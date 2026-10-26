@@ -16,8 +16,24 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertTrue(openQuickAccess.waitForExistence(timeout: 5))
         openQuickAccess.click()
 
-        let quickAccessWindow = app.windows["KeeptideQuickAccessPanel"]
-        XCTAssertTrue(quickAccessWindow.waitForExistence(timeout: 5))
+        let quickAccessPanel = app.dialogs["KeeptideQuickAccessPanel"]
+        guard quickAccessPanel.waitForExistence(timeout: 5) else {
+            let windowMatch = app.windows["KeeptideQuickAccessPanel"]
+            let anyRoleMatch = app.descendants(matching: .any)
+                .matching(identifier: "KeeptideQuickAccessPanel")
+                .firstMatch
+            XCTFail(
+                """
+                Quick access panel did not appear as a dialog.
+                Matching dialog exists: \(quickAccessPanel.exists)
+                Matching window exists: \(windowMatch.exists)
+                Matching identifier with any accessibility role exists: \(anyRoleMatch.exists)
+                Application accessibility hierarchy:
+                \(app.debugDescription)
+                """
+            )
+            return
+        }
 
         let queryField = app.searchFields["Quick access query"]
         guard queryField.waitForExistence(timeout: 5) else {
@@ -27,7 +43,7 @@ final class NativeShellUITests: XCTestCase {
             XCTFail(
                 """
                 Quick access query field did not appear.
-                Quick access window exists: \(quickAccessWindow.exists)
+                Quick access panel exists: \(quickAccessPanel.exists)
                 Matching identifier with any accessibility role exists: \(anyRoleMatch.exists)
                 Application accessibility hierarchy:
                 \(app.debugDescription)
@@ -42,14 +58,14 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(queryField.value as? String, "plain input")
         let emptyState = app.descendants(matching: .any)["QuickAccessEmptyState"]
         XCTAssertTrue(emptyState.exists)
-        XCTAssertTrue(quickAccessWindow.exists)
+        XCTAssertTrue(quickAccessPanel.exists)
 
         queryField.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(queryField.value as? String, "")
-        XCTAssertTrue(quickAccessWindow.exists)
+        XCTAssertTrue(quickAccessPanel.exists)
 
         queryField.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(quickAccessWindow.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(quickAccessPanel.waitForNonExistence(timeout: 5))
     }
 
     func testClosingLibraryLeavesMenuBarApplicationRunning() {
