@@ -1,0 +1,177 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00100000000000000000001 /* KeeptideApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000001 /* KeeptideApp.swift */; };
+		A00100000000000000000002 /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000002 /* AppEnvironment.swift */; };
+		A00100000000000000000003 /* AppSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000003 /* AppSettings.swift */; };
+		A00100000000000000000004 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000004 /* MenuBarController.swift */; };
+		A00100000000000000000005 /* QuickAccessView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000005 /* QuickAccessView.swift */; };
+		A00100000000000000000006 /* PanelController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000006 /* PanelController.swift */; };
+		A00100000000000000000007 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000007 /* LibraryView.swift */; };
+		A00100000000000000000008 /* LibraryWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000008 /* LibraryWindowController.swift */; };
+		A00100000000000000000009 /* AppLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000009 /* AppLaunchTests.swift */; };
+		A0010000000000000000000A /* NativeShellUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0020000000000000000000A /* NativeShellUITests.swift */; };
+		A0010000000000000000000B /* KeeptideSystemTestHostApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0020000000000000000000B /* KeeptideSystemTestHostApp.swift */; };
+		A0010000000000000000000C /* SyntheticPasteboardHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0020000000000000000000C /* SyntheticPasteboardHarness.swift */; };
+		A0010000000000000000000D /* FileDropReceiver.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0020000000000000000000D /* FileDropReceiver.swift */; };
+		A0010000000000000000000E /* SystemTestHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0020000000000000000000E /* SystemTestHostView.swift */; };
+		A0010000000000000000000F /* LaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000014 /* LaunchConfiguration.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A00300000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A01000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A02000000000000000000001;
+			remoteInfo = Keeptide;
+		};
+		A00300000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A01000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A02000000000000000000001;
+			remoteInfo = Keeptide;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A00200000000000000000001 /* KeeptideApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeeptideApp.swift; sourceTree = "<group>"; };
+		A00200000000000000000002 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		A00200000000000000000003 /* AppSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettings.swift; sourceTree = "<group>"; };
+		A00200000000000000000004 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
+		A00200000000000000000005 /* QuickAccessView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickAccessView.swift; sourceTree = "<group>"; };
+		A00200000000000000000006 /* PanelController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelController.swift; sourceTree = "<group>"; };
+		A00200000000000000000007 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		A00200000000000000000008 /* LibraryWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryWindowController.swift; sourceTree = "<group>"; };
+		A00200000000000000000009 /* AppLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLaunchTests.swift; sourceTree = "<group>"; };
+		A0020000000000000000000A /* NativeShellUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeShellUITests.swift; sourceTree = "<group>"; };
+		A0020000000000000000000B /* KeeptideSystemTestHostApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeeptideSystemTestHostApp.swift; sourceTree = "<group>"; };
+		A0020000000000000000000C /* SyntheticPasteboardHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyntheticPasteboardHarness.swift; sourceTree = "<group>"; };
+		A0020000000000000000000D /* FileDropReceiver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileDropReceiver.swift; sourceTree = "<group>"; };
+		A0020000000000000000000E /* SystemTestHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemTestHostView.swift; sourceTree = "<group>"; };
+		A0020000000000000000000F /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		A00200000000000000000010 /* Keeptide.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Keeptide.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00200000000000000000011 /* KeeptideTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KeeptideTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00200000000000000000012 /* KeeptideUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = KeeptideUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00200000000000000000013 /* KeeptideSystemTestHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = KeeptideSystemTestHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00200000000000000000014 /* LaunchConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchConfiguration.swift; sourceTree = "<group>"; };
+		A00200000000000000000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		A00200000000000000000016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A03000000000000000000001 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A03000000000000000000002 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A03000000000000000000003 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A03000000000000000000004 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A04000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				A04000000000000000000002 /* Keeptide */,
+				A04000000000000000000006 /* KeeptideTests */,
+				A04000000000000000000007 /* KeeptideUITests */,
+				A04000000000000000000008 /* KeeptideSystemTestHost */,
+				A04000000000000000000009 /* Config */,
+				A0400000000000000000000A /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A04000000000000000000002 /* Keeptide */ = {isa = PBXGroup; children = (A04000000000000000000003 /* App */, A04000000000000000000004 /* QuickAccess */, A04000000000000000000005 /* Library */, A0400000000000000000000B /* Resources */); path = Keeptide; sourceTree = "<group>"; };
+		A04000000000000000000003 /* App */ = {isa = PBXGroup; children = (A00200000000000000000001 /* KeeptideApp.swift */, A00200000000000000000002 /* AppEnvironment.swift */, A00200000000000000000003 /* AppSettings.swift */, A00200000000000000000014 /* LaunchConfiguration.swift */, A00200000000000000000004 /* MenuBarController.swift */); path = App; sourceTree = "<group>"; };
+		A04000000000000000000004 /* QuickAccess */ = {isa = PBXGroup; children = (A00200000000000000000005 /* QuickAccessView.swift */, A00200000000000000000006 /* PanelController.swift */); path = QuickAccess; sourceTree = "<group>"; };
+		A04000000000000000000005 /* Library */ = {isa = PBXGroup; children = (A00200000000000000000007 /* LibraryView.swift */, A00200000000000000000008 /* LibraryWindowController.swift */); path = Library; sourceTree = "<group>"; };
+		A04000000000000000000006 /* KeeptideTests */ = {isa = PBXGroup; children = (A00200000000000000000009 /* AppLaunchTests.swift */); path = KeeptideTests; sourceTree = "<group>"; };
+		A04000000000000000000007 /* KeeptideUITests */ = {isa = PBXGroup; children = (A0020000000000000000000A /* NativeShellUITests.swift */); path = KeeptideUITests; sourceTree = "<group>"; };
+		A04000000000000000000008 /* KeeptideSystemTestHost */ = {isa = PBXGroup; children = (A0020000000000000000000B /* KeeptideSystemTestHostApp.swift */, A0020000000000000000000C /* SyntheticPasteboardHarness.swift */, A0020000000000000000000D /* FileDropReceiver.swift */, A0020000000000000000000E /* SystemTestHostView.swift */, A0400000000000000000000C /* Resources */); path = KeeptideSystemTestHost; sourceTree = "<group>"; };
+		A04000000000000000000009 /* Config */ = {isa = PBXGroup; children = (A0020000000000000000000F /* Shared.xcconfig */); path = Config; sourceTree = "<group>"; };
+		A0400000000000000000000A /* Products */ = {isa = PBXGroup; children = (A00200000000000000000010 /* Keeptide.app */, A00200000000000000000011 /* KeeptideTests.xctest */, A00200000000000000000012 /* KeeptideUITests.xctest */, A00200000000000000000013 /* KeeptideSystemTestHost.app */); name = Products; sourceTree = "<group>"; };
+		A0400000000000000000000B /* Resources */ = {isa = PBXGroup; children = (A00200000000000000000015 /* Info.plist */); path = Resources; sourceTree = "<group>"; };
+		A0400000000000000000000C /* Resources */ = {isa = PBXGroup; children = (A00200000000000000000016 /* Info.plist */); path = Resources; sourceTree = "<group>"; };
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A02000000000000000000001 /* Keeptide */ = {isa = PBXNativeTarget; buildConfigurationList = A06000000000000000000002 /* Build configuration list for PBXNativeTarget "Keeptide" */; buildPhases = (A07000000000000000000001 /* Sources */, A03000000000000000000001 /* Frameworks */, A08000000000000000000001 /* Resources */); buildRules = (); dependencies = (); name = Keeptide; productName = Keeptide; productReference = A00200000000000000000010 /* Keeptide.app */; productType = "com.apple.product-type.application"; };
+		A02000000000000000000002 /* KeeptideTests */ = {isa = PBXNativeTarget; buildConfigurationList = A06000000000000000000003 /* Build configuration list for PBXNativeTarget "KeeptideTests" */; buildPhases = (A07000000000000000000002 /* Sources */, A03000000000000000000002 /* Frameworks */, A08000000000000000000002 /* Resources */); buildRules = (); dependencies = (A09000000000000000000001 /* PBXTargetDependency */); name = KeeptideTests; productName = KeeptideTests; productReference = A00200000000000000000011 /* KeeptideTests.xctest */; productType = "com.apple.product-type.bundle.unit-test"; };
+		A02000000000000000000003 /* KeeptideUITests */ = {isa = PBXNativeTarget; buildConfigurationList = A06000000000000000000004 /* Build configuration list for PBXNativeTarget "KeeptideUITests" */; buildPhases = (A07000000000000000000003 /* Sources */, A03000000000000000000003 /* Frameworks */, A08000000000000000000003 /* Resources */); buildRules = (); dependencies = (A09000000000000000000002 /* PBXTargetDependency */); name = KeeptideUITests; productName = KeeptideUITests; productReference = A00200000000000000000012 /* KeeptideUITests.xctest */; productType = "com.apple.product-type.bundle.ui-testing"; };
+		A02000000000000000000004 /* KeeptideSystemTestHost */ = {isa = PBXNativeTarget; buildConfigurationList = A06000000000000000000005 /* Build configuration list for PBXNativeTarget "KeeptideSystemTestHost" */; buildPhases = (A07000000000000000000004 /* Sources */, A03000000000000000000004 /* Frameworks */, A08000000000000000000004 /* Resources */); buildRules = (); dependencies = (); name = KeeptideSystemTestHost; productName = KeeptideSystemTestHost; productReference = A00200000000000000000013 /* KeeptideSystemTestHost.app */; productType = "com.apple.product-type.application"; };
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A01000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					A02000000000000000000001 = {CreatedOnToolsVersion = 26.0; };
+					A02000000000000000000002 = {CreatedOnToolsVersion = 26.0; TestTargetID = A02000000000000000000001; };
+					A02000000000000000000003 = {CreatedOnToolsVersion = 26.0; TestTargetID = A02000000000000000000001; };
+					A02000000000000000000004 = {CreatedOnToolsVersion = 26.0; };
+				};
+			};
+			buildConfigurationList = A06000000000000000000001 /* Build configuration list for PBXProject "Keeptide" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (en, Base);
+			mainGroup = A04000000000000000000001;
+			productRefGroup = A0400000000000000000000A /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (A02000000000000000000001 /* Keeptide */, A02000000000000000000002 /* KeeptideTests */, A02000000000000000000003 /* KeeptideUITests */, A02000000000000000000004 /* KeeptideSystemTestHost */);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A08000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A08000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A08000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A08000000000000000000004 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A07000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000001 /* KeeptideApp.swift in Sources */, A00100000000000000000002 /* AppEnvironment.swift in Sources */, A00100000000000000000003 /* AppSettings.swift in Sources */, A0010000000000000000000F /* LaunchConfiguration.swift in Sources */, A00100000000000000000004 /* MenuBarController.swift in Sources */, A00100000000000000000005 /* QuickAccessView.swift in Sources */, A00100000000000000000006 /* PanelController.swift in Sources */, A00100000000000000000007 /* LibraryView.swift in Sources */, A00100000000000000000008 /* LibraryWindowController.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A07000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000009 /* AppLaunchTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A07000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000A /* NativeShellUITests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A07000000000000000000004 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000B /* KeeptideSystemTestHostApp.swift in Sources */, A0010000000000000000000C /* SyntheticPasteboardHarness.swift in Sources */, A0010000000000000000000D /* FileDropReceiver.swift in Sources */, A0010000000000000000000E /* SystemTestHostView.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A09000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A02000000000000000000001 /* Keeptide */; targetProxy = A00300000000000000000001 /* PBXContainerItemProxy */; };
+		A09000000000000000000002 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A02000000000000000000001 /* Keeptide */; targetProxy = A00300000000000000000002 /* PBXContainerItemProxy */; };
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A05000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_OPTIMIZATION_LEVEL = 0; ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
+		A05000000000000000000002 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {COPY_PHASE_STRIP = YES; DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym"; SWIFT_COMPILATION_MODE = wholemodule; VALIDATE_PRODUCT = YES; }; name = Release; };
+		A05000000000000000000003 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Keeptide/Resources/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide; PRODUCT_NAME = "$(TARGET_NAME)"; ENABLE_APP_SANDBOX = YES; }; name = Debug; };
+		A05000000000000000000004 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = Keeptide/Resources/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide; PRODUCT_NAME = "$(TARGET_NAME)"; ENABLE_APP_SANDBOX = YES; }; name = Release; };
+		A05000000000000000000005 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide.Tests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Keeptide.app/Contents/MacOS/Keeptide"; }; name = Debug; };
+		A05000000000000000000006 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {BUNDLE_LOADER = "$(TEST_HOST)"; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide.Tests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Keeptide.app/Contents/MacOS/Keeptide"; }; name = Release; };
+		A05000000000000000000007 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide.UITests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_TARGET_NAME = Keeptide; }; name = Debug; };
+		A05000000000000000000008 /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide.UITests; PRODUCT_NAME = "$(TARGET_NAME)"; TEST_TARGET_NAME = Keeptide; }; name = Release; };
+		A05000000000000000000009 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = KeeptideSystemTestHost/Resources/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide.SystemTestHost; PRODUCT_NAME = "$(TARGET_NAME)"; ENABLE_APP_SANDBOX = YES; }; name = Debug; };
+		A0500000000000000000000A /* Release */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {GENERATE_INFOPLIST_FILE = NO; INFOPLIST_FILE = KeeptideSystemTestHost/Resources/Info.plist; PRODUCT_BUNDLE_IDENTIFIER = io.github.insightprober.Keeptide.SystemTestHost; PRODUCT_NAME = "$(TARGET_NAME)"; ENABLE_APP_SANDBOX = YES; }; name = Release; };
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A06000000000000000000001 /* Build configuration list for PBXProject "Keeptide" */ = {isa = XCConfigurationList; buildConfigurations = (A05000000000000000000001 /* Debug */, A05000000000000000000002 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A06000000000000000000002 /* Build configuration list for PBXNativeTarget "Keeptide" */ = {isa = XCConfigurationList; buildConfigurations = (A05000000000000000000003 /* Debug */, A05000000000000000000004 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A06000000000000000000003 /* Build configuration list for PBXNativeTarget "KeeptideTests" */ = {isa = XCConfigurationList; buildConfigurations = (A05000000000000000000005 /* Debug */, A05000000000000000000006 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A06000000000000000000004 /* Build configuration list for PBXNativeTarget "KeeptideUITests" */ = {isa = XCConfigurationList; buildConfigurations = (A05000000000000000000007 /* Debug */, A05000000000000000000008 /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		A06000000000000000000005 /* Build configuration list for PBXNativeTarget "KeeptideSystemTestHost" */ = {isa = XCConfigurationList; buildConfigurations = (A05000000000000000000009 /* Debug */, A0500000000000000000000A /* Release */); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+/* End XCConfigurationList section */
+	};
+	rootObject = A01000000000000000000001 /* Project object */;
+}

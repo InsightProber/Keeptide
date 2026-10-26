@@ -1,0 +1,41 @@
+name: macOS
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  native-foundation:
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Report build environment
+        run: |
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          uname -m
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Run unit tests
+        run: ./scripts/verify.sh unit AppLaunchTests
+
+      - name: Run native shell UI tests
+        run: ./scripts/verify.sh ui NativeShellUITests
+
+      - name: Build Release configuration
+        run: ./scripts/verify.sh release-build
+
+      - name: Analyze
+        run: ./scripts/verify.sh analyze
