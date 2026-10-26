@@ -12,7 +12,7 @@ struct LibraryView: View {
             ContentUnavailableView {
                 Label("No content yet", systemImage: "doc.text")
             } description: {
-                Text("Snippet creation will be added in a later milestone.")
+                Text("Your saved content will appear here.")
             }
             .navigationTitle("All Snippets")
             .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)

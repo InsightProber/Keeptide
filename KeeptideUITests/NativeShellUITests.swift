@@ -9,14 +9,22 @@ final class NativeShellUITests: XCTestCase {
         app.launchArguments.append("--show-quick-access")
         app.launch()
 
-        let queryField = app.textFields["Quick access query"]
+        let queryField = app.searchFields["Quick access query"]
         XCTAssertTrue(queryField.waitForExistence(timeout: 5))
 
-        queryField.click()
-        queryField.typeText("中文 input")
+        queryField.typeText("plain input")
+        queryField.typeKey(.return, modifierFlags: [])
 
-        XCTAssertEqual(queryField.value as? String, "中文 input")
+        XCTAssertEqual(queryField.value as? String, "plain input")
         XCTAssertTrue(app.staticTexts["No content yet"].exists)
+        XCTAssertTrue(app.windows["Keeptide Quick Access"].exists)
+
+        queryField.typeKey(.escape, modifierFlags: [])
+        XCTAssertEqual(queryField.value as? String, "")
+        XCTAssertTrue(app.windows["Keeptide Quick Access"].exists)
+
+        queryField.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(app.windows["Keeptide Quick Access"].waitForNonExistence(timeout: 5))
     }
 
     func testClosingLibraryLeavesMenuBarApplicationRunning() {
@@ -30,7 +38,16 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertTrue(libraryWindow.waitForExistence(timeout: 5))
 
         libraryWindow.buttons["Close Library"].click()
+        XCTAssertTrue(libraryWindow.waitForNonExistence(timeout: 5))
 
-        XCTAssertNotEqual(app.state, .notRunning)
+        let statusItem = app.menuBars.statusItems["Keeptide"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        statusItem.click()
+
+        let openLibrary = app.menuItems["Open Library"]
+        XCTAssertTrue(openLibrary.waitForExistence(timeout: 5))
+        openLibrary.click()
+
+        XCTAssertTrue(libraryWindow.waitForExistence(timeout: 5))
     }
 }

@@ -8,6 +8,19 @@ final class MenuBarController: NSObject {
         case available
         case unavailable
         case failed(OSStatus)
+
+        var menuTitle: String? {
+            switch self {
+            case .available:
+                nil
+            case .disabledForTesting:
+                "Global shortcut disabled for this test run — open Quick Access here"
+            case .unavailable:
+                "Shift-Command-V is already in use — open Quick Access here"
+            case let .failed(status):
+                "Shift-Command-V is unavailable (error \(status)) — open Quick Access here"
+            }
+        }
     }
 
     private static let hotKeySignature: OSType = 0x4B545044 // KTPD
@@ -35,6 +48,7 @@ final class MenuBarController: NSObject {
             systemSymbolName: "doc.on.clipboard",
             accessibilityDescription: "Keeptide"
         )
+        statusItem.button?.setAccessibilityLabel("Keeptide")
 
         if shouldRegisterHotKey {
             registerHotKey()
@@ -129,15 +143,15 @@ final class MenuBarController: NSObject {
         menu.addItem(withTitle: "Open Quick Access", action: #selector(openQuickAccess), keyEquivalent: "")
         menu.addItem(withTitle: "Open Library", action: #selector(openLibrary), keyEquivalent: "")
 
-        if shortcutStatus == .unavailable {
-            let conflictItem = NSMenuItem(
-                title: "Shift-Command-V is already in use",
-                action: nil,
+        if let shortcutMenuTitle = shortcutStatus.menuTitle {
+            menu.addItem(.separator())
+            let shortcutItem = NSMenuItem(
+                title: shortcutMenuTitle,
+                action: #selector(openQuickAccess),
                 keyEquivalent: ""
             )
-            conflictItem.isEnabled = false
-            menu.addItem(.separator())
-            menu.addItem(conflictItem)
+            shortcutItem.target = self
+            menu.addItem(shortcutItem)
         }
 
         menu.addItem(.separator())

@@ -15,6 +15,7 @@ final class LibraryWindowController: NSWindowController {
         )
         window.title = "Keeptide Library"
         window.identifier = NSUserInterfaceItemIdentifier("KeeptideLibraryWindow")
+        window.isReleasedWhenClosed = false
         window.minSize = Self.minimumSize
         window.setFrameAutosaveName("KeeptideLibraryWindow")
         window.toolbarStyle = .unified

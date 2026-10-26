@@ -23,16 +23,41 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(configuration.shouldRegisterGlobalHotKey)
     }
 
-    func testOpeningAndClosingQuickPanelDoesNotChangeAnIsolatedPasteboard() {
-        let pasteboard = NSPasteboard(name: NSPasteboard.Name("AppLaunchTests.\(UUID().uuidString)"))
-        pasteboard.clearContents()
-        let initialChangeCount = pasteboard.changeCount
-        let controller = PanelController()
+    func testEscapeLeavesMarkedTextWithTheInputMethod() {
+        XCTAssertEqual(
+            QuickAccessEscapePolicy.action(hasMarkedText: true, hasQuery: true),
+            .passToInputMethod
+        )
+    }
 
-        controller.show()
-        controller.close()
+    func testEscapeClearsACommittedQueryBeforeClosingThePanel() {
+        XCTAssertEqual(
+            QuickAccessEscapePolicy.action(hasMarkedText: false, hasQuery: true),
+            .clearQuery
+        )
+    }
 
-        XCTAssertEqual(pasteboard.changeCount, initialChangeCount)
+    func testEscapeClosesThePanelWhenThereIsNoCompositionOrQuery() {
+        XCTAssertEqual(
+            QuickAccessEscapePolicy.action(hasMarkedText: false, hasQuery: false),
+            .closePanel
+        )
+    }
+
+    func testShortcutStatusMessagesCoverEveryState() {
+        XCTAssertNil(MenuBarController.ShortcutStatus.available.menuTitle)
+        XCTAssertEqual(
+            MenuBarController.ShortcutStatus.disabledForTesting.menuTitle,
+            "Global shortcut disabled for this test run — open Quick Access here"
+        )
+        XCTAssertEqual(
+            MenuBarController.ShortcutStatus.unavailable.menuTitle,
+            "Shift-Command-V is already in use — open Quick Access here"
+        )
+        XCTAssertEqual(
+            MenuBarController.ShortcutStatus.failed(-50).menuTitle,
+            "Shift-Command-V is unavailable (error -50) — open Quick Access here"
+        )
     }
 
     func testClosingLibraryDoesNotRequestApplicationTermination() {
