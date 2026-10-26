@@ -6,11 +6,20 @@ final class NativeShellUITests: XCTestCase {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-global-hotkey"]
-        app.launchArguments.append("--show-quick-access")
         app.launch()
 
-        let queryField = app.searchFields["Quick access query"]
+        let statusItem = app.menuBars.statusItems["Keeptide"]
+        XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
+        statusItem.click()
+
+        let openQuickAccess = app.menuItems["Open Quick Access"]
+        XCTAssertTrue(openQuickAccess.waitForExistence(timeout: 5))
+        openQuickAccess.click()
+
         let quickAccessWindow = app.windows["KeeptideQuickAccessPanel"]
+        XCTAssertTrue(quickAccessWindow.waitForExistence(timeout: 5))
+
+        let queryField = app.searchFields["Quick access query"]
         guard queryField.waitForExistence(timeout: 5) else {
             let anyRoleMatch = app.descendants(matching: .any)
                 .matching(identifier: "Quick access query")
