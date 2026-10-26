@@ -15,6 +15,7 @@ final class LibraryWindowController: NSWindowController {
         )
         window.title = "Keeptide Library"
         window.identifier = NSUserInterfaceItemIdentifier("KeeptideLibraryWindow")
+        window.setAccessibilityIdentifier("KeeptideLibraryWindow")
         window.isReleasedWhenClosed = false
         window.minSize = Self.minimumSize
         window.setFrameAutosaveName("KeeptideLibraryWindow")

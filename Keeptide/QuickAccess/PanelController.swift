@@ -14,6 +14,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         )
         panel.title = "Keeptide Quick Access"
         panel.identifier = NSUserInterfaceItemIdentifier("KeeptideQuickAccessPanel")
+        panel.setAccessibilityIdentifier("KeeptideQuickAccessPanel")
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
         panel.isFloatingPanel = true

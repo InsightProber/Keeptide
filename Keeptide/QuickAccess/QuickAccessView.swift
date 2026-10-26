@@ -20,6 +20,8 @@ struct QuickAccessView: View {
             } description: {
                 Text("Your saved content will appear here.")
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("QuickAccessEmptyState")
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor))
         }
