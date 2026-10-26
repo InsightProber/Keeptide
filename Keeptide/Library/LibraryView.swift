@@ -16,6 +16,7 @@ struct LibraryView: View {
             }
             .navigationTitle("All Snippets")
             .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor))
         } detail: {
             ContentUnavailableView {

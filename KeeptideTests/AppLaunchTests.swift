@@ -60,6 +60,35 @@ final class AppLaunchTests: XCTestCase {
         )
     }
 
+    func testApplicationMenuBindsStandardResponderActions() throws {
+        let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
+        let appMenu = try XCTUnwrap(menu.item(withTitle: "Keeptide")?.submenu)
+        let editMenu = try XCTUnwrap(menu.item(withTitle: "Edit")?.submenu)
+        let windowMenu = try XCTUnwrap(menu.item(withTitle: "Window")?.submenu)
+
+        XCTAssertEqual(appMenu.item(withTitle: "Quit Keeptide")?.action, #selector(NSApplication.terminate(_:)))
+        XCTAssertEqual(appMenu.item(withTitle: "Quit Keeptide")?.keyEquivalent, "q")
+        XCTAssertEqual(windowMenu.item(withTitle: "Close")?.action, #selector(NSWindow.performClose(_:)))
+        XCTAssertEqual(windowMenu.item(withTitle: "Close")?.keyEquivalent, "w")
+
+        let expectedEditActions: [(String, Selector, String)] = [
+            ("Undo", Selector(("undo:")), "z"),
+            ("Redo", Selector(("redo:")), "z"),
+            ("Cut", #selector(NSText.cut(_:)), "x"),
+            ("Copy", #selector(NSText.copy(_:)), "c"),
+            ("Paste", #selector(NSText.paste(_:)), "v"),
+            ("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ]
+        for (title, action, keyEquivalent) in expectedEditActions {
+            XCTAssertEqual(editMenu.item(withTitle: title)?.action, action)
+            XCTAssertEqual(editMenu.item(withTitle: title)?.keyEquivalent, keyEquivalent)
+        }
+        XCTAssertEqual(
+            editMenu.item(withTitle: "Redo")?.keyEquivalentModifierMask,
+            [.command, .shift]
+        )
+    }
+
     func testClosingLibraryDoesNotRequestApplicationTermination() {
         let delegate = AppDelegate()
         let controller = LibraryWindowController()
