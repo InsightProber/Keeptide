@@ -1,0 +1,33 @@
+# Private development documents, evidence, and local working material.
+/.local/
+# Guard legacy/default locations used by planning and research workflows.
+/docs/local/
+/docs/superpowers/
+/docs/research/
+/docs/design/
+/docs/qa/
+
+# Machine-specific agent state. Shared AGENTS.md and CLAUDE.md stay tracked.
+/.omx/
+/.claude/
+/.codex/
+/CLAUDE.local.md
+/AGENTS.override.md
+
+# Xcode and Swift generated files.
+.DS_Store
+.build/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xcresult/
+
+# Local credentials and signing material.
+.env
+.env.*
+!.env.example
+*.p12
+*.p8
+*.mobileprovision
+*.provisionprofile

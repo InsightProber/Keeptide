@@ -1,0 +1,88 @@
+# Architecture overview
+
+Keeptide is designed as a local-first native macOS application. This document
+describes the planned architecture; the application has not been implemented yet.
+
+## Native interfaces
+
+Two interfaces serve different tasks:
+
+- **Quick access** is a compact, temporary panel for searching, previewing, and
+  reusing content while working in another application.
+- **The library** is a persistent workspace for creating snippets, editing short
+  notes, organizing collections, and managing retained content.
+
+SwiftUI provides the interface structure. AppKit supplies native window, focus,
+text editing and system integration where those behaviors need precise control.
+Both interfaces use the same application services and content model.
+
+## System overview
+
+```mermaid
+flowchart TB
+    Quick[Quick-access panel] --> Services[Content and application services]
+    Library[Library window] --> Services
+    Capture[Clipboard capture] --> Services
+    Services --> Store[Core Data / SQLite content store]
+    Store --> Search[Rebuildable full-text index]
+    Store --> Preview[Derived previews and thumbnails]
+    Store <--> Cloud[Private CloudKit storage]
+    Services --> Reuse[Validated copy and insertion]
+```
+
+## Content and persistence
+
+Core Data, backed by SQLite, is the authoritative content store. Metadata and
+large content are handled separately so browsing the library does not require
+loading every image or rich representation into memory.
+
+An original capture preserves the clipboard content and its representations.
+A saved snippet can initially reference that capture. Its first body edit creates
+independent editable content, preserving the original. Independently created
+snippets keep their identity even when their text happens to match.
+
+Repeated captures are deduplicated only when their complete content matches.
+Search normalization does not alter stored content or determine content identity.
+History retention and saved-snippet lifetime are independent. Content is reclaimed
+only when its retention and references permit it.
+
+## Search and previews
+
+Full-text search is a derived SQLite index, rebuilt from the content store when
+necessary. It supports literal queries, mixed languages, and complete progressive
+matching for short queries. Results carry enough identity and version information
+to reject obsolete content before an action is performed.
+
+Previews and thumbnails are also derived. Expensive work runs away from the UI
+thread and can be cancelled when the user changes selection. Link and Markdown
+previews do not automatically fetch remote resources.
+
+## iCloud and local boundaries
+
+`NSPersistentCloudKitContainer` mirrors portable content into the user's private
+CloudKit database. Local edits remain usable offline. Initial recovery validates
+content before making it actionable and protects partially restored data from
+destructive maintenance.
+
+Cloud activity is reported at the level the platform can establish. A successful
+container event is not a receipt for every individual item. Account transitions
+must isolate stores and avoid mixing libraries.
+
+Indexes, thumbnails, drafts, usage summaries and local file access permissions
+stay on the Mac. File references do not imply that the referenced file itself has
+been uploaded. Recovered references may require the user to locate a file again.
+
+## Permissions and reuse
+
+Recording is enabled intentionally. Automatic insertion uses the system's
+Accessibility permission and validates the destination immediately before acting.
+Copying content remains an available fallback when automatic insertion is not
+available. The application does not execute saved commands.
+
+## Extension boundary
+
+Stable content identities, versions, change consumption and a shared search
+interface allow future semantic retrieval to be added as a derived capability.
+The first release does not include embeddings, model inference or background
+input monitoring. Future suggestions must preserve the same permission and
+content-validation boundaries.
