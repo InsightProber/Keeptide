@@ -38,7 +38,9 @@ jobs:
         run: ./scripts/verify.sh ui NativeShellUITests
 
       - name: Build Release configuration
+        if: ${{ success() || failure() }}
         run: ./scripts/verify.sh release-build
 
       - name: Analyze
+        if: ${{ success() || failure() }}
         run: ./scripts/verify.sh analyze

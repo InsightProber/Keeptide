@@ -10,14 +10,28 @@ final class NativeShellUITests: XCTestCase {
         app.launch()
 
         let queryField = app.searchFields["Quick access query"]
-        XCTAssertTrue(queryField.waitForExistence(timeout: 5))
+        let quickAccessWindow = app.windows["KeeptideQuickAccessPanel"]
+        guard queryField.waitForExistence(timeout: 5) else {
+            let anyRoleMatch = app.descendants(matching: .any)
+                .matching(identifier: "Quick access query")
+                .firstMatch
+            XCTFail(
+                """
+                Quick access query field did not appear.
+                Quick access window exists: \(quickAccessWindow.exists)
+                Matching identifier with any accessibility role exists: \(anyRoleMatch.exists)
+                Application accessibility hierarchy:
+                \(app.debugDescription)
+                """
+            )
+            return
+        }
 
         queryField.typeText("plain input")
         queryField.typeKey(.return, modifierFlags: [])
 
         XCTAssertEqual(queryField.value as? String, "plain input")
         let emptyState = app.descendants(matching: .any)["QuickAccessEmptyState"]
-        let quickAccessWindow = app.windows["KeeptideQuickAccessPanel"]
         XCTAssertTrue(emptyState.exists)
         XCTAssertTrue(quickAccessWindow.exists)
 
