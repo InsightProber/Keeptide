@@ -1,11 +1,11 @@
 # Roadmap
 
-Keeptide is in the design and repository-foundation stage. The milestones below
+Keeptide is in early native development. The milestones below
 describe capability outcomes, not released features or delivery dates.
 
 | Milestone | Outcome | Completion evidence | Status |
 | --- | --- | --- | --- |
-| M0 — Native and storage foundation | Native application shell, reliable content persistence, and an early iCloud feasibility check | Real macOS interaction, disk reopen tests, and an isolated cloud recovery round trip | Planned |
+| M0 — Native and storage foundation | Native application shell, reliable content persistence, and an early iCloud feasibility check | Real macOS interaction, disk reopen tests, and an isolated cloud recovery round trip | In progress |
 | M1 — Local clipboard workflow | Capture, search, preview basics, copying and validated insertion | End-to-end operation in real destination applications, including input-method and permission behavior | Planned |
 | M2 — Reusable library | Editable snippets, drafts, collections, richer previews and retention controls | Native editing, restart recovery, content identity and safe lifecycle validation | Planned |
 | M3 — Recovery and user control | Full background cloud integration, account isolation, settings and exports | Clean-install recovery, account transition checks and independently verified exports | Planned |

@@ -1,8 +1,8 @@
 # Contributing to Keeptide
 
-Thank you for taking an interest in Keeptide. The project is currently in its
-documentation and repository-foundation stage. A buildable native application and
-its verification scripts will arrive with the implementation milestones.
+Thank you for taking an interest in Keeptide. The project is in early native
+development. A menu-bar application, quick-access panel, library shell, and
+verification infrastructure are present; the content workflows remain planned.
 
 ## Before making a change
 
@@ -31,12 +31,33 @@ include it indirectly in screenshots, issue bodies or CI artifacts.
 
 ## Verification
 
-Documentation changes need accurate status, valid links, consistent terminology,
-and a clean `git diff --check`. Native code changes will require the appropriate
-build, focused tests and integration checks once those targets exist.
+Use full Xcode with the macOS 26 SDK or later, and open `Keeptide.xcodeproj` with
+the shared `Keeptide` scheme. Set `DEVELOPER_DIR` when selecting an installation.
+The verification entry point provides these commands:
+
+```sh
+./scripts/verify.sh unit AppLaunchTests
+./scripts/verify.sh integration AppLaunchTests
+./scripts/verify.sh ui NativeShellUITests
+./scripts/verify.sh release-build
+./scripts/verify.sh analyze
+./scripts/verify.sh all
+```
+
+`unit` and `integration` select a class in `KeeptideTests`; `ui` selects a class
+in `KeeptideUITests`. Test builds use local ad-hoc signing without developer
+credentials. CI uses the same script. Developer ID signing, notarization, and
+cloud provisioning are separate release operations.
+
+For verification-script changes, also run
+`python3 -m unittest discover -s scripts/tests -v`. Documentation changes need
+accurate status, valid links, consistent terminology, and `git diff --check`.
+Logs and result bundles belong under the ignored `.local/` directory.
 
 Changes to native UI, input methods, permissions or destination selection need
-real macOS validation. Changes to cloud recovery need isolated real-service
+real macOS validation. CI and direct Swift compilation do not establish real
+input-method, multi-display, permission, or release-signing behavior. Changes to
+cloud recovery need isolated real-service
 evidence in addition to deterministic application tests. Use synthetic test data;
 never include personal content, credentials or signing material in submissions.
 

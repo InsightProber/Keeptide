@@ -21,10 +21,11 @@ The first release targets macOS 26+ with Swift 6, SwiftUI and AppKit, Core Data
 backed by SQLite, a rebuildable full-text search index, and private CloudKit
 storage. Native interaction quality and data reliability are release criteria.
 
-The repository currently contains documentation and project guidance. There is
-no application target, buildable Xcode project, or application test suite yet.
-Planned capabilities must remain labelled as planned until implemented and
-verified. Update this section and the build commands when the project is created.
+The repository contains an early native foundation: the `Keeptide` application,
+unit and UI test targets, a separate `KeeptideSystemTestHost`, and a shared Xcode
+scheme. Capture, persistence, search, snippets, and cloud integration are still
+planned. Planned capabilities must remain labelled as planned until implemented
+and verified.
 
 ## Start here
 
@@ -116,11 +117,14 @@ verified. Update this section and the build commands when the project is created
 
 ## Verification and evidence
 
-- For this documentation-only stage, verify links, publication boundaries and
-  `git diff --check`. Do not invent successful native builds or test results.
-- When the native project exists, keep its actual build and test entry point here.
-  The intended interface is `scripts/verify.sh` for focused tests, UI tests,
-  Release builds and static analysis; it is not available yet.
+- Verify links, publication boundaries and `git diff --check` for documentation.
+- Use full Xcode with the macOS 26 SDK or later. `DEVELOPER_DIR` may select a
+  specific installation. Command Line Tools alone cannot run native tests.
+- Run `./scripts/verify.sh unit CLASS`, `integration CLASS`, or `ui CLASS` for
+  focused XCTest classes. Use `release-build`, `analyze`, or `all` for broader
+  checks. The shared project/scheme is `Keeptide`; results stay in `.local/`.
+- Run `python3 -m unittest discover -s scripts/tests -v` when changing the
+  verification script. These checks do not substitute for native XCTest.
 - Test behavior and failure boundaries. For meaningful changes, run focused
   tests first, then the relevant integration/build checks. Do not add tests that
   merely mirror formatting or implementation details.
