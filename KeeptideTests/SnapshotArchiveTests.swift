@@ -41,6 +41,34 @@ final class SnapshotArchiveTests: XCTestCase {
         })
         XCTAssertTrue(page.portableRecords.contains(.item(item)))
         await reader.end(lease)
+
+        // Local-only damage must affect an ordinary read without invalidating
+        // the portable archive, which never exports these access bytes.
+        let localID = fixture.localRepresentation.id
+        try await store.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+            request.predicate = NSPredicate(format: "id == %@", localID as NSUUID)
+            let record = try XCTUnwrap(context.fetch(request).first)
+            record.setValue(Data("damaged local-only bytes".utf8), forKey: "bytes")
+            try context.save()
+            context.reset()
+        }
+        let ref = ContentStoreFixtures.ref(item, fixture.capture)
+        let damagedLocalRead = try await ContentRepository(controller: store).read(ref)
+        XCTAssertEqual(damagedLocalRead.integrity, .corrupt)
+        XCTAssertTrue(damagedLocalRead.representations.isEmpty)
+        let damagedLocalLease = try await reader.begin(SnapshotRequest(permit: permit))
+        let damagedLocalArchive = try await reader.page(damagedLocalLease, after: nil)
+        XCTAssertEqual(damagedLocalArchive.portableRecords, page.portableRecords)
+        XCTAssertEqual(damagedLocalArchive.contents.first?.integrity, .requiresRelocation)
+        await reader.end(damagedLocalLease)
+
+        try await accessStore.remove(representationID: localID,
+            permit: StoreSafetyGate(controller: store).permit(.maintenance))
+        let missingLocalLease = try await reader.begin(SnapshotRequest(permit: permit))
+        let missingLocalArchive = try await reader.page(missingLocalLease, after: nil)
+        XCTAssertEqual(missingLocalArchive.portableRecords, page.portableRecords)
+        await reader.end(missingLocalLease)
     }
 
     func testBeginRejectsVisibleHistoryWhoseCaptureMetadataIsMissing() async throws {
