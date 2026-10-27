@@ -53,6 +53,32 @@ final class SearchProjectionTests: XCTestCase {
         XCTAssertEqual(input.captureID, capture.id)
     }
 
+    func testTextByteBudgetSplitsLargeBatchesButAlwaysProgresses() async throws {
+        let controller = try makeStore()
+        var ids: [ItemID] = []
+        for index in 0..<3 {
+            let capture = try ContentStoreFixtures.capture([[
+                ("public.utf8-plain-text", Data(repeating: UInt8(ascii: "a") + UInt8(index), count: 2_000_000)),
+            ]])
+            let item = ContentStoreFixtures.item(capture)
+            try await ContentStoreFixtures.insert(item, capture, into: controller)
+            ids.append(item.id)
+        }
+        let requested = ids
+
+        let small = try await controller.perform { context in
+            try StoredRecords.searchProjection(itemIDs: requested, maximumTextBytes: 1_000_000, in: context)
+        }
+        let medium = try await controller.perform { context in
+            try StoredRecords.searchProjection(itemIDs: requested, maximumTextBytes: 5_000_000, in: context)
+        }
+
+        XCTAssertEqual(small.processed, 1)
+        XCTAssertEqual(small.inputs.map(\.itemID), [ids[0]])
+        XCTAssertEqual(medium.processed, 2)
+        XCTAssertEqual(medium.inputs.map(\.itemID), [ids[0], ids[1]])
+    }
+
     func testAllItemIDsListsEveryItem() async throws {
         let controller = try makeStore()
         var inserted: Set<UUID> = []

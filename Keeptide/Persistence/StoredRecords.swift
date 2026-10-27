@@ -486,6 +486,15 @@ extension StoredRecords {
     /// Visible facets of the requested items as raw Sendable values. Items with
     /// no visible facet are omitted; callers remove their index documents.
     static func searchProjection(itemIDs: [ItemID], in context: NSManagedObjectContext) throws -> [SearchProjectionInput] {
+        try searchProjection(itemIDs: itemIDs, maximumTextBytes: .max, in: context).inputs
+    }
+
+    /// Projects the longest prefix of `itemIDs` whose text payloads fit
+    /// `maximumTextBytes`, so one batch never holds unbounded bytes. The first
+    /// visible item is always included, so callers always make progress.
+    static func searchProjection(
+        itemIDs: [ItemID], maximumTextBytes: Int64, in context: NSManagedObjectContext
+    ) throws -> (inputs: [SearchProjectionInput], processed: Int) {
         var rows: [NSDictionary] = []
         for ids in batches(itemIDs.map(\.rawValue)) {
             rows += try context.fetch(dictionaryRequest(
@@ -493,19 +502,37 @@ extension StoredRecords {
             ))
         }
         let projection = try readProjection(items: rows, strict: false, in: context)
-        var visible: [(row: NSDictionary, item: ValidatedItemMetadata, history: ContentRef?, memo: ContentRef?)] = []
+        var visible: [UUID: SearchVisibleItem] = [:]
         for row in projection.items {
             guard let item = try? validatedItemMetadata(row), item.deletedAt == nil,
                   !projection.itemMarkerIDs.contains(item.id.rawValue) else { continue }
             let history = projectedHistoryRef(item: item, projection: projection)
             let memo = try? projectedMemoRef(item: item, memoID: item.memoID,
                                              memo: item.memoID.flatMap { projection.memos[$0] }, projection: projection)
-            if history != nil || memo != nil { visible.append((row, item, history, memo)) }
+            guard history != nil || memo != nil else { continue }
+            visible[item.id.rawValue] = SearchVisibleItem(
+                row: row, item: item, history: history, memo: memo,
+                memoRow: item.memoID.flatMap { projection.memos[$0] }
+            )
+        }
+        let manifests = try searchManifests(captureIDs: Set(visible.values.compactMap(\.item.captureID)), in: context)
+
+        var included: [SearchVisibleItem] = []
+        var processed = 0
+        var usedBytes: Int64 = 0
+        for id in itemIDs {
+            if let entry = visible[id.rawValue] {
+                let bytes = entry.item.captureID.flatMap { manifests[$0] }
+                    .map { searchTextEntries($0).reduce(Int64(0)) { $0 + $1.byteCount } } ?? 0
+                if !included.isEmpty, usedBytes > maximumTextBytes - bytes { break }
+                usedBytes += bytes
+                included.append(entry)
+            }
+            processed += 1
         }
 
-        let ownedMemoIDs = visible.compactMap { entry -> UUID? in
-            guard entry.memo != nil, let memoID = entry.item.memoID,
-                  projection.memos[memoID]?["bodyMode"] as? String != MemoBodyMode.inheritedCapture.rawValue else { return nil }
+        let ownedMemoIDs = included.compactMap { entry -> UUID? in
+            guard entry.memo != nil, let memoID = entry.item.memoID, !entry.isInherited else { return nil }
             return memoID
         }
         var bodies: [UUID: Data] = [:]
@@ -516,29 +543,29 @@ extension StoredRecords {
                 if let id = row["id"] as? UUID, let body = row["body"] as? Data { bodies[id] = body }
             }
         }
-        let captures = try searchCaptureText(captureIDs: Set(visible.compactMap(\.item.captureID)), in: context)
+        let captureIDs = Set(included.compactMap(\.item.captureID))
+        let texts = try searchCaptureText(manifests: manifests.filter { captureIDs.contains($0.key) }, in: context)
 
-        return visible.map { entry in
-            let memoRow = entry.item.memoID.flatMap { projection.memos[$0] }
+        let inputs = included.map { entry in
             let memo = entry.memo.flatMap { ref -> MemoProjection? in
-                guard let memoID = entry.item.memoID, let memoRow else { return nil }
-                let inherited = memoRow["bodyMode"] as? String == MemoBodyMode.inheritedCapture.rawValue
+                guard let memoID = entry.item.memoID, let memoRow = entry.memoRow else { return nil }
                 return MemoProjection(
                     ref: ref, memoID: memoID, title: memoRow["title"] as? String ?? "",
-                    note: memoRow["note"] as? String ?? "", isInherited: inherited,
-                    body: inherited ? nil : bodies[memoID]
+                    note: memoRow["note"] as? String ?? "", isInherited: entry.isInherited,
+                    body: entry.isInherited ? nil : bodies[memoID]
                 )
             }
-            let capture = entry.item.captureID.flatMap { captures[$0] }
+            let manifest = entry.item.captureID.flatMap { manifests[$0] }
             return SearchProjectionInput(
                 itemID: entry.item.id, title: entry.item.title, sourceApp: entry.row["sourceApp"] as? String,
                 collectionID: (entry.row["collectionID"] as? UUID).map(CollectionID.init(rawValue:)),
                 lastCopiedAt: entry.item.lastCopiedAt, history: entry.history, memo: memo,
-                captureID: entry.item.captureID, representationTypes: capture?.types ?? [],
-                hasLocalReference: capture?.hasLocalReference ?? false,
-                textRepresentations: capture?.text ?? []
+                captureID: entry.item.captureID, representationTypes: manifest?.entries.map(\.typeIdentifier) ?? [],
+                hasLocalReference: manifest?.entries.contains { $0.storage == .localReference } ?? false,
+                textRepresentations: entry.item.captureID.flatMap { texts[$0] } ?? []
             )
         }
+        return (inputs, processed)
     }
 
     /// Every item ID, newest copy first, for a full index rebuild.
@@ -582,19 +609,23 @@ extension StoredRecords {
         return Set(items.map(ItemID.init(rawValue:)))
     }
 
-    private struct SearchCaptureText {
-        var types: [String]
-        var hasLocalReference: Bool
-        var text: [TextRepresentation]
+    private struct SearchVisibleItem {
+        let row: NSDictionary
+        let item: ValidatedItemMetadata
+        let history: ContentRef?
+        let memo: ContentRef?
+        let memoRow: NSDictionary?
+
+        var isInherited: Bool { memoRow?["bodyMode"] as? String == MemoBodyMode.inheritedCapture.rawValue }
     }
 
-    /// Manifest types for every capture, plus bytes of its portable text
-    /// representations only; image and file payloads are never loaded. Byte
-    /// count and digest come from the manifest, so a missing or altered row
-    /// fails the later integrity check instead of being indexed.
-    private static func searchCaptureText(
+    private static func searchTextEntries(_ manifest: CaptureManifest) -> [ManifestEntry] {
+        manifest.entries.filter { $0.storage == .portable && ClipboardTextDecoder.isTextType($0.typeIdentifier) }
+    }
+
+    private static func searchManifests(
         captureIDs: Set<UUID>, in context: NSManagedObjectContext
-    ) throws -> [UUID: SearchCaptureText] {
+    ) throws -> [UUID: CaptureManifest] {
         var manifests: [UUID: CaptureManifest] = [:]
         for ids in batches(Array(captureIDs)) {
             for row in try context.fetch(dictionaryRequest(
@@ -605,9 +636,16 @@ extension StoredRecords {
                 manifests[id] = manifest
             }
         }
-        let wanted = manifests.mapValues { manifest in
-            manifest.entries.filter { $0.storage == .portable && ClipboardTextDecoder.isTextType($0.typeIdentifier) }
-        }
+        return manifests
+    }
+
+    /// Bytes of portable text representations only; image and file payloads are
+    /// never loaded. Byte count and digest come from the manifest, so a missing
+    /// or altered row fails the later integrity check instead of being indexed.
+    private static func searchCaptureText(
+        manifests: [UUID: CaptureManifest], in context: NSManagedObjectContext
+    ) throws -> [UUID: [TextRepresentation]] {
+        let wanted = manifests.mapValues(searchTextEntries)
         let types = Array(Set(wanted.values.flatMap { $0.map(\.typeIdentifier) }))
         var bytes: [UUID: [[Int]: Data]] = [:]
         for ids in batches(wanted.filter { !$0.value.isEmpty }.map(\.key)) {
@@ -621,20 +659,15 @@ extension StoredRecords {
                 bytes[snapshotID, default: [:]][[Int(item), Int(representation)]] = row["bytes"] as? Data ?? Data()
             }
         }
-        var result: [UUID: SearchCaptureText] = [:]
-        for (id, manifest) in manifests {
-            let text = (wanted[id] ?? []).map { entry in
+        var result: [UUID: [TextRepresentation]] = [:]
+        for (id, entries) in wanted {
+            result[id] = entries.map { entry in
                 TextRepresentation(
                     itemIndex: entry.itemIndex, representationIndex: entry.representationIndex,
                     typeIdentifier: entry.typeIdentifier, byteCount: entry.byteCount, digest: entry.digest,
                     bytes: bytes[id]?[[entry.itemIndex, entry.representationIndex]] ?? Data()
                 )
             }
-            result[id] = SearchCaptureText(
-                types: manifest.entries.map(\.typeIdentifier),
-                hasLocalReference: manifest.entries.contains { $0.storage == .localReference },
-                text: text
-            )
         }
         return result
     }

@@ -56,6 +56,8 @@ final class SQLiteSearchIndex: @unchecked Sendable {
     let directory: URL
     private let lock = NSLock()
     private var connection: SQLiteConnection?
+    /// Set when the existing file is not a database; `reset` replaces it.
+    private var openFailure: SearchIndexError?
 
     private var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
 
@@ -64,7 +66,11 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]
         )
-        connection = try Self.openWriter(at: directory.appendingPathComponent(Self.fileName))
+        do {
+            connection = try Self.openWriter(at: directory.appendingPathComponent(Self.fileName))
+        } catch SearchIndexError.corrupt {
+            openFailure = .corrupt
+        }
     }
 
     /// Nil when the file has no complete metadata, which callers treat as "rebuild".
@@ -114,6 +120,7 @@ final class SQLiteSearchIndex: @unchecked Sendable {
             }
             let database = try Self.openWriter(at: fileURL)
             connection = database
+            openFailure = nil
             try database.transaction {
                 for statement in Self.schema { try database.execute(statement) }
                 let meta: [(String, SQLiteValue)] = [
@@ -244,12 +251,13 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         lock.withLock {
             connection?.close()
             connection = nil
+            openFailure = nil
         }
     }
 
     private func withConnection<T>(_ body: (SQLiteConnection) throws -> T) throws -> T {
         try lock.withLock {
-            guard let connection else { throw SearchIndexError.closed }
+            guard let connection else { throw openFailure ?? SearchIndexError.closed }
             return try body(connection)
         }
     }
