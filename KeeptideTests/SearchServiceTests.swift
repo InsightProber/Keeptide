@@ -109,6 +109,27 @@ final class SearchServiceTests: XCTestCase {
         XCTAssertEqual(scanned.results.map(\.ref), indexed.results.map(\.ref))
     }
 
+    func testInvisibleCharactersInQueryDoNotHideMatches() async throws {
+        let service = try makeService([SearchTestSupport.document(body: "kubectl get pods")])
+
+        let page = try await lastPage(service, request("\u{200B}kubectl"))
+
+        XCTAssertEqual(page.totalMatches, 1)
+    }
+
+    func testUnavailableStatusNeverServesStaleIndexContent() async throws {
+        let directory = SearchTestSupport.directory()
+        let (service, _, status) = try makeService([SearchTestSupport.document(body: "deleted clip body")], in: directory)
+        status.update(.unavailable)
+
+        let page = try await lastPage(service, request("deleted"))
+
+        XCTAssertEqual(page.results, [])
+        XCTAssertEqual(page.totalMatches, 0)
+        XCTAssertTrue(page.isComplete)
+        XCTAssertEqual(page.indexState, .unavailable)
+    }
+
     func testSameTextInDifferentItemsIsNotFolded() async throws {
         let first = SearchTestSupport.document(body: "echo hello")
         let second = SearchTestSupport.document(body: "echo hello")
@@ -238,8 +259,9 @@ final class SearchServiceTests: XCTestCase {
     }
 
     func testCancellationStopsShortScanAndNextSearchSucceeds() async throws {
-        let service = try makeService((0..<20_000).map { SearchTestSupport.document(body: "row \($0) 贴板") },
-                                      chunk: 100)
+        let progress = ScanProgress()
+        let service = try makeService((0..<30_000).map { SearchTestSupport.document(body: "row \($0) 贴板") },
+                                      chunk: 100, onScanProgress: { _ in progress.record() })
         let query = request("贴板")
         let consumer = Task { () -> [SearchPage] in
             var pages: [SearchPage] = []
@@ -251,10 +273,13 @@ final class SearchServiceTests: XCTestCase {
         }
 
         let received = try await consumer.value
-        let fresh = try await lastPage(service, request("贴板"))
+        try await SearchTestSupport.waitUntil { progress.isIdle(for: .milliseconds(200)) }
+        let scannedRanges = progress.count
+        let fresh = try await lastPage(service, query)
 
-        XCTAssertFalse(received.isEmpty)
-        XCTAssertEqual(fresh.totalMatches, 20_000)
+        XCTAssertEqual(received.count, 1)
+        XCTAssertLessThan(scannedRanges, 300, "30,000 rows in ranges of 100 must stop well before the end")
+        XCTAssertEqual(fresh.totalMatches, 30_000)
         XCTAssertTrue(fresh.isComplete)
     }
 
@@ -279,10 +304,12 @@ final class SearchServiceTests: XCTestCase {
         let service = try makeService([older, newer, history])
 
         let page = try await lastPage(service, request("  \u{3000}\n", scope: .memo))
+        let invisible = try await lastPage(service, request("\u{200B}\u{FEFF}", scope: .memo))
 
         XCTAssertEqual(page.results.map(\.ref), [newer.ref, older.ref])
         XCTAssertTrue(page.isComplete)
         XCTAssertEqual(page.totalMatches, 2)
+        XCTAssertEqual(invisible.results.map(\.ref), [newer.ref, older.ref])
     }
 
     func testIndexStateAndGenerationAreReportedOnEveryPage() async throws {
@@ -361,13 +388,16 @@ final class SearchServiceTests: XCTestCase {
     }
 
     private func makeService(
-        _ documents: [SearchDocument], usage: [UsageSummary] = [], chunk: Int = 8_192
+        _ documents: [SearchDocument], usage: [UsageSummary] = [], chunk: Int = 8_192,
+        onScanProgress: (@Sendable (Int64) -> Void)? = nil
     ) throws -> SearchService {
-        try makeService(documents, usage: usage, chunk: chunk, in: SearchTestSupport.directory()).0
+        try makeService(documents, usage: usage, chunk: chunk, onScanProgress: onScanProgress,
+                        in: SearchTestSupport.directory()).0
     }
 
     private func makeService(
-        _ documents: [SearchDocument], usage: [UsageSummary] = [], chunk: Int = 8_192, in directory: URL
+        _ documents: [SearchDocument], usage: [UsageSummary] = [], chunk: Int = 8_192,
+        onScanProgress: (@Sendable (Int64) -> Void)? = nil, in directory: URL
     ) throws -> (SearchService, SQLiteSearchIndex, SearchIndexStatus) {
         let index = try SQLiteSearchIndex(directory: directory)
         addTeardownBlock {
@@ -382,12 +412,33 @@ final class SearchServiceTests: XCTestCase {
         try index.finishBuild(checkpoint: nil)
         try index.replaceUsage(usage)
         let status = SearchIndexStatus(.ready)
-        return (SearchService(index: index, status: status, scanChunkSize: chunk), index, status)
+        return (SearchService(index: index, status: status, scanChunkSize: chunk, onScanProgress: onScanProgress),
+                index, status)
     }
 
     private func lastPage(_ service: SearchService, _ request: SearchRequest) async throws -> SearchPage {
         var last: SearchPage?
         for try await page in service.search(request) { last = page }
         return try XCTUnwrap(last)
+    }
+}
+
+/// Counts scanned ranges and when the last one finished.
+private final class ScanProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ranges = 0
+    private var last = ContinuousClock.now
+
+    var count: Int { lock.withLock { ranges } }
+
+    func record() {
+        lock.withLock {
+            ranges += 1
+            last = ContinuousClock.now
+        }
+    }
+
+    func isIdle(for duration: Duration) -> Bool {
+        lock.withLock { ContinuousClock.now - last >= duration }
     }
 }

@@ -3,11 +3,21 @@ import Foundation
 /// Index-only normalization. The result never replaces stored content and never
 /// participates in identity or deduplication.
 enum SearchNormalizer {
-    static let version = 1
+    /// Version 2 also removes default-ignorable scalars such as zero-width spaces.
+    static let version = 2
 
     static func normalize(_ text: String) -> String {
-        let withoutNUL = text.utf8.contains(0) ? String(text.unicodeScalars.filter { $0.value != 0 }) : text
-        return withoutNUL.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+        let visible = text.unicodeScalars.contains(where: isInvisible)
+            ? String(String.UnicodeScalarView(text.unicodeScalars.filter { !isInvisible($0) }))
+            : text
+        return visible.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
+    }
+
+    /// NUL and default-ignorable scalars (zero-width spaces, joiners, soft hyphens,
+    /// byte-order marks, variation selectors) render as nothing and would make an
+    /// otherwise matching text or query miss.
+    private static func isInvisible(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.value == 0 || scalar.properties.isDefaultIgnorableCodePoint
     }
 }
 

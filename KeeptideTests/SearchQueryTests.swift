@@ -11,6 +11,12 @@ final class SearchQueryTests: XCTestCase {
         XCTAssertEqual(SearchNormalizer.normalize("Straße"), "strasse")
     }
 
+    func testDefaultIgnorableScalarsAreRemoved() {
+        XCTAssertEqual(SearchNormalizer.normalize("ku\u{200B}be\u{00AD}ctl\u{FEFF}"), "kubectl")
+        XCTAssertTrue(ParsedQuery("\u{200B}\u{2060}\u{FEFF}").isEmpty)
+        XCTAssertEqual(ParsedQuery("\u{200B}kubectl").terms, ["kubectl"])
+    }
+
     func testParsingSplitsOnUnicodeWhitespaceIncludingIdeographicSpace() {
         XCTAssertEqual(ParsedQuery("git\u{3000}status\n log").terms, ["git", "status", "log"])
     }
@@ -18,10 +24,10 @@ final class SearchQueryTests: XCTestCase {
     func testTermsAreDedupedAndClassifiedByScalarCount() {
         let query = ParsedQuery("贴板 剪贴板 😀 👨‍👩‍👧 贴板 剪贴板")
 
-        XCTAssertEqual(query.terms, ["贴板", "剪贴板", "😀", "👨‍👩‍👧"])
+        XCTAssertEqual(query.terms, ["贴板", "剪贴板", "😀", "👨👩👧"])
         XCTAssertEqual(query.shortTerms, ["贴板", "😀"])
-        XCTAssertEqual(query.longTerms, ["剪贴板", "👨‍👩‍👧"])
-        XCTAssertEqual(query.phrase, "贴板 剪贴板 😀 👨‍👩‍👧")
+        XCTAssertEqual(query.longTerms, ["剪贴板", "👨👩👧"])
+        XCTAssertEqual(query.phrase, "贴板 剪贴板 😀 👨👩👧")
     }
 
     func testFTSExpressionQuotesEveryLongTermLiterally() {

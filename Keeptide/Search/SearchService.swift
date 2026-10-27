@@ -117,12 +117,17 @@ struct SearchService: Sendable {
     private let index: SQLiteSearchIndex?
     private let status: SearchIndexStatus
     private let scanChunkSize: Int
+    private let onScanProgress: (@Sendable (Int64) -> Void)?
 
-    /// `index` is nil when the index could not be created; searches then report `.unavailable`.
-    init(index: SQLiteSearchIndex?, status: SearchIndexStatus, scanChunkSize: Int = 8_192) {
+    /// `index` is nil when the index could not be created; searches then report
+    /// `.unavailable`. `onScanProgress` receives the highest row id after each
+    /// short-term scan range, for measurement and cancellation checks.
+    init(index: SQLiteSearchIndex?, status: SearchIndexStatus, scanChunkSize: Int = 8_192,
+         onScanProgress: (@Sendable (Int64) -> Void)? = nil) {
         self.index = index
         self.status = status
         self.scanChunkSize = scanChunkSize
+        self.onScanProgress = onScanProgress
     }
 
     func search(_ request: SearchRequest) -> AsyncThrowingStream<SearchPage, Error> {
@@ -146,7 +151,8 @@ struct SearchService: Sendable {
         let query = ParsedQuery(request.query)
         let unavailable = SearchPage(generation: request.generation, results: [], totalMatches: 0, isComplete: true,
                                      indexState: .unavailable, queryWasTruncated: query.wasTruncated)
-        guard let index, let reader = try? index.openReader() else {
+        // An index that cannot be written may still hold deleted clips, so it is not read.
+        guard let index, status.state != .unavailable, let reader = try? index.openReader() else {
             emit(unavailable)
             return
         }
@@ -248,6 +254,7 @@ struct SearchService: Sendable {
                 """, builder.bindings)
             keys += try rows.map(RankKey.init(row:))
             lower = upper
+            onScanProgress?(upper)
             let complete = lower >= maximum
             let now = ContinuousClock.now
             guard complete || lastEmission.map({ now - $0 >= .milliseconds(100) }) ?? true else { continue }

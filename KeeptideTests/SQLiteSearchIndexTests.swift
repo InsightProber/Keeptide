@@ -14,7 +14,7 @@ final class SQLiteSearchIndexTests: XCTestCase {
         XCTAssertEqual(building.state, .building)
         XCTAssertNil(building.checkpoint)
         XCTAssertEqual(building.schemaVersion, 1)
-        XCTAssertEqual(building.normalizerVersion, 1)
+        XCTAssertEqual(building.normalizerVersion, 2)
         XCTAssertEqual(building.extractorVersion, 1)
         XCTAssertEqual(building.tokenizer, "trigram case_sensitive 1")
         XCTAssertEqual(building.identity, identity)
