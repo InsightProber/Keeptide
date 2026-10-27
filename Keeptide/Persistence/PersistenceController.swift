@@ -121,6 +121,12 @@ final class StoreRuntime {
     var leases: [UUID: PinnedSnapshot] = [:]
     var retiredLeases: [UUID: PinnedSnapshot] = [:]
     var usagePolicy: UsageDeduplicationPolicy?
+    var localCaptureIndex: LocalCaptureCandidateIndex?
+    private(set) var localCaptureIndexBuildCount = 0
+
+    func recordLocalCaptureIndexBuild() {
+        localCaptureIndexBuildCount += 1
+    }
 
     func invalidateLeases() {
         for id in Array(leases.keys) { releaseLease(id) }

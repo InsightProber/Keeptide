@@ -190,6 +190,14 @@ final class StoreTransactionTests: XCTestCase {
             )
             let firstItem = ContentStoreFixtures.item(firstCapture)
             let secondItem = ContentStoreFixtures.item(secondCapture)
+            try await FileAccessStore(controller: controller).put(
+                LocalFileAccess(
+                    id: reusedID,
+                    snapshotID: firstCapture.id,
+                    bytes: Data("first local target".utf8)
+                ),
+                expecting: controller.identity()
+            )
 
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
@@ -977,11 +985,15 @@ private extension StoreTransactionTests {
             representationIndex: 0,
             typeIdentifier: "public.file-url",
             storage: .localReference,
-            byteCount: Int64(syntheticBytes.count),
-            digest: ContentDigest.sha256(syntheticBytes),
+            byteCount: 0,
+            digest: Data(repeating: 0x59, count: 32),
             bytes: nil
         )
-        let manifest = CaptureManifest(itemCount: 1, entries: [ManifestEntry(representation)])
+        let manifest = CaptureManifest(
+            version: LocalReferencePrivacy.manifestVersion,
+            itemCount: 1,
+            entries: [ManifestEntry(representation)]
+        )
         return CaptureValue(
             id: captureID,
             manifest: manifest,

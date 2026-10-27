@@ -72,6 +72,7 @@ enum StorePrecondition: Codable, Equatable, Sendable {
     case recordUnchanged(RecordKey, fingerprint: Data)
     case facetVisible(ItemID, ContentFacet, Bool)
     case candidateSet(digest: Data, fingerprint: Data)
+    case localCaptureSet(digest: Data, fingerprint: Data)
     case referenceSet(snapshotID: UUID, fingerprint: Data)
 }
 

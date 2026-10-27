@@ -93,7 +93,7 @@ final class StoredRecordsTests: XCTestCase {
         }
     }
 
-    func testSeparateItemLocalReferenceIsAllOrNothingAcrossRemovalAndRestore() async throws {
+    func testSeparateItemLocalReferenceIsAllOrNothingAndCannotBeGenericallyRebound() async throws {
         try await withController { controller in
             let portableBytes = Data("independent text item".utf8)
             let localBytes = Data("local file".utf8)
@@ -115,12 +115,16 @@ final class StoredRecordsTests: XCTestCase {
                     representationIndex: 0,
                     typeIdentifier: "public.file-url",
                     storage: .localReference,
-                    byteCount: Int64(localBytes.count),
-                    digest: ContentDigest.sha256(localBytes),
+                    byteCount: 0,
+                    digest: Data(repeating: 0x72, count: 32),
                     bytes: nil
                 )
             ]
-            let manifest = CaptureManifest(itemCount: 2, entries: representations.map(ManifestEntry.init))
+            let manifest = CaptureManifest(
+                version: LocalReferencePrivacy.manifestVersion,
+                itemCount: 2,
+                entries: representations.map(ManifestEntry.init)
+            )
             let capture = CaptureValue(
                 id: captureID,
                 manifest: manifest,
@@ -153,10 +157,13 @@ final class StoredRecordsTests: XCTestCase {
             XCTAssertTrue(missing.representations.isEmpty)
             XCTAssertFalse(missing.isActionable)
 
-            try await fileAccessStore.put(localAccess, expecting: identity)
-            let restored = try await ContentRepository(controller: controller).read(ref)
-            XCTAssertEqual(restored.integrity, .complete)
-            XCTAssertEqual(restored.representations.map(\.bytes), [portableBytes, localBytes])
+            do {
+                try await fileAccessStore.put(localAccess, expecting: identity)
+                XCTFail("A missing committed reference requires an explicit relocation workflow")
+            } catch { XCTAssertEqual(error as? StoreError, .preconditionFailed) }
+            let stillMissing = try await ContentRepository(controller: controller).read(ref)
+            XCTAssertEqual(stillMissing.integrity, .requiresRelocation)
+            XCTAssertTrue(stillMissing.representations.isEmpty)
 
             try await fileAccessStore.remove(
                 representationID: representations[1].id,
@@ -192,12 +199,16 @@ final class StoredRecordsTests: XCTestCase {
                     representationIndex: 1,
                     typeIdentifier: "public.file-url",
                     storage: .localReference,
-                    byteCount: Int64(localBytes.count),
-                    digest: ContentDigest.sha256(localBytes),
+                    byteCount: 0,
+                    digest: Data(repeating: 0x73, count: 32),
                     bytes: nil
                 )
             ]
-            let manifest = CaptureManifest(itemCount: 1, entries: representations.map(ManifestEntry.init))
+            let manifest = CaptureManifest(
+                version: LocalReferencePrivacy.manifestVersion,
+                itemCount: 1,
+                entries: representations.map(ManifestEntry.init)
+            )
             let capture = CaptureValue(
                 id: captureID,
                 manifest: manifest,
@@ -205,6 +216,10 @@ final class StoredRecordsTests: XCTestCase {
                 representations: representations
             )
             let item = ContentStoreFixtures.item(capture)
+            try await FileAccessStore(controller: controller).put(
+                LocalFileAccess(id: representations[1].id, snapshotID: captureID, bytes: localBytes),
+                expecting: controller.identity()
+            )
             let transaction = StoreTransaction(
                 identity: try await controller.identity(),
                 mutations: [.insert(.capture(capture)), .insert(.item(item))]

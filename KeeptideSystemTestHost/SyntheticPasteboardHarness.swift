@@ -7,13 +7,33 @@ final class SyntheticPasteboardHarness {
 
     private(set) var status = "No synthetic payload written"
     private(set) var receivedTypes: [String] = []
+    private(set) var receivedText = ""
 
-    private let pasteboard = NSPasteboard(name: pasteboardName)
+    private let pasteboard: NSPasteboard
+
+    init() {
+        do {
+            if let configuration = try CaptureTestConfiguration.parse(ProcessInfo.processInfo.arguments) {
+                pasteboard = NSPasteboard(name: .init(configuration.pasteboardName))
+            } else {
+                pasteboard = NSPasteboard(name: Self.pasteboardName)
+            }
+        } catch {
+            // A malformed explicit test session must fail, not write to another board.
+            fatalError("Invalid synthetic capture session identifier")
+        }
+    }
 
     func writeText() {
         pasteboard.clearContents()
         pasteboard.setString("Synthetic Keeptide text", forType: .string)
         status = "Synthetic text written"
+    }
+
+    func writeAlternateText() {
+        pasteboard.clearContents()
+        pasteboard.setString("Synthetic paused text", forType: .string)
+        status = "Synthetic alternate text written"
     }
 
     func writeRichText() {
@@ -66,6 +86,7 @@ final class SyntheticPasteboardHarness {
 
     func inspectSyntheticPasteboard() {
         receivedTypes = pasteboard.types?.map(\.rawValue).sorted() ?? []
+        receivedText = pasteboard.string(forType: .string) ?? ""
         status = receivedTypes.isEmpty ? "No synthetic payload received" : "Synthetic payload received"
     }
 

@@ -578,12 +578,16 @@ private extension SnapshotArchiveTests {
             representationIndex: 0,
             typeIdentifier: "public.file-url",
             storage: .localReference,
-            byteCount: Int64(localBytes.count),
-            digest: ContentDigest.sha256(localBytes),
+            byteCount: 0,
+            digest: Data(repeating: 0x91, count: 32),
             bytes: nil
         )
         let representations = [portable, local]
-        let manifest = CaptureManifest(itemCount: 2, entries: representations.map(ManifestEntry.init))
+        let manifest = CaptureManifest(
+            version: LocalReferencePrivacy.manifestVersion,
+            itemCount: 2,
+            entries: representations.map(ManifestEntry.init)
+        )
         let capture = CaptureValue(
             id: captureID,
             manifest: manifest,

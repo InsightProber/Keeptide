@@ -25,8 +25,10 @@ The repository contains an early native foundation: the `Keeptide` application,
 unit and UI test targets, a separate `KeeptideSystemTestHost`, and a shared Xcode
 scheme. The storage foundation includes two local Core Data stores, typed
 transactions, content validation, consistent snapshots, and persistent change
-consumption. Capture, search, snippet workflows, and cloud integration remain
-planned. Planned capabilities must stay labelled until implemented and verified.
+consumption. Local capture includes explicit recording, privacy filters, exact
+deduplication, recent clips, and original-format copy-back. Search, snippet
+workflows, persistent file authorization, and cloud integration remain planned.
+Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here
 

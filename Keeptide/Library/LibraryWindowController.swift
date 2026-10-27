@@ -6,7 +6,7 @@ final class LibraryWindowController: NSWindowController {
     private static let defaultSize = NSSize(width: 1120, height: 740)
     private static let minimumSize = NSSize(width: 840, height: 560)
 
-    init(autosaveName: String? = "KeeptideLibraryWindow") {
+    init(session: CaptureSession, autosaveName: String? = "KeeptideLibraryWindow") {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -18,7 +18,7 @@ final class LibraryWindowController: NSWindowController {
         window.setAccessibilityIdentifier("KeeptideLibraryWindow")
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
-        window.contentViewController = WindowContentController(rootView: LibraryView(), size: Self.defaultSize)
+        window.contentViewController = WindowContentController(rootView: LibraryView(session: session), size: Self.defaultSize)
         window.setContentSize(Self.defaultSize)
         window.contentMinSize = Self.minimumSize
         window.standardWindowButton(.closeButton)?.setAccessibilityIdentifier("Close Library")

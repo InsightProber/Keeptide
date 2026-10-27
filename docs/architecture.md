@@ -2,8 +2,8 @@
 
 Keeptide is designed as a local-first native macOS application. This document
 describes the overall architecture. The native shell and local storage foundation
-are implemented. Capture, editing, search, exports, and cloud integration remain
-planned.
+and local clipboard recording are implemented. Editing, search, export UI, and
+cloud integration remain planned.
 
 ## Native interfaces
 
@@ -42,6 +42,12 @@ transactions validate versions and references before committing. Snapshot reads
 retain a consistent view while later edits proceed; an unavailable old payload
 terminates the snapshot instead of mixing versions. Persistent changes identify
 records for downstream consumers without duplicating their bodies.
+
+Clipboard body reads run in a short-lived helper process with the application's
+inherited sandbox. The main process observes clipboard versions, applies capture
+policy, and admits only the matching read result. Cancellation and shutdown drain
+pending capture work before closing storage. Foreground-app attribution remains
+observational; permission and source-identity limitations must remain visible.
 
 An original capture preserves the clipboard content and its representations.
 A saved snippet can initially reference that capture. Its first body edit creates

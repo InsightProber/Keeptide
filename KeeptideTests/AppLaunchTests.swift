@@ -5,8 +5,18 @@ import XCTest
 
 @MainActor
 final class AppLaunchTests: XCTestCase {
+    func testCaptureMenuDoesNotEnableRecordingBeforeItsStoreIsReady() throws {
+        var toggled = false
+        let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
+            captureIsReady: { false }, toggleCapture: { toggled = true }, shouldRegisterHotKey: false)
+        let menu = try XCTUnwrap(controller.menu)
+        menu.update()
+        let item = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "CaptureRecordingToggleMenuItem" })
+        XCTAssertFalse(item.isEnabled)
+        XCTAssertFalse(toggled)
+    }
     func testDefaultLibraryInitializerCreatesItsWindow() {
-        XCTAssertNotNil(LibraryWindowController().window)
+        XCTAssertNotNil(LibraryWindowController(session: CaptureSession()).window)
     }
 
     func testCaptureStartsDisabled() {
@@ -30,7 +40,7 @@ final class AppLaunchTests: XCTestCase {
 
     func testWindowGeometrySurvivesHostingLayout() throws {
         let panel = PanelController()
-        let library = LibraryWindowController(autosaveName: nil)
+        let library = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         settleLayout()
         XCTAssertEqual(panel.window?.contentView?.frame.size, NSSize(width: 680, height: 496))
         XCTAssertEqual(panel.window?.contentMinSize, NSSize(width: 520, height: 360))
@@ -159,7 +169,7 @@ final class AppLaunchTests: XCTestCase {
         var panels = 0
         var libraries = 0
         let environment = AppEnvironment(makePanel: { panels += 1; return PanelController() },
-                                         makeLibrary: { libraries += 1; return LibraryWindowController(autosaveName: nil) })
+                                         makeLibrary: { libraries += 1; return LibraryWindowController(session: CaptureSession(), autosaveName: nil) })
         let menu = MenuBarController(showQuickAccess: { _ = environment.panelController },
                                      toggleQuickAccess: { _ = environment.panelController },
                                      showLibrary: { _ = environment.libraryWindowController },
@@ -252,13 +262,13 @@ final class AppLaunchTests: XCTestCase {
     func testLibraryRestoresAnIsolatedSavedFrameAfterHostingLayout() throws {
         let name = "KeeptideTests.frame." + UUID().uuidString
         defer { NSWindow.removeFrame(usingName: name) }
-        let original = LibraryWindowController(autosaveName: nil)
+        let original = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         let window = try XCTUnwrap(original.window)
         let visible = try XCTUnwrap(NSScreen.main?.visibleFrame)
         let saved = NSRect(x: visible.minX + 40, y: visible.minY + 40, width: 1000, height: 700)
         window.setFrame(saved, display: false)
         window.saveFrame(usingName: name)
-        let restored = LibraryWindowController(autosaveName: name)
+        let restored = LibraryWindowController(session: CaptureSession(), autosaveName: name)
         settleLayout()
         XCTAssertEqual(restored.window?.frame, saved)
         XCTAssertEqual(restored.window?.title, "Keeptide Library")

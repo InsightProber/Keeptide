@@ -304,7 +304,7 @@ final class LocalUsageTests: XCTestCase {
         try await reopened.close()
     }
 
-    func testFileAccessPutBeforeCaptureCommitReplacesLocalAuthorizationAndRemoveIsIdempotent() async throws {
+    func testFileAccessPutBeforeCaptureCommitKeepsOriginalBytesAndRemoveIsIdempotent() async throws {
         let (_, controller) = try makeStore()
         let store = FileAccessStore(controller: controller)
         let id = UUID()
@@ -325,9 +325,14 @@ final class LocalUsageTests: XCTestCase {
 
         let identity = try await controller.identity()
         try await store.put(initial, expecting: identity)
-        try await store.put(replacement, expecting: identity)
-        let replaced = try await store.read(representationID: id)
-        XCTAssertEqual(replaced, replacement)
+        do {
+            try await store.put(replacement, expecting: identity)
+            XCTFail("Prepared local bytes were replaced before content commit")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .preconditionFailed)
+        }
+        let preserved = try await store.read(representationID: id)
+        XCTAssertEqual(preserved, initial)
         let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
         try await store.remove(representationID: id, permit: permit)
         try await store.remove(representationID: id, permit: permit)
@@ -359,11 +364,15 @@ final class LocalUsageTests: XCTestCase {
             representationIndex: 0,
             typeIdentifier: "public.file-url",
             storage: .localReference,
-            byteCount: Int64(firstBytes.count),
-            digest: ContentDigest.sha256(firstBytes),
+            byteCount: 0,
+            digest: Data(repeating: 0x65, count: 32),
             bytes: nil
         )
-        let manifest = CaptureManifest(itemCount: 1, entries: [ManifestEntry(representation)])
+        let manifest = CaptureManifest(
+            version: LocalReferencePrivacy.manifestVersion,
+            itemCount: 1,
+            entries: [ManifestEntry(representation)]
+        )
         let capture = CaptureValue(
             id: firstSnapshotID,
             manifest: manifest,

@@ -280,7 +280,45 @@ struct ItemSummary: Codable, Equatable, Sendable {
 }
 
 enum ContentDigest {
+    static let byteCount = SHA256.Digest.byteCount
+
     static func sha256(_ data: Data) -> Data {
         Data(SHA256.hash(data: data))
+    }
+}
+
+enum LocalReferencePrivacy {
+    static let legacyManifestVersion = 1
+    static let opaqueLocalReferenceManifestVersion = 2
+    // Kept as the construction default; readers must use the predicates below
+    // rather than treating this value as either a schema ceiling or an encoding flag.
+    static let manifestVersion = opaqueLocalReferenceManifestVersion
+    static let relocationTokenByteCount = ContentDigest.byteCount
+
+    static func supports(manifestVersion: Int) -> Bool {
+        manifestVersion == legacyManifestVersion
+            || manifestVersion == opaqueLocalReferenceManifestVersion
+    }
+
+    static func usesLegacyLocalDescriptor(manifestVersion: Int) -> Bool {
+        manifestVersion == legacyManifestVersion
+    }
+
+    static func usesOpaqueLocalDescriptor(manifestVersion: Int) -> Bool {
+        manifestVersion == opaqueLocalReferenceManifestVersion
+    }
+
+    static func makeRelocationToken() -> Data {
+        var generator = SystemRandomNumberGenerator()
+        return Data((0..<relocationTokenByteCount).map { _ in
+            UInt8.random(in: .min ... .max, using: &generator)
+        })
+    }
+
+    static func isCloudSafeDescriptor(_ representation: RepresentationValue) -> Bool {
+        representation.storage == .localReference
+            && representation.byteCount == 0
+            && representation.digest.count == relocationTokenByteCount
+            && representation.bytes == nil
     }
 }

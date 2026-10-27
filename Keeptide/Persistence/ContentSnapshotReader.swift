@@ -16,7 +16,9 @@ struct ContentSnapshotReader: Sendable {
             do {
                 values = try context.performAndWait {
                     try context.setQueryGenerationFrom(.current)
-                    return try StoredRecords.snapshotReferences(in: context)
+                    let values = try StoredRecords.snapshotReferences(in: context)
+                    try Self.requirePrivacySafeArchive(refs: values.refs, in: context)
+                    return values
                 }
             } catch {
                 context.performAndWait { context.reset() }
@@ -80,8 +82,12 @@ struct ContentSnapshotReader: Sendable {
                                     let materialized: SnapshotPage
                                     switch result {
                                     case .success(let value): materialized = value
-                                    case .failure:
+                                    case .failure(let error):
                                         controller.runtime.releaseLease(lease.leaseID)
+                                        if let storeError = error as? StoreError,
+                                           storeError == .operationDenied {
+                                            throw StoreError.operationDenied
+                                        }
                                         throw StoreError.snapshotUnavailable
                                     }
                                     let next: Data?
@@ -118,6 +124,38 @@ struct ContentSnapshotReader: Sendable {
 }
 
 private extension ContentSnapshotReader {
+    static func requirePrivacySafeArchive(
+        refs: [ContentRef],
+        in context: NSManagedObjectContext
+    ) throws {
+        var checkedCaptureIDs = Set<UUID>()
+        for ref in refs {
+            guard case .item(let item)? = try StoredRecords.value(.item(ref.itemID), in: context),
+                  let captureID = item.captureID,
+                  checkedCaptureIDs.insert(captureID).inserted else {
+                // Existing graph validation decides whether missing retained
+                // records invalidate the later archive page.
+                continue
+            }
+            let request = NSFetchRequest<NSDictionary>(entityName: "CaptureSnapshot")
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = ["manifest"]
+            request.predicate = NSPredicate(format: "id == %@", captureID as NSUUID)
+            request.fetchLimit = 2
+            let rows = try context.fetch(request)
+            guard rows.count == 1,
+                  let manifestData = rows[0]["manifest"] as? Data,
+                  let manifest = try? JSONDecoder().decode(CaptureManifest.self, from: manifestData) else {
+                continue
+            }
+            if LocalReferencePrivacy.usesLegacyLocalDescriptor(
+                manifestVersion: manifest.version
+            ), manifest.entries.contains(where: { $0.storage == .localReference }) {
+                throw StoreError.operationDenied
+            }
+        }
+    }
+
     // Records have already passed the same capture validation used by ordinary
     // reads. Local file bytes are deliberately absent from this portable closure.
     static func archiveContent(_ ref: ContentRef, records: [RecordKey: RecordValue]) throws -> ResolvedContent {

@@ -20,7 +20,7 @@ private final class SystemTestHostDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 460),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false

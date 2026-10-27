@@ -3,6 +3,41 @@ import XCTest
 @testable import Keeptide
 
 final class ReadReviewTests: XCTestCase {
+    func testCancelledReadDoesNotRunAfterWaitingOnTheWriterQueue() async throws {
+        try await withController { controller, _ in
+            let capture = try ContentStoreFixtures.capture([
+                [("public.utf8-plain-text", Data("cancelled queued read".utf8))]
+            ])
+            let item = ContentStoreFixtures.item(capture)
+            try await ContentStoreFixtures.insert(item, capture, into: controller)
+            let ref = ContentStoreFixtures.ref(item, capture)
+            let writerEntered = expectation(description: "writer blocker entered")
+            let releaseWriter = DispatchSemaphore(value: 0)
+            let blocker = Task {
+                try await controller.perform { _ in
+                    writerEntered.fulfill()
+                    releaseWriter.wait()
+                }
+            }
+            await fulfillment(of: [writerEntered], timeout: 1)
+
+            let read = Task {
+                try await ContentRepository(controller: controller).read(ref)
+            }
+            await Task.yield()
+            read.cancel()
+            releaseWriter.signal()
+            try await blocker.value
+
+            do {
+                _ = try await read.value
+                XCTFail("A cancelled read still ran after leaving the writer queue backlog")
+            } catch is CancellationError {
+                // Expected: cancellation is observed before the payload read begins.
+            }
+        }
+    }
+
     func testRecentLimitCountsOnlyVisibleItems() async throws {
         try await withController { controller, _ in
             let olderCapture = try ContentStoreFixtures.capture([
@@ -335,7 +370,20 @@ final class ReadReviewTests: XCTestCase {
             let local = Data("local-only".utf8)
             let capture = try mixedCapture(portable: portable, local: local)
             let item = ContentStoreFixtures.item(capture)
+            let accessStore = FileAccessStore(controller: controller)
+            try await accessStore.put(
+                LocalFileAccess(
+                    id: capture.representations[1].id,
+                    snapshotID: capture.id,
+                    bytes: local
+                ),
+                expecting: controller.identity()
+            )
             try await ContentStoreFixtures.insert(item, capture, into: controller)
+            try await accessStore.remove(
+                representationID: capture.representations[1].id,
+                permit: StoreSafetyGate(controller: controller).permit(.maintenance)
+            )
             let portableID = capture.representations[0].id
             try await setRepresentationBytes(Data("damaged!".utf8), id: portableID, controller: controller)
 
@@ -474,6 +522,14 @@ final class ReadReviewTests: XCTestCase {
                 local: Data("local-only".utf8)
             )
             let item = ContentStoreFixtures.item(capture)
+            try await FileAccessStore(controller: controller).put(
+                LocalFileAccess(
+                    id: capture.representations[1].id,
+                    snapshotID: capture.id,
+                    bytes: Data("local-only".utf8)
+                ),
+                expecting: controller.identity()
+            )
             try await ContentStoreFixtures.insert(item, capture, into: controller)
             let localReferenceID = capture.representations[1].id
             try await setRepresentationBytes(
@@ -595,12 +651,16 @@ private extension ReadReviewTests {
                 representationIndex: 0,
                 typeIdentifier: "public.file-url",
                 storage: .localReference,
-                byteCount: Int64(local.count),
-                digest: ContentDigest.sha256(local),
+                byteCount: 0,
+                digest: Data(repeating: 0x84, count: 32),
                 bytes: nil
             )
         ]
-        let manifest = CaptureManifest(itemCount: 2, entries: representations.map(ManifestEntry.init))
+        let manifest = CaptureManifest(
+            version: LocalReferencePrivacy.manifestVersion,
+            itemCount: 2,
+            entries: representations.map(ManifestEntry.init)
+        )
         return CaptureValue(
             id: id,
             manifest: manifest,

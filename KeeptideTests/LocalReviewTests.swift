@@ -4,6 +4,75 @@ import XCTest
 
 @MainActor
 final class LocalReviewTests: XCTestCase {
+    func testPreparedBatchRollsBackEarlierRowsWhenALaterBindingConflicts() async throws {
+        let directory = try makeStoreDirectory()
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        let controller = try PersistenceController(directory: directory)
+        addTeardownBlock { try await controller.close() }
+        let store = FileAccessStore(controller: controller)
+        let identity = try await controller.identity()
+        let blocker = LocalFileAccess(
+            id: UUID(),
+            snapshotID: UUID(),
+            bytes: Data("existing blocker".utf8),
+            bookmark: Data([0x01]),
+            localPath: "/Synthetic/blocker"
+        )
+        try await store.put(blocker, expecting: identity)
+        let earlier = LocalFileAccess(
+            id: UUID(),
+            snapshotID: UUID(),
+            bytes: Data("must roll back".utf8)
+        )
+        let conflicting = LocalFileAccess(
+            id: blocker.id,
+            snapshotID: UUID(),
+            bytes: blocker.bytes
+        )
+
+        do {
+            try await store.putPrepared([earlier, conflicting], expecting: identity)
+            XCTFail("A conflicting later row committed an earlier row from the same batch")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .preconditionFailed)
+        }
+
+        let rolledBack = try await store.read(representationID: earlier.id)
+        let blockerAfterFailure = try await store.read(representationID: blocker.id)
+        XCTAssertNil(rolledBack)
+        XCTAssertEqual(blockerAfterFailure, blocker)
+    }
+
+    func testPreparedDiscardRejectsAStaleIdentityFromAnotherPhysicalStore() async throws {
+        let directory = try makeStoreDirectory()
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        let controller = try PersistenceController(directory: directory)
+        addTeardownBlock { try await controller.close() }
+        let store = FileAccessStore(controller: controller)
+        let identity = try await controller.identity()
+        let prepared = LocalFileAccess(
+            id: UUID(),
+            snapshotID: UUID(),
+            bytes: Data("must remain".utf8)
+        )
+        try await store.put(prepared, expecting: identity)
+        let foreignIdentity = StoreIdentity(storeID: UUID(), generation: identity.generation)
+
+        do {
+            try await store.discardPrepared(
+                [prepared.id],
+                snapshotID: prepared.snapshotID,
+                expecting: foreignIdentity
+            )
+            XCTFail("An abort capability from another physical store deleted local state")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .preconditionFailed)
+        }
+
+        let storedAfterRejectedDiscard = try await store.read(representationID: prepared.id)
+        XCTAssertEqual(storedAfterRejectedDiscard, prepared)
+    }
+
     func testCommittedLocalReferenceBytesCannotBeReplacedButAuthorizationCanBeRefreshed() async throws {
         let directory = try makeStoreDirectory()
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }
@@ -51,14 +120,14 @@ final class LocalReviewTests: XCTestCase {
         XCTAssertEqual(storedAfterRejectedReplacement, refreshedAuthorization)
     }
 
-    func testCommittedLocalReferenceRejectsBytesThatDoNotMatchPortableIdentity() async throws {
+    func testLegacyCommittedLocalReferenceRejectsBytesThatDoNotMatchStoredIdentity() async throws {
         let directory = try makeStoreDirectory()
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }
         let controller = try PersistenceController(directory: directory)
         addTeardownBlock { try await controller.close() }
         let committedBytes = Data("file:///synthetic/committed.txt".utf8)
-        let fixture = try makeLocalReferenceFixture(bytes: committedBytes)
-        try await ContentStoreFixtures.insert(fixture.item, fixture.capture, into: controller)
+        let fixture = try makeLocalReferenceFixture(bytes: committedBytes, version: 1)
+        try await insertLegacy(fixture.capture, item: fixture.item, into: controller)
         let store = FileAccessStore(controller: controller)
 
         do {
@@ -152,7 +221,8 @@ final class LocalReviewTests: XCTestCase {
     }
 
     private func makeLocalReferenceFixture(
-        bytes: Data
+        bytes: Data,
+        version: Int = LocalReferencePrivacy.manifestVersion
     ) throws -> (capture: CaptureValue, item: ItemValue, representation: RepresentationValue) {
         let snapshotID = UUID()
         let representation = RepresentationValue(
@@ -161,11 +231,15 @@ final class LocalReviewTests: XCTestCase {
             representationIndex: 0,
             typeIdentifier: "public.file-url",
             storage: .localReference,
-            byteCount: Int64(bytes.count),
-            digest: ContentDigest.sha256(bytes),
+            byteCount: version == 1 ? Int64(bytes.count) : 0,
+            digest: version == 1 ? ContentDigest.sha256(bytes) : Data(repeating: 0x47, count: 32),
             bytes: nil
         )
-        let manifest = CaptureManifest(itemCount: 1, entries: [ManifestEntry(representation)])
+        let manifest = CaptureManifest(
+            version: version,
+            itemCount: 1,
+            entries: [ManifestEntry(representation)]
+        )
         let capture = CaptureValue(
             id: snapshotID,
             manifest: manifest,
@@ -173,6 +247,28 @@ final class LocalReviewTests: XCTestCase {
             representations: [representation]
         )
         return (capture, ContentStoreFixtures.item(capture), representation)
+    }
+
+    private func insertLegacy(
+        _ capture: CaptureValue,
+        item: ItemValue,
+        into controller: PersistenceController
+    ) async throws {
+        try await controller.perform { context in
+            let captureObject = NSEntityDescription.insertNewObject(
+                forEntityName: RecordKey.capture(capture.id).entity,
+                into: context
+            )
+            try StoredRecords.write(.capture(capture), to: captureObject, in: context)
+            let itemObject = NSEntityDescription.insertNewObject(
+                forEntityName: RecordKey.item(item.id).entity,
+                into: context
+            )
+            try StoredRecords.write(.item(item), to: itemObject, in: context)
+            try StoredRecords.link(item, in: context)
+            try context.save()
+            context.reset()
+        }
     }
 
     private func makeStoreDirectory() throws -> URL {

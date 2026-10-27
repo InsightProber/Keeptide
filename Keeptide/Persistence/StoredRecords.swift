@@ -4,6 +4,13 @@ import Foundation
 /// Queue-confined Core Data mapping and integrity checks. Every entry point must
 /// be called synchronously from the supplied context's queue.
 enum StoredRecords {
+    static func canonicalDigest<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .deferredToDate
+        return ContentDigest.sha256(try encoder.encode(value))
+    }
+
     static func object(_ key: RecordKey, in context: NSManagedObjectContext) throws -> NSManagedObject? {
         let request = NSFetchRequest<NSManagedObject>(entityName: key.entity)
         request.predicate = NSPredicate(format: "id == %@", key.id as NSUUID)
@@ -379,10 +386,10 @@ enum StoredRecords {
             return try captureFingerprint(id: id, in: context)
         case .memo(let id):
             guard let metadata = try memoMetadata(id, in: context) else { throw StoreError.notFound }
-            return try digest(try MemoFingerprint(metadata, bodyPresent: hasBody(memoID: id, in: context)))
+            return try canonicalDigest(try MemoFingerprint(metadata, bodyPresent: hasBody(memoID: id, in: context)))
         default:
             guard let value = try value(key, in: context) else { throw StoreError.notFound }
-            return try digest(value)
+            return try canonicalDigest(value)
         }
     }
 
@@ -403,7 +410,7 @@ enum StoredRecords {
             }
             return id
         }
-        guard !captureIDs.isEmpty else { return try digest([ContentRef]()) }
+        guard !captureIDs.isEmpty else { return try canonicalDigest([ContentRef]()) }
 
         let itemRequest = dictionaryRequest(
             entity: "LibraryItem",
@@ -430,7 +437,7 @@ enum StoredRecords {
                 digest: digest
             )
         }
-        return try digest(refs)
+        return try canonicalDigest(refs)
     }
 
     static func referenceFingerprint(snapshotID: UUID, in context: NSManagedObjectContext) throws -> Data {
@@ -465,7 +472,7 @@ enum StoredRecords {
             let memoID: UUID = try required(row, "id")
             _ = try MemoFingerprint(row, bodyPresent: hasBody(memoID: memoID, in: context))
         }
-        return try digest(ReferenceFingerprint(
+        return try canonicalDigest(ReferenceFingerprint(
             items: try itemRows.map(ReferenceItemMetadata.init),
             memos: try memoRows.map(ReferenceMemoMetadata.init)
         ))
@@ -874,7 +881,7 @@ private extension StoredRecords {
         guard try context.count(for: localPayloadRequest) == 0 else {
             throw StoreError.corruptStore
         }
-        return try digest(CaptureFingerprint(
+        return try canonicalDigest(CaptureFingerprint(
             id: id,
             digest: storedDigest,
             representations: values.map(RepresentationFingerprint.init)
@@ -1103,25 +1110,27 @@ private extension StoredRecords {
                 resolved.append(representation)
                 continue
             }
-            let accessRequest = dictionaryRequest(
-                entity: "FileAccessRecord",
-                properties: ["id", "snapshotID", "bytes"],
-                predicate: NSPredicate(format: "id == %@", representation.id as NSUUID)
-            )
-            accessRequest.fetchLimit = 2
-            let access = try context.fetch(accessRequest)
-            guard access.count <= 1 else { return incomplete(ref, .corrupt) }
-            guard let row = access.first else {
-                requiresRelocation = true
-                resolved.append(representation)
-                continue
-            }
-            guard row["snapshotID"] as? UUID == captureID,
-                  let localBytes = row["bytes"] as? Data,
-                  Int64(localBytes.count) == representation.byteCount,
-                  ContentDigest.sha256(localBytes) == representation.digest else {
+            let localBytes: Data
+            do {
+                guard let bytes = try LocalFileAccessRecordReader.decodedBytes(
+                    for: representation,
+                    snapshotID: captureID,
+                    manifestVersion: capture.manifest.version,
+                    in: context
+                ) else {
+                    requiresRelocation = true
+                    resolved.append(representation)
+                    continue
+                }
+                localBytes = bytes
+            } catch {
                 return incomplete(ref, .corrupt)
             }
+            // CloudContent keeps only the opaque relocation descriptor. Once the
+            // LocalState envelope has been validated, publish an ephemeral
+            // actionable representation with the real local integrity metadata.
+            representation.byteCount = Int64(localBytes.count)
+            representation.digest = ContentDigest.sha256(localBytes)
             representation.bytes = localBytes
             resolved.append(representation)
         }
@@ -1252,13 +1261,6 @@ private extension StoredRecords {
         request.fetchLimit = 1
         request.includesPendingChanges = false
         return try context.count(for: request) > 0
-    }
-
-    static func digest<T: Encodable>(_ value: T) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .deferredToDate
-        return ContentDigest.sha256(try encoder.encode(value))
     }
 
     static func required<T>(_ object: NSManagedObject, _ key: String) throws -> T {
