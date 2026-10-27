@@ -15,13 +15,16 @@ as a snippet, or write one directly.
 > The storage foundation provides local persistence, content validation, and
 > consistent reads. Local recording now preserves complete clipboard formats,
 > deduplicates exact copies, and provides a recent-clips list with copy-back.
-> Search, snippet workflows, and iCloud saving are still planned. There is no
+> A rebuildable local full-text index supports literal search, including one-
+> and two-character Chinese queries, but no search interface uses it yet.
+> Search UI, snippet workflows, and iCloud saving are still planned. There is no
 > end-user release yet.
 
 ## Designed for the Mac
 
 The following capabilities describe the planned first release; only the native
-foundation and local recording capabilities listed above are implemented today.
+foundation, local recording, and local search index listed above are implemented
+today.
 
 - A focused quick-access panel and a native library window.
 - Keyboard-first navigation with predictable focus and text editing.
