@@ -204,6 +204,31 @@ final class LocalUsageStore: @unchecked Sendable {
     }
 }
 
+extension LocalUsageStore {
+    func allSummaries() async throws -> [UsageSummary] {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            let request = NSFetchRequest<NSManagedObject>(entityName: "UsageSummary")
+            request.fetchBatchSize = 400
+            return try context.fetch(request).map { object in
+                guard let itemID = object.value(forKey: "itemID") as? UUID,
+                      let facetValue = object.value(forKey: "facet") as? String,
+                      let facet = ContentFacet(rawValue: facetValue),
+                      let lastUsedAt = object.value(forKey: "lastUsedAt") as? Date else {
+                    throw StoreError.corruptStore
+                }
+                return UsageSummary(
+                    itemID: ItemID(rawValue: itemID),
+                    facet: facet,
+                    lastUsedAt: lastUsedAt,
+                    useCount: object.value(forKey: "useCount") as? Int64 ?? 0
+                )
+            }
+        }
+    }
+}
+
 private struct UsageKey: Hashable, Sendable {
     let itemID: ItemID
     let facet: ContentFacet
