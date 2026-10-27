@@ -15,6 +15,8 @@ enum SearchNormalizer {
 /// can use the trigram index; shorter ones need a scan.
 struct ParsedQuery: Equatable, Sendable {
     static let maximumScalarCount = 4_096
+    /// Keeps generated SQL far below SQLite's expression-depth limit.
+    static let maximumTermCount = 64
     static let minimumIndexedScalarCount = 3
 
     let terms: [String]
@@ -25,19 +27,25 @@ struct ParsedQuery: Equatable, Sendable {
 
     init(_ raw: String) {
         var bounded = String.UnicodeScalarView()
+        var scalarCount = 0
         var truncated = false
         for scalar in raw.unicodeScalars {
-            guard bounded.count < Self.maximumScalarCount else {
+            guard scalarCount < Self.maximumScalarCount else {
                 truncated = true
                 break
             }
             bounded.append(scalar)
+            scalarCount += 1
         }
         var seen = Set<String>()
         var terms: [String] = []
         for piece in String(bounded).split(whereSeparator: \.isWhitespace) {
             let term = SearchNormalizer.normalize(String(piece))
             guard !term.isEmpty, seen.insert(term).inserted else { continue }
+            guard terms.count < Self.maximumTermCount else {
+                truncated = true
+                break
+            }
             terms.append(term)
         }
         self.terms = terms

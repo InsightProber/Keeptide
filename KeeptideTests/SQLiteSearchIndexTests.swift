@@ -203,6 +203,26 @@ final class SQLiteSearchIndexTests: XCTestCase {
         XCTAssertEqual(try index.metadata()?.state, .building)
     }
 
+    func testReaderSnapshotIgnoresWritesUntilItEnds() throws {
+        let index = try makeReadyIndex()
+        let first = ItemID()
+        try index.apply([IndexedItemChange(itemID: first, documents: [SearchTestSupport.document(itemID: first)])],
+                        sequence: 1, checkpoint: .keep)
+        let reader = try index.openReader()
+        defer { reader.close() }
+
+        let counts = try reader.snapshot { () -> [[[SQLiteValue]]] in
+            let before = try reader.rows("SELECT count(*) FROM doc", [])
+            let second = ItemID()
+            try index.apply([IndexedItemChange(itemID: second, documents: [SearchTestSupport.document(itemID: second)])],
+                            sequence: 2, checkpoint: .keep)
+            return [before, try reader.rows("SELECT count(*) FROM doc", [])]
+        }
+
+        XCTAssertEqual(counts, [[[.integer(1)]], [[.integer(1)]]])
+        XCTAssertEqual(try reader.rows("SELECT count(*) FROM doc", []), [[.integer(2)]])
+    }
+
     func testInterruptStopsARunningQueryAndLeavesTheReaderUsable() throws {
         let index = try makeReadyIndex()
         let reader = try index.openReader()

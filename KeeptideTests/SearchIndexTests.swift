@@ -202,15 +202,25 @@ final class SearchIndexTests: XCTestCase {
         try await harness.insertTextItems(count: 2_000, prefix: "bulk")
 
         let consumer = harness.consumer
+        let capture = CaptureService(controller: harness.controller)
         let rebuild = Task { try await consumer.synchronize() }
-        _ = try await CaptureService(controller: harness.controller).capture(SearchTestSupport.snapshot("late arrival 迟到", count: 1))
+        // Keep committing for the whole rebuild, so some commits land between the
+        // boundary read and the scan, during the scan, and after it.
+        var captured = 0
+        repeat {
+            _ = try await capture.capture(SearchTestSupport.snapshot("late arrival \(captured) 迟到", count: captured + 1))
+            captured += 1
+        } while harness.status.state != .ready && captured < 500
         try await rebuild.value
         try await harness.consumer.synchronize()
 
-        let late = try await harness.search("迟到")
+        let late = try await harness.search("迟到", limit: 1_000)
         let bulk = try await harness.search("bulk", limit: 1)
-        XCTAssertEqual(late.totalMatches, 1)
+        let fresh = try await SearchHarness.freshDocuments(for: harness.controller)
+        XCTAssertGreaterThan(captured, 1)
+        XCTAssertEqual(late.totalMatches, captured)
         XCTAssertEqual(bulk.totalMatches, 2_000)
+        XCTAssertEqual(try harness.index.allDocuments(), fresh)
     }
 
     func testNormalizationNeverAltersStoredContent() async throws {

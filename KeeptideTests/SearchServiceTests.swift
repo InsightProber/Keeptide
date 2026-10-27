@@ -79,6 +79,36 @@ final class SearchServiceTests: XCTestCase {
         XCTAssertEqual(Set(ownedAll.results.map(\.ref.facet)), [.history, .memo])
     }
 
+    func testHugeTermListStillSearchesAndReportsTruncation() async throws {
+        let service = try makeService([SearchTestSupport.document(body: (0..<100).map(String.init).joined(separator: " "))])
+
+        let page = try await lastPage(service, request((0..<2_000).map(String.init).joined(separator: " ")))
+        let normal = try await lastPage(service, request("42"))
+
+        XCTAssertNotEqual(page.indexState, .unavailable)
+        XCTAssertTrue(page.queryWasTruncated)
+        XCTAssertTrue(page.isComplete)
+        XCTAssertEqual(page.totalMatches, 1)
+        XCTAssertFalse(normal.queryWasTruncated)
+    }
+
+    func testScanAndIndexedPathsRankIdenticalCandidatesIdentically() async throws {
+        let documents = (0..<30).map { offset in
+            SearchTestSupport.document(body: "abc row \(offset)",
+                                       lastCopiedAt: Date(timeIntervalSince1970: Double(offset % 3)))
+        }
+        let usage = documents.enumerated().compactMap { offset, document -> UsageSummary? in
+            offset % 4 == 0 ? usageSummary(document, count: Int64(offset % 8)) : nil
+        }
+        let service = try makeService(documents, usage: usage)
+
+        let indexed = try await lastPage(service, request("abc"))
+        let scanned = try await lastPage(service, request("ab"))
+
+        XCTAssertEqual(indexed.totalMatches, 30)
+        XCTAssertEqual(scanned.results.map(\.ref), indexed.results.map(\.ref))
+    }
+
     func testSameTextInDifferentItemsIsNotFolded() async throws {
         let first = SearchTestSupport.document(body: "echo hello")
         let second = SearchTestSupport.document(body: "echo hello")

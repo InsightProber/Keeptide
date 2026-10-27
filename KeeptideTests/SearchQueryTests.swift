@@ -37,6 +37,16 @@ final class SearchQueryTests: XCTestCase {
         XCTAssertFalse(ParsedQuery("short").wasTruncated)
     }
 
+    func testTermCountIsCappedAndFlagged() {
+        let query = ParsedQuery((0..<2_000).map(String.init).joined(separator: " "))
+
+        XCTAssertEqual(query.terms.count, 64)
+        XCTAssertEqual(query.terms.first, "0")
+        XCTAssertEqual(query.terms.last, "63")
+        XCTAssertTrue(query.wasTruncated)
+        XCTAssertFalse(ParsedQuery(Array(repeating: "same", count: 200).joined(separator: " ")).wasTruncated)
+    }
+
     func testWhitespaceOnlyQueryIsEmpty() {
         let query = ParsedQuery(" \u{3000}\n\t")
 

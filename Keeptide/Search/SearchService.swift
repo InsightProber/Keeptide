@@ -68,6 +68,8 @@ struct SearchPage: Sendable {
     /// True once every candidate in the index has been ranked.
     let isComplete: Bool
     let indexState: SearchIndexState
+    /// The query was longer than the scalar or distinct-term limit and was cut.
+    let queryWasTruncated: Bool
 }
 
 final class SearchIndexStatus: @unchecked Sendable {
@@ -141,23 +143,27 @@ struct SearchService: Sendable {
 
     private func execute(_ request: SearchRequest, emit: (SearchPage) -> Void) async throws {
         guard (1...1_000).contains(request.limit), request.offset >= 0 else { throw SearchError.invalidRequest }
-        let unavailable = SearchPage(generation: request.generation, results: [], totalMatches: 0,
-                                     isComplete: true, indexState: .unavailable)
+        let query = ParsedQuery(request.query)
+        let unavailable = SearchPage(generation: request.generation, results: [], totalMatches: 0, isComplete: true,
+                                     indexState: .unavailable, queryWasTruncated: query.wasTruncated)
         guard let index, let reader = try? index.openReader() else {
             emit(unavailable)
             return
         }
         defer { reader.close() }
-        let query = ParsedQuery(request.query)
         do {
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
-                if query.isEmpty {
-                    emit(try browse(request, reader))
-                } else if query.longTerms.isEmpty {
-                    try scan(query, request, reader, emit: emit)
-                } else {
-                    emit(try ranked(query, request, reader))
+                // One snapshot per search: counts, ranks and scanned ranges all see
+                // the same documents even while the consumer replaces them.
+                try reader.snapshot {
+                    if query.isEmpty {
+                        emit(try browse(query, request, reader))
+                    } else if query.longTerms.isEmpty {
+                        try scan(query, request, reader, emit: emit)
+                    } else {
+                        emit(try ranked(query, request, reader))
+                    }
                 }
             } onCancel: {
                 reader.interrupt()
@@ -168,8 +174,7 @@ struct SearchService: Sendable {
         }
     }
 
-    private func browse(_ request: SearchRequest, _ reader: SearchIndexReader) throws -> SearchPage {
-        let query = ParsedQuery("")
+    private func browse(_ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader) throws -> SearchPage {
         var counter = SQLBuilder()
         let countConditions = conditions(query, request, &counter)
         let total = try count(reader.rows("SELECT count(*) FROM doc d WHERE \(countConditions)", counter.bindings))
@@ -185,7 +190,7 @@ struct SearchService: Sendable {
             guard case .integer(let id) = row[0] else { throw SearchIndexError.corrupt }
             return (id, Int64(SearchRelevance.allTermsAnywhere.rawValue))
         }
-        return page(request, try results(for: keys, query: query, reader), total: total, complete: true)
+        return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true)
     }
 
     private func ranked(_ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader) throws -> SearchPage {
@@ -210,7 +215,7 @@ struct SearchService: Sendable {
             }
             return (id, tier)
         }
-        return page(request, try results(for: keys, query: query, reader), total: total, complete: true)
+        return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true)
     }
 
     /// Terms shorter than three scalars cannot use the trigram index, so every
@@ -220,7 +225,7 @@ struct SearchService: Sendable {
         _ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader, emit: (SearchPage) -> Void
     ) throws {
         guard case .integer(let maximum)? = try reader.rows("SELECT max(id) FROM doc", []).first?.first else {
-            emit(page(request, [], total: 0, complete: true))
+            emit(page(request, query, [], total: 0, complete: true))
             return
         }
         var keys: [RankKey] = []
@@ -250,15 +255,17 @@ struct SearchService: Sendable {
             let window = Array(keys.dropFirst(request.offset).prefix(request.limit))
             guard complete || lastEmission == nil || window.map(\.id) != lastWindow else { continue }
             let results = try results(for: window.map { (id: $0.id, tier: $0.tier) }, query: query, reader)
-            emit(page(request, results, total: keys.count, complete: complete))
+            emit(page(request, query, results, total: keys.count, complete: complete))
             lastEmission = now
             lastWindow = window.map(\.id)
         }
     }
 
-    private func page(_ request: SearchRequest, _ results: [SearchResult], total: Int, complete: Bool) -> SearchPage {
-        SearchPage(generation: request.generation, results: results, totalMatches: total,
-                   isComplete: complete, indexState: status.state)
+    private func page(
+        _ request: SearchRequest, _ query: ParsedQuery, _ results: [SearchResult], total: Int, complete: Bool
+    ) -> SearchPage {
+        SearchPage(generation: request.generation, results: results, totalMatches: total, isComplete: complete,
+                   indexState: status.state, queryWasTruncated: query.wasTruncated)
     }
 
     private func count(_ rows: [[SQLiteValue]]) throws -> Int {

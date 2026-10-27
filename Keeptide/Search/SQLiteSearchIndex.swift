@@ -411,6 +411,14 @@ final class SearchIndexReader: @unchecked Sendable {
         try connection.rows(sql, bindings)
     }
 
+    /// Runs `body` in one read transaction, so every statement sees the same
+    /// index state even while the consumer commits.
+    func snapshot<T>(_ body: () throws -> T) throws -> T {
+        try connection.execute("BEGIN")
+        defer { try? connection.execute("COMMIT") }
+        return try body()
+    }
+
     func interrupt() {
         connection.interrupt()
     }
