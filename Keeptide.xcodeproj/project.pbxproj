@@ -24,6 +24,38 @@
 		A0010000000000000000000F /* LaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000014 /* LaunchConfiguration.swift */; };
 		A00100000000000000000010 /* ApplicationMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000017 /* ApplicationMenu.swift */; };
 		A00100000000000000000011 /* WindowContentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000018 /* WindowContentController.swift */; };
+		AF62A2F4E80132F192950A0A /* PersistenceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C32BE3E3EF0CF8E6BEFD73CC /* PersistenceController.swift */; };
+		0B84FE4CEF9B25C3DD4C0CED /* ContentRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7279B90E045C0E6DD4962EAD /* ContentRepositoryTests.swift */; };
+		8993A4E762C0DA817D98632F /* ContentValues.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22BD3672A227EEF7E527708C /* ContentValues.swift */; };
+		D06E4E735FCEB2A9DBAA731E /* CaptureManifest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4AF4139857D8A84729562EF9 /* CaptureManifest.swift */; };
+		1D8D4799DFE90A2D4CCDAD1D /* CaptureManifestTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1091A35537902F889BC954DC /* CaptureManifestTests.swift */; };
+		B4FB90B02806B40AF89C810B /* ModelCompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 632A9D96686D15AF08A06F55 /* ModelCompatibilityTests.swift */; };
+		B10000000000000000000001 /* Keeptide.xcdatamodeld in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000002 /* Keeptide.xcdatamodeld */; };
+		5FC8892B7DCA75123D571F88 /* StoreTransaction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A7CF516B507C3D4495124FB /* StoreTransaction.swift */; };
+		4150624B20483BBDC3A27DE7 /* ContentRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79094D82A6AF4CF00DE9845B /* ContentRepository.swift */; };
+		08F9B4F61FF8CC89FDAA59D0 /* WriteCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08F65112096FE91BCFF634B6 /* WriteCoordinator.swift */; };
+		DAF9CAAC0C56689521E9A989 /* LocalUsageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 75AC8E3A8C5F9CF60FA1A993 /* LocalUsageStore.swift */; };
+		9099F7C46562FD08DC6F13A2 /* FileAccessStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A97FC7AD32D52D0C18E39C40 /* FileAccessStore.swift */; };
+		CEA1D50757B6F24160120267 /* ContentStoreFixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAF29E4B5BAD88B08227448F /* ContentStoreFixtures.swift */; };
+		465CD911E20A5CB13769267F /* LocalUsageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B73E596A014AC25F7FE80F3 /* LocalUsageTests.swift */; };
+		89A6A5BEB3D4A337033DF903 /* StoredRecords.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DC995DDD5341968863C16F9 /* StoredRecords.swift */; };
+		BBFF565645238B9DAD483F4C /* StoreSafetyGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = C91740D39AFA4A3A0078429D /* StoreSafetyGate.swift */; };
+		152C750B05593F45122E66B7 /* ContentSnapshotReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8635F824D4DB2C2496B6FD74 /* ContentSnapshotReader.swift */; };
+		4A54F35572BCE8CB46E7D291 /* StoreChangeReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9DE6DA7F2286A0A3AF759FC /* StoreChangeReader.swift */; };
+		402981527B2AC378760732BC /* StoredRecordsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6B67A76C20BC7FD9A31DC3DA /* StoredRecordsTests.swift */; };
+		3B1CD42AE0715ACAA4A69DB6 /* SnapshotLeaseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A6BFF9F321FA3AB1A6C588D /* SnapshotLeaseTests.swift */; };
+		7077675DF34D917390DB0689 /* StoreChangeReaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D922B4D47B23D35E2A8629DB /* StoreChangeReaderTests.swift */; };
+		3E1BAE151A3AAE1BC15DCC32 /* StoreTransactionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27CA8752A31F7A6E7264D5FC /* StoreTransactionTests.swift */; };
+		8022B98A93CCEE745FAC9A9D /* SnapshotArchiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4CF328144794F4372FB489E /* SnapshotArchiveTests.swift */; };
+		838D6369DE1E77B08B73A2FB /* LargePayloadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 763180D5F34ADA0A5655C161 /* LargePayloadTests.swift */; };
+		6753D92F191579E9D2D54C47 /* SchemaFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7BD91B32E7C8DDE43C9365B /* SchemaFixtureTests.swift */; };
+		B20000000000000000000001 /* SchemaV1 in Resources */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SchemaV1 */; };
+		F1315B5922B77D1AF2C9A163 /* SafetyReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 855D96F43B5D2AAFBBD482BF /* SafetyReviewTests.swift */; };
+		0C2A41081D7F3A5048CCABB9 /* TransactionReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAD5421E70198EFCFAB79389 /* TransactionReviewTests.swift */; };
+		36D2B59A3172EE7E42C9D02E /* LocalReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CF7F65DA39B4D2EC34A0644 /* LocalReviewTests.swift */; };
+		6747A899F3E9CDE4B374DF27 /* ReadReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AEABC873E5DA73C9C27C6C1 /* ReadReviewTests.swift */; };
+		5A2D9D8F0BEC53921715F5FC /* FileReferencePrivacyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31BDE0BB7943445B611F3F47 /* FileReferencePrivacyTests.swift */; };
+		2AF4E90ECC8E595E572D6BD5 /* SystemFileReferenceClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AEDD7BC6EC1FC00CBDE059A /* SystemFileReferenceClassifier.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -68,6 +100,39 @@
 		A00200000000000000000016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00200000000000000000017 /* ApplicationMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationMenu.swift; sourceTree = "<group>"; };
 		A00200000000000000000018 /* WindowContentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowContentController.swift; sourceTree = "<group>"; };
+		C32BE3E3EF0CF8E6BEFD73CC /* PersistenceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceController.swift; sourceTree = "<group>"; };
+		7279B90E045C0E6DD4962EAD /* ContentRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentRepositoryTests.swift; sourceTree = "<group>"; };
+		22BD3672A227EEF7E527708C /* ContentValues.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentValues.swift; sourceTree = "<group>"; };
+		4AF4139857D8A84729562EF9 /* CaptureManifest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureManifest.swift; sourceTree = "<group>"; };
+		1091A35537902F889BC954DC /* CaptureManifestTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureManifestTests.swift; sourceTree = "<group>"; };
+		632A9D96686D15AF08A06F55 /* ModelCompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCompatibilityTests.swift; sourceTree = "<group>"; };
+		B10000000000000000000003 /* KeeptideV1.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = KeeptideV1.xcdatamodel; sourceTree = "<group>"; };
+		4A7CF516B507C3D4495124FB /* StoreTransaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTransaction.swift; sourceTree = "<group>"; };
+		79094D82A6AF4CF00DE9845B /* ContentRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentRepository.swift; sourceTree = "<group>"; };
+		08F65112096FE91BCFF634B6 /* WriteCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WriteCoordinator.swift; sourceTree = "<group>"; };
+		75AC8E3A8C5F9CF60FA1A993 /* LocalUsageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalUsageStore.swift; sourceTree = "<group>"; };
+		A97FC7AD32D52D0C18E39C40 /* FileAccessStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileAccessStore.swift; sourceTree = "<group>"; };
+		CAF29E4B5BAD88B08227448F /* ContentStoreFixtures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentStoreFixtures.swift; sourceTree = "<group>"; };
+		9B73E596A014AC25F7FE80F3 /* LocalUsageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalUsageTests.swift; sourceTree = "<group>"; };
+		7DC995DDD5341968863C16F9 /* StoredRecords.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredRecords.swift; sourceTree = "<group>"; };
+		C91740D39AFA4A3A0078429D /* StoreSafetyGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreSafetyGate.swift; sourceTree = "<group>"; };
+		8635F824D4DB2C2496B6FD74 /* ContentSnapshotReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentSnapshotReader.swift; sourceTree = "<group>"; };
+		B9DE6DA7F2286A0A3AF759FC /* StoreChangeReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreChangeReader.swift; sourceTree = "<group>"; };
+		6B67A76C20BC7FD9A31DC3DA /* StoredRecordsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoredRecordsTests.swift; sourceTree = "<group>"; };
+		0A6BFF9F321FA3AB1A6C588D /* SnapshotLeaseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotLeaseTests.swift; sourceTree = "<group>"; };
+		D922B4D47B23D35E2A8629DB /* StoreChangeReaderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreChangeReaderTests.swift; sourceTree = "<group>"; };
+		27CA8752A31F7A6E7264D5FC /* StoreTransactionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StoreTransactionTests.swift; sourceTree = "<group>"; };
+		A4CF328144794F4372FB489E /* SnapshotArchiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotArchiveTests.swift; sourceTree = "<group>"; };
+		763180D5F34ADA0A5655C161 /* LargePayloadTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LargePayloadTests.swift; sourceTree = "<group>"; };
+		F7BD91B32E7C8DDE43C9365B /* SchemaFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SchemaFixtureTests.swift; sourceTree = "<group>"; };
+		B20000000000000000000002 /* SchemaV1 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = SchemaV1; path = Fixtures/SchemaV1; sourceTree = "<group>"; };
+		855D96F43B5D2AAFBBD482BF /* SafetyReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SafetyReviewTests.swift; sourceTree = "<group>"; };
+		CAD5421E70198EFCFAB79389 /* TransactionReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransactionReviewTests.swift; sourceTree = "<group>"; };
+		8CF7F65DA39B4D2EC34A0644 /* LocalReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalReviewTests.swift; sourceTree = "<group>"; };
+		0AEABC873E5DA73C9C27C6C1 /* ReadReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadReviewTests.swift; sourceTree = "<group>"; };
+		31BDE0BB7943445B611F3F47 /* FileReferencePrivacyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileReferencePrivacyTests.swift; sourceTree = "<group>"; };
+		7AEDD7BC6EC1FC00CBDE059A /* SystemFileReferenceClassifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemFileReferenceClassifier.swift; sourceTree = "<group>"; };
+		B10000000000000000000004 /* KeeptideV2.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = KeeptideV2.xcdatamodel; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -90,17 +155,20 @@
 			);
 			sourceTree = "<group>";
 		};
-		A04000000000000000000002 /* Keeptide */ = {isa = PBXGroup; children = (A04000000000000000000003 /* App */, A04000000000000000000004 /* QuickAccess */, A04000000000000000000005 /* Library */, A0400000000000000000000B /* Resources */); path = Keeptide; sourceTree = "<group>"; };
+		A04000000000000000000002 /* Keeptide */ = {isa = PBXGroup; children = (4EF47AFE3E3120E63A017E68 /* Preview */, 22AB7CBE58C5D9A39934673B /* Domain */, 8B2538C912EAF5B58E10AEE1 /* Persistence */, A04000000000000000000003 /* App */, A04000000000000000000004 /* QuickAccess */, A04000000000000000000005 /* Library */, A0400000000000000000000B /* Resources */); path = Keeptide; sourceTree = "<group>"; };
 		A04000000000000000000003 /* App */ = {isa = PBXGroup; children = (A00200000000000000000018 /* WindowContentController.swift */, A00200000000000000000001 /* KeeptideApp.swift */, A00200000000000000000002 /* AppEnvironment.swift */, A00200000000000000000003 /* AppSettings.swift */, A00200000000000000000017 /* ApplicationMenu.swift */, A00200000000000000000014 /* LaunchConfiguration.swift */, A00200000000000000000004 /* MenuBarController.swift */); path = App; sourceTree = "<group>"; };
 		A04000000000000000000004 /* QuickAccess */ = {isa = PBXGroup; children = (A00200000000000000000005 /* QuickAccessView.swift */, A00200000000000000000006 /* PanelController.swift */); path = QuickAccess; sourceTree = "<group>"; };
 		A04000000000000000000005 /* Library */ = {isa = PBXGroup; children = (A00200000000000000000007 /* LibraryView.swift */, A00200000000000000000008 /* LibraryWindowController.swift */); path = Library; sourceTree = "<group>"; };
-		A04000000000000000000006 /* KeeptideTests */ = {isa = PBXGroup; children = (A00200000000000000000009 /* AppLaunchTests.swift */); path = KeeptideTests; sourceTree = "<group>"; };
+		A04000000000000000000006 /* KeeptideTests */ = {isa = PBXGroup; children = (31BDE0BB7943445B611F3F47 /* FileReferencePrivacyTests.swift */, 0AEABC873E5DA73C9C27C6C1 /* ReadReviewTests.swift */, 8CF7F65DA39B4D2EC34A0644 /* LocalReviewTests.swift */, CAD5421E70198EFCFAB79389 /* TransactionReviewTests.swift */, 855D96F43B5D2AAFBBD482BF /* SafetyReviewTests.swift */, B20000000000000000000002 /* SchemaV1 */, F7BD91B32E7C8DDE43C9365B /* SchemaFixtureTests.swift */, 763180D5F34ADA0A5655C161 /* LargePayloadTests.swift */, A4CF328144794F4372FB489E /* SnapshotArchiveTests.swift */, 27CA8752A31F7A6E7264D5FC /* StoreTransactionTests.swift */, D922B4D47B23D35E2A8629DB /* StoreChangeReaderTests.swift */, 0A6BFF9F321FA3AB1A6C588D /* SnapshotLeaseTests.swift */, 6B67A76C20BC7FD9A31DC3DA /* StoredRecordsTests.swift */, 9B73E596A014AC25F7FE80F3 /* LocalUsageTests.swift */, CAF29E4B5BAD88B08227448F /* ContentStoreFixtures.swift */, 632A9D96686D15AF08A06F55 /* ModelCompatibilityTests.swift */, 1091A35537902F889BC954DC /* CaptureManifestTests.swift */, 7279B90E045C0E6DD4962EAD /* ContentRepositoryTests.swift */, A00200000000000000000009 /* AppLaunchTests.swift */); path = KeeptideTests; sourceTree = "<group>"; };
 		A04000000000000000000007 /* KeeptideUITests */ = {isa = PBXGroup; children = (A0020000000000000000000A /* NativeShellUITests.swift */); path = KeeptideUITests; sourceTree = "<group>"; };
 		A04000000000000000000008 /* KeeptideSystemTestHost */ = {isa = PBXGroup; children = (A0020000000000000000000B /* KeeptideSystemTestHostApp.swift */, A0020000000000000000000C /* SyntheticPasteboardHarness.swift */, A0020000000000000000000D /* FileDropReceiver.swift */, A0020000000000000000000E /* SystemTestHostView.swift */, A0400000000000000000000C /* Resources */); path = KeeptideSystemTestHost; sourceTree = "<group>"; };
 		A04000000000000000000009 /* Config */ = {isa = PBXGroup; children = (A0020000000000000000000F /* Shared.xcconfig */); path = Config; sourceTree = "<group>"; };
 		A0400000000000000000000A /* Products */ = {isa = PBXGroup; children = (A00200000000000000000010 /* Keeptide.app */, A00200000000000000000011 /* KeeptideTests.xctest */, A00200000000000000000012 /* KeeptideUITests.xctest */, A00200000000000000000013 /* KeeptideSystemTestHost.app */); name = Products; sourceTree = "<group>"; };
-		A0400000000000000000000B /* Resources */ = {isa = PBXGroup; children = (A00200000000000000000015 /* Info.plist */); path = Resources; sourceTree = "<group>"; };
+		A0400000000000000000000B /* Resources */ = {isa = PBXGroup; children = (B10000000000000000000002 /* Keeptide.xcdatamodeld */, A00200000000000000000015 /* Info.plist */); path = Resources; sourceTree = "<group>"; };
 		A0400000000000000000000C /* Resources */ = {isa = PBXGroup; children = (A00200000000000000000016 /* Info.plist */); path = Resources; sourceTree = "<group>"; };
+		8B2538C912EAF5B58E10AEE1 /* Persistence */ = {isa = PBXGroup; children = (B9DE6DA7F2286A0A3AF759FC /* StoreChangeReader.swift */, 8635F824D4DB2C2496B6FD74 /* ContentSnapshotReader.swift */, C91740D39AFA4A3A0078429D /* StoreSafetyGate.swift */, 7DC995DDD5341968863C16F9 /* StoredRecords.swift */, 75AC8E3A8C5F9CF60FA1A993 /* LocalUsageStore.swift */, 08F65112096FE91BCFF634B6 /* WriteCoordinator.swift */, 79094D82A6AF4CF00DE9845B /* ContentRepository.swift */, C32BE3E3EF0CF8E6BEFD73CC /* PersistenceController.swift */, ); path = Persistence; sourceTree = "<group>"; };
+		22AB7CBE58C5D9A39934673B /* Domain */ = {isa = PBXGroup; children = (7AEDD7BC6EC1FC00CBDE059A /* SystemFileReferenceClassifier.swift */, 4A7CF516B507C3D4495124FB /* StoreTransaction.swift */, 4AF4139857D8A84729562EF9 /* CaptureManifest.swift */, 22BD3672A227EEF7E527708C /* ContentValues.swift */, ); path = Domain; sourceTree = "<group>"; };
+		4EF47AFE3E3120E63A017E68 /* Preview */ = {isa = PBXGroup; children = (A97FC7AD32D52D0C18E39C40 /* FileAccessStore.swift */, ); path = Preview; sourceTree = "<group>"; };
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -139,14 +207,14 @@
 
 /* Begin PBXResourcesBuildPhase section */
 		A08000000000000000000001 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
-		A08000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		A08000000000000000000002 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (B20000000000000000000001 /* SchemaV1 in Resources */); runOnlyForDeploymentPostprocessing = 0; };
 		A08000000000000000000003 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		A08000000000000000000004 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A07000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000011 /* WindowContentController.swift in Sources */, A00100000000000000000001 /* KeeptideApp.swift in Sources */, A00100000000000000000002 /* AppEnvironment.swift in Sources */, A00100000000000000000003 /* AppSettings.swift in Sources */, A00100000000000000000010 /* ApplicationMenu.swift in Sources */, A0010000000000000000000F /* LaunchConfiguration.swift in Sources */, A00100000000000000000004 /* MenuBarController.swift in Sources */, A00100000000000000000005 /* QuickAccessView.swift in Sources */, A00100000000000000000006 /* PanelController.swift in Sources */, A00100000000000000000007 /* LibraryView.swift in Sources */, A00100000000000000000008 /* LibraryWindowController.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
-		A07000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000009 /* AppLaunchTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A07000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (2AF4E90ECC8E595E572D6BD5 /* SystemFileReferenceClassifier.swift in Sources */, 4A54F35572BCE8CB46E7D291 /* StoreChangeReader.swift in Sources */, 152C750B05593F45122E66B7 /* ContentSnapshotReader.swift in Sources */, BBFF565645238B9DAD483F4C /* StoreSafetyGate.swift in Sources */, 89A6A5BEB3D4A337033DF903 /* StoredRecords.swift in Sources */, 9099F7C46562FD08DC6F13A2 /* FileAccessStore.swift in Sources */, DAF9CAAC0C56689521E9A989 /* LocalUsageStore.swift in Sources */, 08F9B4F61FF8CC89FDAA59D0 /* WriteCoordinator.swift in Sources */, 4150624B20483BBDC3A27DE7 /* ContentRepository.swift in Sources */, 5FC8892B7DCA75123D571F88 /* StoreTransaction.swift in Sources */, B10000000000000000000001 /* Keeptide.xcdatamodeld in Sources */, D06E4E735FCEB2A9DBAA731E /* CaptureManifest.swift in Sources */, 8993A4E762C0DA817D98632F /* ContentValues.swift in Sources */, AF62A2F4E80132F192950A0A /* PersistenceController.swift in Sources */, A00100000000000000000011 /* WindowContentController.swift in Sources */, A00100000000000000000001 /* KeeptideApp.swift in Sources */, A00100000000000000000002 /* AppEnvironment.swift in Sources */, A00100000000000000000003 /* AppSettings.swift in Sources */, A00100000000000000000010 /* ApplicationMenu.swift in Sources */, A0010000000000000000000F /* LaunchConfiguration.swift in Sources */, A00100000000000000000004 /* MenuBarController.swift in Sources */, A00100000000000000000005 /* QuickAccessView.swift in Sources */, A00100000000000000000006 /* PanelController.swift in Sources */, A00100000000000000000007 /* LibraryView.swift in Sources */, A00100000000000000000008 /* LibraryWindowController.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A07000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (5A2D9D8F0BEC53921715F5FC /* FileReferencePrivacyTests.swift in Sources */, 6747A899F3E9CDE4B374DF27 /* ReadReviewTests.swift in Sources */, 36D2B59A3172EE7E42C9D02E /* LocalReviewTests.swift in Sources */, 0C2A41081D7F3A5048CCABB9 /* TransactionReviewTests.swift in Sources */, F1315B5922B77D1AF2C9A163 /* SafetyReviewTests.swift in Sources */, 6753D92F191579E9D2D54C47 /* SchemaFixtureTests.swift in Sources */, 838D6369DE1E77B08B73A2FB /* LargePayloadTests.swift in Sources */, 8022B98A93CCEE745FAC9A9D /* SnapshotArchiveTests.swift in Sources */, 3E1BAE151A3AAE1BC15DCC32 /* StoreTransactionTests.swift in Sources */, 7077675DF34D917390DB0689 /* StoreChangeReaderTests.swift in Sources */, 3B1CD42AE0715ACAA4A69DB6 /* SnapshotLeaseTests.swift in Sources */, 402981527B2AC378760732BC /* StoredRecordsTests.swift in Sources */, 465CD911E20A5CB13769267F /* LocalUsageTests.swift in Sources */, CEA1D50757B6F24160120267 /* ContentStoreFixtures.swift in Sources */, B4FB90B02806B40AF89C810B /* ModelCompatibilityTests.swift in Sources */, 1D8D4799DFE90A2D4CCDAD1D /* CaptureManifestTests.swift in Sources */, 0B84FE4CEF9B25C3DD4C0CED /* ContentRepositoryTests.swift in Sources */, A00100000000000000000009 /* AppLaunchTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 		A07000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000A /* NativeShellUITests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 		A07000000000000000000004 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000B /* KeeptideSystemTestHostApp.swift in Sources */, A0010000000000000000000C /* SyntheticPasteboardHarness.swift in Sources */, A0010000000000000000000D /* FileDropReceiver.swift in Sources */, A0010000000000000000000E /* SystemTestHostView.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXSourcesBuildPhase section */
@@ -155,6 +223,10 @@
 		A09000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A02000000000000000000001 /* Keeptide */; targetProxy = A00300000000000000000001 /* PBXContainerItemProxy */; };
 		A09000000000000000000002 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A02000000000000000000001 /* Keeptide */; targetProxy = A00300000000000000000002 /* PBXContainerItemProxy */; };
 /* End PBXTargetDependency section */
+
+/* Begin XCVersionGroup section */
+		B10000000000000000000002 /* Keeptide.xcdatamodeld */ = {isa = XCVersionGroup; children = (B10000000000000000000003 /* KeeptideV1.xcdatamodel */, B10000000000000000000004 /* KeeptideV2.xcdatamodel */); currentVersion = B10000000000000000000004; path = Keeptide.xcdatamodeld; sourceTree = "<group>"; versionGroupType = wrapper.xcdatamodel; };
+/* End XCVersionGroup section */
 
 /* Begin XCBuildConfiguration section */
 		A05000000000000000000001 /* Debug */ = {isa = XCBuildConfiguration; baseConfigurationReference = A0020000000000000000000F /* Shared.xcconfig */; buildSettings = {COPY_PHASE_STRIP = NO; DEBUG_INFORMATION_FORMAT = dwarf; ENABLE_TESTABILITY = YES; GCC_OPTIMIZATION_LEVEL = 0; ONLY_ACTIVE_ARCH = YES; SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)"; SWIFT_OPTIMIZATION_LEVEL = "-Onone"; }; name = Debug; };
