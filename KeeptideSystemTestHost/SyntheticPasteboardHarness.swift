@@ -7,13 +7,30 @@ final class SyntheticPasteboardHarness {
 
     private(set) var status = "No synthetic payload written"
     private(set) var receivedTypes: [String] = []
+    private(set) var receivedText = ""
 
-    private let pasteboard = NSPasteboard(name: pasteboardName)
+    private let pasteboard: NSPasteboard
+
+    init() {
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--capture-test-session"), index + 1 < arguments.count,
+           let id = UUID(uuidString: arguments[index + 1]) {
+            pasteboard = NSPasteboard(name: .init("io.github.insightprober.Keeptide.capture-test.\(id.uuidString)"))
+        } else {
+            pasteboard = NSPasteboard(name: Self.pasteboardName)
+        }
+    }
 
     func writeText() {
         pasteboard.clearContents()
         pasteboard.setString("Synthetic Keeptide text", forType: .string)
         status = "Synthetic text written"
+    }
+
+    func writeAlternateText() {
+        pasteboard.clearContents()
+        pasteboard.setString("Synthetic paused text", forType: .string)
+        status = "Synthetic alternate text written"
     }
 
     func writeRichText() {
@@ -66,6 +83,7 @@ final class SyntheticPasteboardHarness {
 
     func inspectSyntheticPasteboard() {
         receivedTypes = pasteboard.types?.map(\.rawValue).sorted() ?? []
+        receivedText = pasteboard.string(forType: .string) ?? ""
         status = receivedTypes.isEmpty ? "No synthetic payload received" : "Synthetic payload received"
     }
 

@@ -15,17 +15,21 @@ FORBIDDEN_CLIPBOARD_ACCESS = re.compile(r"\bNSPasteboard\b|\bUIPasteboard\b")
 
 
 class ProductionShellBoundaryTests(unittest.TestCase):
-    def test_foundation_shell_has_no_clipboard_api_access(self) -> None:
+    def test_views_do_not_access_clipboard_outside_capture_composition(self) -> None:
         violations: list[str] = []
         for directory in SHELL_DIRECTORIES:
             for source_file in sorted(directory.rglob("*.swift")):
+                # CaptureSession owns the explicit production/test pasteboard
+                # selection. Views and window controllers only invoke its actions.
+                if source_file == REPOSITORY_ROOT / "Keeptide/App/CaptureSession.swift":
+                    continue
                 if FORBIDDEN_CLIPBOARD_ACCESS.search(source_file.read_text(encoding="utf-8")):
                     violations.append(str(source_file.relative_to(REPOSITORY_ROOT)))
 
         self.assertEqual(
             violations,
             [],
-            "Foundation shell must not access clipboard APIs; add clipboard behavior in its owning milestone",
+            "Views and window controllers must use CaptureSession rather than access clipboard APIs",
         )
 
 

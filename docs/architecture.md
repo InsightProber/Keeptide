@@ -2,8 +2,8 @@
 
 Keeptide is designed as a local-first native macOS application. This document
 describes the overall architecture. The native shell and local storage foundation
-are implemented. Capture, editing, search, exports, and cloud integration remain
-planned.
+and local clipboard recording are implemented. Editing, search, export UI, and
+cloud integration remain planned.
 
 ## Native interfaces
 

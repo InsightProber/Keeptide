@@ -2,7 +2,7 @@ import AppKit
 import Carbon
 
 @MainActor
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     enum ShortcutStatus: Equatable {
         case disabledForTesting
         case registered
@@ -44,10 +44,16 @@ final class MenuBarController: NSObject {
     private let showQuickAccess: () -> Void
     private let toggleQuickAccess: () -> Void
     private let showLibrary: () -> Void
+    private let captureIsReady: () -> Bool
+    private let captureIsEnabled: () -> Bool
+    private let captureStatus: () -> String
+    private let toggleCapture: () -> Void
     private let registration: ShortcutRegistration
     private let statusItem: NSStatusItem
     private var eventHandler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
+    private weak var captureToggleItem: NSMenuItem?
+    private weak var captureStatusItem: NSMenuItem?
 
     private(set) var shortcutStatus: ShortcutStatus = .disabledForTesting
 
@@ -55,12 +61,20 @@ final class MenuBarController: NSObject {
         showQuickAccess: @escaping () -> Void,
         toggleQuickAccess: @escaping () -> Void,
         showLibrary: @escaping () -> Void,
+        captureIsReady: @escaping () -> Bool = { true },
+        captureIsEnabled: @escaping () -> Bool = { false },
+        captureStatus: @escaping () -> String = { "Clipboard recording is off" },
+        toggleCapture: @escaping () -> Void = {},
         shouldRegisterHotKey: Bool,
         registration: ShortcutRegistration = .system()
     ) {
         self.showQuickAccess = showQuickAccess
         self.toggleQuickAccess = toggleQuickAccess
         self.showLibrary = showLibrary
+        self.captureIsReady = captureIsReady
+        self.captureIsEnabled = captureIsEnabled
+        self.captureStatus = captureStatus
+        self.toggleCapture = toggleCapture
         self.registration = registration
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
@@ -177,8 +191,24 @@ final class MenuBarController: NSObject {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.delegate = self
         menu.addItem(withTitle: "Open Quick Access", action: #selector(openQuickAccess), keyEquivalent: "")
         menu.addItem(withTitle: "Open Library", action: #selector(openLibrary), keyEquivalent: "")
+
+        menu.addItem(.separator())
+        let captureToggleItem = menu.addItem(
+            withTitle: "Start Recording",
+            action: #selector(toggleCaptureRecording),
+            keyEquivalent: ""
+        )
+        captureToggleItem.identifier = NSUserInterfaceItemIdentifier("CaptureRecordingToggleMenuItem")
+        self.captureToggleItem = captureToggleItem
+        let captureStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+        captureStatusItem.identifier = NSUserInterfaceItemIdentifier("CaptureStatusMenuItem")
+        captureStatusItem.isEnabled = false
+        menu.addItem(captureStatusItem)
+        self.captureStatusItem = captureStatusItem
 
         if let shortcutMenuTitle = shortcutStatus.menuTitle {
             menu.addItem(.separator())
@@ -199,6 +229,19 @@ final class MenuBarController: NSObject {
             item.target = self
         }
         statusItem.menu = menu
+        updateCaptureMenuItems()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        updateCaptureMenuItems()
+    }
+
+    private func updateCaptureMenuItems() {
+        captureToggleItem?.isEnabled = captureIsReady()
+        let toggleTitle = captureIsEnabled() ? "Pause Recording" : "Start Recording"
+        if captureToggleItem?.title != toggleTitle { captureToggleItem?.title = toggleTitle }
+        let status = captureStatus()
+        if captureStatusItem?.title != status { captureStatusItem?.title = status }
     }
 
     @objc private func openQuickAccess() {
@@ -207,6 +250,12 @@ final class MenuBarController: NSObject {
 
     @objc private func openLibrary() {
         showLibrary()
+    }
+
+    @objc private func toggleCaptureRecording() {
+        guard captureIsReady() else { return }
+        toggleCapture()
+        updateCaptureMenuItems()
     }
 
     @objc private func quit() {

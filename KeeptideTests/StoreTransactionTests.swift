@@ -977,11 +977,15 @@ private extension StoreTransactionTests {
             representationIndex: 0,
             typeIdentifier: "public.file-url",
             storage: .localReference,
-            byteCount: Int64(syntheticBytes.count),
-            digest: ContentDigest.sha256(syntheticBytes),
+            byteCount: 0,
+            digest: Data(repeating: 0x59, count: 32),
             bytes: nil
         )
-        let manifest = CaptureManifest(itemCount: 1, entries: [ManifestEntry(representation)])
+        let manifest = CaptureManifest(
+            version: LocalReferencePrivacy.manifestVersion,
+            itemCount: 1,
+            entries: [ManifestEntry(representation)]
+        )
         return CaptureValue(
             id: captureID,
             manifest: manifest,

@@ -4,7 +4,7 @@ import SwiftUI
 struct SystemTestHostView: View {
     var body: some View {
         SyntheticHostAppKitView()
-            .frame(minWidth: 680, minHeight: 360)
+            .frame(minWidth: 680, minHeight: 520)
     }
 }
 
@@ -21,6 +21,7 @@ private final class SyntheticHostView: NSView {
     private let harness = SyntheticPasteboardHarness()
     private let statusLabel = NSTextField(labelWithString: "No synthetic payload written")
     private let detailsLabel = NSTextField(wrappingLabelWithString: "")
+    private let receivedTextLabel = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -46,6 +47,7 @@ private final class SyntheticHostView: NSView {
         buttonRow.spacing = 8
 
         let inspectButton = makeButton("Inspect Synthetic Pasteboard", action: #selector(inspectPasteboard))
+        let alternateButton = makeButton("Write Alternate Text", action: #selector(writeAlternateText))
         let dropReceiver = DropView { [weak self] urls in
             self?.harness.receiveDroppedFiles(urls)
             self?.refreshStatus()
@@ -73,16 +75,19 @@ private final class SyntheticHostView: NSView {
         statusLabel.setAccessibilityIdentifier("Synthetic host status")
         detailsLabel.font = .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         detailsLabel.isSelectable = true
+        receivedTextLabel.setAccessibilityIdentifier("ReceivedSyntheticText")
 
         let stack = NSStackView(views: [
             title,
             explanation,
             input,
             buttonRow,
+            alternateButton,
             inspectButton,
             dropContainer,
             statusLabel,
             detailsLabel,
+            receivedTextLabel,
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -110,6 +115,7 @@ private final class SyntheticHostView: NSView {
     }
 
     @objc private func writeText() { harness.writeText(); refreshStatus() }
+    @objc private func writeAlternateText() { harness.writeAlternateText(); refreshStatus() }
     @objc private func writeRichText() { harness.writeRichText(); refreshStatus() }
     @objc private func writeImage() { harness.writeImage(); refreshStatus() }
     @objc private func writeFileReference() { harness.writeFileReference(); refreshStatus() }
@@ -118,5 +124,6 @@ private final class SyntheticHostView: NSView {
     private func refreshStatus() {
         statusLabel.stringValue = harness.status
         detailsLabel.stringValue = harness.receivedTypes.joined(separator: "\n")
+        receivedTextLabel.stringValue = harness.receivedText
     }
 }

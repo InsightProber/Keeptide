@@ -284,3 +284,22 @@ enum ContentDigest {
         Data(SHA256.hash(data: data))
     }
 }
+
+enum LocalReferencePrivacy {
+    static let manifestVersion = 2
+    static let relocationTokenByteCount = 32
+
+    static func makeRelocationToken() -> Data {
+        var generator = SystemRandomNumberGenerator()
+        return Data((0..<relocationTokenByteCount).map { _ in
+            UInt8.random(in: .min ... .max, using: &generator)
+        })
+    }
+
+    static func isCloudSafeDescriptor(_ representation: RepresentationValue) -> Bool {
+        representation.storage == .localReference
+            && representation.byteCount == 0
+            && representation.digest.count == relocationTokenByteCount
+            && representation.bytes == nil
+    }
+}

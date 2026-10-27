@@ -1116,12 +1116,37 @@ private extension StoredRecords {
                 resolved.append(representation)
                 continue
             }
-            guard row["snapshotID"] as? UUID == captureID,
-                  let localBytes = row["bytes"] as? Data,
-                  Int64(localBytes.count) == representation.byteCount,
-                  ContentDigest.sha256(localBytes) == representation.digest else {
+            guard row["id"] as? UUID == representation.id,
+                  row["snapshotID"] as? UUID == captureID,
+                  let persistedBytes = row["bytes"] as? Data else {
                 return incomplete(ref, .corrupt)
             }
+            let localBytes: Data
+            do {
+                if capture.manifest.version == 1 {
+                    guard representation.byteCount <= Int64(Int.max) else {
+                        return incomplete(ref, .corrupt)
+                    }
+                    localBytes = try LocalFileAccessEnvelope.decodeLegacyVerified(
+                        persistedBytes,
+                        byteCount: Int(representation.byteCount),
+                        digest: representation.digest
+                    )
+                } else {
+                    localBytes = try LocalFileAccessEnvelope.decode(
+                        persistedBytes,
+                        representationID: representation.id,
+                        snapshotID: captureID
+                    )
+                }
+            } catch {
+                return incomplete(ref, .corrupt)
+            }
+            // CloudContent keeps only the opaque relocation descriptor. Once the
+            // LocalState envelope has been validated, publish an ephemeral
+            // actionable representation with the real local integrity metadata.
+            representation.byteCount = Int64(localBytes.count)
+            representation.digest = ContentDigest.sha256(localBytes)
             representation.bytes = localBytes
             resolved.append(representation)
         }

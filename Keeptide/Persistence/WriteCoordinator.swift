@@ -4,7 +4,7 @@ import Foundation
 struct WriteCoordinator: Sendable {
     let controller: PersistenceController
 
-    func commit(_ transaction: StoreTransaction) async throws -> StoreReceipt {
+    func commit(_ transaction: StoreTransaction, validate authorization: @escaping @Sendable () throws -> Void = {}) async throws -> StoreReceipt {
         try await controller.perform { context in
             context.reset()
             defer {
@@ -19,6 +19,7 @@ struct WriteCoordinator: Sendable {
             for condition in transaction.preconditions {
                 try check(condition, transaction: transaction, in: context)
             }
+            try authorization()
             var touched = Set<RecordKey>()
             var affectedItems = Set<ItemID>()
             var affectedMemos = Set<UUID>()
@@ -35,6 +36,7 @@ struct WriteCoordinator: Sendable {
                         guard try StoredRecords.object(key, in: context) == nil else { throw StoreError.preconditionFailed }
                         if case .capture(let capture) = value {
                             try requireAvailableRepresentationIDs(capture, in: context)
+                            try requirePreparedLocalReferences(capture, in: context)
                         }
                         try requireUnmarked(value, in: context)
                         try validate(value, old: nil)
@@ -116,7 +118,9 @@ struct WriteCoordinator: Sendable {
                 for key in removed { try validateRemoval(key, in: context) }
                 // All mutations in this save belong to CloudContent. Local usage,
                 // file access and generation changes use separate LocalState saves.
+                try authorization()
                 try context.save()
+                CaptureCandidateRepository.didCommit(transaction.mutations, in: context, runtime: controller.runtime)
                 return StoreReceipt(transactionID: transaction.transactionID, identity: controller.runtime.identity,
                                     changed: touched.sorted { $0.entity + $0.id.uuidString < $1.entity + $1.id.uuidString })
             } catch {
@@ -181,6 +185,8 @@ struct WriteCoordinator: Sendable {
             valid = visible == expected
         case .candidateSet(let digest, let fingerprint):
             valid = try StoredRecords.candidateFingerprint(digest: digest, in: context) == fingerprint
+        case .localCaptureSet(let digest, let fingerprint):
+            valid = try CaptureCandidateRepository.localFingerprint(digest: digest, in: context, runtime: controller.runtime) == fingerprint
         case .referenceSet(let id, let fingerprint): valid = try StoredRecords.referenceFingerprint(snapshotID: id, in: context) == fingerprint
         }
         guard valid else { throw StoreError.preconditionFailed }
@@ -204,6 +210,36 @@ struct WriteCoordinator: Sendable {
         )
         request.fetchLimit = 1
         guard try context.fetch(request).isEmpty else { throw StoreError.preconditionFailed }
+    }
+
+    private func requirePreparedLocalReferences(
+        _ capture: CaptureValue,
+        in context: NSManagedObjectContext
+    ) throws {
+        let localReferences = capture.representations.filter { $0.storage == .localReference }
+        guard !localReferences.isEmpty else { return }
+        guard capture.manifest.version == LocalReferencePrivacy.manifestVersion else {
+            throw StoreError.invalidTransaction
+        }
+        for representation in localReferences {
+            let request = NSFetchRequest<NSDictionary>(entityName: "FileAccessRecord")
+            request.predicate = NSPredicate(format: "id == %@", representation.id as NSUUID)
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = ["id", "snapshotID", "bytes"]
+            request.fetchLimit = 2
+            let rows = try context.fetch(request)
+            guard rows.count == 1,
+                  rows[0]["id"] as? UUID == representation.id,
+                  rows[0]["snapshotID"] as? UUID == capture.id,
+                  let persistedBytes = rows[0]["bytes"] as? Data else {
+                throw StoreError.preconditionFailed
+            }
+            _ = try LocalFileAccessEnvelope.decode(
+                persistedBytes,
+                representationID: representation.id,
+                snapshotID: capture.id
+            )
+        }
     }
 
     private func requireUnmarked(_ value: RecordValue, in context: NSManagedObjectContext) throws {
@@ -357,6 +393,14 @@ struct WriteCoordinator: Sendable {
         case .capture(let capture):
             guard old == nil else { throw StoreError.invalidTransaction }
             let localItems = Set(capture.representations.filter { $0.storage == .localReference }.map(\.itemIndex))
+            if !localItems.isEmpty {
+                guard capture.manifest.version == LocalReferencePrivacy.manifestVersion,
+                      capture.representations
+                        .filter({ $0.storage == .localReference })
+                        .allSatisfy(LocalReferencePrivacy.isCloudSafeDescriptor) else {
+                    throw StoreError.invalidTransaction
+                }
+            }
             for representation in capture.representations where representation.storage == .portable {
                 guard !SystemFileReferenceClassifier.isLocalFileReference(
                     typeIdentifier: representation.typeIdentifier,

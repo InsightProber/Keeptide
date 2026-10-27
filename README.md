@@ -13,13 +13,15 @@ as a snippet, or write one directly.
 > **Status: early development.** The native foundation includes a menu-bar app,
 > a quick-access panel, a library window, and a separate system test host.
 > The storage foundation provides local persistence, content validation, and
-> consistent reads. Clipboard capture, search, snippet workflows, and iCloud
-> saving are still planned. There is no end-user release yet.
+> consistent reads. Local recording now preserves complete clipboard formats,
+> deduplicates exact copies, and provides a recent-clips list with copy-back.
+> Search, snippet workflows, and iCloud saving are still planned. There is no
+> end-user release yet.
 
 ## Designed for the Mac
 
 The following capabilities describe the planned first release; only the native
-and storage foundations listed above are implemented today.
+foundation and local recording capabilities listed above are implemented today.
 
 - A focused quick-access panel and a native library window.
 - Keyboard-first navigation with predictable focus and text editing.
@@ -52,8 +54,17 @@ Command Line Tools alone cannot run its XCTest suite.
 Run `./scripts/verify.sh all` for native tests, a Release build, and a Debug build
 with Swift warnings treated as errors. See [Contributing](CONTRIBUTING.md) for focused
 commands and validation
-boundaries. The application starts with capture disabled and does not access the
-system clipboard in this foundation stage.
+boundaries. Recording is disabled on first launch. Open the library or menu-bar
+menu and choose **Start Recording** to record new copies; **Pause Recording**
+stops collection. Ignored applications can be configured in the library.
+
+Recording preserves whole items and their available representations. Private or
+transient content is skipped when the source marks it accordingly. A copy above
+50 MiB, or one whose advertised formats cannot all be read, is skipped with a
+visible status. Rapidly replaced clipboard contents may not be captured.
+The current library shows recent clips; full-library search and retention
+controls are forthcoming. File references remain local and are not backups of
+the referenced files. Persistent file-access authorization is not implemented.
 
 ## Principles
 

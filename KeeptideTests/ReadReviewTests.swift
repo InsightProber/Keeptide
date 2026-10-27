@@ -335,7 +335,20 @@ final class ReadReviewTests: XCTestCase {
             let local = Data("local-only".utf8)
             let capture = try mixedCapture(portable: portable, local: local)
             let item = ContentStoreFixtures.item(capture)
+            let accessStore = FileAccessStore(controller: controller)
+            try await accessStore.put(
+                LocalFileAccess(
+                    id: capture.representations[1].id,
+                    snapshotID: capture.id,
+                    bytes: local
+                ),
+                expecting: controller.identity()
+            )
             try await ContentStoreFixtures.insert(item, capture, into: controller)
+            try await accessStore.remove(
+                representationID: capture.representations[1].id,
+                permit: StoreSafetyGate(controller: controller).permit(.maintenance)
+            )
             let portableID = capture.representations[0].id
             try await setRepresentationBytes(Data("damaged!".utf8), id: portableID, controller: controller)
 
@@ -474,6 +487,14 @@ final class ReadReviewTests: XCTestCase {
                 local: Data("local-only".utf8)
             )
             let item = ContentStoreFixtures.item(capture)
+            try await FileAccessStore(controller: controller).put(
+                LocalFileAccess(
+                    id: capture.representations[1].id,
+                    snapshotID: capture.id,
+                    bytes: Data("local-only".utf8)
+                ),
+                expecting: controller.identity()
+            )
             try await ContentStoreFixtures.insert(item, capture, into: controller)
             let localReferenceID = capture.representations[1].id
             try await setRepresentationBytes(
@@ -595,12 +616,16 @@ private extension ReadReviewTests {
                 representationIndex: 0,
                 typeIdentifier: "public.file-url",
                 storage: .localReference,
-                byteCount: Int64(local.count),
-                digest: ContentDigest.sha256(local),
+                byteCount: 0,
+                digest: Data(repeating: 0x84, count: 32),
                 bytes: nil
             )
         ]
-        let manifest = CaptureManifest(itemCount: 2, entries: representations.map(ManifestEntry.init))
+        let manifest = CaptureManifest(
+            version: LocalReferencePrivacy.manifestVersion,
+            itemCount: 2,
+            entries: representations.map(ManifestEntry.init)
+        )
         return CaptureValue(
             id: id,
             manifest: manifest,

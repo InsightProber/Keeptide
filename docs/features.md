@@ -1,7 +1,9 @@
 # Feature scope
 
-All capabilities on this page are **planned**, unless a later release explicitly
-marks them available. There is no application release yet.
+The table below describes the planned first release. Development builds currently
+include local recording, explicit start/pause controls, ignored applications,
+exact capture deduplication, a recent-clips list, and original-format copying.
+Other capabilities remain planned. There is no application release yet.
 
 ## First release
 

@@ -5,6 +5,16 @@ import XCTest
 
 @MainActor
 final class AppLaunchTests: XCTestCase {
+    func testCaptureMenuDoesNotEnableRecordingBeforeItsStoreIsReady() throws {
+        var toggled = false
+        let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
+            captureIsReady: { false }, toggleCapture: { toggled = true }, shouldRegisterHotKey: false)
+        let menu = try XCTUnwrap(controller.menu)
+        menu.update()
+        let item = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "CaptureRecordingToggleMenuItem" })
+        XCTAssertFalse(item.isEnabled)
+        XCTAssertFalse(toggled)
+    }
     func testDefaultLibraryInitializerCreatesItsWindow() {
         XCTAssertNotNil(LibraryWindowController().window)
     }

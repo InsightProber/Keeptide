@@ -18,23 +18,38 @@ enum KeeptideApp {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var environment: AppEnvironment?
     private var menuBarController: MenuBarController?
+    private var initializationTask: Task<Void, Never>?
+    private var isShuttingDown = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         NSApplication.shared.mainMenu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
-
-        let environment = AppEnvironment()
-        self.environment = environment
 
         let processInfo = ProcessInfo.processInfo
         let launchConfiguration = LaunchConfiguration(
             arguments: processInfo.arguments,
             environment: processInfo.environment
         )
+        let environment = AppEnvironment()
+        self.environment = environment
+
+        if launchConfiguration.shouldInitializeCaptureSession {
+            initializationTask = Task {
+                await environment.captureSession.initialize(
+                    testSessionID: launchConfiguration.captureTestSessionID
+                )
+            }
+        }
         menuBarController = MenuBarController(
             showQuickAccess: { environment.panelController.show() },
             toggleQuickAccess: { environment.panelController.toggle() },
             showLibrary: { environment.showLibrary() },
+            captureIsReady: { environment.captureSession.isReady && !environment.captureSession.isPausing },
+            captureIsEnabled: { environment.captureSession.preferences.isEnabled },
+            captureStatus: { environment.captureSession.status },
+            toggleCapture: {
+                environment.captureSession.preferences.isEnabled.toggle()
+            },
             shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
             registration: launchConfiguration.usesSyntheticHotKey
                 ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
@@ -56,5 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isShuttingDown, let environment else { return .terminateNow }
+        isShuttingDown = true
+        let initializationTask = initializationTask
+        Task {
+            await initializationTask?.value
+            await environment.captureSession.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 }

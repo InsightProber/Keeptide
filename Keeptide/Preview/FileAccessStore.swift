@@ -38,27 +38,53 @@ final class FileAccessStore: @unchecked Sendable {
                 }
                 let committed = try Self.committedRepresentation(id: value.id, in: context)
                 if let committed {
-                    guard committed.snapshotID == value.snapshotID,
-                          committed.byteCount == value.bytes.count,
-                          committed.digest == ContentDigest.sha256(value.bytes) else {
+                    guard committed.snapshotID == value.snapshotID else {
                         throw StoreError.preconditionFailed
                     }
-                    if let existing = matches.first {
-                        guard let existingBytes = existing.value(forKey: "bytes") as? Data else {
+                    if committed.manifestVersion == 1 {
+                        guard committed.byteCount == value.bytes.count,
+                              committed.digest == ContentDigest.sha256(value.bytes) else {
+                            throw StoreError.preconditionFailed
+                        }
+                    } else {
+                        guard committed.manifestVersion == LocalReferencePrivacy.manifestVersion,
+                              committed.byteCount == 0,
+                              committed.digest.count == LocalReferencePrivacy.relocationTokenByteCount else {
                             throw StoreError.corruptStore
                         }
-                        guard existingBytes.count == committed.byteCount,
-                              ContentDigest.sha256(existingBytes) == committed.digest else {
-                            throw StoreError.corruptStore
-                        }
-                        guard existingBytes == value.bytes else { throw StoreError.preconditionFailed }
                     }
+                }
+                if let existing = matches.first {
+                    guard let persistedBytes = existing.value(forKey: "bytes") as? Data else {
+                        throw StoreError.corruptStore
+                    }
+                    let existingBytes = try Self.decodeLocalBytes(
+                        persistedBytes,
+                        representationID: value.id,
+                        snapshotID: value.snapshotID,
+                        committed: committed
+                    )
+                    guard existingBytes == value.bytes else { throw StoreError.preconditionFailed }
+                } else if committed?.manifestVersion == LocalReferencePrivacy.manifestVersion {
+                    // A restored v2 descriptor is intentionally opaque, so generic put cannot
+                    // establish that caller-provided bytes are the original local reference.
+                    throw StoreError.preconditionFailed
                 }
                 let record = matches.first
                     ?? NSEntityDescription.insertNewObject(forEntityName: "FileAccessRecord", into: context)
                 record.setValue(value.id, forKey: "id")
                 record.setValue(value.snapshotID, forKey: "snapshotID")
-                record.setValue(value.bytes, forKey: "bytes")
+                let persistedBytes: Data
+                if committed?.manifestVersion == 1 {
+                    persistedBytes = value.bytes
+                } else {
+                    persistedBytes = LocalFileAccessEnvelope.encode(
+                        value.bytes,
+                        representationID: value.id,
+                        snapshotID: value.snapshotID
+                    )
+                }
+                record.setValue(persistedBytes, forKey: "bytes")
                 record.setValue(value.bookmark, forKey: "bookmark")
                 record.setValue(value.localPath, forKey: "localPath")
                 try context.save()
@@ -78,16 +104,64 @@ final class FileAccessStore: @unchecked Sendable {
             guard let record = matches.first else { return nil }
             guard let id = record.value(forKey: "id") as? UUID,
                   let snapshotID = record.value(forKey: "snapshotID") as? UUID,
-                  let bytes = record.value(forKey: "bytes") as? Data else {
+                  let persistedBytes = record.value(forKey: "bytes") as? Data else {
                 throw StoreError.corruptStore
             }
+            let committed = try Self.committedRepresentation(id: id, in: context)
             return LocalFileAccess(
                 id: id,
                 snapshotID: snapshotID,
-                bytes: bytes,
+                bytes: try Self.decodeLocalBytes(
+                    persistedBytes,
+                    representationID: id,
+                    snapshotID: snapshotID,
+                    committed: committed
+                ),
                 bookmark: record.value(forKey: "bookmark") as? Data,
                 localPath: record.value(forKey: "localPath") as? String
             )
+        }
+    }
+
+    func discardPrepared(
+        _ representationIDs: [UUID],
+        snapshotID: UUID,
+        expecting identity: StoreIdentity
+    ) async throws {
+        let uniqueIDs = Set(representationIDs)
+        guard uniqueIDs.count == representationIDs.count else {
+            throw StoreError.invalidTransaction
+        }
+        let controller = controller
+        try await controller.perform { context in
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            guard !uniqueIDs.isEmpty else { return }
+            do {
+                let committed = NSFetchRequest<NSFetchRequestResult>(entityName: "CaptureRepresentation")
+                committed.predicate = NSPredicate(format: "id IN %@", Array(uniqueIDs) as NSArray)
+                committed.fetchLimit = 1
+                guard try context.count(for: committed) == 0 else {
+                    throw StoreError.preconditionFailed
+                }
+
+                let prepared = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+                prepared.predicate = NSPredicate(format: "id IN %@", Array(uniqueIDs) as NSArray)
+                let rows = try context.fetch(prepared)
+                guard rows.count <= uniqueIDs.count else { throw StoreError.corruptStore }
+                for row in rows {
+                    guard let id = row.value(forKey: "id") as? UUID,
+                          uniqueIDs.contains(id),
+                          row.value(forKey: "snapshotID") as? UUID == snapshotID else {
+                        throw StoreError.preconditionFailed
+                    }
+                }
+                rows.forEach(context.delete)
+                if context.hasChanges { try context.save() }
+            } catch {
+                context.rollback()
+                throw error
+            }
         }
     }
 
@@ -115,7 +189,7 @@ final class FileAccessStore: @unchecked Sendable {
     private static func committedRepresentation(
         id: UUID,
         in context: NSManagedObjectContext
-    ) throws -> (snapshotID: UUID, byteCount: Int, digest: Data)? {
+    ) throws -> (snapshotID: UUID, byteCount: Int, digest: Data, manifestVersion: Int)? {
         let request = NSFetchRequest<NSDictionary>(entityName: "CaptureRepresentation")
         request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
         request.resultType = .dictionaryResultType
@@ -132,6 +206,118 @@ final class FileAccessStore: @unchecked Sendable {
               let digest = row["digest"] as? Data else {
             throw StoreError.corruptStore
         }
-        return (snapshotID, Int(byteCount), digest)
+        let captureRequest = NSFetchRequest<NSDictionary>(entityName: "CaptureSnapshot")
+        captureRequest.predicate = NSPredicate(format: "id == %@", snapshotID as NSUUID)
+        captureRequest.resultType = .dictionaryResultType
+        captureRequest.propertiesToFetch = ["manifest"]
+        captureRequest.fetchLimit = 2
+        let captures = try context.fetch(captureRequest)
+        guard captures.count == 1,
+              let manifestData = captures[0]["manifest"] as? Data else {
+            throw StoreError.corruptStore
+        }
+        let manifest: CaptureManifest
+        do {
+            manifest = try JSONDecoder().decode(CaptureManifest.self, from: manifestData)
+        } catch {
+            throw StoreError.corruptStore
+        }
+        return (snapshotID, Int(byteCount), digest, manifest.version)
+    }
+
+    private static func decodeLocalBytes(
+        _ persisted: Data,
+        representationID: UUID,
+        snapshotID: UUID,
+        committed: (snapshotID: UUID, byteCount: Int, digest: Data, manifestVersion: Int)?
+    ) throws -> Data {
+        guard let committed else {
+            return try LocalFileAccessEnvelope.decode(
+                persisted,
+                representationID: representationID,
+                snapshotID: snapshotID
+            )
+        }
+        guard committed.snapshotID == snapshotID else { throw StoreError.corruptStore }
+        if committed.manifestVersion == 1 {
+            return try LocalFileAccessEnvelope.decodeLegacyVerified(
+                persisted,
+                byteCount: committed.byteCount,
+                digest: committed.digest
+            )
+        }
+        guard committed.manifestVersion == LocalReferencePrivacy.manifestVersion else {
+            throw StoreError.corruptStore
+        }
+        return try LocalFileAccessEnvelope.decode(
+            persisted,
+            representationID: representationID,
+            snapshotID: snapshotID
+        )
+    }
+}
+
+enum LocalFileAccessEnvelope {
+    private static let magic = Data([0x4b, 0x50, 0x54, 0x4c, 0x46, 0x41, 0x30, 0x32]) // KPTLFA02
+    private static let identifierByteCount = 16
+    private static let lengthByteCount = MemoryLayout<UInt64>.size
+    private static let digestByteCount = 32
+    private static let headerByteCount = magic.count
+        + (identifierByteCount * 2)
+        + lengthByteCount
+        + (digestByteCount * 2)
+
+    static func encode(_ bytes: Data, representationID: UUID, snapshotID: UUID) -> Data {
+        var result = magic
+        result.append(uuidBytes(representationID))
+        result.append(uuidBytes(snapshotID))
+        var length = UInt64(bytes.count).bigEndian
+        withUnsafeBytes(of: &length) { result.append(contentsOf: $0) }
+        result.append(ContentDigest.sha256(bytes))
+        let bindingDigest = ContentDigest.sha256(result)
+        result.append(bindingDigest)
+        result.append(bytes)
+        return result
+    }
+
+    static func decode(_ stored: Data, representationID: UUID, snapshotID: UUID) throws -> Data {
+        guard stored.starts(with: magic) else { throw StoreError.corruptStore }
+        guard stored.count >= headerByteCount else { throw StoreError.corruptStore }
+        let representationStart = magic.count
+        let representationEnd = representationStart + identifierByteCount
+        let snapshotEnd = representationEnd + identifierByteCount
+        guard Data(stored[representationStart..<representationEnd]) == uuidBytes(representationID),
+              Data(stored[representationEnd..<snapshotEnd]) == uuidBytes(snapshotID) else {
+            throw StoreError.corruptStore
+        }
+        let lengthRange = snapshotEnd..<(snapshotEnd + lengthByteCount)
+        var declaredLength: UInt64 = 0
+        for byte in stored[lengthRange] {
+            declaredLength = (declaredLength << 8) | UInt64(byte)
+        }
+        guard declaredLength <= UInt64(Int.max) else { throw StoreError.corruptStore }
+        let payloadDigestStart = lengthRange.upperBound
+        let payloadDigestEnd = payloadDigestStart + digestByteCount
+        let bindingDigestEnd = payloadDigestEnd + digestByteCount
+        let payload = stored.suffix(from: bindingDigestEnd)
+        guard payload.count == Int(declaredLength),
+              Data(stored[payloadDigestStart..<payloadDigestEnd]) == ContentDigest.sha256(Data(payload)),
+              Data(stored[payloadDigestEnd..<bindingDigestEnd])
+                == ContentDigest.sha256(Data(stored.prefix(payloadDigestEnd))) else {
+            throw StoreError.corruptStore
+        }
+        return Data(payload)
+    }
+
+    static func decodeLegacyVerified(_ stored: Data, byteCount: Int, digest: Data) throws -> Data {
+        guard stored.count == byteCount, ContentDigest.sha256(stored) == digest else {
+            throw StoreError.corruptStore
+        }
+        return stored
+    }
+
+    private static func uuidBytes(_ value: UUID) -> Data {
+        var uuid = value.uuid
+        return withUnsafeBytes(of: &uuid) { Data($0) }
     }
 }
