@@ -56,15 +56,24 @@ with Swift warnings treated as errors. See [Contributing](CONTRIBUTING.md) for f
 commands and validation
 boundaries. Recording is disabled on first launch. Open the library or menu-bar
 menu and choose **Start Recording** to record new copies; **Pause Recording**
-stops collection. Ignored applications can be configured in the library.
+stops collection. Ignored applications can be configured in the library. Source
+attribution uses observed foreground-application changes and is best effort;
+it cannot authenticate which application wrote the clipboard.
 
 Recording preserves whole items and their available representations. Private or
 transient content is skipped when the source marks it accordingly. A copy above
 50 MiB, or one whose advertised formats cannot all be read, is skipped with a
-visible status. Rapidly replaced clipboard contents may not be captured.
+visible status. Clipboard bodies are read in an isolated helper process so a
+slow or faulty provider does not block the interface. Rapidly replaced clipboard
+contents may not be captured. Detail text previews show a bounded prefix.
 The current library shows recent clips; full-library search and retention
 controls are forthcoming. File references remain local and are not backups of
 the referenced files. Persistent file-access authorization is not implemented.
+
+Automated capture tests use isolated named pasteboards and temporary libraries.
+They verify local format preservation, capture policy, and copying. The general
+clipboard's Allow / Ask / Deny permission flow still needs dedicated acceptance
+validation; named-pasteboard tests do not establish that behavior.
 
 ## Principles
 

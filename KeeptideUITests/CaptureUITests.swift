@@ -3,15 +3,53 @@ import XCTest
 
 @MainActor
 final class CaptureUITests: XCTestCase {
+    private var cleanupSessionID: UUID?
+    private var cleanupApplication: XCUIApplication?
+    private var cleanupHost: XCUIApplication?
+
+    override func tearDown() async throws {
+        if let sessionID = cleanupSessionID, let app = cleanupApplication {
+            cleanupCaptureTestSession(sessionID, app: app, host: cleanupHost)
+        } else {
+            cleanupHost?.terminate()
+            cleanupApplication?.terminate()
+        }
+        cleanupSessionID = nil
+        cleanupApplication = nil
+        cleanupHost = nil
+        try await super.tearDown()
+    }
+
+    func testIgnoredApplicationPickerCanBeCancelledAndOpenedAgain() {
+        continueAfterFailure = false
+        let sessionID = UUID()
+        let app = launchKeeptide(sessionID: sessionID)
+
+        app.activate()
+        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 8))
+        let ignoredApps = app.buttons["IgnoredApplications"]
+        XCTAssertTrue(ignoredApps.waitForExistence(timeout: 8))
+        ignoredApps.click()
+
+        let choose = app.buttons["Choose Application…"]
+        XCTAssertTrue(choose.waitForExistence(timeout: 5), app.debugDescription)
+        for _ in 0..<2 {
+            choose.click()
+            let openPanel = app.descendants(matching: .sheet)["open-panel"]
+            XCTAssertTrue(openPanel.waitForExistence(timeout: 5), app.debugDescription)
+            let cancel = openPanel.buttons["CancelButton"]
+            XCTAssertTrue(cancel.waitForExistence(timeout: 5), app.debugDescription)
+            cancel.click()
+            XCTAssertTrue(openPanel.waitForNonExistence(timeout: 5))
+            XCTAssertTrue(choose.waitForExistence(timeout: 5), app.debugDescription)
+        }
+    }
+
     func testRecordingLifecycleUsesOnlyTheIsolatedPasteboardAndPersistsRecentContent() {
         continueAfterFailure = false
         let sessionID = UUID()
         let app = launchKeeptide(sessionID: sessionID)
         let host = launchSystemTestHost(sessionID: sessionID)
-        defer {
-            host.terminate()
-            app.terminate()
-        }
 
         app.activate()
         let library = app.windows["KeeptideLibraryWindow"]
@@ -84,6 +122,8 @@ final class CaptureUITests: XCTestCase {
 
     private func launchKeeptide(sessionID: UUID) -> XCUIApplication {
         let app = XCUIApplication()
+        cleanupSessionID = sessionID
+        cleanupApplication = app
         app.launchArguments = [
             "--ui-testing",
             "--disable-global-hotkey",
@@ -99,8 +139,44 @@ final class CaptureUITests: XCTestCase {
         let hostURL = Bundle.main.bundleURL.deletingLastPathComponent()
             .appendingPathComponent("KeeptideSystemTestHost.app")
         let host = XCUIApplication(url: hostURL)
+        cleanupHost = host
         host.launchArguments = ["--capture-test-session", sessionID.uuidString]
         host.launch()
         return host
+    }
+
+    private func cleanupCaptureTestSession(
+        _ sessionID: UUID,
+        app: XCUIApplication,
+        host: XCUIApplication? = nil
+    ) {
+        host?.terminate()
+        app.terminate()
+        app.launchArguments = [
+            "--ui-testing",
+            "--disable-global-hotkey",
+            "--show-library",
+            "--capture-test-session",
+            sessionID.uuidString,
+            "--cleanup-capture-test-session",
+        ]
+        app.launch()
+        defer { app.terminate() }
+
+        let library = app.windows["KeeptideLibraryWindow"]
+        XCTAssertTrue(library.waitForExistence(timeout: 8), app.debugDescription)
+        let status = app.descendants(matching: .any)["CaptureStatus"]
+        XCTAssertTrue(status.waitForExistence(timeout: 5), app.debugDescription)
+        let removed = NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Test session removed",
+            "Test session removed"
+        )
+        expectation(for: removed, evaluatedWith: status)
+        waitForExpectations(timeout: 8)
+
+        let recordingButton = app.buttons["CaptureRecordingToggle"]
+        XCTAssertTrue(recordingButton.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(recordingButton.isEnabled)
     }
 }

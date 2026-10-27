@@ -65,7 +65,6 @@ struct ContentSnapshotReader: Sendable {
                                     // Refaulting keeps the pinned generation; reset would advance it.
                                     defer { context.refreshAllObjects() }
                                     let records = try Self.portableRecords(for: refs, in: context)
-                                    try Self.requirePrivacySafeArchive(records)
                                     let byKey = Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) })
                                     let contents = try refs.map { try Self.archiveContent($0, records: byKey) }
                                     return SnapshotPage(contents: contents, next: nil, portableRecords: records)
@@ -133,23 +132,25 @@ private extension ContentSnapshotReader {
         for ref in refs {
             guard case .item(let item)? = try StoredRecords.value(.item(ref.itemID), in: context),
                   let captureID = item.captureID,
-                  checkedCaptureIDs.insert(captureID).inserted,
-                  case .capture(let capture)? = try StoredRecords.value(.capture(captureID), in: context) else {
+                  checkedCaptureIDs.insert(captureID).inserted else {
                 // Existing graph validation decides whether missing retained
                 // records invalidate the later archive page.
                 continue
             }
-            if capture.manifest.version < LocalReferencePrivacy.manifestVersion,
-               capture.representations.contains(where: { $0.storage == .localReference }) {
-                throw StoreError.operationDenied
+            let request = NSFetchRequest<NSDictionary>(entityName: "CaptureSnapshot")
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = ["manifest"]
+            request.predicate = NSPredicate(format: "id == %@", captureID as NSUUID)
+            request.fetchLimit = 2
+            let rows = try context.fetch(request)
+            guard rows.count == 1,
+                  let manifestData = rows[0]["manifest"] as? Data,
+                  let manifest = try? JSONDecoder().decode(CaptureManifest.self, from: manifestData) else {
+                continue
             }
-        }
-    }
-
-    static func requirePrivacySafeArchive(_ records: [RecordValue]) throws {
-        for case .capture(let capture) in records {
-            if capture.manifest.version < LocalReferencePrivacy.manifestVersion,
-               capture.representations.contains(where: { $0.storage == .localReference }) {
+            if LocalReferencePrivacy.usesLegacyLocalDescriptor(
+                manifestVersion: manifest.version
+            ), manifest.entries.contains(where: { $0.storage == .localReference }) {
                 throw StoreError.operationDenied
             }
         }

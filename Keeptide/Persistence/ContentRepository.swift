@@ -9,10 +9,19 @@ struct ContentRepository: Sendable {
     let controller: PersistenceController
 
     func read(_ ref: ContentRef) async throws -> ResolvedContent {
-        try await controller.perform { context in
-            context.reset()
-            defer { context.reset() }
-            return try StoredRecords.resolve(ref, in: context)
+        let cancellation = ContentReadCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await controller.perform { context in
+                try cancellation.check()
+                context.reset()
+                defer { context.reset() }
+                let content = try StoredRecords.resolve(ref, in: context)
+                try cancellation.check()
+                return content
+            }
+        } onCancel: {
+            cancellation.cancel()
         }
     }
 
@@ -44,6 +53,21 @@ struct ContentRepository: Sendable {
         try await controller.perform { context in
             context.reset()
             return try StoredRecords.referenceFingerprint(snapshotID: snapshotID, in: context)
+        }
+    }
+}
+
+private final class ContentReadCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCancelled = false
+
+    func cancel() {
+        lock.withLock { isCancelled = true }
+    }
+
+    func check() throws {
+        if lock.withLock({ isCancelled }) {
+            throw CancellationError()
         }
     }
 }

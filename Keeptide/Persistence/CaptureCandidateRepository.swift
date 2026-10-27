@@ -88,7 +88,15 @@ struct CaptureCandidateRepository: Sendable {
                         throw StoreError.corruptStore
                     }
                     let itemID = ItemID(rawValue: rawID)
-                    guard let ref = try StoredRecords.currentRef(itemID: itemID, facet: .history, in: context) else {
+                    let ref: ContentRef
+                    do {
+                        guard let current = try StoredRecords.currentRef(
+                            itemID: itemID,
+                            facet: .history,
+                            in: context
+                        ) else { continue }
+                        ref = current
+                    } catch StoreError.notFound {
                         continue
                     }
                     let resolved = try StoredRecords.resolve(ref, in: context)
@@ -123,7 +131,7 @@ struct CaptureCandidateRepository: Sendable {
                 )
             }
         }
-        return try canonicalDigest(
+        return try StoredRecords.canonicalDigest(
             LocalCaptureDigestValue(itemCount: snapshot.items.count, entries: entries)
         )
     }
@@ -142,29 +150,39 @@ struct CaptureCandidateRepository: Sendable {
     /// Call only after a successful CloudContent save. Cache maintenance must
     /// never turn a committed transaction into an apparent failure.
     static func didCommit(
-        _ mutations: [StoreMutation],
-        in context: NSManagedObjectContext,
+        _ transaction: StoreTransaction,
         runtime: StoreRuntime
     ) {
         guard var index = runtime.localCaptureIndex else { return }
-        do {
-            for mutation in mutations {
-                switch mutation {
-                case .insert(.capture(let capture)), .update(.capture(let capture)):
-                    index.remove(snapshotID: capture.id)
-                    if let digest = try localDigest(capture, in: context) {
-                        index.insert(snapshotID: capture.id, digest: digest)
-                    }
-                case .delete(.capture(let id)):
-                    index.remove(snapshotID: id)
-                default:
-                    continue
-                }
+        let insertedLocalCaptures = transaction.mutations.compactMap { mutation -> CaptureValue? in
+            guard case .insert(.capture(let capture)) = mutation,
+                  capture.representations.contains(where: { $0.storage == .localReference }) else {
+                return nil
             }
-            runtime.localCaptureIndex = index
-        } catch {
-            runtime.localCaptureIndex = nil
+            return capture
         }
+        let committedDigests = transaction.preconditions.compactMap { condition -> Data? in
+            guard case .localCaptureSet(let digest, _) = condition else { return nil }
+            return digest
+        }
+        guard insertedLocalCaptures.count <= 1 else {
+            runtime.localCaptureIndex = nil
+            return
+        }
+        if let capture = insertedLocalCaptures.first {
+            guard committedDigests.count == 1,
+                  let digest = committedDigests.first else {
+                runtime.localCaptureIndex = nil
+                return
+            }
+            index.insert(snapshotID: capture.id, digest: digest)
+        }
+        for mutation in transaction.mutations {
+            if case .delete(.capture(let id)) = mutation {
+                index.remove(snapshotID: id)
+            }
+        }
+        runtime.localCaptureIndex = index
     }
 
     static func invalidateLocalIndex(runtime: StoreRuntime) {
@@ -204,10 +222,13 @@ struct CaptureCandidateRepository: Sendable {
         var index = LocalCaptureCandidateIndex()
         for id in ids {
             do {
-                guard case .capture(let capture) = try StoredRecords.value(.capture(id), in: context) else {
-                    continue
-                }
-                if let digest = try localDigest(capture, in: context) {
+                guard let capture = try localCaptureMetadata(id: id, in: context) else { continue }
+                if let digest = try localDigest(
+                    manifest: capture.manifest,
+                    representations: capture.representations,
+                    snapshotID: id,
+                    in: context
+                ) {
                     index.insert(snapshotID: id, digest: digest)
                 }
             } catch StoreError.notFound {
@@ -220,73 +241,115 @@ struct CaptureCandidateRepository: Sendable {
     }
 
     private static func localDigest(
-        _ capture: CaptureValue,
+        manifest: CaptureManifest,
+        representations: [RepresentationValue],
+        snapshotID: UUID,
         in context: NSManagedObjectContext
     ) throws -> Data? {
-        guard capture.representations.contains(where: { $0.storage == .localReference }) else {
+        guard representations.contains(where: { $0.storage == .localReference }) else {
             return nil
         }
         var entries: [LocalCaptureDigestEntry] = []
-        entries.reserveCapacity(capture.representations.count)
-        for representation in capture.representations.sorted(by: representationOrder) {
-            let bytes: Data
+        entries.reserveCapacity(representations.count)
+        for representation in representations.sorted(by: representationOrder) {
+            let byteCount: Int64
+            let digest: Data
             switch representation.storage {
             case .portable:
-                guard let portable = representation.bytes else { throw StoreError.corruptStore }
-                bytes = portable
+                byteCount = representation.byteCount
+                digest = representation.digest
             case .localReference:
-                let request = NSFetchRequest<NSDictionary>(entityName: "FileAccessRecord")
-                request.resultType = .dictionaryResultType
-                request.propertiesToFetch = ["id", "snapshotID", "bytes"]
-                request.predicate = NSPredicate(format: "id == %@", representation.id as NSUUID)
-                request.fetchLimit = 2
-                let rows = try context.fetch(request)
-                guard rows.count <= 1 else { throw LocalCaptureIndexBuildError.duplicateRepresentationID }
-                guard let row = rows.first else { return nil }
-                guard row["id"] as? UUID == representation.id,
-                      row["snapshotID"] as? UUID == capture.id,
-                      let stored = row["bytes"] as? Data else {
-                    throw StoreError.corruptStore
-                }
-                if capture.manifest.version == 1 {
-                    guard representation.byteCount >= 0,
-                          representation.byteCount <= Int64(Int.max) else {
-                        throw StoreError.corruptStore
-                    }
-                    bytes = try LocalFileAccessEnvelope.decodeLegacyVerified(
-                        stored,
-                        byteCount: Int(representation.byteCount),
-                        digest: representation.digest
-                    )
-                } else {
-                    guard capture.manifest.version == LocalReferencePrivacy.manifestVersion else {
-                        throw StoreError.corruptStore
-                    }
-                    bytes = try LocalFileAccessEnvelope.decode(
-                        stored,
-                        representationID: representation.id,
-                        snapshotID: capture.id
-                    )
-                }
+                guard let metadata = try LocalFileAccessRecordReader.indexedMetadata(
+                    for: representation,
+                    snapshotID: snapshotID,
+                    manifestVersion: manifest.version,
+                    in: context
+                ) else { return nil }
+                byteCount = metadata.byteCount
+                digest = metadata.digest
             }
             entries.append(LocalCaptureDigestEntry(
                 itemIndex: representation.itemIndex,
                 representationIndex: representation.representationIndex,
                 typeIdentifier: Data(representation.typeIdentifier.utf8),
-                byteCount: Int64(bytes.count),
-                digest: ContentDigest.sha256(bytes)
+                byteCount: byteCount,
+                digest: digest
             ))
         }
-        return try canonicalDigest(
-            LocalCaptureDigestValue(itemCount: capture.manifest.itemCount, entries: entries)
+        return try StoredRecords.canonicalDigest(
+            LocalCaptureDigestValue(itemCount: manifest.itemCount, entries: entries)
         )
+    }
+
+    private static func localCaptureMetadata(
+        id: UUID,
+        in context: NSManagedObjectContext
+    ) throws -> (manifest: CaptureManifest, representations: [RepresentationValue])? {
+        let captureRequest = NSFetchRequest<NSDictionary>(entityName: "CaptureSnapshot")
+        captureRequest.resultType = .dictionaryResultType
+        captureRequest.propertiesToFetch = ["id", "manifest"]
+        captureRequest.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+        captureRequest.fetchLimit = 2
+        let captures = try context.fetch(captureRequest)
+        guard captures.count <= 1 else { throw StoreError.corruptStore }
+        guard let capture = captures.first else { return nil }
+        guard capture["id"] as? UUID == id,
+              let manifestData = capture["manifest"] as? Data else {
+            throw StoreError.corruptStore
+        }
+        let manifest: CaptureManifest
+        do {
+            manifest = try JSONDecoder().decode(CaptureManifest.self, from: manifestData)
+            guard try manifest.canonicalData() == manifestData else { throw StoreError.corruptStore }
+        } catch {
+            throw StoreError.corruptStore
+        }
+
+        let representationRequest = NSFetchRequest<NSDictionary>(entityName: "CaptureRepresentation")
+        representationRequest.resultType = .dictionaryResultType
+        representationRequest.propertiesToFetch = [
+            "id", "snapshotID", "itemIndex", "representationIndex", "typeIdentifier",
+            "storage", "byteCount", "digest"
+        ]
+        representationRequest.predicate = NSPredicate(format: "snapshotID == %@", id as NSUUID)
+        let rows = try context.fetch(representationRequest)
+        let representations = try rows.map { row -> RepresentationValue in
+            guard let representationID = row["id"] as? UUID,
+                  let snapshotID = row["snapshotID"] as? UUID,
+                  let itemIndex = row["itemIndex"] as? Int64,
+                  let representationIndex = row["representationIndex"] as? Int64,
+                  itemIndex >= 0, itemIndex <= Int64(Int.max),
+                  representationIndex >= 0, representationIndex <= Int64(Int.max),
+                  let typeIdentifier = row["typeIdentifier"] as? String,
+                  let rawStorage = row["storage"] as? String,
+                  let storage = RepresentationStorage(rawValue: rawStorage),
+                  let byteCount = row["byteCount"] as? Int64,
+                  let digest = row["digest"] as? Data else {
+                throw StoreError.corruptStore
+            }
+            return RepresentationValue(
+                id: representationID,
+                snapshotID: snapshotID,
+                itemIndex: Int(itemIndex),
+                representationIndex: Int(representationIndex),
+                typeIdentifier: typeIdentifier,
+                storage: storage,
+                byteCount: byteCount,
+                digest: digest,
+                bytes: nil
+            )
+        }.sorted(by: representationOrder)
+        guard manifest.validate(representations, snapshotID: id) != .corrupt else {
+            throw StoreError.corruptStore
+        }
+        return (manifest, representations)
     }
 
     private static func localFingerprint(
         snapshotIDs: [UUID],
         in context: NSManagedObjectContext
     ) throws -> Data {
-        guard !snapshotIDs.isEmpty else { return try canonicalDigest([ContentRef]()) }
+        guard !snapshotIDs.isEmpty else { return try StoredRecords.canonicalDigest([ContentRef]()) }
         let request = NSFetchRequest<NSDictionary>(entityName: "LibraryItem")
         request.resultType = .dictionaryResultType
         request.propertiesToFetch = ["id"]
@@ -297,9 +360,17 @@ struct CaptureCandidateRepository: Sendable {
         request.sortDescriptors = [NSSortDescriptor(key: "id", ascending: true)]
         let refs = try context.fetch(request).compactMap { row -> ContentRef? in
             guard let id = row["id"] as? UUID else { throw StoreError.corruptStore }
-            return try StoredRecords.currentRef(itemID: ItemID(rawValue: id), facet: .history, in: context)
+            do {
+                return try StoredRecords.currentRef(
+                    itemID: ItemID(rawValue: id),
+                    facet: .history,
+                    in: context
+                )
+            } catch StoreError.notFound {
+                return nil
+            }
         }
-        return try canonicalDigest(refs)
+        return try StoredRecords.canonicalDigest(refs)
     }
 
     private static func representationOrder(_ lhs: RepresentationValue, _ rhs: RepresentationValue) -> Bool {
@@ -307,12 +378,6 @@ struct CaptureCandidateRepository: Sendable {
         return lhs.representationIndex < rhs.representationIndex
     }
 
-    private static func canonicalDigest<T: Encodable>(_ value: T) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .deferredToDate
-        return ContentDigest.sha256(try encoder.encode(value))
-    }
 }
 
 private struct LocalCaptureDigestValue: Codable {
@@ -326,8 +391,4 @@ private struct LocalCaptureDigestEntry: Codable {
     let typeIdentifier: Data
     let byteCount: Int64
     let digest: Data
-}
-
-private enum LocalCaptureIndexBuildError: Error {
-    case duplicateRepresentationID
 }

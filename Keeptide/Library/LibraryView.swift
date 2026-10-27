@@ -6,10 +6,8 @@ struct LibraryView: View {
     @State private var selectedSection: LibrarySection? = .recentClips
     @State private var selectedItemID: ItemID?
     @State private var showsIgnoredApplications = false
-    @State private var showsApplicationPicker = false
-    @State private var applicationPickerMessage: String?
 
-    init(session: CaptureSession = CaptureSession()) {
+    init(session: CaptureSession) {
         _session = Bindable(wrappedValue: session)
     }
 
@@ -34,41 +32,15 @@ struct LibraryView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .sheet(isPresented: $showsIgnoredApplications) {
-            IgnoredApplicationsView(
-                preferences: session.preferences,
-                showsApplicationPicker: $showsApplicationPicker,
-                applicationPickerMessage: $applicationPickerMessage
-            )
+            IgnoredApplicationsView(preferences: session.preferences)
         }
-        .fileImporter(
-            isPresented: $showsApplicationPicker,
-            allowedContentTypes: [.application],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case let .success(urls):
-                guard let url = urls.first else { return }
-                let accessed = url.startAccessingSecurityScopedResource()
-                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                guard let bundleID = Bundle(url: url)?.bundleIdentifier else {
-                    applicationPickerMessage = "The selected application does not provide a readable bundle identifier."
-                    return
-                }
-                session.preferences.addExclusion(bundleID)
-                applicationPickerMessage = nil
-            case let .failure(error):
-                if (error as NSError).code == NSUserCancelledError { return }
-                applicationPickerMessage = "Keeptide could not read the selected application. No app was added."
-            }
-        }
-        .onChange(of: selectedItemID) { _, itemID in
-            let ref = session.recent.first(where: { $0.itemID == itemID }).flatMap(preferredRef)
-            Task { await session.select(ref) }
+        .task(id: selectedItemID) {
+            let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
+            await session.select(ref)
         }
         .onChange(of: selectedSection) { _, section in
             guard section != .recentClips else { return }
             selectedItemID = nil
-            Task { await session.select(nil) }
         }
     }
 
@@ -77,6 +49,7 @@ struct LibraryView: View {
         if selectedSection == .recentClips {
             VStack(spacing: 0) {
                 captureStatus
+                if session.actionMessage != nil { actionStatus.padding(12) }
                 Divider()
                 if session.recent.isEmpty {
                     ContentUnavailableView {
@@ -112,10 +85,10 @@ struct LibraryView: View {
     private var captureStatus: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Image(systemName: session.preferences.isEnabled ? "record.circle.fill" : "pause.circle")
-                    .foregroundStyle(session.preferences.isEnabled ? Color.accentColor : Color.secondary)
+                Image(systemName: session.isRecording ? "record.circle.fill" : "pause.circle")
+                    .foregroundStyle(session.isRecording ? Color.accentColor : Color.secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                Text(session.isPausing ? "Pausing recording…" : (session.preferences.isEnabled ? "Recording new copies" : "Recording paused"))
+                    Text(captureHeadline)
                         .font(.headline)
                     Text(session.status)
                         .font(.caption)
@@ -130,8 +103,8 @@ struct LibraryView: View {
                     session.preferences.isEnabled.toggle()
                 } label: {
                     Label(
-                        session.preferences.isEnabled ? "Pause Recording" : "Start Recording",
-                        systemImage: session.preferences.isEnabled ? "pause.fill" : "record.circle"
+                        session.isRecording ? "Pause Recording" : "Start Recording",
+                        systemImage: session.isRecording ? "pause.fill" : "record.circle"
                     )
                 }
                 .accessibilityIdentifier("CaptureRecordingToggle")
@@ -151,16 +124,18 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        if let content = session.selectedContent,
+        if session.selectionIsLoading {
+            ProgressView("Loading clip…")
+        } else if let content = session.selectedContent,
            let summary = session.recent.first(where: { $0.itemID == selectedItemID }),
-           let ref = preferredRef(summary) {
+           let ref = summary.history {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(summary.title.isEmpty ? "Clipboard Item" : summary.title)
                                 .font(.title2.weight(.semibold))
-                            Text(formatSummary(content))
+                            Text(content.isActionable ? formatSummary(content) : integritySummary(content.integrity))
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -171,32 +146,30 @@ struct LibraryView: View {
                         }
                         .keyboardShortcut("c", modifiers: [.command, .shift])
                         .accessibilityIdentifier("CopyCapture")
+                        .disabled(!content.isActionable || session.selectionIsLoading)
                     }
 
                     Divider()
-                    if let actionMessage = session.actionMessage {
-                        Label(actionMessage, systemImage: "info.circle")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .accessibilityIdentifier("CaptureActionStatus")
-                    }
-                    if let text = readableText(content) {
-                        Text(text)
+                    if !content.isActionable {
+                        unavailableContent(content.integrity)
+                    } else if let preview = session.selectedPreview {
+                        Text(preview.text)
                             .textSelection(.enabled)
                             .font(.body)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                        if preview.isTruncated {
+                            Label("Preview limited to the first 8 KiB", systemImage: "ellipsis.circle")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("CapturePreviewTruncated")
+                        }
                     } else if content.representations.contains(where: isImage) {
                         ContentUnavailableView(
                             "Image capture",
                             systemImage: "photo",
                             description: Text("The original image representations are preserved for copying.")
                         )
-                    } else if content.representations.contains(where: { representation in
-                        SystemFileReferenceClassifier.isLocalFileReference(
-                            typeIdentifier: representation.typeIdentifier,
-                            bytes: representation.bytes
-                        )
-                    }) {
+                    } else if content.representations.contains(where: { $0.storage == .localReference }) {
                         ContentUnavailableView(
                             "File reference",
                             systemImage: "doc",
@@ -212,6 +185,13 @@ struct LibraryView: View {
                 }
                 .padding(24)
             }
+        } else if selectedItemID != nil, session.selectionError != nil {
+            ContentUnavailableView {
+                Label("Clip unavailable", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(session.selectionError ?? "This clip could not be loaded.")
+            }
+            .accessibilityIdentifier("CaptureSelectionError")
         } else {
             ContentUnavailableView {
                 Label("Select a recent clip", systemImage: "doc.text")
@@ -221,21 +201,55 @@ struct LibraryView: View {
         }
     }
 
-    private func preferredRef(_ summary: ItemSummary) -> ContentRef? {
-        summary.memo ?? summary.history
+    private var captureHeadline: String {
+        if session.isPausing { return "Pausing recording…" }
+        if session.isRecording { return "Recording new copies" }
+        return session.isReady ? "Recording paused" : "Recording unavailable"
     }
 
-    private func readableText(_ content: ResolvedContent) -> String? {
-        let plainTextTypes = Set([
-            "public.utf8-plain-text",
-            "public.plain-text",
-            "NSStringPboardType"
-        ])
-        return content.representations.lazy.compactMap { representation in
-            guard plainTextTypes.contains(representation.typeIdentifier),
-                  let bytes = representation.bytes else { return nil }
-            return String(data: bytes, encoding: .utf8)
-        }.first
+    @ViewBuilder
+    private var actionStatus: some View {
+        if let actionMessage = session.actionMessage {
+            Label(actionMessage, systemImage: "info.circle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("CaptureActionStatus")
+        }
+    }
+
+    private func integritySummary(_ integrity: ContentIntegrity) -> String {
+        switch integrity {
+        case .complete: "Original formats available"
+        case .requiresRelocation: "File access required"
+        case .recovering: "Content is still recovering"
+        case .corrupt: "Content is unavailable"
+        }
+    }
+
+    @ViewBuilder
+    private func unavailableContent(_ integrity: ContentIntegrity) -> some View {
+        switch integrity {
+        case .complete:
+            EmptyView()
+        case .requiresRelocation:
+            ContentUnavailableView(
+                "File access required",
+                systemImage: "doc.badge.ellipsis",
+                description: Text("Choose the original file again before copying this clip.")
+            )
+        case .recovering:
+            ContentUnavailableView(
+                "Content is recovering",
+                systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
+                description: Text("Keeptide will make this clip available after recovery completes.")
+            )
+        case .corrupt:
+            ContentUnavailableView(
+                "Content unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text("The original formats could not be verified, so this clip cannot be copied.")
+            )
+        }
     }
 
     private func isImage(_ representation: RepresentationValue) -> Bool {
@@ -252,10 +266,10 @@ struct LibraryView: View {
 
 private struct IgnoredApplicationsView: View {
     @Bindable var preferences: CapturePreferences
-    @Binding var showsApplicationPicker: Bool
-    @Binding var applicationPickerMessage: String?
     @Environment(\.dismiss) private var dismiss
     @State private var manualBundleID = ""
+    @State private var showsApplicationPicker = false
+    @State private var applicationPickerMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -311,6 +325,12 @@ private struct IgnoredApplicationsView: View {
         }
         .padding(24)
         .frame(minWidth: 560, minHeight: 360)
+        .fileImporter(
+            isPresented: $showsApplicationPicker,
+            allowedContentTypes: [.application],
+            allowsMultipleSelection: false,
+            onCompletion: handleApplicationPicker
+        )
     }
 
     private func addManualBundleID() {
@@ -318,6 +338,24 @@ private struct IgnoredApplicationsView: View {
         guard !bundleID.isEmpty else { return }
         preferences.addExclusion(bundleID)
         manualBundleID = ""
+    }
+
+    private func handleApplicationPicker(_ result: Result<[URL], any Error>) {
+        switch result {
+        case let .success(urls):
+            guard let url = urls.first else { return }
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            guard let bundleID = Bundle(url: url)?.bundleIdentifier else {
+                applicationPickerMessage = "The selected application does not provide a readable bundle identifier."
+                return
+            }
+            preferences.addExclusion(bundleID)
+            applicationPickerMessage = nil
+        case let .failure(error):
+            if (error as NSError).code == NSUserCancelledError { return }
+            applicationPickerMessage = "Keeptide could not read the selected application. No app was added."
+        }
     }
 }
 

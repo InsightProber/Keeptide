@@ -36,7 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if launchConfiguration.shouldInitializeCaptureSession {
             initializationTask = Task {
                 await environment.captureSession.initialize(
-                    testSessionID: launchConfiguration.captureTestSessionID
+                    testSessionID: launchConfiguration.captureTestSessionID,
+                    cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession
                 )
             }
         }
@@ -45,11 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             toggleQuickAccess: { environment.panelController.toggle() },
             showLibrary: { environment.showLibrary() },
             captureIsReady: { environment.captureSession.isReady && !environment.captureSession.isPausing },
-            captureIsEnabled: { environment.captureSession.preferences.isEnabled },
+            captureIsEnabled: { environment.captureSession.isRecording },
             captureStatus: { environment.captureSession.status },
             toggleCapture: {
                 environment.captureSession.preferences.isEnabled.toggle()
             },
+            canRequestQuit: { [weak self] in self?.isShuttingDown == false },
             shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
             registration: launchConfiguration.usesSyntheticHotKey
                 ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))

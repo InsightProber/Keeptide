@@ -17,7 +17,14 @@ final class FileAccessStore: @unchecked Sendable {
     }
 
     func put(_ value: LocalFileAccess, expecting identity: StoreIdentity) async throws {
-        guard value.localPath?.utf8.contains(0) != true else {
+        try await putPrepared([value], expecting: identity)
+    }
+
+    func putPrepared(_ values: [LocalFileAccess], expecting identity: StoreIdentity) async throws {
+        guard !values.isEmpty else { return }
+        let identifiers = values.map(\.id)
+        guard Set(identifiers).count == identifiers.count,
+              values.allSatisfy({ $0.localPath?.utf8.contains(0) != true }) else {
             throw StoreError.invalidTransaction
         }
         let controller = controller
@@ -25,69 +32,17 @@ final class FileAccessStore: @unchecked Sendable {
             guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
             try StoreSafetyGate.validate(.write, runtime: controller.runtime)
             do {
-                let request = Self.request(representationID: value.id)
-                let matches = try context.fetch(request)
-                guard matches.count <= 1 else { throw StoreError.corruptStore }
-                for existing in matches {
-                    guard let snapshotID = existing.value(forKey: "snapshotID") as? UUID else {
-                        throw StoreError.corruptStore
-                    }
-                    guard snapshotID == value.snapshotID else {
-                        throw StoreError.preconditionFailed
+                var restoresCommittedLocalState = false
+                for value in values {
+                    restoresCommittedLocalState = try Self.stage(value, in: context)
+                        || restoresCommittedLocalState
+                }
+                if context.hasChanges {
+                    try context.save()
+                    if restoresCommittedLocalState {
+                        CaptureCandidateRepository.invalidateLocalIndex(runtime: controller.runtime)
                     }
                 }
-                let committed = try Self.committedRepresentation(id: value.id, in: context)
-                if let committed {
-                    guard committed.snapshotID == value.snapshotID else {
-                        throw StoreError.preconditionFailed
-                    }
-                    if committed.manifestVersion == 1 {
-                        guard committed.byteCount == value.bytes.count,
-                              committed.digest == ContentDigest.sha256(value.bytes) else {
-                            throw StoreError.preconditionFailed
-                        }
-                    } else {
-                        guard committed.manifestVersion == LocalReferencePrivacy.manifestVersion,
-                              committed.byteCount == 0,
-                              committed.digest.count == LocalReferencePrivacy.relocationTokenByteCount else {
-                            throw StoreError.corruptStore
-                        }
-                    }
-                }
-                if let existing = matches.first {
-                    guard let persistedBytes = existing.value(forKey: "bytes") as? Data else {
-                        throw StoreError.corruptStore
-                    }
-                    let existingBytes = try Self.decodeLocalBytes(
-                        persistedBytes,
-                        representationID: value.id,
-                        snapshotID: value.snapshotID,
-                        committed: committed
-                    )
-                    guard existingBytes == value.bytes else { throw StoreError.preconditionFailed }
-                } else if committed?.manifestVersion == LocalReferencePrivacy.manifestVersion {
-                    // A restored v2 descriptor is intentionally opaque, so generic put cannot
-                    // establish that caller-provided bytes are the original local reference.
-                    throw StoreError.preconditionFailed
-                }
-                let record = matches.first
-                    ?? NSEntityDescription.insertNewObject(forEntityName: "FileAccessRecord", into: context)
-                record.setValue(value.id, forKey: "id")
-                record.setValue(value.snapshotID, forKey: "snapshotID")
-                let persistedBytes: Data
-                if committed?.manifestVersion == 1 {
-                    persistedBytes = value.bytes
-                } else {
-                    persistedBytes = LocalFileAccessEnvelope.encode(
-                        value.bytes,
-                        representationID: value.id,
-                        snapshotID: value.snapshotID
-                    )
-                }
-                record.setValue(persistedBytes, forKey: "bytes")
-                record.setValue(value.bookmark, forKey: "bookmark")
-                record.setValue(value.localPath, forKey: "localPath")
-                try context.save()
             } catch {
                 context.rollback()
                 throw error
@@ -134,8 +89,14 @@ final class FileAccessStore: @unchecked Sendable {
         }
         let controller = controller
         try await controller.perform { context in
-            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
-            try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            // This is not general maintenance. The immutable snapshot/representation
+            // IDs are an abort capability for rows staged by one capture attempt.
+            // A generation transition may quarantine that same physical store before
+            // the attempt can roll back, but an identity from another store must never
+            // delete rows in the newly bound store.
+            guard identity.storeID == controller.runtime.identity.storeID else {
+                throw StoreError.preconditionFailed
+            }
             guard !uniqueIDs.isEmpty else { return }
             do {
                 let committed = NSFetchRequest<NSFetchRequestResult>(entityName: "CaptureRepresentation")
@@ -172,7 +133,10 @@ final class FileAccessStore: @unchecked Sendable {
             do {
                 let matches = try context.fetch(Self.request(representationID: representationID))
                 matches.forEach(context.delete)
-                if context.hasChanges { try context.save() }
+                if context.hasChanges {
+                    try context.save()
+                    CaptureCandidateRepository.invalidateLocalIndex(runtime: controller.runtime)
+                }
             } catch {
                 context.rollback()
                 throw error
@@ -184,6 +148,86 @@ final class FileAccessStore: @unchecked Sendable {
         let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
         request.predicate = NSPredicate(format: "id == %@", representationID as NSUUID)
         return request
+    }
+
+    private static func stage(
+        _ value: LocalFileAccess,
+        in context: NSManagedObjectContext
+    ) throws -> Bool {
+        let request = request(representationID: value.id)
+        request.fetchLimit = 2
+        let matches = try context.fetch(request)
+        guard matches.count <= 1 else { throw StoreError.corruptStore }
+        for existing in matches {
+            guard let snapshotID = existing.value(forKey: "snapshotID") as? UUID else {
+                throw StoreError.corruptStore
+            }
+            guard snapshotID == value.snapshotID else {
+                throw StoreError.preconditionFailed
+            }
+        }
+        let committed = try committedRepresentation(id: value.id, in: context)
+        if let committed {
+            guard committed.snapshotID == value.snapshotID else {
+                throw StoreError.preconditionFailed
+            }
+            if LocalReferencePrivacy.usesLegacyLocalDescriptor(
+                manifestVersion: committed.manifestVersion
+            ) {
+                guard committed.byteCount == value.bytes.count,
+                      committed.digest == ContentDigest.sha256(value.bytes) else {
+                    throw StoreError.preconditionFailed
+                }
+            } else {
+                guard LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+                        manifestVersion: committed.manifestVersion
+                      ),
+                      committed.byteCount == 0,
+                      committed.digest.count == LocalReferencePrivacy.relocationTokenByteCount else {
+                    throw StoreError.corruptStore
+                }
+            }
+        }
+        if let existing = matches.first {
+            guard let persistedBytes = existing.value(forKey: "bytes") as? Data else {
+                throw StoreError.corruptStore
+            }
+            let existingBytes = try decodeLocalBytes(
+                persistedBytes,
+                representationID: value.id,
+                snapshotID: value.snapshotID,
+                committed: committed
+            )
+            guard existingBytes == value.bytes else { throw StoreError.preconditionFailed }
+        } else if let committed,
+                  LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+                    manifestVersion: committed.manifestVersion
+                  ) {
+            // A restored opaque descriptor cannot prove caller-provided bytes are
+            // the original local reference. A dedicated relocation flow must bind it.
+            throw StoreError.preconditionFailed
+        }
+        let record = matches.first
+            ?? NSEntityDescription.insertNewObject(forEntityName: "FileAccessRecord", into: context)
+        record.setValue(value.id, forKey: "id")
+        record.setValue(value.snapshotID, forKey: "snapshotID")
+        let persistedBytes: Data
+        if let committed,
+           LocalReferencePrivacy.usesLegacyLocalDescriptor(
+            manifestVersion: committed.manifestVersion
+           ) {
+            persistedBytes = value.bytes
+        } else {
+            persistedBytes = LocalFileAccessEnvelope.encode(
+                value.bytes,
+                representationID: value.id,
+                snapshotID: value.snapshotID
+            )
+        }
+        record.setValue(persistedBytes, forKey: "bytes")
+        record.setValue(value.bookmark, forKey: "bookmark")
+        record.setValue(value.localPath, forKey: "localPath")
+        return committed != nil && matches.isEmpty
     }
 
     private static func committedRepresentation(
@@ -239,14 +283,18 @@ final class FileAccessStore: @unchecked Sendable {
             )
         }
         guard committed.snapshotID == snapshotID else { throw StoreError.corruptStore }
-        if committed.manifestVersion == 1 {
+        if LocalReferencePrivacy.usesLegacyLocalDescriptor(
+            manifestVersion: committed.manifestVersion
+        ) {
             return try LocalFileAccessEnvelope.decodeLegacyVerified(
                 persisted,
                 byteCount: committed.byteCount,
                 digest: committed.digest
             )
         }
-        guard committed.manifestVersion == LocalReferencePrivacy.manifestVersion else {
+        guard LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+            manifestVersion: committed.manifestVersion
+        ) else {
             throw StoreError.corruptStore
         }
         return try LocalFileAccessEnvelope.decode(
@@ -257,11 +305,101 @@ final class FileAccessStore: @unchecked Sendable {
     }
 }
 
+enum LocalFileAccessRecordReader {
+    struct IndexedMetadata {
+        let byteCount: Int64
+        let digest: Data
+    }
+
+    static func decodedBytes(
+        for representation: RepresentationValue,
+        snapshotID: UUID,
+        manifestVersion: Int,
+        in context: NSManagedObjectContext
+    ) throws -> Data? {
+        let request = NSFetchRequest<NSDictionary>(entityName: "FileAccessRecord")
+        request.resultType = .dictionaryResultType
+        request.propertiesToFetch = ["id", "snapshotID", "bytes"]
+        request.predicate = NSPredicate(format: "id == %@", representation.id as NSUUID)
+        request.fetchLimit = 2
+        let rows = try context.fetch(request)
+        guard rows.count <= 1 else { throw StoreError.corruptStore }
+        guard let row = rows.first else { return nil }
+        guard row["id"] as? UUID == representation.id,
+              row["snapshotID"] as? UUID == snapshotID,
+              let persisted = row["bytes"] as? Data else {
+            throw StoreError.corruptStore
+        }
+        if LocalReferencePrivacy.usesLegacyLocalDescriptor(manifestVersion: manifestVersion) {
+            guard representation.byteCount >= 0,
+                  representation.byteCount <= Int64(Int.max) else {
+                throw StoreError.corruptStore
+            }
+            return try LocalFileAccessEnvelope.decodeLegacyVerified(
+                persisted,
+                byteCount: Int(representation.byteCount),
+                digest: representation.digest
+            )
+        }
+        guard LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+            manifestVersion: manifestVersion
+        ) else { throw StoreError.corruptStore }
+        return try LocalFileAccessEnvelope.decode(
+            persisted,
+            representationID: representation.id,
+            snapshotID: snapshotID
+        )
+    }
+
+    static func indexedMetadata(
+        for representation: RepresentationValue,
+        snapshotID: UUID,
+        manifestVersion: Int,
+        in context: NSManagedObjectContext
+    ) throws -> IndexedMetadata? {
+        let request = NSFetchRequest<NSDictionary>(entityName: "FileAccessRecord")
+        request.resultType = .dictionaryResultType
+        request.propertiesToFetch = ["id", "snapshotID", "bytes"]
+        request.predicate = NSPredicate(format: "id == %@", representation.id as NSUUID)
+        request.fetchLimit = 2
+        let rows = try context.fetch(request)
+        guard rows.count <= 1 else { throw StoreError.corruptStore }
+        guard let row = rows.first else { return nil }
+        guard row["id"] as? UUID == representation.id,
+              row["snapshotID"] as? UUID == snapshotID,
+              let persisted = row["bytes"] as? Data else {
+            throw StoreError.corruptStore
+        }
+        if LocalReferencePrivacy.usesLegacyLocalDescriptor(manifestVersion: manifestVersion) {
+            guard representation.byteCount >= 0,
+                  representation.byteCount <= Int64(Int.max),
+                  persisted.count == Int(representation.byteCount) else {
+                throw StoreError.corruptStore
+            }
+            return IndexedMetadata(byteCount: representation.byteCount, digest: representation.digest)
+        }
+        guard LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+            manifestVersion: manifestVersion
+        ) else { throw StoreError.corruptStore }
+        let metadata = try LocalFileAccessEnvelope.indexedMetadata(
+            persisted,
+            representationID: representation.id,
+            snapshotID: snapshotID
+        )
+        return IndexedMetadata(byteCount: metadata.byteCount, digest: metadata.digest)
+    }
+}
+
 enum LocalFileAccessEnvelope {
+    struct IndexedMetadata {
+        let byteCount: Int64
+        let digest: Data
+    }
+
     private static let magic = Data([0x4b, 0x50, 0x54, 0x4c, 0x46, 0x41, 0x30, 0x32]) // KPTLFA02
     private static let identifierByteCount = 16
     private static let lengthByteCount = MemoryLayout<UInt64>.size
-    private static let digestByteCount = 32
+    private static let digestByteCount = ContentDigest.byteCount
     private static let headerByteCount = magic.count
         + (identifierByteCount * 2)
         + lengthByteCount
@@ -281,6 +419,23 @@ enum LocalFileAccessEnvelope {
     }
 
     static func decode(_ stored: Data, representationID: UUID, snapshotID: UUID) throws -> Data {
+        let metadata = try indexedMetadata(
+            stored,
+            representationID: representationID,
+            snapshotID: snapshotID
+        )
+        let payload = stored.suffix(from: headerByteCount)
+        guard ContentDigest.sha256(Data(payload)) == metadata.digest else {
+            throw StoreError.corruptStore
+        }
+        return Data(payload)
+    }
+
+    static func indexedMetadata(
+        _ stored: Data,
+        representationID: UUID,
+        snapshotID: UUID
+    ) throws -> IndexedMetadata {
         guard stored.starts(with: magic) else { throw StoreError.corruptStore }
         guard stored.count >= headerByteCount else { throw StoreError.corruptStore }
         let representationStart = magic.count
@@ -299,14 +454,15 @@ enum LocalFileAccessEnvelope {
         let payloadDigestStart = lengthRange.upperBound
         let payloadDigestEnd = payloadDigestStart + digestByteCount
         let bindingDigestEnd = payloadDigestEnd + digestByteCount
-        let payload = stored.suffix(from: bindingDigestEnd)
-        guard payload.count == Int(declaredLength),
-              Data(stored[payloadDigestStart..<payloadDigestEnd]) == ContentDigest.sha256(Data(payload)),
+        guard stored.count == bindingDigestEnd + Int(declaredLength),
               Data(stored[payloadDigestEnd..<bindingDigestEnd])
                 == ContentDigest.sha256(Data(stored.prefix(payloadDigestEnd))) else {
             throw StoreError.corruptStore
         }
-        return Data(payload)
+        return IndexedMetadata(
+            byteCount: Int64(declaredLength),
+            digest: Data(stored[payloadDigestStart..<payloadDigestEnd])
+        )
     }
 
     static func decodeLegacyVerified(_ stored: Data, byteCount: Int, digest: Data) throws -> Data {

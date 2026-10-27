@@ -6,6 +6,9 @@ final class CaptureSession {
     private(set) var preferences = CapturePreferences()
     private(set) var recent: [ItemSummary] = []
     private(set) var selectedContent: ResolvedContent?
+    private(set) var selectedPreview: ClipTextPreview?
+    private(set) var selectionIsLoading = false
+    private(set) var selectionError: String?
     private(set) var isReady = false
     private(set) var actionMessage: String?
     private var message: String?
@@ -15,11 +18,14 @@ final class CaptureSession {
     @ObservationIgnored private var selectionGeneration = 0
     @ObservationIgnored private var refreshGeneration = 0
     @ObservationIgnored private var initializing = false
+    @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
+    @ObservationIgnored private var selectionRead: Task<(ResolvedContent, ClipTextPreview?), Error>?
     @ObservationIgnored private var copyGeneration = 0
     @ObservationIgnored private var readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)?
 
     var status: String { monitor?.status ?? message ?? "Not recording" }
     var isPausing: Bool { monitor?.isPausing ?? false }
+    var isRecording: Bool { isReady && (monitor?.isRecording ?? false) }
 
     init(readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil) {
@@ -27,34 +33,59 @@ final class CaptureSession {
         self.pasteboard = pasteboard
     }
 
-    func initialize(testSessionID: UUID? = nil) async {
+    func initialize(testSessionID: UUID? = nil, cleanupTestSession: Bool = false) async {
         guard !isReady, !initializing else { return }
         initializing = true
         defer { initializing = false }
         do {
-            let support = try FileManager.default.url(for: .applicationSupportDirectory,
-                in: .userDomainMask, appropriateFor: nil, create: true)
             let directory: URL
             let board: NSPasteboard
             if let testSessionID {
-                directory = support.appendingPathComponent("KeeptideTests/\(testSessionID.uuidString)")
-                preferences = CapturePreferences(defaults: UserDefaults(suiteName: "KeeptideCaptureTest.\(testSessionID.uuidString)")!)
-                board = NSPasteboard(name: .init("io.github.insightprober.Keeptide.capture-test.\(testSessionID.uuidString)"))
+                let configuration = CaptureTestConfiguration(id: testSessionID)
+                directory = configuration.directory
+                let defaults = UserDefaults(suiteName: configuration.preferencesSuite)!
+                board = NSPasteboard(name: .init(configuration.pasteboardName))
+                if cleanupTestSession {
+                    if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
+                    defaults.removePersistentDomain(forName: configuration.preferencesSuite)
+                    board.releaseGlobally()
+                    message = "Test session removed"
+                    return
+                }
+                preferences = CapturePreferences(defaults: defaults)
             } else {
+                let support = try FileManager.default.url(for: .applicationSupportDirectory,
+                    in: .userDomainMask, appropriateFor: nil, create: true)
                 directory = support.appendingPathComponent("Keeptide/Library")
                 board = .general
             }
             let store = try await Task.detached(priority: .userInitiated) {
                 try PersistenceController(directory: directory)
             }.value
+            do { _ = try await StoreSafetyGate(controller: store).permit(.write) }
+            catch {
+                try? await store.close()
+                message = "The library requires recovery before recording can resume."
+                return
+            }
             controller = store
-            readContent = { ref in try await ContentRepository(controller: store).read(ref) }
+            readContent = { ref in
+                try Task.checkCancellation()
+                return try await ContentRepository(controller: store).read(ref)
+            }
             pasteboard = board
             let monitor = PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
                 service: CaptureService(controller: store), preferences: preferences,
                 sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
                 matchesOwnWrite: { $0.matches(pasteboard: board) })
             monitor.onCapture = { [weak self] in await self?.refresh() }
+            monitor.onUnavailable = { [weak self] in self?.isReady = false }
+            foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+            ) { [weak monitor] notification in
+                let identifier = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+                MainActor.assumeIsolated { monitor?.foregroundApplicationChanged(to: identifier) }
+            }
             self.monitor = monitor
             isReady = true
             message = nil
@@ -80,18 +111,35 @@ final class CaptureSession {
     }
 
     func select(_ ref: ContentRef?) async {
+        selectionRead?.cancel()
         selectionGeneration += 1
         copyGeneration += 1
-        actionMessage = nil
+        actionMessage = nil; selectionError = nil; selectedContent = nil; selectedPreview = nil
+        selectionIsLoading = false
         let generation = selectionGeneration
-        selectedContent = nil
         guard let ref, let readContent else { return }
-        do {
+        selectionIsLoading = true
+        let operation = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             let content = try await readContent(ref)
-            guard generation == selectionGeneration else { return }
+            try Task.checkCancellation()
+            return (content, ClipboardTextDecoder.preview(content.representations))
+        }
+        selectionRead = operation
+        defer {
+            if generation == selectionGeneration { selectionIsLoading = false; selectionRead = nil }
+        }
+        do {
+            let (content, preview) = try await withTaskCancellationHandler {
+                try await operation.value
+            } onCancel: { operation.cancel() }
+            guard generation == selectionGeneration, !Task.isCancelled else { return }
             selectedContent = content
+            selectedPreview = preview
+        } catch is CancellationError {
+            // A newer selection or shutdown owns the detail pane.
         } catch {
-            if generation == selectionGeneration { actionMessage = "This clip is no longer available." }
+            if generation == selectionGeneration { selectionError = "This clip is no longer available." }
         }
     }
 
@@ -103,7 +151,11 @@ final class CaptureSession {
         do {
             let content = try await readContent(ref)
             guard generation == copyGeneration else { return }
-            let token = try PasteboardWriter(pasteboard: pasteboard).write(content)
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                try PasteboardWriter.prepare(content)
+            }.value
+            guard generation == copyGeneration, !Task.isCancelled else { return }
+            let token = try PasteboardWriter(pasteboard: pasteboard).write(prepared)
             monitor?.suppressOwnWrite(token)
             actionMessage = "Copied"
         } catch {
@@ -115,7 +167,15 @@ final class CaptureSession {
     func shutdown() async {
         copyGeneration += 1
         selectionGeneration += 1
-        monitor?.stop()
+        selectionRead?.cancel()
+        selectionRead = nil
+        selectionIsLoading = false
+        selectedContent = nil
+        selectedPreview = nil
+        selectionError = nil
+        if let foregroundObserver { NSWorkspace.shared.notificationCenter.removeObserver(foregroundObserver) }
+        foregroundObserver = nil
+        await monitor?.stopAndDrain()
         monitor = nil
         try? await controller?.close()
         controller = nil

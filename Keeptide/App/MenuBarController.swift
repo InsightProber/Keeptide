@@ -48,12 +48,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let captureIsEnabled: () -> Bool
     private let captureStatus: () -> String
     private let toggleCapture: () -> Void
+    private let canRequestQuit: () -> Bool
+    private let requestQuit: () -> Void
     private let registration: ShortcutRegistration
     private let statusItem: NSStatusItem
     private var eventHandler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
     private weak var captureToggleItem: NSMenuItem?
     private weak var captureStatusItem: NSMenuItem?
+    private weak var quitItem: NSMenuItem?
+    private var isQuitPending = false
 
     private(set) var shortcutStatus: ShortcutStatus = .disabledForTesting
 
@@ -65,6 +69,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         captureIsEnabled: @escaping () -> Bool = { false },
         captureStatus: @escaping () -> String = { "Clipboard recording is off" },
         toggleCapture: @escaping () -> Void = {},
+        canRequestQuit: @escaping () -> Bool = { true },
+        requestQuit: @escaping () -> Void = { NSApplication.shared.terminate(nil) },
         shouldRegisterHotKey: Bool,
         registration: ShortcutRegistration = .system()
     ) {
@@ -75,6 +81,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         self.captureIsEnabled = captureIsEnabled
         self.captureStatus = captureStatus
         self.toggleCapture = toggleCapture
+        self.canRequestQuit = canRequestQuit
+        self.requestQuit = requestQuit
         self.registration = registration
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
@@ -224,16 +232,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Keeptide", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = menu.addItem(withTitle: "Quit Keeptide", action: #selector(quit), keyEquivalent: "q")
+        quitItem.identifier = NSUserInterfaceItemIdentifier("QuitKeeptide")
+        self.quitItem = quitItem
         for item in menu.items where item.action != nil {
             item.target = self
         }
         statusItem.menu = menu
         updateCaptureMenuItems()
+        updateQuitMenuItem()
     }
 
     func menuWillOpen(_ menu: NSMenu) {
         updateCaptureMenuItems()
+        updateQuitMenuItem()
     }
 
     private func updateCaptureMenuItems() {
@@ -259,7 +271,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func quit() {
-        NSApplication.shared.terminate(nil)
+        guard !isQuitPending, canRequestQuit() else {
+            updateQuitMenuItem()
+            return
+        }
+        isQuitPending = true
+        updateQuitMenuItem()
+        requestQuit()
+    }
+
+    private func updateQuitMenuItem() {
+        quitItem?.isEnabled = !isQuitPending && canRequestQuit()
     }
 }
 

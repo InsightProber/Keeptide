@@ -105,7 +105,7 @@ struct CaptureManifest: Codable, Equatable, Sendable {
     }
 
     private var hasValidCoordinates: Bool {
-        guard (1...LocalReferencePrivacy.manifestVersion).contains(version), itemCount >= 0 else {
+        guard LocalReferencePrivacy.supports(manifestVersion: version), itemCount >= 0 else {
             return false
         }
         guard !entries.isEmpty else {
@@ -122,10 +122,10 @@ struct CaptureManifest: Codable, Equatable, Sendable {
             guard entry.itemIndex >= 0,
                   entry.representationIndex >= 0,
                   entry.byteCount >= 0,
-                  entry.digest.count == 32 else {
+                  entry.digest.count == ContentDigest.byteCount else {
                 return false
             }
-            if version == LocalReferencePrivacy.manifestVersion,
+            if LocalReferencePrivacy.usesOpaqueLocalDescriptor(manifestVersion: version),
                entry.storage == .localReference,
                entry.byteCount != 0 {
                 return false

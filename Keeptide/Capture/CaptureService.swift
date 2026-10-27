@@ -35,7 +35,12 @@ actor CaptureService {
             return try await self.store(snapshot, at: date, permit: permit, isCurrent: isCurrent)
         }
         tail = operation
-        return try await operation.value
+        return try await withTaskCancellationHandler {
+            try await operation.value
+        } onCancel: {
+            permit.revoke()
+            operation.cancel()
+        }
     }
 
     private func store(_ snapshot: CaptureSnapshotValue, at date: Date, permit: CapturePermit,
@@ -44,7 +49,7 @@ actor CaptureService {
             throw CaptureError.emptySnapshot
         }
         guard CapturePolicy.decision(typeIdentifiers: snapshot.items.flatMap { $0.representations.map(\.typeIdentifier) },
-            sourceApp: snapshot.sourceApp, isCaptureEnabled: true, isPaused: false,
+            sourceApp: snapshot.sourceApp,
             excludedSourceApps: []) == .capture else { throw CaptureError.privacyRestricted }
         guard snapshot.items.flatMap(\.representations).allSatisfy({ CapturePolicy.isSafeTypeIdentifier($0.typeIdentifier) }) else {
             throw CaptureError.privacyRestricted
@@ -52,10 +57,11 @@ actor CaptureService {
         var size = 0
         for item in snapshot.items {
             for representation in item.representations {
-                guard representation.bytes.count <= 50 * 1024 * 1024 - size else { throw CaptureError.oversized }
+                guard representation.bytes.count <= SnapshotReader.maximumPayloadBytes - size else { throw CaptureError.oversized }
                 size += representation.bytes.count
             }
         }
+        guard permit.isValid, !Task.isCancelled, await isCurrent() else { throw CaptureError.staleSnapshot }
         let prepared = try Self.prepare(snapshot)
         let identity = try await controller.identity()
         let candidates = CaptureCandidateRepository(controller: controller)
@@ -78,10 +84,8 @@ actor CaptureService {
                     result = CaptureResult(itemID: item.id, ref: match.ref, reused: true)
                 } else {
                     if !preparedLocalRows {
-                        for access in prepared.localAccess {
-                            guard permit.isValid else { throw CaptureError.staleSnapshot }
-                            try await FileAccessStore(controller: controller).put(access, expecting: identity)
-                        }
+                        guard permit.isValid else { throw CaptureError.staleSnapshot }
+                        try await FileAccessStore(controller: controller).putPrepared(prepared.localAccess, expecting: identity)
                         preparedLocalRows = true
                     }
                     let item = ItemValue(createdAt: date, sourceApp: snapshot.sourceApp,
@@ -101,6 +105,7 @@ actor CaptureService {
                 } catch StoreError.preconditionFailed {
                     // Another capture service committed after candidate lookup. Re-read
                     // and compare bytes; never treat a failed CAS as a successful copy.
+                    guard try await controller.identity() == identity else { throw CaptureError.staleSnapshot }
                     continue
                 }
                 if result.reused, preparedLocalRows {
@@ -142,7 +147,7 @@ actor CaptureService {
             // File producers can also advertise paths as text or legacy metadata.
             // Keep every representation of such an item local, preserving fidelity.
             let isFileItem = item.representations.contains {
-                SystemFileReferenceClassifier.isLocalFileReference(typeIdentifier: $0.typeIdentifier, bytes: $0.bytes)
+                $0.isLocalFileReference
             }
             for (index, representation) in item.representations.enumerated() {
                 let value = RepresentationValue(snapshotID: id, itemIndex: itemIndex, representationIndex: index,
@@ -157,7 +162,7 @@ actor CaptureService {
                 }
             }
         }
-        let manifest = CaptureManifest(version: local.isEmpty ? 1 : 2,
+        let manifest = CaptureManifest(version: local.isEmpty ? 1 : LocalReferencePrivacy.manifestVersion,
                                        itemCount: snapshot.items.count, entries: values.map(ManifestEntry.init))
         return (CaptureValue(id: id, manifest: manifest, digest: ContentDigest.sha256(try manifest.canonicalData()),
                              representations: values), local)
@@ -165,14 +170,7 @@ actor CaptureService {
 
     private nonisolated static func title(_ snapshot: CaptureSnapshotValue, hasLocalReferences: Bool) -> String {
         guard !hasLocalReferences else { return snapshot.items.count == 1 ? "File reference" : "File references" }
-        for item in snapshot.items {
-            for value in item.representations where ["public.utf8-plain-text", "public.url"].contains(value.typeIdentifier) {
-                if let text = String(data: value.bytes.prefix(2048), encoding: .utf8) {
-                    let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-                    if !line.isEmpty { return String(line.prefix(160)) }
-                }
-            }
-        }
+        if let title = ClipboardTextDecoder.title(snapshot.items) { return title }
         return snapshot.items.count > 1 ? "Copied items" : "Copied content"
     }
 }

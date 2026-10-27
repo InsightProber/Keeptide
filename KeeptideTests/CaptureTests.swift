@@ -181,20 +181,89 @@ final class CaptureTests: XCTestCase {
 
     func testCancellationAfterLocalPreparationRemovesOnlyThisAttempt() async throws {
         try await withStore { controller in
-            let probe = FreshnessProbe()
+            let staged = self.expectation(description: "local rows staged before cancellation")
             let input = CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: [
                 CapturedRepresentation(typeIdentifier: "public.file-url", bytes: Data("file:///synthetic.txt".utf8))
             ])], changeCount: 1, sourceApp: nil)
             do {
-                _ = try await CaptureService(controller: controller).capture(input, isCurrent: { await probe.check() })
+                _ = try await CaptureService(controller: controller).capture(input, isCurrent: {
+                    let rows = try? await controller.perform { context in
+                        try context.count(for: NSFetchRequest<NSFetchRequestResult>(entityName: "FileAccessRecord"))
+                    }
+                    if let rows, rows > 0 { staged.fulfill(); return false }
+                    return true
+                })
                 XCTFail("Stale content committed")
             } catch { XCTAssertEqual(error as? CaptureError, .staleSnapshot) }
+            await self.fulfillment(of: [staged], timeout: 1)
             let count = try await controller.perform { context in
                 try context.count(for: NSFetchRequest<NSFetchRequestResult>(entityName: "FileAccessRecord"))
             }
             XCTAssertEqual(count, 0)
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertTrue(rows.isEmpty)
+        }
+    }
+
+    func testGenerationChangeAfterLocalPreparationAbortsOnlyThatStagingBatch() async throws {
+        try await withStore { controller in
+            let service = CaptureService(controller: controller)
+            let committedBytes = Data("file:///synthetic/committed.txt".utf8)
+            let committed = try await service.capture(CaptureSnapshotValue(
+                items: [CapturedPasteboardItem(representations: [
+                    CapturedRepresentation(typeIdentifier: "public.file-url", bytes: committedBytes)
+                ])],
+                changeCount: 1,
+                sourceApp: nil
+            ))
+            let repository = ContentRepository(controller: controller)
+            let committedState = try await repository.recordState(.capture(committed.ref.version.rawValue))
+            guard case .capture(let committedCapture) = committedState.value else {
+                return XCTFail("Expected committed capture")
+            }
+            let committedRepresentationID = try XCTUnwrap(committedCapture.representations.first?.id)
+            let originalIdentity = try await controller.identity()
+            let unrelated = LocalFileAccess(
+                id: UUID(),
+                snapshotID: UUID(),
+                bytes: Data("unrelated staging".utf8)
+            )
+            let fileAccess = FileAccessStore(controller: controller)
+            try await fileAccess.put(unrelated, expecting: originalIdentity)
+            let probe = GenerationChangeAfterStagingProbe(
+                controller: controller,
+                identity: originalIdentity,
+                baselineLocalRows: 2
+            )
+            let abortedBytes = Data("file:///synthetic/aborted.txt".utf8)
+
+            do {
+                _ = try await service.capture(CaptureSnapshotValue(
+                    items: [CapturedPasteboardItem(representations: [
+                        CapturedRepresentation(typeIdentifier: "public.file-url", bytes: abortedBytes)
+                    ])],
+                    changeCount: 2,
+                    sourceApp: nil
+                ), isCurrent: { await probe.check() })
+                XCTFail("A capture committed across a store generation transition")
+            } catch {
+                XCTAssertEqual(error as? CaptureError, .staleSnapshot)
+            }
+
+            let didTransition = await probe.didTransition
+            let checkCount = await probe.checkCount
+            XCTAssertTrue(didTransition)
+            XCTAssertEqual(checkCount, 3, "Generation mismatch retried the capture CAS loop")
+            let localRows = try await controller.perform { context in
+                try context.count(for: NSFetchRequest<NSFetchRequestResult>(entityName: "FileAccessRecord"))
+            }
+            XCTAssertEqual(localRows, 2, "The aborted capture stranded local staging rows")
+            let committedLocalState = try await fileAccess.read(representationID: committedRepresentationID)
+            let unrelatedLocalState = try await fileAccess.read(representationID: unrelated.id)
+            XCTAssertNotNil(committedLocalState)
+            XCTAssertEqual(unrelatedLocalState, unrelated)
+            let recent = try await repository.recent(limit: 10)
+            XCTAssertEqual(recent.map(\.itemID), [committed.itemID])
         }
     }
 
@@ -215,6 +284,27 @@ final class CaptureTests: XCTestCase {
                 try context.count(for: NSFetchRequest<NSFetchRequestResult>(entityName: "FileAccessRecord"))
             }
             XCTAssertEqual(count, 4, "Failed CAS attempts must not strand raw local paths")
+        }
+    }
+
+    func testCancellingTheCallerRevokesQueuedCaptureWork() async throws {
+        try await withStore { controller in
+            let service = CaptureService(controller: controller)
+            let entered = self.expectation(description: "first capture admitted")
+            let gate = CaptureAdmissionGate(entered: entered)
+            let first = Task {
+                try await service.capture(self.snapshot("first", count: 1), isCurrent: { await gate.waitOnce() })
+            }
+            await self.fulfillment(of: [entered], timeout: 3)
+            let second = Task { try await service.capture(self.snapshot("cancelled", count: 2)) }
+            await Task.yield()
+            second.cancel()
+            await gate.release()
+            _ = try await first.value
+            do { _ = try await second.value; XCTFail("Cancelled caller committed") }
+            catch { XCTAssertTrue(error is CancellationError || error as? CaptureError == .staleSnapshot) }
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.map(\.title), ["first"])
         }
     }
 
@@ -240,11 +330,6 @@ final class CaptureTests: XCTestCase {
     }
 }
 
-private actor FreshnessProbe {
-    private var calls = 0
-    func check() -> Bool { calls += 1; return calls == 1 }
-}
-
 private final class AuthorizationProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var calls = 0
@@ -253,5 +338,51 @@ private final class AuthorizationProbe: @unchecked Sendable {
             calls += 1
             if calls > 1 { throw CaptureError.staleSnapshot }
         }
+    }
+}
+
+private actor CaptureAdmissionGate {
+    let entered: XCTestExpectation
+    var first = true
+    var continuation: CheckedContinuation<Bool, Never>?
+    init(entered: XCTestExpectation) { self.entered = entered }
+    func waitOnce() async -> Bool {
+        guard first else { return true }
+        first = false
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            entered.fulfill()
+        }
+    }
+    func release() { continuation?.resume(returning: true); continuation = nil }
+}
+
+private actor GenerationChangeAfterStagingProbe {
+    let controller: PersistenceController
+    let identity: StoreIdentity
+    let baselineLocalRows: Int
+    private(set) var checkCount = 0
+    private(set) var didTransition = false
+
+    init(controller: PersistenceController, identity: StoreIdentity, baselineLocalRows: Int) {
+        self.controller = controller
+        self.identity = identity
+        self.baselineLocalRows = baselineLocalRows
+    }
+
+    func check() async -> Bool {
+        checkCount += 1
+        guard !didTransition else { return true }
+        let localRows = try? await controller.perform { context in
+            try context.count(for: NSFetchRequest<NSFetchRequestResult>(entityName: "FileAccessRecord"))
+        }
+        guard let localRows, localRows > baselineLocalRows else { return true }
+        do {
+            try await StoreSafetyGate(controller: controller).transition(to: .quarantined, expecting: identity)
+            didTransition = true
+        } catch {
+            XCTFail("Failed to transition store after local staging: \(error)")
+        }
+        return true
     }
 }

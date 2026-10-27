@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 struct OwnWriteToken: Equatable, Sendable {
-    static let typeIdentifier = "io.github.insightprober.keeptide.own-write"
+    static let typeIdentifier = CaptureWire.ownWriteTypeIdentifier
 
     let changeCount: Int
     let marker: String
@@ -31,6 +31,10 @@ enum PasteboardWriterError: Error, Equatable {
     case writeFailed
 }
 
+struct PreparedPasteboardContent: Sendable {
+    fileprivate let representations: [RepresentationValue]
+}
+
 @MainActor
 final class PasteboardWriter {
     private let pasteboard: NSPasteboard
@@ -39,10 +43,7 @@ final class PasteboardWriter {
         self.pasteboard = pasteboard
     }
 
-    func write(_ content: ResolvedContent) throws -> OwnWriteToken {
-        guard content.isActionable else {
-            throw PasteboardWriterError.nonActionableContent
-        }
+    func write(_ content: PreparedPasteboardContent) throws -> OwnWriteToken {
         let prepared = try prepareItems(content.representations)
         let marker = UUID().uuidString
         let markerType = NSPasteboard.PasteboardType(OwnWriteToken.typeIdentifier)
@@ -58,7 +59,9 @@ final class PasteboardWriter {
         return OwnWriteToken(changeCount: pasteboard.changeCount, marker: marker)
     }
 
-    private func prepareItems(_ representations: [RepresentationValue]) throws -> [NSPasteboardItem] {
+    nonisolated static func prepare(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        guard content.isActionable else { throw PasteboardWriterError.nonActionableContent }
+        let representations = content.representations
         guard !representations.isEmpty else {
             throw PasteboardWriterError.emptyContent
         }
@@ -66,17 +69,14 @@ final class PasteboardWriter {
             ($0.itemIndex, $0.representationIndex) < ($1.itemIndex, $1.representationIndex)
         }
 
-        var prepared: [NSPasteboardItem] = []
         var nextItemIndex = 0
         var nextRepresentationIndex = 0
-        var currentItem: NSPasteboardItem?
         var currentTypes = Set<String>()
 
         for representation in ordered {
             if representation.itemIndex == nextItemIndex + 1 && nextRepresentationIndex > 0 {
                 nextItemIndex += 1
                 nextRepresentationIndex = 0
-                currentItem = nil
                 currentTypes.removeAll(keepingCapacity: true)
             }
             guard representation.itemIndex == nextItemIndex,
@@ -105,25 +105,21 @@ final class PasteboardWriter {
                 )
             }
 
-            let item: NSPasteboardItem
-            if let currentItem {
-                item = currentItem
-            } else {
-                item = NSPasteboardItem()
-                currentItem = item
-                prepared.append(item)
-            }
-            guard item.setData(
-                bytes,
-                forType: NSPasteboard.PasteboardType(representation.typeIdentifier)
-            ) else {
-                throw PasteboardWriterError.cannotPrepareRepresentation(
-                    itemIndex: representation.itemIndex,
-                    representationIndex: representation.representationIndex
-                )
-            }
             nextRepresentationIndex += 1
         }
-        return prepared
+        return PreparedPasteboardContent(representations: ordered)
+    }
+
+    private func prepareItems(_ representations: [RepresentationValue]) throws -> [NSPasteboardItem] {
+        var items: [NSPasteboardItem] = []
+        for representation in representations {
+            if representation.itemIndex == items.count { items.append(NSPasteboardItem()) }
+            guard let bytes = representation.bytes,
+                  items[representation.itemIndex].setData(bytes, forType: .init(representation.typeIdentifier)) else {
+                throw PasteboardWriterError.cannotPrepareRepresentation(
+                    itemIndex: representation.itemIndex, representationIndex: representation.representationIndex)
+            }
+        }
+        return items
     }
 }

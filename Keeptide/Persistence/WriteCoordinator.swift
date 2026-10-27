@@ -120,7 +120,7 @@ struct WriteCoordinator: Sendable {
                 // file access and generation changes use separate LocalState saves.
                 try authorization()
                 try context.save()
-                CaptureCandidateRepository.didCommit(transaction.mutations, in: context, runtime: controller.runtime)
+                CaptureCandidateRepository.didCommit(transaction, runtime: controller.runtime)
                 return StoreReceipt(transactionID: transaction.transactionID, identity: controller.runtime.identity,
                                     changed: touched.sorted { $0.entity + $0.id.uuidString < $1.entity + $1.id.uuidString })
             } catch {
@@ -218,27 +218,20 @@ struct WriteCoordinator: Sendable {
     ) throws {
         let localReferences = capture.representations.filter { $0.storage == .localReference }
         guard !localReferences.isEmpty else { return }
-        guard capture.manifest.version == LocalReferencePrivacy.manifestVersion else {
+        guard LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+            manifestVersion: capture.manifest.version
+        ) else {
             throw StoreError.invalidTransaction
         }
         for representation in localReferences {
-            let request = NSFetchRequest<NSDictionary>(entityName: "FileAccessRecord")
-            request.predicate = NSPredicate(format: "id == %@", representation.id as NSUUID)
-            request.resultType = .dictionaryResultType
-            request.propertiesToFetch = ["id", "snapshotID", "bytes"]
-            request.fetchLimit = 2
-            let rows = try context.fetch(request)
-            guard rows.count == 1,
-                  rows[0]["id"] as? UUID == representation.id,
-                  rows[0]["snapshotID"] as? UUID == capture.id,
-                  let persistedBytes = rows[0]["bytes"] as? Data else {
+            guard try LocalFileAccessRecordReader.decodedBytes(
+                for: representation,
+                snapshotID: capture.id,
+                manifestVersion: capture.manifest.version,
+                in: context
+            ) != nil else {
                 throw StoreError.preconditionFailed
             }
-            _ = try LocalFileAccessEnvelope.decode(
-                persistedBytes,
-                representationID: representation.id,
-                snapshotID: capture.id
-            )
         }
     }
 
@@ -317,10 +310,7 @@ struct WriteCoordinator: Sendable {
             digest: capture.digest,
             representations: capture.representations.map(PurgeRepresentationFingerprint.init)
         )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        encoder.dateEncodingStrategy = .deferredToDate
-        return ContentDigest.sha256(try encoder.encode(value))
+        return try StoredRecords.canonicalDigest(value)
     }
 
     private func requireMaintenance(_ transaction: StoreTransaction) throws {
@@ -394,8 +384,7 @@ struct WriteCoordinator: Sendable {
             guard old == nil else { throw StoreError.invalidTransaction }
             let localItems = Set(capture.representations.filter { $0.storage == .localReference }.map(\.itemIndex))
             if !localItems.isEmpty {
-                guard capture.manifest.version == LocalReferencePrivacy.manifestVersion,
-                      capture.representations
+                guard capture.representations
                         .filter({ $0.storage == .localReference })
                         .allSatisfy(LocalReferencePrivacy.isCloudSafeDescriptor) else {
                     throw StoreError.invalidTransaction

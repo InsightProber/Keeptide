@@ -50,7 +50,10 @@ The verification entry point provides these commands:
 An optional class name narrows the selection. CI runs complete targets, and the
 script rejects empty, entirely skipped, or unreadable results. Test builds use
 local ad-hoc signing without developer credentials. CI uses the same script. Developer ID signing, notarization, and
-cloud provisioning are separate release operations.
+cloud provisioning are separate release operations. The build embeds a short-lived
+clipboard reader with inherited sandbox entitlements. Its signing step deliberately
+uses the checked-in helper entitlement set; XCTest's extra test-host entitlements
+must not be propagated to that helper.
 
 For verification-script changes, also run
 `python3 -m unittest discover -s scripts/tests -v`. Documentation changes need

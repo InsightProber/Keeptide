@@ -5,6 +5,49 @@ import XCTest
 
 @MainActor
 final class FileRelocationPrivacyTests: XCTestCase {
+    func testIndexedEnvelopeMetadataValidatesBindingButFullDecodeStillValidatesPayload() throws {
+        let representationID = UUID()
+        let snapshotID = UUID()
+        let bytes = Data("file:///Synthetic/index-header.txt".utf8)
+        let stored = LocalFileAccessEnvelope.encode(
+            bytes,
+            representationID: representationID,
+            snapshotID: snapshotID
+        )
+        let metadata = try LocalFileAccessEnvelope.indexedMetadata(
+            stored,
+            representationID: representationID,
+            snapshotID: snapshotID
+        )
+        XCTAssertEqual(metadata.byteCount, Int64(bytes.count))
+        XCTAssertEqual(metadata.digest, ContentDigest.sha256(bytes))
+
+        var damagedPayload = stored
+        damagedPayload[damagedPayload.index(before: damagedPayload.endIndex)] ^= 0xff
+        XCTAssertEqual(
+            try LocalFileAccessEnvelope.indexedMetadata(
+                damagedPayload,
+                representationID: representationID,
+                snapshotID: snapshotID
+            ).digest,
+            metadata.digest
+        )
+        XCTAssertThrowsError(try LocalFileAccessEnvelope.decode(
+            damagedPayload,
+            representationID: representationID,
+            snapshotID: snapshotID
+        ))
+
+        var damagedBinding = stored
+        let payloadDigestOffset = 8 + 16 + 16 + MemoryLayout<UInt64>.size
+        damagedBinding[payloadDigestOffset] ^= 0xff
+        XCTAssertThrowsError(try LocalFileAccessEnvelope.indexedMetadata(
+            damagedBinding,
+            representationID: representationID,
+            snapshotID: snapshotID
+        ))
+    }
+
     func testV2LocalReferencePersistsOnlyOpaqueCloudDescriptorAndResolvesBoundLocalBytes() async throws {
         let store = try makeStore()
         let localBytes = Data("file:///Users/example/Documents/Quarterly Plan.pdf".utf8)
@@ -216,22 +259,23 @@ final class FileRelocationPrivacyTests: XCTestCase {
     func testMissingV2LocalStateRequiresRelocationAndCloudDescriptorCannotConfirmCandidatePaths() async throws {
         let store = try makeStore()
         let localBytes = Data("file:///Users/example/Documents/Restored.pdf".utf8)
-        let token = Data(repeating: 0x5c, count: 32)
-        let fixture = try makeLocalReference(version: 2, localBytes: localBytes, cloudByteCount: 0, cloudDigest: token)
-        let accessStore = FileAccessStore(controller: store)
-        try await accessStore.put(
-            LocalFileAccess(id: fixture.representation.id, snapshotID: fixture.capture.id, bytes: localBytes),
-            expecting: store.identity()
+        let snapshot = CaptureSnapshotValue(
+            items: [CapturedPasteboardItem(representations: [
+                CapturedRepresentation(typeIdentifier: "public.file-url", bytes: localBytes)
+            ])],
+            changeCount: 1,
+            sourceApp: "test.source"
         )
-        try await ContentStoreFixtures.insert(fixture.item, fixture.capture, into: store)
+        let result = try await CaptureService(controller: store).capture(snapshot)
+        let fixture = try await persistedCapture(snapshotID: result.ref.version.rawValue, in: store)
+        let representation = try XCTUnwrap(fixture.representations.first)
+        let accessStore = FileAccessStore(controller: store)
         try await accessStore.remove(
-            representationID: fixture.representation.id,
+            representationID: representation.id,
             permit: StoreSafetyGate(controller: store).permit(.maintenance)
         )
 
-        let restored = try await ContentRepository(controller: store).read(
-            ContentStoreFixtures.ref(fixture.item, fixture.capture)
-        )
+        let restored = try await ContentRepository(controller: store).read(result.ref)
         XCTAssertEqual(restored.integrity, .requiresRelocation)
         XCTAssertTrue(restored.representations.isEmpty)
 
@@ -240,8 +284,49 @@ final class FileRelocationPrivacyTests: XCTestCase {
             "file:///Users/example/Desktop/Restored.pdf",
             "/Users/example/Documents/Restored.pdf"
         ].map { Data($0.utf8) }
-        XCTAssertFalse(candidatePaths.contains { ContentDigest.sha256($0) == token })
-        XCTAssertFalse(candidatePaths.contains { Int64($0.count) == fixture.representation.byteCount })
+        XCTAssertEqual(representation.byteCount, 0)
+        XCTAssertEqual(representation.digest.count, LocalReferencePrivacy.relocationTokenByteCount)
+        XCTAssertFalse(candidatePaths.contains { ContentDigest.sha256($0) == representation.digest })
+        XCTAssertFalse(candidatePaths.contains { $0 == representation.digest })
+    }
+
+    func testRestoringCommittedLegacyLocalStateInvalidatesAnAlreadyBuiltIndex() async throws {
+        let store = try makeStore()
+        let localBytes = Data("file:///Synthetic/restored-after-index.txt".utf8)
+        let fixture = try makeLocalReference(
+            version: LocalReferencePrivacy.legacyManifestVersion,
+            localBytes: localBytes,
+            cloudByteCount: Int64(localBytes.count),
+            cloudDigest: ContentDigest.sha256(localBytes)
+        )
+        try await insertCommittedCapture(fixture.capture, item: fixture.item, into: store)
+        let snapshot = CaptureSnapshotValue(
+            items: [CapturedPasteboardItem(representations: [
+                CapturedRepresentation(typeIdentifier: "public.file-url", bytes: localBytes)
+            ])],
+            changeCount: 1,
+            sourceApp: "test.source"
+        )
+        let candidates = CaptureCandidateRepository(controller: store)
+
+        let missing = try await candidates.find(snapshot, digest: Data(), hasLocalReferences: true)
+        let initialBuildCount = try await localIndexBuildCount(store)
+        XCTAssertNil(missing.match)
+        XCTAssertEqual(initialBuildCount, 1)
+
+        try await FileAccessStore(controller: store).put(
+            LocalFileAccess(
+                id: fixture.representation.id,
+                snapshotID: fixture.capture.id,
+                bytes: localBytes
+            ),
+            expecting: store.identity()
+        )
+
+        let restored = try await candidates.find(snapshot, digest: Data(), hasLocalReferences: true)
+        let restoredBuildCount = try await localIndexBuildCount(store)
+        XCTAssertEqual(restored.match?.item.id, fixture.item.id)
+        XCTAssertEqual(restoredBuildCount, 2)
     }
 
     func testDiscardPreparedRemovesOnlyUncommittedRowsForTheExactSnapshot() async throws {
@@ -411,6 +496,19 @@ final class FileRelocationPrivacyTests: XCTestCase {
                 row["bytes"] as? Data
             )
         }
+    }
+
+    private func persistedCapture(snapshotID: UUID, in store: PersistenceController) async throws -> CaptureValue {
+        try await store.perform { context in
+            guard case .capture(let capture) = try StoredRecords.value(.capture(snapshotID), in: context) else {
+                throw StoreError.corruptStore
+            }
+            return capture
+        }
+    }
+
+    private func localIndexBuildCount(_ store: PersistenceController) async throws -> Int {
+        try await store.perform { _ in store.runtime.localCaptureIndexBuildCount }
     }
 
     private func makeStore() throws -> PersistenceController {

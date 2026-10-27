@@ -19,11 +19,21 @@ class ProductionShellBoundaryTests(unittest.TestCase):
         violations: list[str] = []
         for directory in SHELL_DIRECTORIES:
             for source_file in sorted(directory.rglob("*.swift")):
-                # CaptureSession owns the explicit production/test pasteboard
-                # selection. Views and window controllers only invoke its actions.
+                text = source_file.read_text(encoding="utf-8")
                 if source_file == REPOSITORY_ROOT / "Keeptide/App/CaptureSession.swift":
-                    continue
-                if FORBIDDEN_CLIPBOARD_ACCESS.search(source_file.read_text(encoding="utf-8")):
+                    # Permit only handle injection and named-board composition;
+                    # this file must still delegate every body read and write.
+                    permitted = {
+                        "@ObservationIgnored private var pasteboard: NSPasteboard?",
+                        "pasteboard: NSPasteboard? = nil) {",
+                        "let board: NSPasteboard",
+                        "board = NSPasteboard(name: .init(configuration.pasteboardName))",
+                    }
+                    text = "\n".join(line for line in text.splitlines() if line.strip() not in permitted)
+                    self.assertIsNone(re.search(
+                        r"\b(?:board|pasteboard)\??\.(?:pasteboardItems|data|string|readObjects|writeObjects|clearContents|setData|setString)\b", text
+                    ), "CaptureSession must delegate clipboard bodies to its reader/writer")
+                if FORBIDDEN_CLIPBOARD_ACCESS.search(text):
                     violations.append(str(source_file.relative_to(REPOSITORY_ROOT)))
 
         self.assertEqual(

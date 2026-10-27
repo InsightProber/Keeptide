@@ -1,8 +1,6 @@
 import Foundation
 
 enum CapturePolicyExclusion: Equatable, Sendable {
-    case recordingDisabled
-    case paused
     case excludedSource
     case sensitivePasteboard
 }
@@ -47,13 +45,9 @@ enum CapturePolicy {
     static func decision(
         typeIdentifiers: [String],
         sourceApp: String?,
-        isCaptureEnabled: Bool,
-        isPaused: Bool,
         excludedSourceApps: Set<String>
     ) -> CapturePolicyDecision {
-        guard isCaptureEnabled else { return .skip(.recordingDisabled) }
-        guard !isPaused else { return .skip(.paused) }
-        if let sourceApp, excludedSourceApps.contains(sourceApp) {
+        if let sourceApp, excludedSourceApps.contains(where: { $0.caseInsensitiveCompare(sourceApp) == .orderedSame }) {
             return .skip(.excludedSource)
         }
 

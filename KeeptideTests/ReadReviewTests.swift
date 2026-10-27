@@ -3,6 +3,41 @@ import XCTest
 @testable import Keeptide
 
 final class ReadReviewTests: XCTestCase {
+    func testCancelledReadDoesNotRunAfterWaitingOnTheWriterQueue() async throws {
+        try await withController { controller, _ in
+            let capture = try ContentStoreFixtures.capture([
+                [("public.utf8-plain-text", Data("cancelled queued read".utf8))]
+            ])
+            let item = ContentStoreFixtures.item(capture)
+            try await ContentStoreFixtures.insert(item, capture, into: controller)
+            let ref = ContentStoreFixtures.ref(item, capture)
+            let writerEntered = expectation(description: "writer blocker entered")
+            let releaseWriter = DispatchSemaphore(value: 0)
+            let blocker = Task {
+                try await controller.perform { _ in
+                    writerEntered.fulfill()
+                    releaseWriter.wait()
+                }
+            }
+            await fulfillment(of: [writerEntered], timeout: 1)
+
+            let read = Task {
+                try await ContentRepository(controller: controller).read(ref)
+            }
+            await Task.yield()
+            read.cancel()
+            releaseWriter.signal()
+            try await blocker.value
+
+            do {
+                _ = try await read.value
+                XCTFail("A cancelled read still ran after leaving the writer queue backlog")
+            } catch is CancellationError {
+                // Expected: cancellation is observed before the payload read begins.
+            }
+        }
+    }
+
     func testRecentLimitCountsOnlyVisibleItems() async throws {
         try await withController { controller, _ in
             let olderCapture = try ContentStoreFixtures.capture([

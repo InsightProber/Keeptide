@@ -6,7 +6,7 @@ final class LibraryWindowController: NSWindowController {
     private static let defaultSize = NSSize(width: 1120, height: 740)
     private static let minimumSize = NSSize(width: 840, height: 560)
 
-    init(session: CaptureSession = CaptureSession(), autosaveName: String? = "KeeptideLibraryWindow") {
+    init(session: CaptureSession, autosaveName: String? = "KeeptideLibraryWindow") {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

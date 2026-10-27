@@ -4,6 +4,75 @@ import XCTest
 
 @MainActor
 final class LocalReviewTests: XCTestCase {
+    func testPreparedBatchRollsBackEarlierRowsWhenALaterBindingConflicts() async throws {
+        let directory = try makeStoreDirectory()
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        let controller = try PersistenceController(directory: directory)
+        addTeardownBlock { try await controller.close() }
+        let store = FileAccessStore(controller: controller)
+        let identity = try await controller.identity()
+        let blocker = LocalFileAccess(
+            id: UUID(),
+            snapshotID: UUID(),
+            bytes: Data("existing blocker".utf8),
+            bookmark: Data([0x01]),
+            localPath: "/Synthetic/blocker"
+        )
+        try await store.put(blocker, expecting: identity)
+        let earlier = LocalFileAccess(
+            id: UUID(),
+            snapshotID: UUID(),
+            bytes: Data("must roll back".utf8)
+        )
+        let conflicting = LocalFileAccess(
+            id: blocker.id,
+            snapshotID: UUID(),
+            bytes: blocker.bytes
+        )
+
+        do {
+            try await store.putPrepared([earlier, conflicting], expecting: identity)
+            XCTFail("A conflicting later row committed an earlier row from the same batch")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .preconditionFailed)
+        }
+
+        let rolledBack = try await store.read(representationID: earlier.id)
+        let blockerAfterFailure = try await store.read(representationID: blocker.id)
+        XCTAssertNil(rolledBack)
+        XCTAssertEqual(blockerAfterFailure, blocker)
+    }
+
+    func testPreparedDiscardRejectsAStaleIdentityFromAnotherPhysicalStore() async throws {
+        let directory = try makeStoreDirectory()
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        let controller = try PersistenceController(directory: directory)
+        addTeardownBlock { try await controller.close() }
+        let store = FileAccessStore(controller: controller)
+        let identity = try await controller.identity()
+        let prepared = LocalFileAccess(
+            id: UUID(),
+            snapshotID: UUID(),
+            bytes: Data("must remain".utf8)
+        )
+        try await store.put(prepared, expecting: identity)
+        let foreignIdentity = StoreIdentity(storeID: UUID(), generation: identity.generation)
+
+        do {
+            try await store.discardPrepared(
+                [prepared.id],
+                snapshotID: prepared.snapshotID,
+                expecting: foreignIdentity
+            )
+            XCTFail("An abort capability from another physical store deleted local state")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .preconditionFailed)
+        }
+
+        let storedAfterRejectedDiscard = try await store.read(representationID: prepared.id)
+        XCTAssertEqual(storedAfterRejectedDiscard, prepared)
+    }
+
     func testCommittedLocalReferenceBytesCannotBeReplacedButAuthorizationCanBeRefreshed() async throws {
         let directory = try makeStoreDirectory()
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }

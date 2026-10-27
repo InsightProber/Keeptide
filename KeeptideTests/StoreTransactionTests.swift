@@ -190,6 +190,14 @@ final class StoreTransactionTests: XCTestCase {
             )
             let firstItem = ContentStoreFixtures.item(firstCapture)
             let secondItem = ContentStoreFixtures.item(secondCapture)
+            try await FileAccessStore(controller: controller).put(
+                LocalFileAccess(
+                    id: reusedID,
+                    snapshotID: firstCapture.id,
+                    bytes: Data("first local target".utf8)
+                ),
+                expecting: controller.identity()
+            )
 
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(

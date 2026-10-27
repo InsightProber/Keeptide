@@ -12,12 +12,15 @@ final class SyntheticPasteboardHarness {
     private let pasteboard: NSPasteboard
 
     init() {
-        let arguments = ProcessInfo.processInfo.arguments
-        if let index = arguments.firstIndex(of: "--capture-test-session"), index + 1 < arguments.count,
-           let id = UUID(uuidString: arguments[index + 1]) {
-            pasteboard = NSPasteboard(name: .init("io.github.insightprober.Keeptide.capture-test.\(id.uuidString)"))
-        } else {
-            pasteboard = NSPasteboard(name: Self.pasteboardName)
+        do {
+            if let configuration = try CaptureTestConfiguration.parse(ProcessInfo.processInfo.arguments) {
+                pasteboard = NSPasteboard(name: .init(configuration.pasteboardName))
+            } else {
+                pasteboard = NSPasteboard(name: Self.pasteboardName)
+            }
+        } catch {
+            // A malformed explicit test session must fail, not write to another board.
+            fatalError("Invalid synthetic capture session identifier")
         }
     }
 

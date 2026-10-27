@@ -76,6 +76,37 @@ final class LocalCaptureLookupTests: XCTestCase {
         }
     }
 
+    func testReusingALocalCaptureKeepsTheWarmIndex() async throws {
+        try await withStore { controller in
+            let snapshot = self.fileSnapshot("file:///Synthetic/reuse-warm-index.txt", changeCount: 1)
+            let candidates = CaptureCandidateRepository(controller: controller)
+            let cold = try await candidates.find(
+                snapshot,
+                digest: Data(),
+                hasLocalReferences: true
+            )
+            let coldBuildCount = try await localIndexBuildCount(controller)
+            XCTAssertNil(cold.match)
+            XCTAssertEqual(coldBuildCount, 1)
+
+            let first = try await CaptureService(controller: controller).capture(snapshot)
+            let reused = try await CaptureService(controller: controller).capture(snapshot)
+            let reusedBuildCount = try await localIndexBuildCount(controller)
+            XCTAssertTrue(reused.reused)
+            XCTAssertEqual(reused.itemID, first.itemID)
+            XCTAssertEqual(reusedBuildCount, 1)
+
+            let warm = try await candidates.find(
+                snapshot,
+                digest: Data(),
+                hasLocalReferences: true
+            )
+            let warmBuildCount = try await localIndexBuildCount(controller)
+            XCTAssertEqual(warm.match?.item.id, first.itemID)
+            XCTAssertEqual(warmBuildCount, 1)
+        }
+    }
+
     func testColdIndexSkipsDamagedCandidateWithoutBlockingOrReusingIt() async throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -104,6 +135,104 @@ final class LocalCaptureLookupTests: XCTestCase {
         try await reopened.close()
     }
 
+    func testForgedEnvelopeMetadataCannotCauseWrongLocalCaptureReuse() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let originalSnapshot = fileSnapshot("file:///Synthetic/metadata-a.txt", changeCount: 1)
+        let targetSnapshot = fileSnapshot("file:///Synthetic/metadata-b.txt", changeCount: 2)
+
+        let initial = try PersistenceController(directory: directory)
+        let original = try await CaptureService(controller: initial).capture(originalSnapshot)
+        try await forgeEnvelopeMetadata(
+            snapshotID: original.ref.version.rawValue,
+            targetBytes: Data("file:///Synthetic/metadata-b.txt".utf8),
+            in: initial
+        )
+        try await initial.close()
+
+        let reopened = try PersistenceController(directory: directory)
+        let captured = try await CaptureService(controller: reopened).capture(targetSnapshot)
+        XCTAssertFalse(captured.reused)
+        XCTAssertNotEqual(captured.itemID, original.itemID)
+        let content = try await ContentRepository(controller: reopened).read(captured.ref)
+        XCTAssertTrue(content.isActionable)
+        XCTAssertEqual(content.representations.map(\.bytes), targetSnapshot.items[0].representations.map(\.bytes))
+        try await reopened.close()
+    }
+
+    func testTombstonedLocalCandidateIsSkippedInsteadOfFailingTheCapture() async throws {
+        try await withStore { controller in
+            let snapshot = self.fileSnapshot("file:///Synthetic/tombstoned.txt", changeCount: 1)
+            let first = try await CaptureService(controller: controller).capture(snapshot)
+            let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+            _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+                identity: try await controller.identity(),
+                mutations: [
+                    .insert(.itemMarker(ItemDeletionMarkerValue(itemID: first.itemID)))
+                ],
+                permit: permit
+            ))
+
+            let replacement = try await CaptureService(controller: controller).capture(snapshot)
+            XCTAssertNotEqual(replacement.itemID, first.itemID)
+            XCTAssertFalse(replacement.reused)
+            let content = try await ContentRepository(controller: controller).read(replacement.ref)
+            XCTAssertTrue(content.isActionable)
+        }
+    }
+
+    func testColdIndexSkipsDuplicateLocalRowsWithoutBlockingHealthyCandidates() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let damagedSnapshot = fileSnapshot("file:///Synthetic/duplicate-row.txt", changeCount: 1)
+        let healthySnapshot = fileSnapshot("file:///Synthetic/healthy-row.txt", changeCount: 2)
+
+        let initial = try PersistenceController(directory: directory)
+        let damaged = try await CaptureService(controller: initial).capture(damagedSnapshot)
+        let healthy = try await CaptureService(controller: initial).capture(healthySnapshot)
+        try await duplicateFirstLocalRow(snapshotID: damaged.ref.version.rawValue, in: initial)
+        try await initial.close()
+
+        let reopened = try PersistenceController(directory: directory)
+        let healthyMatch = try await CaptureCandidateRepository(controller: reopened).find(
+            healthySnapshot,
+            digest: Data(),
+            hasLocalReferences: true
+        )
+        XCTAssertEqual(healthyMatch.match?.item.id, healthy.itemID)
+
+        let replacement = try await CaptureService(controller: reopened).capture(damagedSnapshot)
+        XCTAssertNotEqual(replacement.itemID, damaged.itemID)
+        XCTAssertFalse(replacement.reused)
+        try await reopened.close()
+    }
+
+    func testColdIndexSkipsCorruptEnvelopeHeaderWithoutBlockingHealthyCandidates() async throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let damagedSnapshot = fileSnapshot("file:///Synthetic/damaged-header.txt", changeCount: 1)
+        let healthySnapshot = fileSnapshot("file:///Synthetic/healthy-header.txt", changeCount: 2)
+
+        let initial = try PersistenceController(directory: directory)
+        let damaged = try await CaptureService(controller: initial).capture(damagedSnapshot)
+        let healthy = try await CaptureService(controller: initial).capture(healthySnapshot)
+        try await corruptFirstLocalEnvelopeHeader(snapshotID: damaged.ref.version.rawValue, in: initial)
+        try await initial.close()
+
+        let reopened = try PersistenceController(directory: directory)
+        let healthyMatch = try await CaptureCandidateRepository(controller: reopened).find(
+            healthySnapshot,
+            digest: Data(),
+            hasLocalReferences: true
+        )
+        XCTAssertEqual(healthyMatch.match?.item.id, healthy.itemID)
+
+        let replacement = try await CaptureService(controller: reopened).capture(damagedSnapshot)
+        XCTAssertFalse(replacement.reused)
+        XCTAssertNotEqual(replacement.itemID, damaged.itemID)
+        try await reopened.close()
+    }
+
     private func fileSnapshot(_ value: String, changeCount: Int) -> CaptureSnapshotValue {
         CaptureSnapshotValue(
             items: [CapturedPasteboardItem(representations: [
@@ -129,6 +258,74 @@ final class LocalCaptureLookupTests: XCTestCase {
                 let stored = try XCTUnwrap(row.value(forKey: "bytes") as? Data)
                 var corrupted = [UInt8](stored)
                 corrupted[corrupted.index(before: corrupted.endIndex)] ^= 0xff
+                row.setValue(Data(corrupted), forKey: "bytes")
+            }
+            try context.save()
+            context.reset()
+        }
+    }
+
+    private func duplicateFirstLocalRow(snapshotID: UUID, in controller: PersistenceController) async throws {
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+            request.predicate = NSPredicate(format: "snapshotID == %@", snapshotID as NSUUID)
+            let source = try XCTUnwrap(context.fetch(request).first)
+            let duplicate = NSEntityDescription.insertNewObject(forEntityName: "FileAccessRecord", into: context)
+            for key in ["id", "snapshotID", "bytes", "bookmark", "localPath"] {
+                duplicate.setValue(source.value(forKey: key), forKey: key)
+            }
+            try context.save()
+            context.reset()
+        }
+    }
+
+    private func forgeEnvelopeMetadata(
+        snapshotID: UUID,
+        targetBytes: Data,
+        in controller: PersistenceController
+    ) async throws {
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+            request.predicate = NSPredicate(format: "snapshotID == %@", snapshotID as NSUUID)
+            let rows = try context.fetch(request)
+            XCTAssertFalse(rows.isEmpty)
+            let payloadDigestStart = 8 + 16 + 16 + MemoryLayout<UInt64>.size
+            let payloadDigestEnd = payloadDigestStart + ContentDigest.byteCount
+            let bindingDigestEnd = payloadDigestEnd + ContentDigest.byteCount
+            for row in rows {
+                let stored = try XCTUnwrap(row.value(forKey: "bytes") as? Data)
+                var corrupted = [UInt8](stored)
+                XCTAssertGreaterThanOrEqual(corrupted.count, bindingDigestEnd)
+                corrupted.replaceSubrange(
+                    payloadDigestStart..<payloadDigestEnd,
+                    with: ContentDigest.sha256(targetBytes)
+                )
+                corrupted.replaceSubrange(
+                    payloadDigestEnd..<bindingDigestEnd,
+                    with: ContentDigest.sha256(Data(corrupted.prefix(payloadDigestEnd)))
+                )
+                row.setValue(Data(corrupted), forKey: "bytes")
+            }
+            try context.save()
+            context.reset()
+        }
+    }
+
+    private func corruptFirstLocalEnvelopeHeader(
+        snapshotID: UUID,
+        in controller: PersistenceController
+    ) async throws {
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+            request.predicate = NSPredicate(format: "snapshotID == %@", snapshotID as NSUUID)
+            let rows = try context.fetch(request)
+            XCTAssertFalse(rows.isEmpty)
+            let bindingDigestOffset = 8 + 16 + 16 + MemoryLayout<UInt64>.size + ContentDigest.byteCount
+            for row in rows {
+                let stored = try XCTUnwrap(row.value(forKey: "bytes") as? Data)
+                var corrupted = [UInt8](stored)
+                XCTAssertGreaterThan(corrupted.count, bindingDigestOffset)
+                corrupted[bindingDigestOffset] ^= 0xff
                 row.setValue(Data(corrupted), forKey: "bytes")
             }
             try context.save()
