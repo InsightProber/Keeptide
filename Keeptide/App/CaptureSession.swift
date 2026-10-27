@@ -22,6 +22,10 @@ final class CaptureSession {
     @ObservationIgnored private var selectionRead: Task<(ResolvedContent, ClipTextPreview?), Error>?
     @ObservationIgnored private var copyGeneration = 0
     @ObservationIgnored private var readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)?
+    /// Search over the local index; nil until the store opens. No UI uses it yet.
+    @ObservationIgnored private(set) var searchService: SearchService?
+    @ObservationIgnored private var searchIndex: SQLiteSearchIndex?
+    @ObservationIgnored private var historyConsumer: HistoryConsumer?
 
     var status: String { monitor?.status ?? message ?? "Not recording" }
     var isPausing: Bool { monitor?.isPausing ?? false }
@@ -87,6 +91,7 @@ final class CaptureSession {
                 MainActor.assumeIsolated { monitor?.foregroundApplicationChanged(to: identifier) }
             }
             self.monitor = monitor
+            await startSearch(store: store, directory: directory)
             isReady = true
             message = nil
             await refresh()
@@ -94,6 +99,25 @@ final class CaptureSession {
         } catch {
             message = "The local library could not be opened. Recording is unavailable."
         }
+    }
+
+    /// A search index failure leaves recording and the library usable; searches
+    /// then report the index as unavailable.
+    private func startSearch(store: PersistenceController, directory: URL) async {
+        let status = SearchIndexStatus()
+        let searchDirectory = directory.appendingPathComponent("Search", isDirectory: true)
+        guard let index = try? await Task.detached(priority: .utility, operation: {
+            try SQLiteSearchIndex(directory: searchDirectory)
+        }).value else {
+            status.update(.unavailable)
+            searchService = SearchService(index: nil, status: status)
+            return
+        }
+        let consumer = HistoryConsumer(controller: store, index: index, status: status)
+        searchIndex = index
+        historyConsumer = consumer
+        searchService = SearchService(index: index, status: status)
+        await consumer.start()
     }
 
     func refresh() async {
@@ -177,8 +201,13 @@ final class CaptureSession {
         foregroundObserver = nil
         await monitor?.stopAndDrain()
         monitor = nil
+        await historyConsumer?.stopAndDrain()
+        historyConsumer = nil
         try? await controller?.close()
         controller = nil
+        searchIndex?.close()
+        searchIndex = nil
+        searchService = nil
         readContent = nil
         isReady = false
     }

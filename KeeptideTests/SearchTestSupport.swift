@@ -46,7 +46,10 @@ enum SearchTestSupport {
         ])], changeCount: count, sourceApp: "test.source")
     }
 
-    static func waitUntil(timeout: Duration = .seconds(5), _ condition: () async throws -> Bool) async throws {
+    static func waitUntil(
+        timeout: Duration = .seconds(5), isolation: isolated (any Actor)? = #isolation,
+        _ condition: () async throws -> Bool
+    ) async throws {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if try await condition() { return }
