@@ -177,6 +177,22 @@ final class SQLiteSearchIndexTests: XCTestCase {
         XCTAssertEqual(currentMatches, [[.integer(Int64(items.indices.filter { $0 % 3 != 2 }.count))]])
     }
 
+    func testInterruptStopsARunningQueryAndLeavesTheReaderUsable() throws {
+        let index = try makeReadyIndex()
+        let reader = try index.openReader()
+        defer { reader.close() }
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(50)) { reader.interrupt() }
+        let started = Date()
+
+        XCTAssertThrowsError(try reader.rows(
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c LIMIT 200000000) SELECT count(*) FROM c", []
+        )) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 5)
+        XCTAssertEqual(try reader.rows("SELECT 1", []), [[.integer(1)]])
+    }
+
     private func makeIndex() throws -> SQLiteSearchIndex {
         let directory = SearchTestSupport.directory()
         let index = try SQLiteSearchIndex(directory: directory)
