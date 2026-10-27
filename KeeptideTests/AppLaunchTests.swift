@@ -5,6 +5,10 @@ import XCTest
 
 @MainActor
 final class AppLaunchTests: XCTestCase {
+    func testDefaultLibraryInitializerCreatesItsWindow() {
+        XCTAssertNotNil(LibraryWindowController().window)
+    }
+
     func testCaptureStartsDisabled() {
         let suiteName = "AppLaunchTests.captureStartsDisabled.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -120,6 +124,14 @@ final class AppLaunchTests: XCTestCase {
         )
 
         XCTAssertFalse(configuration.shouldRegisterGlobalHotKey)
+    }
+
+    func testExplicitSyntheticHotKeyIsAvailableInsideTheUITestEnvironment() {
+        let arguments = ["--ui-testing", "--synthetic-hotkey"]
+        let environment = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        XCTAssertTrue(LaunchConfiguration(arguments: arguments, environment: environment).shouldRegisterGlobalHotKey)
+        XCTAssertFalse(LaunchConfiguration(arguments: arguments + ["--disable-global-hotkey"],
+                                          environment: environment).shouldRegisterGlobalHotKey)
     }
 
     func testEscapeCancelsMarkedTextBeforeClearingTheQuery() {

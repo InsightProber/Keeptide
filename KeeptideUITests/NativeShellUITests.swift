@@ -93,7 +93,12 @@ final class NativeShellUITests: XCTestCase {
 
         // Use a reserved synthetic chord through the real Carbon registration path.
         host.typeKey(.F19, modifierFlags: modifiers)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        guard panel.waitForExistence(timeout: 5) else {
+            let beforeMenu = app.debugDescription
+            app.menuBars.statusItems["Keeptide"].click()
+            XCTFail("Hotkey did not present panel. Before menu: \(beforeMenu) After menu: \(app.debugDescription)")
+            return
+        }
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
         query.typeText("first session")
@@ -107,20 +112,20 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(input.value as? String, "before after")
 
         host.typeKey(.F19, modifierFlags: modifiers)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeText("toggle session")
         query.typeKey(.F19, modifierFlags: modifiers)
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         host.typeKey(.F19, modifierFlags: modifiers)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeText("click away session")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         // One key press must open a fresh session after click-away.
         host.typeKey(.F19, modifierFlags: modifiers)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
@@ -128,7 +133,7 @@ final class NativeShellUITests: XCTestCase {
                        "io.github.insightprober.Keeptide.SystemTestHost")
 
         host.typeKey(.F19, modifierFlags: modifiers)
-        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         query.typeText("must not return with library")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
@@ -162,7 +167,7 @@ final class NativeShellUITests: XCTestCase {
         app.launch()
 
         let libraryWindow = app.windows["KeeptideLibraryWindow"]
-        XCTAssertTrue(libraryWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(libraryWindow.waitForExistence(timeout: 5), app.debugDescription)
 
         app.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(libraryWindow.waitForNonExistence(timeout: 5))
@@ -175,6 +180,6 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertTrue(openLibrary.waitForExistence(timeout: 5))
         openLibrary.click()
 
-        XCTAssertTrue(libraryWindow.waitForExistence(timeout: 5))
+        XCTAssertTrue(libraryWindow.waitForExistence(timeout: 5), app.debugDescription)
     }
 }

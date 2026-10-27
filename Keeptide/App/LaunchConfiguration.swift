@@ -9,7 +9,8 @@ struct LaunchConfiguration: Sendable {
     init(arguments: [String], environment: [String: String]) {
         usesSyntheticHotKey = arguments.contains("--ui-testing") && arguments.contains("--synthetic-hotkey")
         let isRunningTests = environment["XCTestConfigurationFilePath"] != nil
-        shouldRegisterGlobalHotKey = !isRunningTests && !arguments.contains("--disable-global-hotkey")
+        shouldRegisterGlobalHotKey = (usesSyntheticHotKey || !isRunningTests)
+            && !arguments.contains("--disable-global-hotkey")
         shouldShowQuickAccess = arguments.contains("--show-quick-access")
         shouldShowLibrary = arguments.contains("--show-library")
     }
