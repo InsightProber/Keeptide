@@ -1,7 +1,9 @@
 # Architecture overview
 
 Keeptide is designed as a local-first native macOS application. This document
-describes the planned architecture; the application has not been implemented yet.
+describes the overall architecture. The native shell and local storage foundation
+are implemented. Capture, editing, search, exports, and cloud integration remain
+planned.
 
 ## Native interfaces
 
@@ -34,7 +36,12 @@ flowchart TB
 
 Core Data, backed by SQLite, is the authoritative content store. Metadata and
 large content are handled separately so browsing the library does not require
-loading every image or rich representation into memory.
+loading every image or rich representation into memory. Portable content and
+local-only usage and file access information use separate stores. Atomic content
+transactions validate versions and references before committing. Snapshot reads
+retain a consistent view while later edits proceed; an unavailable old payload
+terminates the snapshot instead of mixing versions. Persistent changes identify
+records for downstream consumers without duplicating their bodies.
 
 An original capture preserves the clipboard content and its representations.
 A saved snippet can initially reference that capture. Its first body edit creates

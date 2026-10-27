@@ -12,13 +12,14 @@ as a snippet, or write one directly.
 
 > **Status: early development.** The native foundation includes a menu-bar app,
 > a quick-access panel, a library window, and a separate system test host.
-> Clipboard capture, content storage, search, snippets, and iCloud saving are
-> still planned. There is no end-user release yet.
+> The storage foundation provides local persistence, content validation, and
+> consistent reads. Clipboard capture, search, snippet workflows, and iCloud
+> saving are still planned. There is no end-user release yet.
 
 ## Designed for the Mac
 
 The following capabilities describe the planned first release; only the native
-foundation listed above is implemented today.
+and storage foundations listed above are implemented today.
 
 - A focused quick-access panel and a native library window.
 - Keyboard-first navigation with predictable focus and text editing.

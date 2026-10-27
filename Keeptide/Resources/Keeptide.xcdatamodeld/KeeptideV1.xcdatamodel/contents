@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="25249" systemVersion="26B118" minimumToolsVersion="Automatic" sourceLanguage="Swift" userDefinedModelVersionIdentifier="1">
+    <entity name="CaptureRepresentation" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="byteCount" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="bytes" optional="YES" attributeType="Binary" allowsExternalBinaryDataStorage="YES"/>
+        <attribute name="digest" optional="YES" attributeType="Binary"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="itemIndex" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="representationIndex" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="snapshotID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="storage" optional="YES" attributeType="String"/>
+        <attribute name="typeIdentifier" optional="YES" attributeType="String"/>
+        <relationship name="snapshot" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CaptureSnapshot" inverseName="representations" inverseEntity="CaptureSnapshot"/>
+        <fetchIndex name="CaptureRepresentation_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="CaptureRepresentation_by_snapshot_coordinate">
+            <fetchIndexElement property="snapshotID" type="Binary" order="ascending"/>
+            <fetchIndexElement property="itemIndex" type="Binary" order="ascending"/>
+            <fetchIndexElement property="representationIndex" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="CaptureSnapshot" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="digest" optional="YES" attributeType="Binary"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="manifest" optional="YES" attributeType="Binary"/>
+        <relationship name="items" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="LibraryItem" inverseName="capture" inverseEntity="LibraryItem"/>
+        <relationship name="representations" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="CaptureRepresentation" inverseName="snapshot" inverseEntity="CaptureRepresentation"/>
+        <fetchIndex name="CaptureSnapshot_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="Collection" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="color" optional="YES" attributeType="String"/>
+        <attribute name="deletedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="sortOrder" optional="YES" attributeType="Double" defaultValueString="0" usesScalarValueType="YES"/>
+        <relationship name="items" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="LibraryItem" inverseName="collection" inverseEntity="LibraryItem"/>
+        <fetchIndex name="Collection_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="FacetDeletionMarker" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="facet" optional="YES" attributeType="String"/>
+        <attribute name="generationID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="itemID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="purgedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <fetchIndex name="FacetDeletionMarker_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="FacetDeletionMarker_by_item_facet_generation">
+            <fetchIndexElement property="itemID" type="Binary" order="ascending"/>
+            <fetchIndexElement property="facet" type="Binary" order="ascending"/>
+            <fetchIndexElement property="generationID" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="FileAccessRecord" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="bookmark" optional="YES" attributeType="Binary" allowsExternalBinaryDataStorage="YES"/>
+        <attribute name="bytes" optional="YES" attributeType="Binary" allowsExternalBinaryDataStorage="YES"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="localPath" optional="YES" attributeType="String"/>
+        <attribute name="snapshotID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <fetchIndex name="FileAccessRecord_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="ItemDeletionMarker" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="deletedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <fetchIndex name="ItemDeletionMarker_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="LibraryItem" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="captureID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="collectionID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="copyCount" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="createdAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="deletedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="historyDeletedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="historyEligible" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="historyPurgeAfter" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="isFavorite" optional="YES" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="lastCopiedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="memoID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="sourceApp" optional="YES" attributeType="String"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <relationship name="capture" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="CaptureSnapshot" inverseName="items" inverseEntity="CaptureSnapshot"/>
+        <relationship name="collection" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="Collection" inverseName="items" inverseEntity="Collection"/>
+        <relationship name="memo" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="MemoDocument" inverseName="item" inverseEntity="MemoDocument"/>
+        <fetchIndex name="LibraryItem_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="LibraryItem_by_captureID">
+            <fetchIndexElement property="captureID" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="LibraryItem_by_recency">
+            <fetchIndexElement property="lastCopiedAt" type="Binary" order="descending"/>
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="MemoDocument" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="body" optional="YES" attributeType="Binary" allowsExternalBinaryDataStorage="YES"/>
+        <attribute name="bodyMode" optional="YES" attributeType="String"/>
+        <attribute name="deletedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="digest" optional="YES" attributeType="Binary"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="itemID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="languageHint" optional="YES" attributeType="String"/>
+        <attribute name="note" optional="YES" attributeType="String"/>
+        <attribute name="purgeAfter" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="sourceRepresentationType" optional="YES" attributeType="String"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <attribute name="version" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <relationship name="item" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="LibraryItem" inverseName="memo" inverseEntity="LibraryItem"/>
+        <fetchIndex name="MemoDocument_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="MemoDocument_by_itemID">
+            <fetchIndexElement property="itemID" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="StoreIdentity" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="generation" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="safetyState" optional="YES" attributeType="String"/>
+        <fetchIndex name="StoreIdentity_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="UsageExecutionDedup" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="recordedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <fetchIndex name="UsageExecutionDedup_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="UsageExecutionDedup_by_recordedAt_id">
+            <fetchIndexElement property="recordedAt" type="Binary" order="ascending"/>
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <entity name="UsageSummary" representedClassName="NSManagedObject" syncable="YES">
+        <attribute name="facet" optional="YES" attributeType="String"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO" preserveAfterDeletion="YES"/>
+        <attribute name="itemID" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="lastUsedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="useCount" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <fetchIndex name="UsageSummary_by_id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="UsageSummary_by_item_facet">
+            <fetchIndexElement property="itemID" type="Binary" order="ascending"/>
+            <fetchIndexElement property="facet" type="Binary" order="ascending"/>
+        </fetchIndex>
+    </entity>
+    <configuration name="CloudContent" usedWithCloudKit="YES">
+        <memberEntity name="LibraryItem"/>
+        <memberEntity name="CaptureSnapshot"/>
+        <memberEntity name="CaptureRepresentation"/>
+        <memberEntity name="MemoDocument"/>
+        <memberEntity name="Collection"/>
+        <memberEntity name="ItemDeletionMarker"/>
+        <memberEntity name="FacetDeletionMarker"/>
+    </configuration>
+    <configuration name="LocalState">
+        <memberEntity name="StoreIdentity"/>
+        <memberEntity name="UsageSummary"/>
+        <memberEntity name="UsageExecutionDedup"/>
+        <memberEntity name="FileAccessRecord"/>
+    </configuration>
+</model>

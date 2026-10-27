@@ -2,7 +2,8 @@
 
 Thank you for taking an interest in Keeptide. The project is in early native
 development. A menu-bar application, quick-access panel, library shell, and
-verification infrastructure are present; the content workflows remain planned.
+verification infrastructure are present. Local persistence and content validation
+are implemented; the user-facing content workflows remain planned.
 
 ## Before making a change
 
@@ -37,7 +38,7 @@ The verification entry point provides these commands:
 
 ```sh
 ./scripts/verify.sh unit AppLaunchTests
-./scripts/verify.sh integration AppLaunchTests
+./scripts/verify.sh integration ContentRepositoryTests
 ./scripts/verify.sh ui NativeShellUITests
 ./scripts/verify.sh release-build
 ./scripts/verify.sh warnings-build

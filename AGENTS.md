@@ -23,9 +23,10 @@ storage. Native interaction quality and data reliability are release criteria.
 
 The repository contains an early native foundation: the `Keeptide` application,
 unit and UI test targets, a separate `KeeptideSystemTestHost`, and a shared Xcode
-scheme. Capture, persistence, search, snippets, and cloud integration are still
-planned. Planned capabilities must remain labelled as planned until implemented
-and verified.
+scheme. The storage foundation includes two local Core Data stores, typed
+transactions, content validation, consistent snapshots, and persistent change
+consumption. Capture, search, snippet workflows, and cloud integration remain
+planned. Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here
 
