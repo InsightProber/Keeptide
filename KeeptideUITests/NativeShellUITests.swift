@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import XCTest
 
 @MainActor
@@ -73,7 +74,7 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertTrue(quickAccessPanel.waitForNonExistence(timeout: 5))
     }
 
-    func testGlobalHotKeySessionsReturnFocusAndDoNotResurrect() {
+    func testGlobalHotKeySessionsReturnFocusAndDoNotResurrect() throws {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--synthetic-hotkey"]
@@ -89,10 +90,9 @@ final class NativeShellUITests: XCTestCase {
         input.typeText("before")
         let panel = app.dialogs["KeeptideQuickAccessPanel"]
         let query = app.searchFields["Quick access query"]
-        let modifiers: XCUIElement.KeyModifierFlags = [.command, .shift, .control, .option]
 
         // Use a reserved synthetic chord through the real Carbon registration path.
-        host.typeKey(.F19, modifierFlags: modifiers)
+        try pressSyntheticHotKey()
         guard panel.waitForExistence(timeout: 5) else {
             let beforeMenu = app.debugDescription
             app.menuBars.statusItems["Keeptide"].click()
@@ -111,20 +111,20 @@ final class NativeShellUITests: XCTestCase {
         host.typeText(" after")
         XCTAssertEqual(input.value as? String, "before after")
 
-        host.typeKey(.F19, modifierFlags: modifiers)
+        try pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeText("toggle session")
-        query.typeKey(.F19, modifierFlags: modifiers)
+        try pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
-        host.typeKey(.F19, modifierFlags: modifiers)
+        try pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeText("click away session")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         // One key press must open a fresh session after click-away.
-        host.typeKey(.F19, modifierFlags: modifiers)
+        try pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeKey(.escape, modifierFlags: [])
@@ -132,7 +132,7 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
 
-        host.typeKey(.F19, modifierFlags: modifiers)
+        try pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         query.typeText("must not return with library")
         input.click()
@@ -142,6 +142,20 @@ final class NativeShellUITests: XCTestCase {
         app.menuItems["Open Library"].click()
         XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 5))
         XCTAssertFalse(panel.exists)
+    }
+
+    private func pressSyntheticHotKey() throws {
+        // Global registration must be exercised with a session-wide event, rather
+        // than input synthesized specifically for an XCUIElement's application.
+        XCTAssertTrue(CGPreflightPostEventAccess(), "UI runner needs event-posting access for the global shortcut test")
+        let allowedTargets = ["io.github.insightprober.Keeptide", "io.github.insightprober.Keeptide.SystemTestHost"]
+        XCTAssertTrue(allowedTargets.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""))
+        let down = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_F19), keyDown: true))
+        let up = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_F19), keyDown: false))
+        down.flags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+        up.flags = down.flags
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
     }
 
     func testLaunchServicesReopenShowsLibrary() throws {
