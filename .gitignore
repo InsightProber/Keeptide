@@ -23,6 +23,10 @@ build/
 xcuserdata/
 *.xcresult/
 
+# Verification script caches.
+__pycache__/
+*.py[cod]
+
 # Local credentials and signing material.
 .env
 .env.*

@@ -10,12 +10,15 @@ Bring up a compact panel to find and reuse content without leaving your work.
 Open the library when you want to edit, organize, or read. Save a useful capture
 as a snippet, or write one directly.
 
-> **Status: pre-implementation.** This repository currently contains the product
-> direction, architecture overview, roadmap, and contributor guidance. There is
-> no application download or buildable Xcode project yet. The capabilities below
-> are planned for the first release.
+> **Status: early development.** The native foundation includes a menu-bar app,
+> a quick-access panel, a library window, and a separate system test host.
+> Clipboard capture, content storage, search, snippets, and iCloud saving are
+> still planned. There is no end-user release yet.
 
 ## Designed for the Mac
+
+The following capabilities describe the planned first release; only the native
+foundation listed above is implemented today.
 
 - A focused quick-access panel and a native library window.
 - Keyboard-first navigation with predictable focus and text editing.
@@ -38,6 +41,18 @@ the first-release scope.
 | [Roadmap](docs/roadmap.md) | Capability milestones and future direction |
 | [Contributing](CONTRIBUTING.md) | Project status, contribution workflow, and documentation policy |
 | [Agent instructions](AGENTS.md) | Shared project guidance for Codex and Claude Code |
+
+## Development
+
+Open `Keeptide.xcodeproj` in full Xcode with the macOS 26 SDK or later and select
+the shared `Keeptide` scheme. The project uses Swift 6 and Apple frameworks;
+Command Line Tools alone cannot run its XCTest suite.
+
+Run `./scripts/verify.sh all` for native tests, a Release build, and a Debug build
+with Swift warnings treated as errors. See [Contributing](CONTRIBUTING.md) for focused
+commands and validation
+boundaries. The application starts with capture disabled and does not access the
+system clipboard in this foundation stage.
 
 ## Principles
 
