@@ -73,6 +73,7 @@ struct SearchPage: Sendable {
 final class SearchIndexStatus: @unchecked Sendable {
     private let lock = NSLock()
     private var current: SearchIndexState
+    private var pendingSaves = 0
     private var readFailureHandler: (@Sendable () -> Void)?
 
     init(_ state: SearchIndexState = .updating) {
@@ -83,6 +84,22 @@ final class SearchIndexStatus: @unchecked Sendable {
 
     func update(_ state: SearchIndexState) {
         lock.withLock { current = state }
+    }
+
+    /// Called synchronously for every store save: the index is now behind.
+    func markPending() {
+        lock.withLock {
+            pendingSaves += 1
+            if current == .ready { current = .updating }
+        }
+    }
+
+    /// The save count a pass starts from; see `finishPass(startedAt:)`.
+    var pendingMark: Int { lock.withLock { pendingSaves } }
+
+    /// Reports `.ready` only if no save arrived after the pass started.
+    func finishPass(startedAt mark: Int) {
+        lock.withLock { current = pendingSaves == mark ? .ready : .updating }
     }
 
     func setReadFailureHandler(_ handler: @escaping @Sendable () -> Void) {

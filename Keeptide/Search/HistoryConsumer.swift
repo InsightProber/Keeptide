@@ -19,6 +19,8 @@ actor HistoryConsumer {
     private var activePass: Task<Void, Error>?
     private var failures = 0
     private var rebuildRequested = false
+    /// The usage state last copied into the index; nil forces a refresh.
+    private var usageFingerprint: UsageSummaryFingerprint?
     private var stopped = false
 
     init(controller: PersistenceController, index: SQLiteSearchIndex, status: SearchIndexStatus,
@@ -32,9 +34,12 @@ actor HistoryConsumer {
     /// Observes writer saves and schedules the first pass; returns immediately.
     func start() {
         guard !stopped, observer == nil else { return }
+        let status = status
         observer = NotificationCenter.default.addObserver(
             forName: .NSManagedObjectContextDidSave, object: controller.writer, queue: nil
         ) { [weak self] _ in
+            // Runs during the save, before it returns, so no search sees `.ready` while behind.
+            status.markPending()
             Task { await self?.schedule() }
         }
         status.setReadFailureHandler { [weak self] in
@@ -108,6 +113,7 @@ actor HistoryConsumer {
     }
 
     private func synchronizeOnce() async throws {
+        let mark = status.pendingMark
         let identity = try await controller.identity()
         // nil: rebuild only if the index is unusable; .some(boundary): rebuild from it.
         var forcedRebuild: Data?? = rebuildRequested ? .some(nil) : nil
@@ -122,8 +128,8 @@ actor HistoryConsumer {
                 }
                 guard let metadata = try index.metadata() else { throw SearchIndexError.corrupt }
                 try await catchUp(from: metadata.checkpoint, identity: identity)
-                try index.replaceUsage(try await LocalUsageStore(controller: controller).allSummaries())
-                status.update(.ready)
+                await refreshUsage()
+                status.finishPass(startedAt: mark)
                 return
             } catch SearchIndexError.corrupt {
                 forcedRebuild = .some(nil)
@@ -140,6 +146,7 @@ actor HistoryConsumer {
     /// scan, so anything committed during the scan is replayed afterwards.
     private func rebuild(identity: StoreIdentity, from provided: Data?) async throws {
         status.update(.rebuilding)
+        usageFingerprint = nil
         try index.reset(identity: identity)
         var boundary = provided
         if boundary == nil {
@@ -153,6 +160,20 @@ actor HistoryConsumer {
         }
         try await project(ids, sequence: sequence, checkpoint: .keep)
         try index.finishBuild(checkpoint: boundary)
+    }
+
+    /// Usage only orders equally relevant results, so a failure here never fails
+    /// the pass; the mirror is retried on the next pass.
+    private func refreshUsage() async {
+        let usage = LocalUsageStore(controller: controller)
+        do {
+            let fingerprint = try await usage.summaryFingerprint()
+            guard fingerprint != usageFingerprint else { return }
+            try index.replaceUsage(try await usage.allSummaries())
+            usageFingerprint = fingerprint
+        } catch {
+            usageFingerprint = nil
+        }
     }
 
     private func catchUp(from start: Data?, identity: StoreIdentity) async throws {

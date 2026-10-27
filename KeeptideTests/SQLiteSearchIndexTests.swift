@@ -177,6 +177,32 @@ final class SQLiteSearchIndexTests: XCTestCase {
         XCTAssertEqual(currentMatches, [[.integer(Int64(items.indices.filter { $0 % 3 != 2 }.count))]])
     }
 
+    func testFailedResetLeavesTheIndexRetryableInsteadOfClosed() throws {
+        let directory = SearchTestSupport.directory()
+        let index = try SQLiteSearchIndex(directory: directory)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            index.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let identity = SearchTestSupport.identity()
+        try index.reset(identity: identity)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+
+        XCTAssertThrowsError(try index.reset(identity: identity))
+        // Either a retryable error or a reopened old file is fine; `.closed` is not.
+        do {
+            _ = try index.metadata()
+        } catch {
+            XCTAssertNotEqual(error as? SearchIndexError, .closed)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+
+        XCTAssertNoThrow(try index.metadata())
+        try index.reset(identity: identity)
+        XCTAssertEqual(try index.metadata()?.state, .building)
+    }
+
     func testInterruptStopsARunningQueryAndLeavesTheReaderUsable() throws {
         let index = try makeReadyIndex()
         let reader = try index.openReader()

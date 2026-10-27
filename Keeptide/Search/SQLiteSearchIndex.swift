@@ -56,7 +56,8 @@ final class SQLiteSearchIndex: @unchecked Sendable {
     let directory: URL
     private let lock = NSLock()
     private var connection: SQLiteConnection?
-    /// Set when the existing file is not a database; `reset` replaces it.
+    /// Why there is no connection: `.corrupt` waits for `reset`; any other
+    /// failure is retried by reopening on the next call. Nil after `close()`.
     private var openFailure: SearchIndexError?
 
     private var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
@@ -112,13 +113,19 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         try lock.withLock {
             connection?.close()
             connection = nil
-            for suffix in ["", "-wal", "-shm"] {
-                let url = directory.appendingPathComponent(Self.fileName + suffix)
-                if FileManager.default.fileExists(atPath: url.path) {
-                    try FileManager.default.removeItem(at: url)
+            let database: SQLiteConnection
+            do {
+                for suffix in ["", "-wal", "-shm"] {
+                    let url = directory.appendingPathComponent(Self.fileName + suffix)
+                    if FileManager.default.fileExists(atPath: url.path) {
+                        try FileManager.default.removeItem(at: url)
+                    }
                 }
+                database = try Self.openWriter(at: fileURL)
+            } catch {
+                openFailure = .unavailable(code: SQLITE_CANTOPEN)
+                throw error
             }
-            let database = try Self.openWriter(at: fileURL)
             connection = database
             openFailure = nil
             try database.transaction {
@@ -257,6 +264,15 @@ final class SQLiteSearchIndex: @unchecked Sendable {
 
     private func withConnection<T>(_ body: (SQLiteConnection) throws -> T) throws -> T {
         try lock.withLock {
+            if connection == nil, let failure = openFailure, failure != .corrupt {
+                do {
+                    connection = try Self.openWriter(at: fileURL)
+                    openFailure = nil
+                } catch SearchIndexError.corrupt {
+                    openFailure = .corrupt
+                    throw SearchIndexError.corrupt
+                }
+            }
             guard let connection else { throw openFailure ?? SearchIndexError.closed }
             return try body(connection)
         }

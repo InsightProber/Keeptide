@@ -27,6 +27,43 @@ final class SearchIndexTests: XCTestCase {
         try await SearchTestSupport.waitUntil { try await harness.search("自动").totalMatches == 1 }
     }
 
+    func testSavesMarkTheIndexUpdatingUntilCaughtUp() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let consumer = HistoryConsumer(controller: harness.controller, index: harness.index, status: harness.status,
+                                       debounce: .milliseconds(300))
+        await consumer.start()
+        try await SearchTestSupport.waitUntil { harness.status.state == .ready }
+
+        _ = try await CaptureService(controller: harness.controller).capture(SearchTestSupport.snapshot("pending 待处理", count: 1))
+
+        XCTAssertEqual(harness.status.state, .updating)
+        try await SearchTestSupport.waitUntil { harness.status.state == .ready }
+        await consumer.stopAndDrain()
+        let page = try await harness.search("待处理")
+        XCTAssertEqual(page.totalMatches, 1)
+    }
+
+    func testMalformedUsageRowDoesNotMakeTheIndexUnavailable() async throws {
+        let harness = try SearchHarness.make(in: self)
+        _ = try await CaptureService(controller: harness.controller).capture(SearchTestSupport.snapshot("usage isolation", count: 1))
+        try await harness.controller.perform { context in
+            let row = NSEntityDescription.insertNewObject(forEntityName: "UsageSummary", into: context)
+            row.setValue(UUID(), forKey: "id")
+            row.setValue(UUID(), forKey: "itemID")
+            row.setValue("not a facet", forKey: "facet")
+            row.setValue(Date(), forKey: "lastUsedAt")
+            row.setValue(Int64(1), forKey: "useCount")
+            try context.save()
+            context.reset()
+        }
+
+        try await harness.consumer.synchronize()
+        let page = try await harness.search("isolation")
+
+        XCTAssertEqual(harness.status.state, .ready)
+        XCTAssertEqual(page.totalMatches, 1)
+    }
+
     func testMemoEditReplacesOldVersion() async throws {
         let harness = try SearchHarness.make(in: self)
         let itemID = ItemID()
@@ -139,13 +176,15 @@ final class SearchIndexTests: XCTestCase {
         let often = try await service.capture(SearchTestSupport.snapshot("deploy script B", count: 2))
         let exact = try await service.capture(SearchTestSupport.snapshot("deploy", count: 3))
         let recent = try await ContentRepository(controller: try XCTUnwrap(harness?.controller)).recent(limit: 10)
-        let oftenRef = try XCTUnwrap(recent.first { $0.itemID == often.itemID }?.history)
+        // Receipts go to the older item, so recency alone would order it last.
+        let usedRef = try XCTUnwrap(recent.first { $0.itemID == rarely.itemID }?.history)
         let usage = LocalUsageStore(controller: try XCTUnwrap(harness?.controller))
+        try await harness?.consumer.synchronize()
         for _ in 0..<3 {
-            try await usage.record(UseReceipt(ref: oftenRef, outcome: .success))
+            try await usage.record(UseReceipt(ref: usedRef, outcome: .success))
         }
         try await harness?.consumer.synchronize()
-        let expected = [exact.itemID, often.itemID, rarely.itemID]
+        let expected = [exact.itemID, rarely.itemID, often.itemID]
         let before = try await try XCTUnwrap(harness).search("deploy").results.map(\.ref.itemID)
         try await harness?.close()
         harness = nil

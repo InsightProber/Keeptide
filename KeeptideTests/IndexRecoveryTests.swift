@@ -173,6 +173,25 @@ final class IndexRecoveryTests: XCTestCase {
         XCTAssertEqual(try harness.index.allDocuments(), current)
     }
 
+    func testWriteFailureIsRetriedInsteadOfStoppingTheConsumer() async throws {
+        let harness = try SearchHarness.make(in: self)
+        try await harness.insertTextItems(count: 3, prefix: "retry")
+        let search = harness.directory.appendingPathComponent("Search", isDirectory: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: search.path)
+        addTeardownBlock { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: search.path) }
+
+        do {
+            try await harness.consumer.synchronize()
+            XCTFail("An unwritable index directory was reported as synchronized")
+        } catch {}
+        XCTAssertEqual(harness.status.state, .unavailable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: search.path)
+        try await harness.consumer.synchronize()
+
+        XCTAssertEqual(harness.status.state, .ready)
+        XCTAssertEqual(try harness.index.allDocuments().count, 3)
+    }
+
     private func execute(on harness: SearchHarness, _ sql: String, _ bindings: [SQLiteValue] = []) throws {
         let path = harness.directory.appendingPathComponent("Search/\(SQLiteSearchIndex.fileName)").path
         let connection = try SQLiteConnection(path: path, flags: SQLITE_OPEN_READWRITE)
