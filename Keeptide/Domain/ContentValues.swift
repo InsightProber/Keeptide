@@ -25,7 +25,7 @@ struct ContentVersion: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-enum ContentFacet: String, Codable, Equatable, Sendable {
+enum ContentFacet: String, Codable, Equatable, Hashable, Sendable {
     case history
     case memo
 }
@@ -228,9 +228,9 @@ enum ContentIntegrity: String, Codable, Equatable, Sendable {
 }
 
 struct ResolvedContent: Codable, Equatable, Sendable {
-    var ref: ContentRef
-    var integrity: ContentIntegrity
-    var representations: [RepresentationValue]
+    let ref: ContentRef
+    let integrity: ContentIntegrity
+    let representations: [RepresentationValue]
 
     init(ref: ContentRef, integrity: ContentIntegrity, representations: [RepresentationValue]) {
         self.ref = ref
@@ -240,6 +240,26 @@ struct ResolvedContent: Codable, Equatable, Sendable {
 
     var isActionable: Bool {
         integrity == .complete
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case ref, integrity, representations
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            ref: try container.decode(ContentRef.self, forKey: .ref),
+            integrity: try container.decode(ContentIntegrity.self, forKey: .integrity),
+            representations: try container.decode([RepresentationValue].self, forKey: .representations)
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(ref, forKey: .ref)
+        try container.encode(integrity, forKey: .integrity)
+        try container.encode(representations, forKey: .representations)
     }
 }
 

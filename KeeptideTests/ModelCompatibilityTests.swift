@@ -11,14 +11,30 @@ final class ModelCompatibilityTests: XCTestCase {
         "StoreIdentity", "UsageSummary", "UsageExecutionDedup", "FileAccessRecord"
     ]
 
-    func testV1ModelHasExactConfigurationBoundariesAndVersionIdentifier() throws {
+    func testIndexUpgradeRequiresAnInferredMigrationFromTheFrozenV1Model() throws {
+        let current = try loadModel()
+        let directory = try XCTUnwrap(Bundle(for: PersistenceController.self)
+            .url(forResource: "Keeptide", withExtension: "momd"))
+        let original = try XCTUnwrap(NSManagedObjectModel(contentsOf:
+            directory.appendingPathComponent("KeeptideV1.mom")))
+        XCTAssertEqual(original.versionIdentifiers, ["1"])
+        for entity in ["CaptureSnapshot", "LibraryItem"] {
+            XCTAssertNotEqual(original.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity])
+        }
+        for entity in localEntities {
+            XCTAssertEqual(original.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity])
+        }
+        _ = try NSMappingModel.inferredMappingModel(forSourceModel: original, destinationModel: current)
+    }
+
+    func testCurrentModelHasExactConfigurationBoundariesAndVersionIdentifier() throws {
         let model = try loadModel()
 
         let customConfigurations = Set(model.configurations).subtracting(["PF_DEFAULT_CONFIGURATION_NAME"])
         XCTAssertEqual(customConfigurations, ["CloudContent", "LocalState"])
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent")).compactMap(\.name)), cloudEntities)
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "LocalState")).compactMap(\.name)), localEntities)
-        XCTAssertEqual(model.versionIdentifiers, ["1"])
+        XCTAssertEqual(model.versionIdentifiers, ["2"])
     }
 
     func testCloudEntitiesExposeTheFrozenAttributes() throws {
@@ -181,8 +197,9 @@ final class ModelCompatibilityTests: XCTestCase {
     func testRequiredLookupIndexesArePresent() throws {
         let model = try loadModel()
         let expected: [String: Set<String>] = [
-            "LibraryItem": ["id:ascending", "captureID:ascending", "lastCopiedAt:descending,id:ascending"],
-            "CaptureSnapshot": ["id:ascending"],
+            "LibraryItem": ["id:ascending", "captureID:ascending", "memoID:ascending", "collectionID:ascending",
+                            "lastCopiedAt:descending,id:ascending"],
+            "CaptureSnapshot": ["id:ascending", "digest:ascending"],
             "CaptureRepresentation": [
                 "id:ascending", "snapshotID:ascending,itemIndex:ascending,representationIndex:ascending"
             ],

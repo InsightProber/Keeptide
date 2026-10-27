@@ -38,6 +38,25 @@ final class CaptureManifestTests: XCTestCase {
         )
     }
 
+    func testCanonicalManifestFixtureIsStableForUnicodeSlashesAndBase64() throws {
+        let manifest = CaptureManifest(itemCount: 1, entries: [
+            ManifestEntry(
+                itemIndex: 0,
+                representationIndex: 0,
+                typeIdentifier: "com.example.café/图",
+                storage: .portable,
+                byteCount: 3,
+                digest: Data([251, 255, 239])
+            )
+        ])
+        let fixture = Data(
+            #"{"entries":[{"byteCount":3,"digest":"+//v","itemIndex":0,"representationIndex":0,"storage":"portable","typeIdentifier":"com.example.café/图"}],"itemCount":1,"version":1}"#.utf8
+        )
+
+        XCTAssertEqual(try manifest.canonicalData(), fixture)
+        XCTAssertEqual(try JSONDecoder().decode(CaptureManifest.self, from: fixture), manifest)
+    }
+
     func testEquivalentContentIgnoresRandomRepresentationAndSnapshotIdentities() throws {
         let bytes = Data("same bytes".utf8)
         let digest = sha256(bytes)
@@ -155,6 +174,33 @@ final class CaptureManifestTests: XCTestCase {
         XCTAssertEqual(manifest.validate([corruptBytes], snapshotID: snapshotID), .corrupt)
     }
 
+    func testCanonicallyEquivalentTypeIdentifiersAreNotTheSameManifestIdentity() {
+        let snapshotID = UUID()
+        let bytes = Data("payload".utf8)
+        let composed = "com.example.caf\u{E9}"
+        let decomposed = "com.example.cafe\u{301}"
+        XCTAssertEqual(composed, decomposed, "The fixture must exercise Swift canonical equivalence")
+        XCTAssertNotEqual(Array(composed.utf8), Array(decomposed.utf8))
+
+        let representation = representation(
+            snapshotID: snapshotID,
+            typeIdentifier: decomposed,
+            bytes: bytes
+        )
+        let manifest = CaptureManifest(itemCount: 1, entries: [
+            ManifestEntry(
+                itemIndex: 0,
+                representationIndex: 0,
+                typeIdentifier: composed,
+                storage: .portable,
+                byteCount: Int64(bytes.count),
+                digest: sha256(bytes)
+            )
+        ])
+
+        XCTAssertEqual(manifest.validate([representation], snapshotID: snapshotID), .corrupt)
+    }
+
     func testLocalReferenceContainingPortableBytesIsCorrupt() {
         let snapshotID = UUID()
         let bytes = Data("must remain local".utf8)
@@ -168,21 +214,47 @@ final class CaptureManifestTests: XCTestCase {
         XCTAssertEqual(manifest.validate([value], snapshotID: snapshotID), .corrupt)
     }
 
-    func testNoncontiguousOrUnorderedManifestCoordinatesAreCorrupt() {
+    func testLaterManifestCoordinatesMustBeContiguousOrderedAndUnique() {
         let digest = Data(repeating: 1, count: 32)
-        let gap = CaptureManifest(itemCount: 1, entries: [
+        let validFirst = ManifestEntry(
+            itemIndex: 0,
+            representationIndex: 0,
+            typeIdentifier: "public.data",
+            storage: .portable,
+            byteCount: 0,
+            digest: digest
+        )
+        let representationGap = CaptureManifest(itemCount: 1, entries: [
+            validFirst,
+            ManifestEntry(itemIndex: 0, representationIndex: 2, typeIdentifier: "public.data",
+                          storage: .portable, byteCount: 0, digest: digest)
+        ])
+        let itemGap = CaptureManifest(itemCount: 3, entries: [
+            validFirst,
+            ManifestEntry(itemIndex: 2, representationIndex: 0, typeIdentifier: "public.data",
+                          storage: .portable, byteCount: 0, digest: digest)
+        ])
+        let backwards = CaptureManifest(itemCount: 2, entries: [
+            validFirst,
+            ManifestEntry(itemIndex: 1, representationIndex: 0, typeIdentifier: "public.data",
+                          storage: .portable, byteCount: 0, digest: digest),
             ManifestEntry(itemIndex: 0, representationIndex: 1, typeIdentifier: "public.data",
                           storage: .portable, byteCount: 0, digest: digest)
         ])
-        let unordered = CaptureManifest(itemCount: 1, entries: [
+        let duplicate = CaptureManifest(itemCount: 1, entries: [validFirst, validFirst])
+        let itemCountMismatch = CaptureManifest(itemCount: 2, entries: [validFirst])
+        let shortDigest = CaptureManifest(itemCount: 1, entries: [
+            validFirst,
             ManifestEntry(itemIndex: 0, representationIndex: 1, typeIdentifier: "public.data",
-                          storage: .localReference, byteCount: 0, digest: digest),
-            ManifestEntry(itemIndex: 0, representationIndex: 0, typeIdentifier: "public.data",
-                          storage: .localReference, byteCount: 0, digest: digest)
+                          storage: .portable, byteCount: 0, digest: Data([1, 2]))
         ])
 
-        XCTAssertEqual(gap.validate([], snapshotID: UUID()), .corrupt)
-        XCTAssertEqual(unordered.validate([], snapshotID: UUID()), .corrupt)
+        XCTAssertEqual(representationGap.validate([], snapshotID: UUID()), .corrupt)
+        XCTAssertEqual(itemGap.validate([], snapshotID: UUID()), .corrupt)
+        XCTAssertEqual(backwards.validate([], snapshotID: UUID()), .corrupt)
+        XCTAssertEqual(duplicate.validate([], snapshotID: UUID()), .corrupt)
+        XCTAssertEqual(itemCountMismatch.validate([], snapshotID: UUID()), .corrupt)
+        XCTAssertEqual(shortDigest.validate([], snapshotID: UUID()), .corrupt)
     }
 
     func testManifestCannotStartAtItemOne() {
@@ -207,6 +279,26 @@ final class CaptureManifestTests: XCTestCase {
         XCTAssertFalse(ResolvedContent(ref: ref, integrity: .corrupt, representations: []).isActionable)
         XCTAssertFalse(ResolvedContent(ref: ref, integrity: .requiresRelocation, representations: []).isActionable)
         XCTAssertTrue(ResolvedContent(ref: ref, integrity: .corrupt, representations: [untrusted]).representations.isEmpty)
+    }
+
+    func testDecodedIncompleteContentCannotCarryUnvalidatedRepresentations() throws {
+        let ref = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let untrusted = RepresentationValue(
+            snapshotID: UUID(), itemIndex: 0, representationIndex: 0,
+            typeIdentifier: "public.data", storage: .portable,
+            byteCount: 0, digest: Data(repeating: 0, count: 32), bytes: Data()
+        )
+        let complete = ResolvedContent(ref: ref, integrity: .complete, representations: [untrusted])
+        let encoded = try JSONEncoder().encode(complete)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object["integrity"] = ContentIntegrity.corrupt.rawValue
+        let corruptEncoding = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+
+        let decoded = try JSONDecoder().decode(ResolvedContent.self, from: corruptEncoding)
+
+        XCTAssertEqual(decoded.integrity, .corrupt)
+        XCTAssertTrue(decoded.representations.isEmpty)
+        XCTAssertFalse(decoded.isActionable)
     }
 
     private func manifest(typeIdentifier: String, bytes: Data) -> CaptureManifest {

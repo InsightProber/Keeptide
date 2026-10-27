@@ -3,7 +3,9 @@ import Foundation
 enum StoreError: Error, Equatable {
     case closed, invalidModel, corruptStore, invalidTransaction, preconditionFailed
     case notFound, staleReference, invalidToken, invalidLease, snapshotUnavailable
-    case contentProtected, operationDenied
+    case contentProtected, operationDenied, storeInUse
+    // Rebuild the derived projection before adopting this captured history boundary.
+    case historyRequiresRebuild(checkpoint: Data?)
 }
 
 struct StoreIdentity: Codable, Equatable, Sendable {
@@ -69,7 +71,7 @@ enum StorePrecondition: Codable, Equatable, Sendable {
     case contentVersion(ContentRef)
     case recordUnchanged(RecordKey, fingerprint: Data)
     case facetVisible(ItemID, ContentFacet, Bool)
-    case candidateSet(fingerprint: Data)
+    case candidateSet(digest: Data, fingerprint: Data)
     case referenceSet(snapshotID: UUID, fingerprint: Data)
 }
 

@@ -420,9 +420,9 @@ final class StoreTransactionTests: XCTestCase {
             ))
             let existingState = try await ContentRepository(controller: controller).recordState(.collection(existing.id))
 
-            try await gate.transition(to: .quarantined)
+            try await gate.transition(to: .quarantined, expecting: oldIdentity)
             let quarantinedIdentity = try await controller.identity()
-            try await gate.transition(to: .active)
+            try await gate.transition(to: .active, expecting: quarantinedIdentity)
             let activeIdentity = try await controller.identity()
             XCTAssertNotEqual(quarantinedIdentity.generation, oldIdentity.generation)
             XCTAssertNotEqual(activeIdentity.generation, quarantinedIdentity.generation)
@@ -501,6 +501,7 @@ final class StoreTransactionTests: XCTestCase {
         let directory = try makeDirectory()
         let model = try modelRejectingInvalidCollectionName()
         var controller: PersistenceController? = try PersistenceController(directory: directory, model: model)
+        var reopenedController: PersistenceController?
         do {
             let active = try XCTUnwrap(controller)
             let capture = try ContentStoreFixtures.capture([
@@ -533,6 +534,7 @@ final class StoreTransactionTests: XCTestCase {
             try await active.close()
             controller = nil
             let reopened = try PersistenceController(directory: directory, model: model)
+            reopenedController = reopened
             let reopenedState = try await ContentRepository(controller: reopened).recordState(.item(originalItem.id))
             guard case .item(let persistedItem) = reopenedState.value else {
                 return XCTFail("The original item changed type")
@@ -545,9 +547,11 @@ final class StoreTransactionTests: XCTestCase {
             )
             XCTAssertEqual(resolved.representations.first?.bytes, Data("stable payload".utf8))
             try await reopened.close()
+            reopenedController = nil
             try FileManager.default.removeItem(at: directory)
         } catch {
             try? await controller?.close()
+            try? await reopenedController?.close()
             try? FileManager.default.removeItem(at: directory)
             throw error
         }
@@ -599,19 +603,20 @@ final class StoreTransactionTests: XCTestCase {
             var firstItem = ContentStoreFixtures.item(firstCapture)
             try await ContentStoreFixtures.insert(firstItem, firstCapture, into: controller)
             let repository = ContentRepository(controller: controller)
-            let oldCandidates = try await repository.candidateFingerprint()
-            let oldReferences = try await repository.referenceFingerprint(snapshotID: firstCapture.id)
+            let oldCandidates = try await repository.candidateFingerprint(digest: firstCapture.digest)
 
-            let secondCapture = try ContentStoreFixtures.capture([
-                [("public.utf8-plain-text", Data("second".utf8))]
-            ])
-            let secondItem = ContentStoreFixtures.item(secondCapture)
-            try await ContentStoreFixtures.insert(secondItem, secondCapture, into: controller)
+            let secondItem = ContentStoreFixtures.item(firstCapture)
+            _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+                identity: try await controller.identity(),
+                mutations: [.insert(.item(secondItem))]
+            ))
             let candidateSentinel = CollectionValue(name: "must not be inserted from stale candidates")
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
                     identity: try await controller.identity(),
-                    preconditions: [.candidateSet(fingerprint: oldCandidates)],
+                    preconditions: [
+                        .candidateSet(digest: firstCapture.digest, fingerprint: oldCandidates)
+                    ],
                     mutations: [.insert(.collection(candidateSentinel))]
                 ))
                 XCTFail("A stale candidate-set intent was committed")
@@ -620,6 +625,7 @@ final class StoreTransactionTests: XCTestCase {
             }
             try await assertMissing(.collection(candidateSentinel.id), in: controller)
 
+            let oldReferences = try await repository.referenceFingerprint(snapshotID: firstCapture.id)
             let itemState = try await repository.recordState(.item(firstItem.id))
             firstItem.historyEligible = false
             _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
@@ -675,7 +681,11 @@ final class StoreTransactionTests: XCTestCase {
             )
             XCTAssertEqual(original.representations.first?.bytes, Data("immutable".utf8))
 
-            try await StoreSafetyGate(controller: controller).transition(to: .quarantined)
+            let identity = try await controller.identity()
+            try await StoreSafetyGate(controller: controller).transition(
+                to: .quarantined,
+                expecting: identity
+            )
             let blocked = CollectionValue(name: "blocked")
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(

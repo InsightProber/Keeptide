@@ -11,17 +11,31 @@ struct StoreSafetyGate: Sendable {
         }
     }
 
-    func transition(to state: StoreSafetyState) async throws {
+    func transition(to state: StoreSafetyState, expecting identity: StoreIdentity) async throws {
         try await controller.perform { context in
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            context.reset()
+            defer { context.reset() }
             let request = NSFetchRequest<NSManagedObject>(entityName: "StoreIdentity")
-            guard let record = try context.fetch(request).first else { throw StoreError.corruptStore }
+            request.fetchLimit = 2
+            let records = try context.fetch(request)
+            guard records.count == 1, let record = records.first,
+                  record.value(forKey: "id") as? UUID == identity.storeID,
+                  record.value(forKey: "generation") as? UUID == identity.generation,
+                  record.value(forKey: "safetyState") as? String == controller.runtime.safety.rawValue else {
+                throw StoreError.corruptStore
+            }
+            guard state != controller.runtime.safety else { return }
+            // A suspended binding must pass through quarantine before activation.
+            if controller.runtime.safety == .suspended, state != .quarantined { throw StoreError.operationDenied }
+            if state == .localReady { throw StoreError.operationDenied }
             let generation = UUID()
-            let identity = StoreIdentity(storeID: controller.runtime.identity.storeID, generation: generation)
+            let next = StoreIdentity(storeID: identity.storeID, generation: generation)
             do {
                 record.setValue(generation, forKey: "generation")
                 record.setValue(state.rawValue, forKey: "safetyState")
                 try context.save()
-                controller.runtime.identity = identity
+                controller.runtime.identity = next
                 controller.runtime.safety = state
                 controller.runtime.invalidateLeases()
             } catch {

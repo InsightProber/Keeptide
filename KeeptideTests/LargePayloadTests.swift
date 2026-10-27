@@ -22,6 +22,7 @@ final class LargePayloadTests: XCTestCase {
         try await ContentStoreFixtures.insert(item, capture, into: store)
         try await store.close()
         let reopened = try PersistenceController(directory: directory)
+        addTeardownBlock { try await reopened.close() }
         let summary = try await ContentRepository(controller: reopened).recent(limit: 1)
         XCTAssertEqual(summary.map(\.itemID), [item.id])
         let hasPayload = try await reopened.perform { context in

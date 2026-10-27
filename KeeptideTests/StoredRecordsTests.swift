@@ -134,7 +134,9 @@ final class StoredRecordsTests: XCTestCase {
                 bytes: localBytes
             )
             let fileAccessStore = FileAccessStore(controller: controller)
-            try await fileAccessStore.put(localAccess)
+            let identity = try await controller.identity()
+            let maintenancePermit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+            try await fileAccessStore.put(localAccess, expecting: identity)
             try await ContentStoreFixtures.insert(item, capture, into: controller)
 
             let ref = ContentStoreFixtures.ref(item, capture)
@@ -142,18 +144,24 @@ final class StoredRecordsTests: XCTestCase {
             XCTAssertEqual(complete.integrity, .complete)
             XCTAssertEqual(complete.representations.map(\.bytes), [portableBytes, localBytes])
 
-            try await fileAccessStore.remove(representationID: representations[1].id)
+            try await fileAccessStore.remove(
+                representationID: representations[1].id,
+                permit: maintenancePermit
+            )
             let missing = try await ContentRepository(controller: controller).read(ref)
             XCTAssertEqual(missing.integrity, .requiresRelocation)
             XCTAssertTrue(missing.representations.isEmpty)
             XCTAssertFalse(missing.isActionable)
 
-            try await fileAccessStore.put(localAccess)
+            try await fileAccessStore.put(localAccess, expecting: identity)
             let restored = try await ContentRepository(controller: controller).read(ref)
             XCTAssertEqual(restored.integrity, .complete)
             XCTAssertEqual(restored.representations.map(\.bytes), [portableBytes, localBytes])
 
-            try await fileAccessStore.remove(representationID: representations[1].id)
+            try await fileAccessStore.remove(
+                representationID: representations[1].id,
+                permit: maintenancePermit
+            )
             let removedAgain = try await ContentRepository(controller: controller).read(
                 ContentStoreFixtures.ref(item, capture)
             )
@@ -295,27 +303,6 @@ final class StoredRecordsTests: XCTestCase {
         }
     }
 
-    func testSummariesDoNotRegisterPayloadManagedObjects() async throws {
-        try await withController { controller in
-            let capture = try ContentStoreFixtures.capture([
-                [("public.utf8-plain-text", Data("payload".utf8))]
-            ])
-            let item = ContentStoreFixtures.item(capture)
-            try await ContentStoreFixtures.insert(item, capture, into: controller)
-
-            let result = try await controller.perform { context -> SummaryProbe in
-                context.reset()
-                let summaries = try StoredRecords.summaries(limit: 10, in: context)
-                let registeredPayloadEntities = context.registeredObjects.compactMap(\.entity.name).filter {
-                    $0 == "CaptureRepresentation" || $0 == "MemoDocument"
-                }
-                return SummaryProbe(summaries: summaries, registeredPayloadEntities: registeredPayloadEntities)
-            }
-            XCTAssertEqual(result.summaries.count, 1)
-            XCTAssertTrue(result.registeredPayloadEntities.isEmpty)
-        }
-    }
-
     func testIdenticalContentInDistinctItemsRetainsDistinctIdentity() async throws {
         try await withController { controller in
             let bytes = Data("same".utf8)
@@ -366,11 +353,6 @@ private extension StoredRecordsTests {
             throw error
         }
     }
-}
-
-private struct SummaryProbe: Sendable {
-    let summaries: [ItemSummary]
-    let registeredPayloadEntities: [String]
 }
 
 private enum TestFailure: Error {

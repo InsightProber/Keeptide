@@ -33,10 +33,19 @@ struct UsageSummary: Codable, Equatable, Sendable {
     var useCount: Int64
 }
 
+struct UsageDeduplicationPolicy: Equatable, Sendable {
+    let limit: Int
+    let interval: TimeInterval
+
+    init(limit: Int, interval: TimeInterval) {
+        self.limit = max(0, limit)
+        self.interval = interval.isFinite ? max(0, interval) : 0
+    }
+}
+
 final class LocalUsageStore: @unchecked Sendable {
     private let controller: PersistenceController
-    private let deduplicationLimit: Int
-    private let deduplicationInterval: TimeInterval
+    private let policy: UsageDeduplicationPolicy
 
     init(
         controller: PersistenceController,
@@ -44,20 +53,43 @@ final class LocalUsageStore: @unchecked Sendable {
         deduplicationInterval: TimeInterval = 604_800
     ) {
         self.controller = controller
-        self.deduplicationLimit = max(0, deduplicationLimit)
-        self.deduplicationInterval = max(0, deduplicationInterval)
+        policy = UsageDeduplicationPolicy(limit: deduplicationLimit, interval: deduplicationInterval)
     }
 
-    func record(_ receipt: UseReceipt, now: Date = Date()) async throws {
+    func record(
+        _ receipt: UseReceipt,
+        now: Date = Date(),
+        expecting expectedIdentity: StoreIdentity? = nil
+    ) async throws {
         guard receipt.outcome == .success else { return }
-        let deduplicationLimit = deduplicationLimit
-        let deduplicationInterval = deduplicationInterval
+        guard receipt.occurredAt.timeIntervalSinceReferenceDate.isFinite,
+              now.timeIntervalSinceReferenceDate.isFinite else {
+            throw StoreError.invalidTransaction
+        }
+        let identity: StoreIdentity
+        if let expectedIdentity {
+            identity = expectedIdentity
+        } else {
+            identity = try await controller.identity()
+        }
+        let policy = policy
+        let controller = controller
 
         try await controller.perform { context in
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try StoreSafetyGate.validate(.projection, runtime: controller.runtime)
+            let shouldRegisterPolicy: Bool
+            if let configured = controller.runtime.usagePolicy {
+                guard configured == policy else { throw StoreError.preconditionFailed }
+                shouldRegisterPolicy = false
+            } else {
+                shouldRegisterPolicy = true
+            }
             do {
-                let expiration = now.addingTimeInterval(-deduplicationInterval)
+                let expiration = now.addingTimeInterval(-policy.interval)
                 let expiredRequest = NSFetchRequest<NSManagedObject>(entityName: "UsageExecutionDedup")
                 expiredRequest.predicate = NSPredicate(format: "recordedAt <= %@", expiration as NSDate)
+                expiredRequest.fetchBatchSize = 256
                 try context.fetch(expiredRequest).forEach(context.delete)
 
                 let duplicateRequest = NSFetchRequest<NSManagedObject>(entityName: "UsageExecutionDedup")
@@ -69,6 +101,7 @@ final class LocalUsageStore: @unchecked Sendable {
                 duplicateRequest.fetchLimit = 1
                 if try context.fetch(duplicateRequest).isEmpty == false {
                     if context.hasChanges { try context.save() }
+                    if shouldRegisterPolicy { controller.runtime.usagePolicy = policy }
                     return
                 }
 
@@ -95,7 +128,7 @@ final class LocalUsageStore: @unchecked Sendable {
                     summary.setValue(previousCount + 1, forKey: "useCount")
                 }
 
-                if deduplicationLimit > 0 {
+                if policy.limit > 0 {
                     let dedup = NSEntityDescription.insertNewObject(
                         forEntityName: "UsageExecutionDedup",
                         into: context
@@ -104,15 +137,26 @@ final class LocalUsageStore: @unchecked Sendable {
                     dedup.setValue(now, forKey: "recordedAt")
                 }
 
-                let allDedupRequest = NSFetchRequest<NSManagedObject>(entityName: "UsageExecutionDedup")
-                allDedupRequest.sortDescriptors = [NSSortDescriptor(key: "recordedAt", ascending: true)]
-                let dedupRecords = try context.fetch(allDedupRequest)
-                let excess = max(0, dedupRecords.count - deduplicationLimit)
-                for record in dedupRecords.prefix(excess) {
-                    context.delete(record)
+                let countRequest = NSFetchRequest<NSFetchRequestResult>(entityName: "UsageExecutionDedup")
+                let excess = max(0, try context.count(for: countRequest) - policy.limit)
+                if excess > 0 {
+                    let oldestRequest = NSFetchRequest<NSManagedObject>(entityName: "UsageExecutionDedup")
+                    if policy.limit > 0 {
+                        oldestRequest.predicate = NSPredicate(
+                            format: "id != %@",
+                            receipt.executionID as NSUUID
+                        )
+                    }
+                    oldestRequest.sortDescriptors = [
+                        NSSortDescriptor(key: "recordedAt", ascending: true),
+                        NSSortDescriptor(key: "id", ascending: true)
+                    ]
+                    oldestRequest.fetchLimit = excess
+                    try context.fetch(oldestRequest).forEach(context.delete)
                 }
 
                 try context.save()
+                if shouldRegisterPolicy { controller.runtime.usagePolicy = policy }
             } catch {
                 context.rollback()
                 throw error
@@ -128,30 +172,32 @@ final class LocalUsageStore: @unchecked Sendable {
         guard keys.isEmpty == false else { return [] }
 
         return try await controller.perform { context in
-            let request = NSFetchRequest<NSManagedObject>(entityName: "UsageSummary")
-            request.predicate = NSCompoundPredicate(orPredicateWithSubpredicates: keys.map { key in
-                NSPredicate(
-                    format: "itemID == %@ AND facet == %@",
-                    key.itemID.rawValue as NSUUID,
-                    key.facet.rawValue
-                )
-            })
-            let objects = try context.fetch(request)
             var summariesByKey: [UsageKey: UsageSummary] = [:]
-            for object in objects {
-                guard let itemID = object.value(forKey: "itemID") as? UUID,
-                      let facetValue = object.value(forKey: "facet") as? String,
-                      let facet = ContentFacet(rawValue: facetValue),
-                      let lastUsedAt = object.value(forKey: "lastUsedAt") as? Date else {
-                    throw LocalUsageStoreError.invalidSummary
-                }
-                let summary = UsageSummary(
-                    itemID: ItemID(rawValue: itemID),
-                    facet: facet,
-                    lastUsedAt: lastUsedAt,
-                    useCount: object.value(forKey: "useCount") as? Int64 ?? 0
+            let requestedKeys = Set(keys)
+            for chunkStart in stride(from: 0, to: keys.count, by: 400) {
+                let chunk = keys[chunkStart..<min(chunkStart + 400, keys.count)]
+                let request = NSFetchRequest<NSManagedObject>(entityName: "UsageSummary")
+                request.predicate = NSPredicate(
+                    format: "itemID IN %@",
+                    chunk.map(\.itemID.rawValue) as NSArray
                 )
-                summariesByKey[UsageKey(itemID: summary.itemID, facet: summary.facet)] = summary
+                request.fetchBatchSize = 400
+                for object in try context.fetch(request) {
+                    guard let itemID = object.value(forKey: "itemID") as? UUID,
+                          let facetValue = object.value(forKey: "facet") as? String,
+                          let facet = ContentFacet(rawValue: facetValue),
+                          let lastUsedAt = object.value(forKey: "lastUsedAt") as? Date else {
+                        throw StoreError.corruptStore
+                    }
+                    let key = UsageKey(itemID: ItemID(rawValue: itemID), facet: facet)
+                    guard requestedKeys.contains(key) else { continue }
+                    summariesByKey[key] = UsageSummary(
+                        itemID: key.itemID,
+                        facet: key.facet,
+                        lastUsedAt: lastUsedAt,
+                        useCount: object.value(forKey: "useCount") as? Int64 ?? 0
+                    )
+                }
             }
             return keys.compactMap { summariesByKey[$0] }
         }
@@ -161,8 +207,4 @@ final class LocalUsageStore: @unchecked Sendable {
 private struct UsageKey: Hashable, Sendable {
     let itemID: ItemID
     let facet: ContentFacet
-}
-
-private enum LocalUsageStoreError: Error {
-    case invalidSummary
 }

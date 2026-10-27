@@ -13,7 +13,7 @@ final class SnapshotArchiveTests: XCTestCase {
             id: fixture.localRepresentation.id,
             snapshotID: fixture.capture.id,
             bytes: fixture.localBytes
-        ))
+        ), expecting: store.identity())
         try await ContentStoreFixtures.insert(item, fixture.capture, into: store)
 
         let reader = ContentSnapshotReader(controller: store)
@@ -58,7 +58,7 @@ final class SnapshotArchiveTests: XCTestCase {
             _ = try await reader.begin(SnapshotRequest(permit: permit))
             XCTFail("A visibly eligible history facet was silently omitted")
         } catch {
-            XCTAssertEqual(error as? StoreError, .corruptStore)
+            XCTAssertEqual(error as? StoreError, .snapshotUnavailable)
         }
     }
 
@@ -93,7 +93,7 @@ final class SnapshotArchiveTests: XCTestCase {
             _ = try await reader.begin(SnapshotRequest(permit: permit))
             XCTFail("A visible memo facet was silently omitted")
         } catch {
-            XCTAssertEqual(error as? StoreError, .corruptStore)
+            XCTAssertEqual(error as? StoreError, .snapshotUnavailable)
         }
     }
 
@@ -209,6 +209,7 @@ final class SnapshotArchiveTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnapshotArchiveTests-\(UUID().uuidString)", isDirectory: true)
         let store = try PersistenceController(directory: directory)
+        addTeardownBlock { try await store.close(); try FileManager.default.removeItem(at: directory) }
         let reader = ContentSnapshotReader(controller: store)
         let permit = try await StoreSafetyGate(controller: store).permit(.completeArchive)
         let lease = try await reader.begin(SnapshotRequest(permit: permit))
@@ -226,6 +227,7 @@ final class SnapshotArchiveTests: XCTestCase {
 
         try await store.close()
         let reopened = try PersistenceController(directory: directory)
+        addTeardownBlock { try await reopened.close() }
         do {
             _ = try await ContentSnapshotReader(controller: reopened).page(lease, after: nil)
             XCTFail("A process-local pinned lease survived reopen")
@@ -233,7 +235,6 @@ final class SnapshotArchiveTests: XCTestCase {
             XCTAssertEqual(error as? StoreError, .invalidLease)
         }
         try await reopened.close()
-        try FileManager.default.removeItem(at: directory)
     }
 
     func testOldMemoGenerationMarkerDoesNotHideReplacementFromReadOrArchive() async throws {

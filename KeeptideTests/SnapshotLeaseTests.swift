@@ -87,7 +87,7 @@ final class SnapshotLeaseTests: XCTestCase {
         let oldPermit = try await gate.permit(.completeArchive)
         let reader = ContentSnapshotReader(controller: store)
         let lease = try await reader.begin(SnapshotRequest(permit: oldPermit))
-        try await gate.transition(to: .quarantined)
+        try await gate.transition(to: .quarantined, expecting: try await store.identity())
         do { _ = try await gate.permit(.maintenance); XCTFail("Quarantine allowed maintenance") }
         catch { XCTAssertEqual(error as? StoreError, .operationDenied) }
         do { _ = try await gate.permit(.completeArchive); XCTFail("Quarantine allowed complete archive") }
@@ -104,6 +104,7 @@ final class SnapshotLeaseTests: XCTestCase {
         let directory = store.contentStore.url!.deletingLastPathComponent()
         try await store.close()
         let reopened = try PersistenceController(directory: directory)
+        addTeardownBlock { try await reopened.close() }
         do { _ = try await StoreSafetyGate(controller: reopened).permit(.completeArchive); XCTFail("Quarantine was lost") }
         catch { XCTAssertEqual(error as? StoreError, .operationDenied) }
         try await reopened.close()

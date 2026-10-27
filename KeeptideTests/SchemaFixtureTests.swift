@@ -20,7 +20,7 @@ final class SchemaFixtureTests: XCTestCase {
             .appendingPathComponent("Keeptide-SchemaFixtureTests-\(UUID().uuidString)", isDirectory: true)
         let copiedFixture = temporaryRoot.appendingPathComponent("SchemaV1", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        addTeardownBlock { try FileManager.default.removeItem(at: temporaryRoot) }
         try FileManager.default.copyItem(at: fixture, to: copiedFixture)
 
         let ref = ContentRef(
@@ -30,6 +30,7 @@ final class SchemaFixtureTests: XCTestCase {
             digest: captureDigest
         )
         let controller = try PersistenceController(directory: copiedFixture)
+        addTeardownBlock { try await controller.close() }
         let resolved = try await ContentRepository(controller: controller).read(ref)
         XCTAssertEqual(resolved.integrity, .complete)
         XCTAssertEqual(resolved.representations.map(\.id), [

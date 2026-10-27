@@ -12,168 +12,136 @@ struct ContentSnapshotReader: Sendable {
             controller.runtime.expireLeases()
             let context = controller.container.newBackgroundContext()
             context.undoManager = nil
-            let values = try context.performAndWait { () throws -> ([ContentRef], Set<UUID>) in
-                try context.setQueryGenerationFrom(.current)
-                // The first fetch materializes the query-generation boundary while
-                // the common writer queue prevents an intervening local commit.
-                return try Self.visibleReferences(in: context)
+            let values: (refs: [ContentRef], protectedCaptures: Set<UUID>)
+            do {
+                values = try context.performAndWait {
+                    try context.setQueryGenerationFrom(.current)
+                    return try StoredRecords.snapshotReferences(in: context)
+                }
+            } catch {
+                context.performAndWait { context.reset() }
+                throw error
             }
             let encoder = JSONEncoder()
-            encoder.outputFormatting = .sortedKeys
+            encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
             let lease = SnapshotLease(leaseID: UUID(), identity: controller.runtime.identity,
-                                      boundary: ContentDigest.sha256(try encoder.encode(values.0)))
-            controller.runtime.leases[lease.leaseID] = PinnedSnapshot(lease: lease, context: context,
-                refs: values.0, protectedCaptures: values.1, pageSize: request.pageSize, lifetime: request.lifetime)
+                                      boundary: ContentDigest.sha256(try encoder.encode(values.refs)))
+            let snapshot = PinnedSnapshot(lease: lease, context: context,
+                refs: values.refs, protectedCaptures: values.protectedCaptures,
+                pageSize: request.pageSize, lifetime: request.lifetime)
+            controller.runtime.leases[lease.leaseID] = snapshot
+            controller.scheduleExpiration(of: snapshot)
             return lease
         }
     }
 
     func page(_ lease: SnapshotLease, after cursor: Data?) async throws -> SnapshotPage {
-        try await controller.perform { _ in
-            controller.runtime.expireLeases()
-            guard lease.identity == controller.runtime.identity,
-                  let snapshot = controller.runtime.leases[lease.leaseID], snapshot.lease == lease else {
-                throw StoreError.invalidLease
-            }
-            let start: Int
-            if let cursor {
-                guard let position = snapshot.cursors[cursor] else { throw StoreError.invalidToken }
-                start = position
-            } else { start = 0 }
-            let end = min(start + snapshot.pageSize, snapshot.refs.count)
-            let pinnedContext = snapshot.context
-            let refs = Array(snapshot.refs[start..<end])
-            let pageValues: ([ResolvedContent], [RecordValue])
-            do {
-                pageValues = try pinnedContext.performAndWait {
-                    let resolved = try refs.map { try StoredRecords.resolve($0, in: pinnedContext) }
-                    let contents = try resolved.map(Self.archiveContent)
-                    let records = try Self.portableRecords(for: refs, in: pinnedContext)
-                    return (contents, records)
+        try Task.checkCancellation()
+        let page: SnapshotPage = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Enqueue the pinned read before releasing the writer reservation.
+                // close() can then safely drain this queue before detaching stores.
+                controller.writer.perform {
+                    do {
+                        guard !controller.runtime.closed else { throw StoreError.closed }
+                        controller.runtime.expireLeases()
+                        guard lease.identity == controller.runtime.identity,
+                              let snapshot = controller.runtime.leases[lease.leaseID],
+                              snapshot.lease == lease else { throw StoreError.invalidLease }
+                        let start: Int
+                        if let cursor {
+                            guard let position = snapshot.cursors[cursor] else { throw StoreError.invalidToken }
+                            start = position
+                        } else { start = 0 }
+                        let end = min(start + snapshot.pageSize, snapshot.refs.count)
+                        let refs = Array(snapshot.refs[start..<end])
+                        snapshot.inFlightPages += 1
+                        let context = snapshot.context
+                        context.perform {
+                            let result = Result {
+                                try autoreleasepool {
+                                    // Refaulting keeps the pinned generation; reset would advance it.
+                                    defer { context.refreshAllObjects() }
+                                    let records = try Self.portableRecords(for: refs, in: context)
+                                    let byKey = Dictionary(uniqueKeysWithValues: records.map { ($0.key, $0) })
+                                    let contents = try refs.map { try Self.archiveContent($0, records: byKey) }
+                                    return SnapshotPage(contents: contents, next: nil, portableRecords: records)
+                                }
+                            }
+                            controller.writer.perform {
+                                controller.runtime.finishPage(snapshot)
+                                do {
+                                    guard !controller.runtime.closed else { throw StoreError.closed }
+                                    controller.runtime.expireLeases()
+                                    guard lease.identity == controller.runtime.identity,
+                                          controller.runtime.leases[lease.leaseID] === snapshot else {
+                                        throw StoreError.invalidLease
+                                    }
+                                    let materialized: SnapshotPage
+                                    switch result {
+                                    case .success(let value): materialized = value
+                                    case .failure:
+                                        controller.runtime.releaseLease(lease.leaseID)
+                                        throw StoreError.snapshotUnavailable
+                                    }
+                                    let next: Data?
+                                    if end < snapshot.refs.count {
+                                        if let existing = snapshot.cursors.first(where: { $0.value == end }) {
+                                            next = existing.key
+                                        } else {
+                                            let token = Data(UUID().uuidString.utf8)
+                                            snapshot.cursors[token] = end
+                                            next = token
+                                        }
+                                    } else { next = nil }
+                                    continuation.resume(returning: SnapshotPage(contents: materialized.contents,
+                                        next: next, portableRecords: materialized.portableRecords))
+                                } catch { continuation.resume(throwing: error) }
+                            }
+                        }
+                    } catch { continuation.resume(throwing: error) }
                 }
-            } catch {
-                pinnedContext.performAndWait { pinnedContext.reset() }
-                controller.runtime.leases.removeValue(forKey: lease.leaseID)
-                throw StoreError.snapshotUnavailable
             }
-            let next: Data?
-            if end < snapshot.refs.count {
-                if let existing = snapshot.cursors.first(where: { $0.value == end }) { next = existing.key }
-                else {
-                    let token = Data(UUID().uuidString.utf8)
-                    snapshot.cursors[token] = end
-                    next = token
-                }
-            } else { next = nil }
-            return SnapshotPage(contents: pageValues.0, next: next, portableRecords: pageValues.1)
+        } onCancel: {
+            Task { await self.end(lease) }
         }
+        try Task.checkCancellation()
+        return page
     }
 
     func end(_ lease: SnapshotLease) async {
         try? await controller.perform { _ in
-            guard let snapshot = controller.runtime.leases[lease.leaseID], snapshot.lease == lease else { return }
-            let pinnedContext = snapshot.context
-            pinnedContext.performAndWait { pinnedContext.reset() }
-            controller.runtime.leases.removeValue(forKey: lease.leaseID)
+            guard controller.runtime.leases[lease.leaseID]?.lease == lease else { return }
+            controller.runtime.releaseLease(lease.leaseID)
         }
     }
 }
 
 private extension ContentSnapshotReader {
-    static func visibleReferences(
-        in context: NSManagedObjectContext
-    ) throws -> ([ContentRef], Set<UUID>) {
-        let itemRequest = NSFetchRequest<NSDictionary>(entityName: "LibraryItem")
-        itemRequest.resultType = .dictionaryResultType
-        itemRequest.propertiesToFetch = [
-            "id", "captureID", "memoID", "historyEligible", "historyDeletedAt", "deletedAt"
-        ]
-        itemRequest.sortDescriptors = [
-            NSSortDescriptor(key: "lastCopiedAt", ascending: false),
-            NSSortDescriptor(key: "id", ascending: true)
-        ]
-        itemRequest.includesPendingChanges = false
-        let items = try context.fetch(itemRequest)
-        let protectedCaptures = Set(items.compactMap { $0["captureID"] as? UUID })
-
-        let itemMarkerRequest = NSFetchRequest<NSDictionary>(entityName: "ItemDeletionMarker")
-        itemMarkerRequest.resultType = .dictionaryResultType
-        itemMarkerRequest.propertiesToFetch = ["id"]
-        itemMarkerRequest.includesPendingChanges = false
-        let itemMarkers = Set(try context.fetch(itemMarkerRequest).compactMap { $0["id"] as? UUID })
-
-        let facetMarkerRequest = NSFetchRequest<NSDictionary>(entityName: "FacetDeletionMarker")
-        facetMarkerRequest.resultType = .dictionaryResultType
-        facetMarkerRequest.propertiesToFetch = ["itemID", "facet", "generationID"]
-        facetMarkerRequest.includesPendingChanges = false
-        let facetMarkers = Set(try context.fetch(facetMarkerRequest).compactMap { row -> VisibleFacet? in
-            guard let itemID = row["itemID"] as? UUID,
-                  let rawFacet = row["facet"] as? String,
-                  let facet = ContentFacet(rawValue: rawFacet),
-                  let generationID = row["generationID"] as? UUID else { return nil }
-            return VisibleFacet(itemID: itemID, facet: facet, generationID: generationID)
-        })
-
-        var refs: [ContentRef] = []
-        for item in items {
-            guard let rawItemID = item["id"] as? UUID else { throw StoreError.corruptStore }
-            guard item["deletedAt"] == nil, !itemMarkers.contains(rawItemID) else { continue }
-            let itemID = ItemID(rawValue: rawItemID)
-
-            let historyEligible = (item["historyEligible"] as? NSNumber)?.boolValue == true
-            if historyEligible, item["historyDeletedAt"] == nil {
-                guard let captureID = item["captureID"] as? UUID else { throw StoreError.corruptStore }
-                let historyMarked = facetMarkers.contains(VisibleFacet(
-                    itemID: rawItemID,
-                    facet: .history,
-                    generationID: captureID
-                ))
-                if !historyMarked {
-                    do {
-                        guard let ref = try StoredRecords.currentRef(itemID: itemID, facet: .history, in: context) else {
-                            throw StoreError.corruptStore
-                        }
-                        refs.append(ref)
-                    } catch StoreError.notFound {
-                        throw StoreError.corruptStore
-                    }
-                }
+    // Records have already passed the same capture validation used by ordinary
+    // reads. Local file bytes are deliberately absent from this portable closure.
+    static func archiveContent(_ ref: ContentRef, records: [RecordKey: RecordValue]) throws -> ResolvedContent {
+        guard case .item(let item)? = records[.item(ref.itemID)] else { throw StoreError.corruptStore }
+        if ref.facet == .memo {
+            guard let memoID = item.memoID, case .memo(let memo)? = records[.memo(memoID)] else {
+                throw StoreError.corruptStore
             }
-
-            if let memoID = item["memoID"] as? UUID {
-                let memoMarked = facetMarkers.contains(VisibleFacet(
-                    itemID: rawItemID,
-                    facet: .memo,
-                    generationID: memoID
-                ))
-                guard !memoMarked else { continue }
-                do {
-                    if let ref = try StoredRecords.currentRef(itemID: itemID, facet: .memo, in: context) {
-                        refs.append(ref)
-                    } else {
-                        throw StoreError.corruptStore
-                    }
-                } catch StoreError.notFound {
-                    // Soft-deleted memo facets are intentionally absent.
-                    continue
+            if memo.bodyMode != .inheritedCapture {
+                guard memo.version == ref.version, memo.digest == ref.digest, let body = memo.body else {
+                    throw StoreError.corruptStore
                 }
+                let value = RepresentationValue(id: memo.id, snapshotID: memo.id, itemIndex: 0,
+                    representationIndex: 0, typeIdentifier: "public.utf8-plain-text", storage: .portable,
+                    byteCount: Int64(body.count), digest: ref.digest, bytes: body)
+                return ResolvedContent(ref: ref, integrity: .complete, representations: [value])
             }
         }
-        return (refs, protectedCaptures)
-    }
-
-    static func archiveContent(_ resolved: ResolvedContent) throws -> ResolvedContent {
-        switch resolved.integrity {
-        case .complete:
-            if resolved.representations.contains(where: { $0.storage == .localReference }) {
-                return ResolvedContent(ref: resolved.ref, integrity: .requiresRelocation, representations: [])
-            }
-            return resolved
-        case .requiresRelocation:
-            return ResolvedContent(ref: resolved.ref, integrity: .requiresRelocation, representations: [])
-        case .recovering, .corrupt:
-            throw StoreError.corruptStore
+        guard let captureID = item.captureID, case .capture(let capture)? = records[.capture(captureID)],
+              ref.version.rawValue == capture.id, ref.digest == capture.digest else { throw StoreError.corruptStore }
+        if capture.representations.contains(where: { $0.storage == .localReference }) {
+            return ResolvedContent(ref: ref, integrity: .requiresRelocation, representations: [])
         }
+        return ResolvedContent(ref: ref, integrity: .complete, representations: capture.representations)
     }
 
     static func portableRecords(
@@ -183,6 +151,7 @@ private extension ContentSnapshotReader {
         var records: [RecordValue] = []
         var included = Set<RecordKey>()
         for ref in refs {
+            if included.contains(.item(ref.itemID)) { continue }
             guard case .item(let item)? = try StoredRecords.value(.item(ref.itemID), in: context) else {
                 throw StoreError.corruptStore
             }
@@ -241,11 +210,8 @@ private extension ContentSnapshotReader {
         included: inout Set<RecordKey>,
         in context: NSManagedObjectContext
     ) throws {
-        guard case .capture(let capture)? = try StoredRecords.value(.capture(captureID), in: context),
-              ContentDigest.sha256(try capture.manifest.canonicalData()) == capture.digest,
-              capture.manifest.validate(capture.representations, snapshotID: capture.id) == .complete else {
-            throw StoreError.corruptStore
-        }
+        guard !included.contains(.capture(captureID)) else { return }
+        let capture = try StoredRecords.validatedCapture(captureID, in: context)
         append(.capture(capture), to: &records, included: &included)
     }
 
@@ -257,10 +223,4 @@ private extension ContentSnapshotReader {
         guard included.insert(record.key).inserted else { return }
         records.append(record)
     }
-}
-
-private struct VisibleFacet: Hashable {
-    let itemID: UUID
-    let facet: ContentFacet
-    let generationID: UUID
 }

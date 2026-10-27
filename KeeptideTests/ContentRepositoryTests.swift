@@ -7,8 +7,8 @@ final class ContentRepositoryTests: XCTestCase {
     func testCreatesPortableAndLocalSQLiteStoresOnDisk() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        XCTAssertNoThrow(try PersistenceController(directory: directory))
+        let controller = try PersistenceController(directory: directory)
+        addTeardownBlock { try await controller.close(); try FileManager.default.removeItem(at: directory) }
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Content.sqlite").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Local.sqlite").path))
     }
@@ -16,8 +16,8 @@ final class ContentRepositoryTests: XCTestCase {
     func testMultipleItemsAndFormatsSurviveCloseAndReopenByteForByte() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
         let controller = try PersistenceController(directory: directory)
+        addTeardownBlock { try await controller.close(); try FileManager.default.removeItem(at: directory) }
         let capture = try ContentStoreFixtures.capture([
             [("public.utf8-plain-text", Data("hello 中文\u{0}".utf8)),
              ("public.rtf", Data([0x7b, 0x5c, 0x72, 0x74, 0x66, 0x7d]))],
@@ -27,6 +27,7 @@ final class ContentRepositoryTests: XCTestCase {
         try await ContentStoreFixtures.insert(item, capture, into: controller)
         try await controller.close()
         let reopened = try PersistenceController(directory: directory)
+        addTeardownBlock { try await reopened.close() }
         let result = try await ContentRepository(controller: reopened).read(ContentStoreFixtures.ref(item, capture))
         XCTAssertTrue(result.isActionable)
         XCTAssertEqual(result.representations, capture.representations)

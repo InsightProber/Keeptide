@@ -7,15 +7,23 @@ struct WriteCoordinator: Sendable {
     func commit(_ transaction: StoreTransaction) async throws -> StoreReceipt {
         try await controller.perform { context in
             context.reset()
-            defer { context.reset() }
+            defer {
+                context.transactionAuthor = nil
+                context.reset()
+            }
             guard transaction.identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
             controller.runtime.expireLeases()
             try StoreSafetyGate.validate(.write, runtime: controller.runtime)
             guard !transaction.mutations.isEmpty else { throw StoreError.invalidTransaction }
-            for condition in transaction.preconditions { try check(condition, in: context) }
+            try validateStructure(transaction)
+            for condition in transaction.preconditions {
+                try check(condition, transaction: transaction, in: context)
+            }
             var touched = Set<RecordKey>()
             var affectedItems = Set<ItemID>()
             var affectedMemos = Set<UUID>()
+            var insertedItems = Set<ItemID>()
+            var previousItems: [ItemID: ItemValue] = [:]
             var removed: [RecordKey] = []
             do {
                 context.transactionAuthor = transaction.transactionID.uuidString
@@ -28,14 +36,12 @@ struct WriteCoordinator: Sendable {
                         if case .capture(let capture) = value {
                             try requireAvailableRepresentationIDs(capture, in: context)
                         }
-                        if case .item(let item) = value,
-                           try StoredRecords.object(.itemMarker(item.id), in: context) != nil {
-                            throw StoreError.preconditionFailed
-                        }
+                        try requireUnmarked(value, in: context)
                         try validate(value, old: nil)
                         let record = NSEntityDescription.insertNewObject(forEntityName: key.entity, into: context)
                         try StoredRecords.write(value, to: record, in: context)
                         collect(value, into: &affectedItems)
+                        if case .item(let item) = value { insertedItems.insert(item.id) }
                         if case .memo(let memo) = value { affectedMemos.insert(memo.id) }
                         if case .itemMarker = value { try requireMaintenance(transaction) }
                         if case .facetMarker = value { try requireMaintenance(transaction) }
@@ -44,15 +50,18 @@ struct WriteCoordinator: Sendable {
                         try requireCAS(key, transaction: transaction)
                         guard let old = try StoredRecords.value(key, in: context),
                               let record = try StoredRecords.object(key, in: context) else { throw StoreError.preconditionFailed }
+                        try requireUnmarked(value, in: context)
                         try validate(value, old: old)
                         try StoredRecords.write(value, to: record, in: context)
                         collect(value, into: &affectedItems)
                         if case .memo(let memo) = value { affectedMemos.insert(memo.id) }
                         if case .item(let previous) = old,
-                           case .item(let updated) = value,
-                           previous.memoID != updated.memoID,
-                           let detachedMemo = previous.memoID {
-                            affectedMemos.insert(detachedMemo)
+                           case .item(let updated) = value {
+                            previousItems[updated.id] = previous
+                            if previous.memoID != updated.memoID,
+                               let detachedMemo = previous.memoID {
+                                affectedMemos.insert(detachedMemo)
+                            }
                         }
                     case .delete(let target):
                         key = target
@@ -71,9 +80,7 @@ struct WriteCoordinator: Sendable {
                             guard !controller.runtime.leases.values.contains(where: { $0.protectedCaptures.contains(id) }) else {
                                 throw StoreError.contentProtected
                             }
-                            let children = NSFetchRequest<NSManagedObject>(entityName: "CaptureRepresentation")
-                            children.predicate = NSPredicate(format: "snapshotID == %@", id as NSUUID)
-                            try context.fetch(children).forEach(context.delete)
+                            try deleteCaptureRepresentations(id: id, capture: record, in: context)
                         case .memo(let id):
                             if case .memo(let memo) = old {
                                 guard try hasFacetMarker(itemID: memo.itemID, facet: .memo, id: id, in: context)
@@ -93,17 +100,17 @@ struct WriteCoordinator: Sendable {
                     guard touched.insert(key).inserted else { throw StoreError.invalidTransaction }
                 }
                 for id in affectedMemos {
-                    guard let value = try StoredRecords.value(.memo(id), in: context) else { continue }
-                    guard case .memo(let memo) = value,
-                          case .item(let owner) = try StoredRecords.value(.item(memo.itemID), in: context),
-                          owner.memoID == memo.id else {
-                        throw StoreError.invalidTransaction
-                    }
+                    try validateMemoOwner(id, in: context)
                 }
                 for id in affectedItems {
                     if case .item(let item) = try StoredRecords.value(.item(id), in: context) {
-                        try validateItem(item, in: context)
-                        try StoredRecords.link(item, in: context)
+                        let changes = referenceChanges(
+                            for: item,
+                            previous: previousItems[id],
+                            inserted: insertedItems.contains(id)
+                        )
+                        try validateItem(item, requiring: changes, in: context)
+                        if changes.any { try StoredRecords.link(item, in: context) }
                     }
                 }
                 for key in removed { try validateRemoval(key, in: context) }
@@ -119,7 +126,26 @@ struct WriteCoordinator: Sendable {
         }
     }
 
-    private func check(_ condition: StorePrecondition, in context: NSManagedObjectContext) throws {
+    private func validateStructure(_ transaction: StoreTransaction) throws {
+        var keys = Set<RecordKey>()
+        for mutation in transaction.mutations {
+            let key: RecordKey
+            switch mutation {
+            case .insert(let value), .update(let value):
+                key = value.key
+                try validatePersistableScalars(value)
+            case .delete(let target):
+                key = target
+            }
+            guard keys.insert(key).inserted else { throw StoreError.invalidTransaction }
+        }
+    }
+
+    private func check(
+        _ condition: StorePrecondition,
+        transaction: StoreTransaction,
+        in context: NSManagedObjectContext
+    ) throws {
         let valid: Bool
         switch condition {
         case .exists(let key): valid = try StoredRecords.object(key, in: context) != nil
@@ -129,6 +155,15 @@ struct WriteCoordinator: Sendable {
                 valid = try StoredRecords.fingerprint(key, in: context) == fingerprint
             } catch StoreError.notFound {
                 valid = false
+            } catch StoreError.corruptStore {
+                guard case .capture(let id) = key,
+                      transaction.mutations.contains(where: {
+                          if case .delete(.capture(let deletedID)) = $0 { return deletedID == id }
+                          return false
+                      }) else {
+                    throw StoreError.corruptStore
+                }
+                valid = try capturePurgeFingerprint(id: id, in: context) == fingerprint
             }
         case .contentVersion(let ref):
             do {
@@ -144,7 +179,8 @@ struct WriteCoordinator: Sendable {
                 visible = false
             }
             valid = visible == expected
-        case .candidateSet(let fingerprint): valid = try StoredRecords.candidateFingerprint(in: context) == fingerprint
+        case .candidateSet(let digest, let fingerprint):
+            valid = try StoredRecords.candidateFingerprint(digest: digest, in: context) == fingerprint
         case .referenceSet(let id, let fingerprint): valid = try StoredRecords.referenceFingerprint(snapshotID: id, in: context) == fingerprint
         }
         guard valid else { throw StoreError.preconditionFailed }
@@ -170,6 +206,87 @@ struct WriteCoordinator: Sendable {
         guard try context.fetch(request).isEmpty else { throw StoreError.preconditionFailed }
     }
 
+    private func requireUnmarked(_ value: RecordValue, in context: NSManagedObjectContext) throws {
+        let itemID: ItemID?
+        switch value {
+        case .item(let item): itemID = item.id
+        case .memo(let memo): itemID = memo.itemID
+        default: itemID = nil
+        }
+        if let itemID, try hasItemMarker(itemID, in: context) {
+            throw StoreError.preconditionFailed
+        }
+    }
+
+    private func hasItemMarker(_ itemID: ItemID, in context: NSManagedObjectContext) throws -> Bool {
+        let request = NSFetchRequest<NSManagedObject>(entityName: "ItemDeletionMarker")
+        request.predicate = NSPredicate(format: "id == %@", itemID.rawValue as NSUUID)
+        request.fetchLimit = 1
+        return try !context.fetch(request).isEmpty
+    }
+
+    private func deleteCaptureRepresentations(
+        id: UUID,
+        capture: NSManagedObject,
+        in context: NSManagedObjectContext
+    ) throws {
+        let request = NSFetchRequest<NSManagedObject>(entityName: "CaptureRepresentation")
+        request.predicate = NSPredicate(format: "snapshotID == %@", id as NSUUID)
+        var children = Dictionary(uniqueKeysWithValues: try context.fetch(request).map { ($0.objectID, $0) })
+        if let related = capture.value(forKey: "representations") as? NSSet {
+            for case let child as NSManagedObject in related {
+                children[child.objectID] = child
+            }
+        }
+        children.values.forEach(context.delete)
+    }
+
+    private func capturePurgeFingerprint(id: UUID, in context: NSManagedObjectContext) throws -> Data {
+        guard let captureObject = try StoredRecords.object(.capture(id), in: context) else {
+            throw StoreError.notFound
+        }
+        let request = NSFetchRequest<NSManagedObject>(entityName: "CaptureRepresentation")
+        request.predicate = NSPredicate(format: "snapshotID == %@", id as NSUUID)
+        let attributed = try context.fetch(request)
+        guard let related = captureObject.value(forKey: "representations") as? NSSet else {
+            throw StoreError.corruptStore
+        }
+        let relatedObjects = related.compactMap { $0 as? NSManagedObject }
+        guard relatedObjects.count == related.count else { throw StoreError.corruptStore }
+        let attributedIDs = Set(attributed.map(\.objectID))
+        let relatedIDs = Set(relatedObjects.map(\.objectID))
+        guard attributedIDs.isSubset(of: relatedIDs) else { throw StoreError.corruptStore }
+        let inconsistent = relatedObjects.filter { !attributedIDs.contains($0.objectID) }
+        guard !inconsistent.isEmpty,
+              try inconsistent.allSatisfy({ child in
+                  guard let snapshot = child.value(forKey: "snapshot") as? NSManagedObject,
+                        snapshot.objectID == captureObject.objectID,
+                        let snapshotID = child.value(forKey: "snapshotID") as? UUID else {
+                      throw StoreError.corruptStore
+                  }
+                  return snapshotID != id
+              }),
+              case .capture(let capture) = try StoredRecords.value(.capture(id), in: context) else {
+            throw StoreError.corruptStore
+        }
+        let canonicalManifest = try capture.manifest.canonicalData()
+        guard let storedManifest = captureObject.value(forKey: "manifest") as? Data,
+              canonicalManifest == storedManifest,
+              ContentDigest.sha256(canonicalManifest) == capture.digest,
+              capture.manifest.validate(capture.representations, snapshotID: id) == .complete else {
+            throw StoreError.corruptStore
+        }
+        let value = PurgeCaptureFingerprint(
+            id: capture.id,
+            digest: capture.digest,
+            representations: capture.representations.map(PurgeRepresentationFingerprint.init)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.dateEncodingStrategy = .deferredToDate
+        return ContentDigest.sha256(try encoder.encode(value))
+    }
+
     private func requireMaintenance(_ transaction: StoreTransaction) throws {
         guard let permit = transaction.permit else { throw StoreError.operationDenied }
         try StoreSafetyGate.validate(.maintenance, runtime: controller.runtime, permit: permit)
@@ -185,14 +302,66 @@ struct WriteCoordinator: Sendable {
         }
     }
 
+    private func validatePersistableScalars(_ value: RecordValue) throws {
+        switch value {
+        case .capture(let capture):
+            guard capture.representations.allSatisfy({ isLossless($0.typeIdentifier) }) else {
+                throw StoreError.invalidTransaction
+            }
+        case .memo(let memo):
+            guard [memo.title, memo.note].allSatisfy(isLossless),
+                  optionalStringIsLossless(memo.sourceRepresentationType),
+                  optionalStringIsLossless(memo.languageHint),
+                  optionalDateIsFinite(memo.deletedAt),
+                  optionalDateIsFinite(memo.purgeAfter) else {
+                throw StoreError.invalidTransaction
+            }
+        case .item(let item):
+            guard isLossless(item.title), optionalStringIsLossless(item.sourceApp),
+                  dateIsFinite(item.createdAt), dateIsFinite(item.lastCopiedAt),
+                  optionalDateIsFinite(item.historyDeletedAt),
+                  optionalDateIsFinite(item.historyPurgeAfter),
+                  optionalDateIsFinite(item.deletedAt) else {
+                throw StoreError.invalidTransaction
+            }
+        case .collection(let collection):
+            guard isLossless(collection.name), isLossless(collection.color),
+                  optionalDateIsFinite(collection.deletedAt) else {
+                throw StoreError.invalidTransaction
+            }
+        case .itemMarker(let marker):
+            guard dateIsFinite(marker.deletedAt) else { throw StoreError.invalidTransaction }
+        case .facetMarker(let marker):
+            guard dateIsFinite(marker.purgedAt) else { throw StoreError.invalidTransaction }
+        }
+    }
+
+    private func isLossless(_ value: String) -> Bool {
+        !value.utf8.contains(0)
+    }
+
+    private func optionalStringIsLossless(_ value: String?) -> Bool {
+        value.map(isLossless) ?? true
+    }
+
+    private func dateIsFinite(_ value: Date) -> Bool {
+        value.timeIntervalSinceReferenceDate.isFinite
+    }
+
+    private func optionalDateIsFinite(_ value: Date?) -> Bool {
+        value.map(dateIsFinite) ?? true
+    }
+
     private func validate(_ value: RecordValue, old: RecordValue?) throws {
         switch value {
         case .capture(let capture):
             guard old == nil else { throw StoreError.invalidTransaction }
             let localItems = Set(capture.representations.filter { $0.storage == .localReference }.map(\.itemIndex))
-            let fileTypes: Set<String> = ["public.file-url", "NSFilenamesPboardType", "com.apple.pasteboard.promised-file-url"]
             for representation in capture.representations where representation.storage == .portable {
-                guard !fileTypes.contains(representation.typeIdentifier), !localItems.contains(representation.itemIndex) else {
+                guard !SystemFileReferenceClassifier.isLocalFileReference(
+                    typeIdentifier: representation.typeIdentifier,
+                    bytes: representation.bytes
+                ), !localItems.contains(representation.itemIndex) else {
                     throw StoreError.invalidTransaction
                 }
             }
@@ -215,31 +384,75 @@ struct WriteCoordinator: Sendable {
             }
         case .item(let item):
             guard item.copyCount >= 0 else { throw StoreError.invalidTransaction }
-            if case .item(let previous) = old, let previousCapture = previous.captureID, let capture = item.captureID {
-                guard previousCapture == capture else { throw StoreError.invalidTransaction }
+            if case .item(let previous) = old,
+               previous.captureID != item.captureID,
+               item.captureID != nil {
+                throw StoreError.invalidTransaction
             }
         case .collection(let value): guard value.sortOrder.isFinite else { throw StoreError.invalidTransaction }
         case .itemMarker, .facetMarker: guard old == nil else { throw StoreError.invalidTransaction }
         }
     }
 
-    private func validateItem(_ item: ItemValue, in context: NSManagedObjectContext) throws {
+    private func validateMemoOwner(_ memoID: UUID, in context: NSManagedObjectContext) throws {
+        guard let memo = try StoredRecords.object(.memo(memoID), in: context) else { return }
+        guard let rawItemID = memo.value(forKey: "itemID") as? UUID,
+              let owner = try StoredRecords.object(.item(ItemID(rawValue: rawItemID)), in: context),
+              owner.value(forKey: "memoID") as? UUID == memoID else {
+            throw StoreError.invalidTransaction
+        }
+    }
+
+    private func referenceChanges(
+        for item: ItemValue,
+        previous: ItemValue?,
+        inserted: Bool
+    ) -> ItemReferenceChanges {
+        if inserted { return .all }
+        guard let previous else { return .none }
+        return ItemReferenceChanges(
+            capture: previous.captureID != item.captureID,
+            memo: previous.memoID != item.memoID,
+            collection: previous.collectionID != item.collectionID
+        )
+    }
+
+    private func validateItem(
+        _ item: ItemValue,
+        requiring changes: ItemReferenceChanges,
+        in context: NSManagedObjectContext
+    ) throws {
         if item.historyEligible { guard item.captureID != nil else { throw StoreError.invalidTransaction } }
         if let capture = item.captureID {
-            guard try StoredRecords.object(.capture(capture), in: context) != nil else { throw StoreError.invalidTransaction }
+            if changes.capture,
+               try StoredRecords.object(.capture(capture), in: context) == nil {
+                throw StoreError.invalidTransaction
+            }
             if item.historyEligible, try hasFacetMarker(itemID: item.id, facet: .history, id: capture, in: context) {
                 throw StoreError.invalidTransaction
             }
         }
         if let memoID = item.memoID {
-            guard case .memo(let memo) = try StoredRecords.value(.memo(memoID), in: context), memo.itemID == item.id,
-                  !(try hasFacetMarker(itemID: item.id, facet: .memo, id: memoID, in: context)) else {
+            guard !(try hasFacetMarker(itemID: item.id, facet: .memo, id: memoID, in: context)) else {
                 throw StoreError.invalidTransaction
             }
-            if memo.bodyMode == .inheritedCapture { guard item.captureID != nil else { throw StoreError.invalidTransaction } }
+            if let memo = try StoredRecords.object(.memo(memoID), in: context) {
+                guard memo.value(forKey: "itemID") as? UUID == item.id.rawValue,
+                      let rawMode = memo.value(forKey: "bodyMode") as? String,
+                      let mode = MemoBodyMode(rawValue: rawMode) else {
+                    throw StoreError.invalidTransaction
+                }
+                if mode == .inheritedCapture, item.captureID == nil {
+                    throw StoreError.invalidTransaction
+                }
+            } else if changes.memo {
+                throw StoreError.invalidTransaction
+            }
         }
         if let collection = item.collectionID {
-            guard item.memoID != nil, try StoredRecords.object(.collection(collection), in: context) != nil else {
+            guard item.memoID != nil else { throw StoreError.invalidTransaction }
+            if changes.collection,
+               try StoredRecords.object(.collection(collection), in: context) == nil {
                 throw StoreError.invalidTransaction
             }
         }
@@ -265,5 +478,46 @@ struct WriteCoordinator: Sendable {
         request.predicate = NSPredicate(format: "%K == %@", attribute, key.id as NSUUID)
         request.fetchLimit = 1
         guard try context.fetch(request).isEmpty else { throw StoreError.preconditionFailed }
+    }
+}
+
+private struct ItemReferenceChanges {
+    let capture: Bool
+    let memo: Bool
+    let collection: Bool
+
+    static let all = ItemReferenceChanges(capture: true, memo: true, collection: true)
+    static let none = ItemReferenceChanges(capture: false, memo: false, collection: false)
+
+    var any: Bool {
+        capture || memo || collection
+    }
+}
+
+private struct PurgeCaptureFingerprint: Encodable {
+    let id: UUID
+    let digest: Data
+    let representations: [PurgeRepresentationFingerprint]
+}
+
+private struct PurgeRepresentationFingerprint: Encodable {
+    let id: UUID
+    let snapshotID: UUID
+    let itemIndex: Int
+    let representationIndex: Int
+    let typeIdentifierBytes: Data
+    let storage: RepresentationStorage
+    let byteCount: Int64
+    let digest: Data
+
+    init(_ value: RepresentationValue) {
+        id = value.id
+        snapshotID = value.snapshotID
+        itemIndex = value.itemIndex
+        representationIndex = value.representationIndex
+        typeIdentifierBytes = Data(value.typeIdentifier.utf8)
+        storage = value.storage
+        byteCount = value.byteCount
+        digest = value.digest
     }
 }

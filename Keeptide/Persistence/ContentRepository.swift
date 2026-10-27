@@ -33,10 +33,10 @@ struct ContentRepository: Sendable {
         }
     }
 
-    func candidateFingerprint() async throws -> Data {
+    func candidateFingerprint(digest: Data) async throws -> Data {
         try await controller.perform { context in
             context.reset()
-            return try StoredRecords.candidateFingerprint(in: context)
+            return try StoredRecords.candidateFingerprint(digest: digest, in: context)
         }
     }
 

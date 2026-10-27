@@ -1,9 +1,11 @@
 import CoreData
+import Darwin
 import Foundation
 
-// The container is fixed after initialization. Mutable state and every managed
-// object are confined to writer.perform; only Sendable values leave that queue.
+// The container is fixed after initialization. Runtime state stays on the writer
+// queue; managed objects stay on their writer or pinned snapshot context queue.
 final class PersistenceController: @unchecked Sendable {
+    private let directoryOwnership: StoreDirectoryOwnership
     let container: NSPersistentContainer
     let writer: NSManagedObjectContext
     let contentStore: NSPersistentStore
@@ -19,6 +21,7 @@ final class PersistenceController: @unchecked Sendable {
     init(directory: URL, model: NSManagedObjectModel? = nil) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                               attributes: [.posixPermissions: 0o700])
+        directoryOwnership = try StoreDirectoryOwnership(directory: directory)
         container = NSPersistentContainer(name: "Keeptide", managedObjectModel: try model ?? Self.loadModel())
         let coordinator = container.persistentStoreCoordinator
         let common: [AnyHashable: Any] = [NSMigratePersistentStoresAutomaticallyOption: true,
@@ -54,13 +57,23 @@ final class PersistenceController: @unchecked Sendable {
                 runtime.identity = StoreIdentity(storeID: id, generation: generation)
                 runtime.safety = safety
             } else {
+                let hasContent = try (container.managedObjectModel.entities(forConfigurationName: "CloudContent") ?? []).contains { entity in
+                    guard let name = entity.name else { throw StoreError.invalidModel }
+                    let existing = NSFetchRequest<NSManagedObjectID>(entityName: name)
+                    existing.resultType = .managedObjectIDResultType
+                    existing.fetchLimit = 1
+                    existing.includesPropertyValues = false
+                    return try !writer.fetch(existing).isEmpty
+                }
+                let safety: StoreSafetyState = hasContent ? .quarantined : .localReady
                 let identity = StoreIdentity(storeID: id, generation: UUID())
                 let object = NSEntityDescription.insertNewObject(forEntityName: "StoreIdentity", into: writer)
                 object.setValue(id, forKey: "id")
                 object.setValue(identity.generation, forKey: "generation")
-                object.setValue(StoreSafetyState.localReady.rawValue, forKey: "safetyState")
+                object.setValue(safety.rawValue, forKey: "safetyState")
                 try writer.save()
                 runtime.identity = identity
+                runtime.safety = safety
             }
             writer.reset()
         }
@@ -80,12 +93,23 @@ final class PersistenceController: @unchecked Sendable {
     func close() async throws {
         try await writer.perform {
             guard !self.runtime.closed else { return }
-            self.runtime.invalidateLeases()
+            self.runtime.closeLeases()
             self.writer.reset()
             for store in self.container.persistentStoreCoordinator.persistentStores {
                 try self.container.persistentStoreCoordinator.remove(store)
             }
             self.runtime.closed = true
+            self.directoryOwnership.release()
+        }
+    }
+
+    func scheduleExpiration(of snapshot: PinnedSnapshot) {
+        let deadline = snapshot.deadline
+        snapshot.expirationTask = Task { [weak self] in
+            do { try await Task.sleep(until: deadline, clock: .continuous) }
+            catch { return }
+            guard let self else { return }
+            try? await self.perform { _ in self.runtime.expireLeases() }
         }
     }
 }
@@ -95,27 +119,54 @@ final class StoreRuntime {
     var safety: StoreSafetyState = .localReady
     var closed = false
     var leases: [UUID: PinnedSnapshot] = [:]
+    var retiredLeases: [UUID: PinnedSnapshot] = [:]
+    var usagePolicy: UsageDeduplicationPolicy?
 
     func invalidateLeases() {
-        for lease in leases.values {
-            let context = lease.context
+        for id in Array(leases.keys) { releaseLease(id) }
+    }
+
+    func releaseLease(_ id: UUID) {
+        guard let snapshot = leases.removeValue(forKey: id) else { return }
+        snapshot.expirationTask?.cancel()
+        snapshot.expirationTask = nil
+        if snapshot.inFlightPages > 0 {
+            retiredLeases[id] = snapshot
+        } else {
+            let context = snapshot.context
+            context.performAndWait { context.reset() }
+        }
+    }
+
+    func finishPage(_ snapshot: PinnedSnapshot) {
+        snapshot.inFlightPages -= 1
+        if snapshot.inFlightPages == 0, retiredLeases.removeValue(forKey: snapshot.lease.leaseID) != nil {
+            let context = snapshot.context
+            context.performAndWait { context.reset() }
+        }
+    }
+
+    func closeLeases() {
+        for snapshot in Array(leases.values) + Array(retiredLeases.values) {
+            snapshot.expirationTask?.cancel()
+            snapshot.expirationTask = nil
+            let context = snapshot.context
             context.performAndWait { context.reset() }
         }
         leases.removeAll()
+        retiredLeases.removeAll()
     }
 
     func expireLeases() {
         let now = ContinuousClock().now
         for id in leases.filter({ $0.value.deadline <= now }).keys {
-            if let expired = leases.removeValue(forKey: id) {
-                let context = expired.context
-                context.performAndWait { context.reset() }
-            }
+            releaseLease(id)
         }
     }
 }
 
-final class PinnedSnapshot {
+// Immutable context/refs may cross queues; cursors and lifecycle counters are writer-confined.
+final class PinnedSnapshot: @unchecked Sendable {
     let lease: SnapshotLease
     let context: NSManagedObjectContext
     let refs: [ContentRef]
@@ -123,6 +174,8 @@ final class PinnedSnapshot {
     let pageSize: Int
     let deadline: ContinuousClock.Instant
     var cursors: [Data: Int] = [:]
+    var inFlightPages = 0
+    var expirationTask: Task<Void, Never>?
 
     init(lease: SnapshotLease, context: NSManagedObjectContext, refs: [ContentRef],
          protectedCaptures: Set<UUID>, pageSize: Int, lifetime: TimeInterval) {
@@ -130,4 +183,34 @@ final class PinnedSnapshot {
         self.protectedCaptures = protectedCaptures; self.pageSize = pageSize
         deadline = ContinuousClock().now.advanced(by: .seconds(lifetime))
     }
+}
+
+// Keep the lock file after close: replacing its inode would allow two owners.
+private final class StoreDirectoryOwnership: @unchecked Sendable {
+    private let lock = NSLock()
+    private var descriptor: Int32
+
+    init(directory: URL) throws {
+        let path = directory.resolvingSymlinksInPath().appendingPathComponent(".store-owner.lock").path
+        let descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+            let code = errno
+            Darwin.close(descriptor)
+            if code == EWOULDBLOCK { throw StoreError.storeInUse }
+            throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO)
+        }
+        self.descriptor = descriptor
+    }
+
+    func release() {
+        lock.withLock {
+            if descriptor >= 0 {
+                Darwin.close(descriptor)
+                descriptor = -1
+            }
+        }
+    }
+
+    deinit { release() }
 }

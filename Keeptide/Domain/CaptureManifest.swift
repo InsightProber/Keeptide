@@ -80,12 +80,7 @@ struct CaptureManifest: Codable, Equatable, Sendable {
             previousCoordinate = coordinate
             guard representationIDs.insert(representation.id).inserted,
                   representation.snapshotID == snapshotID,
-                  representation.itemIndex == entry.itemIndex,
-                  representation.representationIndex == entry.representationIndex,
-                  representation.typeIdentifier == entry.typeIdentifier,
-                  representation.storage == entry.storage,
-                  representation.byteCount == entry.byteCount,
-                  representation.digest == entry.digest else {
+                  entry.matchesExactly(representation) else {
                 return .corrupt
             }
 
@@ -147,6 +142,17 @@ struct CaptureManifest: Codable, Equatable, Sendable {
             }
         }
         return currentItem + 1 == itemCount
+    }
+}
+
+private extension ManifestEntry {
+    func matchesExactly(_ representation: RepresentationValue) -> Bool {
+        itemIndex == representation.itemIndex
+            && representationIndex == representation.representationIndex
+            && typeIdentifier.utf8.elementsEqual(representation.typeIdentifier.utf8)
+            && storage == representation.storage
+            && byteCount == representation.byteCount
+            && digest == representation.digest
     }
 }
 
