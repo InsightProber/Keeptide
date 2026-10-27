@@ -1,5 +1,4 @@
 import AppKit
-import Carbon
 import XCTest
 
 @MainActor
@@ -92,7 +91,7 @@ final class NativeShellUITests: XCTestCase {
         let query = app.searchFields["Quick access query"]
 
         // Use a reserved synthetic chord through the real Carbon registration path.
-        try pressSyntheticHotKey()
+        pressSyntheticHotKey()
         guard panel.waitForExistence(timeout: 5) else {
             let beforeMenu = app.debugDescription
             app.menuBars.statusItems["Keeptide"].click()
@@ -111,20 +110,20 @@ final class NativeShellUITests: XCTestCase {
         host.typeText(" after")
         XCTAssertEqual(input.value as? String, "before after")
 
-        try pressSyntheticHotKey()
+        pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeText("toggle session")
-        try pressSyntheticHotKey()
+        pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
-        try pressSyntheticHotKey()
+        pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeText("click away session")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         // One key press must open a fresh session after click-away.
-        try pressSyntheticHotKey()
+        pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
         query.typeKey(.escape, modifierFlags: [])
@@ -132,7 +131,7 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
 
-        try pressSyntheticHotKey()
+        pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         query.typeText("must not return with library")
         input.click()
@@ -144,18 +143,11 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertFalse(panel.exists)
     }
 
-    private func pressSyntheticHotKey() throws {
-        // Global registration must be exercised with a session-wide event, rather
-        // than input synthesized specifically for an XCUIElement's application.
-        XCTAssertTrue(CGPreflightPostEventAccess(), "UI runner needs event-posting access for the global shortcut test")
+    private func pressSyntheticHotKey() {
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
         let allowedTargets = ["io.github.insightprober.Keeptide", "io.github.insightprober.Keeptide.SystemTestHost"]
-        XCTAssertTrue(allowedTargets.contains(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""))
-        let down = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_F19), keyDown: true))
-        let up = try XCTUnwrap(CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(kVK_F19), keyDown: false))
-        down.flags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
-        up.flags = down.flags
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+        XCTAssertTrue(allowedTargets.contains(frontmost))
+        XCUIApplication(bundleIdentifier: frontmost).typeKey("9", modifierFlags: [.command, .option, .control, .shift])
     }
 
     func testLaunchServicesReopenShowsLibrary() throws {

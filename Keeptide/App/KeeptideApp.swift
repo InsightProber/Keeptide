@@ -37,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showLibrary: { environment.showLibrary() },
             shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
             registration: launchConfiguration.usesSyntheticHotKey
-                ? .system(keyCode: { UInt32(kVK_F19) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
+                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
                 : .system()
         )
 
