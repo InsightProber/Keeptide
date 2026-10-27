@@ -5,13 +5,13 @@ import Carbon
 final class MenuBarController: NSObject {
     enum ShortcutStatus: Equatable {
         case disabledForTesting
-        case available
+        case registered
         case unavailable
         case failed(OSStatus)
 
         var menuTitle: String? {
             switch self {
-            case .available:
+            case .registered:
                 nil
             case .disabledForTesting:
                 "Global shortcut disabled for this test run — open Quick Access here"
@@ -23,11 +23,28 @@ final class MenuBarController: NSObject {
         }
     }
 
-    private static let hotKeySignature: OSType = 0x4B545044 // KTPD
-    private static let hotKeyIdentifier: UInt32 = 1
+    struct ShortcutRegistration {
+        var keyCode: () -> UInt32?
+        var register: (UInt32, OptionBits, inout EventHotKeyRef?) -> OSStatus
+        var unregister: (EventHotKeyRef) -> Void
 
-    private let panelController: PanelController
-    private let libraryWindowController: LibraryWindowController
+        static func system(keyCode: @escaping () -> UInt32? = ShortcutKeyResolver.currentCommandV,
+                           modifiers: UInt32 = UInt32(cmdKey | shiftKey)) -> Self {
+            Self(keyCode: keyCode, register: { keyCode, options, reference in
+                RegisterEventHotKey(keyCode, modifiers,
+                                    EventHotKeyID(signature: hotKeySignature, id: hotKeyIdentifier),
+                                    GetApplicationEventTarget(), options, &reference)
+            }, unregister: { UnregisterEventHotKey($0) })
+        }
+    }
+
+    nonisolated private static let hotKeySignature: OSType = 0x4B545044 // KTPD
+    nonisolated private static let hotKeyIdentifier: UInt32 = 1
+
+    private let showQuickAccess: () -> Void
+    private let toggleQuickAccess: () -> Void
+    private let showLibrary: () -> Void
+    private let registration: ShortcutRegistration
     private let statusItem: NSStatusItem
     private var eventHandler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
@@ -35,12 +52,16 @@ final class MenuBarController: NSObject {
     private(set) var shortcutStatus: ShortcutStatus = .disabledForTesting
 
     init(
-        panelController: PanelController,
-        libraryWindowController: LibraryWindowController,
-        shouldRegisterHotKey: Bool
+        showQuickAccess: @escaping () -> Void,
+        toggleQuickAccess: @escaping () -> Void,
+        showLibrary: @escaping () -> Void,
+        shouldRegisterHotKey: Bool,
+        registration: ShortcutRegistration = .system()
     ) {
-        self.panelController = panelController
-        self.libraryWindowController = libraryWindowController
+        self.showQuickAccess = showQuickAccess
+        self.toggleQuickAccess = toggleQuickAccess
+        self.showLibrary = showLibrary
+        self.registration = registration
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
@@ -51,22 +72,28 @@ final class MenuBarController: NSObject {
         statusItem.button?.setAccessibilityLabel("Keeptide")
 
         if shouldRegisterHotKey {
-            registerHotKey()
+            installHotKeyHandler()
+            DistributedNotificationCenter.default().addObserver(
+                self, selector: #selector(inputSourceChanged),
+                name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil,
+                suspensionBehavior: .deliverImmediately
+            )
         }
         rebuildMenu()
     }
 
     isolated deinit {
         if let hotKey {
-            UnregisterEventHotKey(hotKey)
+            registration.unregister(hotKey)
         }
         if let eventHandler {
             RemoveEventHandler(eventHandler)
         }
+        DistributedNotificationCenter.default().removeObserver(self)
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
-    private func registerHotKey() {
+    private func installHotKeyHandler() {
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -99,7 +126,7 @@ final class MenuBarController: NSObject {
                     .fromOpaque(userData)
                     .takeUnretainedValue()
                 MainActor.assumeIsolated {
-                    controller.panelController.toggle()
+                    controller.toggleQuickAccess()
                 }
                 return noErr
             },
@@ -113,30 +140,40 @@ final class MenuBarController: NSObject {
             return
         }
 
-        let hotKeyID = EventHotKeyID(
-            signature: Self.hotKeySignature,
-            id: Self.hotKeyIdentifier
-        )
+        refreshHotKey()
+    }
+
+    @objc func inputSourceChanged() {
+        refreshHotKey()
+        rebuildMenu()
+    }
+
+    private func refreshHotKey() {
+        guard eventHandler != nil else { return }
+        if let hotKey {
+            registration.unregister(hotKey)
+            self.hotKey = nil
+        }
+        guard let keyCode = registration.keyCode() else {
+            shortcutStatus = .failed(OSStatus(paramErr))
+            return
+        }
         var registeredHotKey: EventHotKeyRef?
-        let registrationStatus = RegisterEventHotKey(
-            UInt32(kVK_ANSI_V),
-            UInt32(cmdKey | shiftKey),
-            hotKeyID,
-            GetApplicationEventTarget(),
-            OptionBits(kEventHotKeyExclusive),
-            &registeredHotKey
-        )
+        // Registration success does not prove a combination is unused by other apps.
+        let registrationStatus = registration.register(keyCode, 0, &registeredHotKey)
 
         switch registrationStatus {
         case noErr:
             hotKey = registeredHotKey
-            shortcutStatus = .available
+            shortcutStatus = .registered
         case OSStatus(eventHotKeyExistsErr):
             shortcutStatus = .unavailable
         default:
             shortcutStatus = .failed(registrationStatus)
         }
     }
+
+    var menu: NSMenu? { statusItem.menu }
 
     private func rebuildMenu() {
         let menu = NSMenu()
@@ -150,6 +187,8 @@ final class MenuBarController: NSObject {
                 action: #selector(openQuickAccess),
                 keyEquivalent: ""
             )
+            shortcutItem.identifier = NSUserInterfaceItemIdentifier("ShortcutFallback")
+            shortcutItem.setAccessibilityIdentifier("ShortcutFallback")
             shortcutItem.target = self
             menu.addItem(shortcutItem)
         }
@@ -163,14 +202,44 @@ final class MenuBarController: NSObject {
     }
 
     @objc private func openQuickAccess() {
-        panelController.show()
+        showQuickAccess()
     }
 
     @objc private func openLibrary() {
-        libraryWindowController.show()
+        showLibrary()
     }
 
     @objc private func quit() {
         NSApplication.shared.terminate(nil)
+    }
+}
+
+
+/// Carbon registration needs a virtual key before a keyboard event exists.
+/// Resolve the Command layout (including Dvorak-QWERTY Command) without changing it.
+enum ShortcutKeyResolver {
+    static func currentCommandV() -> UInt32? {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let raw = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
+        return commandV(in: Unmanaged<CFData>.fromOpaque(raw).takeUnretainedValue())
+    }
+
+    static func commandV(in data: CFData) -> UInt32? {
+        guard CFDataGetLength(data) >= MemoryLayout<UCKeyboardLayout>.size,
+              let bytes = CFDataGetBytePtr(data) else { return nil }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        for keyCode in UInt16(0)...UInt16(127) {
+            var state: UInt32 = 0
+            var length = 0
+            var characters = [UniChar](repeating: 0, count: 8)
+            let status = UCKeyTranslate(layout, keyCode, UInt16(kUCKeyActionDown),
+                                        UInt32((cmdKey >> 8) & 0xFF), UInt32(LMGetKbdType()),
+                                        OptionBits(kUCKeyTranslateNoDeadKeysMask), &state,
+                                        characters.count, &length, &characters)
+            if status == noErr, String(utf16CodeUnits: characters, count: length).lowercased() == "v" {
+                return UInt32(keyCode)
+            }
+        }
+        return nil
     }
 }

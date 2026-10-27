@@ -120,9 +120,9 @@ and verified.
 - Verify links, publication boundaries and `git diff --check` for documentation.
 - Use full Xcode with the macOS 26 SDK or later. `DEVELOPER_DIR` may select a
   specific installation. Command Line Tools alone cannot run native tests.
-- Run `./scripts/verify.sh unit CLASS`, `integration CLASS`, or `ui CLASS` for
-  focused XCTest classes. Use `release-build`, `analyze`, or `all` for broader
-  checks. The shared project/scheme is `Keeptide`; results stay in `.local/`.
+- Run `./scripts/verify.sh unit`, `integration`, or `ui` for complete XCTest
+  targets; append a class name for focused runs. Use `release-build`,
+  `warnings-build`, or `all` for broader checks. The shared project/scheme is `Keeptide`; results stay in `.local/`.
 - Run `python3 -m unittest discover -s scripts/tests -v` when changing the
   verification script. These checks do not substitute for native XCTest.
 - Test behavior and failure boundaries. For meaningful changes, run focused

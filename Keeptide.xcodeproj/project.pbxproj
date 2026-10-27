@@ -23,6 +23,7 @@
 		A0010000000000000000000E /* SystemTestHostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0020000000000000000000E /* SystemTestHostView.swift */; };
 		A0010000000000000000000F /* LaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000014 /* LaunchConfiguration.swift */; };
 		A00100000000000000000010 /* ApplicationMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000017 /* ApplicationMenu.swift */; };
+		A00100000000000000000011 /* WindowContentController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000018 /* WindowContentController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +67,7 @@
 		A00200000000000000000015 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00200000000000000000016 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00200000000000000000017 /* ApplicationMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationMenu.swift; sourceTree = "<group>"; };
+		A00200000000000000000018 /* WindowContentController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowContentController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,7 +91,7 @@
 			sourceTree = "<group>";
 		};
 		A04000000000000000000002 /* Keeptide */ = {isa = PBXGroup; children = (A04000000000000000000003 /* App */, A04000000000000000000004 /* QuickAccess */, A04000000000000000000005 /* Library */, A0400000000000000000000B /* Resources */); path = Keeptide; sourceTree = "<group>"; };
-		A04000000000000000000003 /* App */ = {isa = PBXGroup; children = (A00200000000000000000001 /* KeeptideApp.swift */, A00200000000000000000002 /* AppEnvironment.swift */, A00200000000000000000003 /* AppSettings.swift */, A00200000000000000000017 /* ApplicationMenu.swift */, A00200000000000000000014 /* LaunchConfiguration.swift */, A00200000000000000000004 /* MenuBarController.swift */); path = App; sourceTree = "<group>"; };
+		A04000000000000000000003 /* App */ = {isa = PBXGroup; children = (A00200000000000000000018 /* WindowContentController.swift */, A00200000000000000000001 /* KeeptideApp.swift */, A00200000000000000000002 /* AppEnvironment.swift */, A00200000000000000000003 /* AppSettings.swift */, A00200000000000000000017 /* ApplicationMenu.swift */, A00200000000000000000014 /* LaunchConfiguration.swift */, A00200000000000000000004 /* MenuBarController.swift */); path = App; sourceTree = "<group>"; };
 		A04000000000000000000004 /* QuickAccess */ = {isa = PBXGroup; children = (A00200000000000000000005 /* QuickAccessView.swift */, A00200000000000000000006 /* PanelController.swift */); path = QuickAccess; sourceTree = "<group>"; };
 		A04000000000000000000005 /* Library */ = {isa = PBXGroup; children = (A00200000000000000000007 /* LibraryView.swift */, A00200000000000000000008 /* LibraryWindowController.swift */); path = Library; sourceTree = "<group>"; };
 		A04000000000000000000006 /* KeeptideTests */ = {isa = PBXGroup; children = (A00200000000000000000009 /* AppLaunchTests.swift */); path = KeeptideTests; sourceTree = "<group>"; };
@@ -143,7 +145,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		A07000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000001 /* KeeptideApp.swift in Sources */, A00100000000000000000002 /* AppEnvironment.swift in Sources */, A00100000000000000000003 /* AppSettings.swift in Sources */, A00100000000000000000010 /* ApplicationMenu.swift in Sources */, A0010000000000000000000F /* LaunchConfiguration.swift in Sources */, A00100000000000000000004 /* MenuBarController.swift in Sources */, A00100000000000000000005 /* QuickAccessView.swift in Sources */, A00100000000000000000006 /* PanelController.swift in Sources */, A00100000000000000000007 /* LibraryView.swift in Sources */, A00100000000000000000008 /* LibraryWindowController.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
+		A07000000000000000000001 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000011 /* WindowContentController.swift in Sources */, A00100000000000000000001 /* KeeptideApp.swift in Sources */, A00100000000000000000002 /* AppEnvironment.swift in Sources */, A00100000000000000000003 /* AppSettings.swift in Sources */, A00100000000000000000010 /* ApplicationMenu.swift in Sources */, A0010000000000000000000F /* LaunchConfiguration.swift in Sources */, A00100000000000000000004 /* MenuBarController.swift in Sources */, A00100000000000000000005 /* QuickAccessView.swift in Sources */, A00100000000000000000006 /* PanelController.swift in Sources */, A00100000000000000000007 /* LibraryView.swift in Sources */, A00100000000000000000008 /* LibraryWindowController.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 		A07000000000000000000002 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00100000000000000000009 /* AppLaunchTests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 		A07000000000000000000003 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000A /* NativeShellUITests.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };
 		A07000000000000000000004 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0010000000000000000000B /* KeeptideSystemTestHostApp.swift in Sources */, A0010000000000000000000C /* SyntheticPasteboardHarness.swift in Sources */, A0010000000000000000000D /* FileDropReceiver.swift in Sources */, A0010000000000000000000E /* SystemTestHostView.swift in Sources */); runOnlyForDeploymentPostprocessing = 0; };

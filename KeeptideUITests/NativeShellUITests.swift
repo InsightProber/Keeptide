@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @MainActor
@@ -12,7 +13,7 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertTrue(statusItem.waitForExistence(timeout: 5))
         statusItem.click()
 
-        let openQuickAccess = app.menuItems["Open Quick Access"]
+        let openQuickAccess = app.menuItems["ShortcutFallback"]
         XCTAssertTrue(openQuickAccess.waitForExistence(timeout: 5))
         openQuickAccess.click()
 
@@ -64,8 +65,93 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(queryField.value as? String, "")
         XCTAssertTrue(quickAccessPanel.exists)
 
+        queryField.typeKey("z", modifierFlags: .command)
+        XCTAssertEqual(queryField.value as? String, "plain input")
+        queryField.typeKey("z", modifierFlags: [.command, .shift])
+        XCTAssertEqual(queryField.value as? String, "")
         queryField.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(quickAccessPanel.waitForNonExistence(timeout: 5))
+    }
+
+    func testGlobalHotKeySessionsReturnFocusAndDoNotResurrect() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--synthetic-hotkey"]
+        app.launch()
+        let hostURL = Bundle.main.bundleURL.deletingLastPathComponent()
+            .appendingPathComponent("KeeptideSystemTestHost.app")
+        let host = XCUIApplication(url: hostURL)
+        host.launch()
+        defer { host.terminate() }
+        let input = host.textFields["Synthetic input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        input.click()
+        input.typeText("before")
+        let panel = app.dialogs["KeeptideQuickAccessPanel"]
+        let query = app.searchFields["Quick access query"]
+        let modifiers: XCUIElement.KeyModifierFlags = [.command, .shift, .control, .option]
+
+        // Use a reserved synthetic chord through the real Carbon registration path.
+        host.typeKey(.F19, modifierFlags: modifiers)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                       "io.github.insightprober.Keeptide.SystemTestHost")
+        query.typeText("first session")
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                       "io.github.insightprober.Keeptide.SystemTestHost")
+        query.typeKey("w", modifierFlags: .command)
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                       "io.github.insightprober.Keeptide.SystemTestHost")
+        host.typeText(" after")
+        XCTAssertEqual(input.value as? String, "before after")
+
+        host.typeKey(.F19, modifierFlags: modifiers)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertEqual(query.value as? String, "")
+        query.typeText("toggle session")
+        query.typeKey(.F19, modifierFlags: modifiers)
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        host.typeKey(.F19, modifierFlags: modifiers)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertEqual(query.value as? String, "")
+        query.typeText("click away session")
+        input.click()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        // One key press must open a fresh session after click-away.
+        host.typeKey(.F19, modifierFlags: modifiers)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        XCTAssertEqual(query.value as? String, "")
+        query.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                       "io.github.insightprober.Keeptide.SystemTestHost")
+
+        host.typeKey(.F19, modifierFlags: modifiers)
+        XCTAssertTrue(panel.waitForExistence(timeout: 5))
+        query.typeText("must not return with library")
+        input.click()
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
+        let statusItem = app.menuBars.statusItems["Keeptide"]
+        statusItem.click()
+        app.menuItems["Open Library"].click()
+        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 5))
+        XCTAssertFalse(panel.exists)
+    }
+
+    func testLaunchServicesReopenShowsLibrary() throws {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--disable-global-hotkey"]
+        app.launch()
+        let url = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("Keeptide.app")
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = [url.path]
+        try process.run()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 5))
     }
 
     func testClosingLibraryLeavesMenuBarApplicationRunning() {

@@ -17,6 +17,9 @@ as a snippet, or write one directly.
 
 ## Designed for the Mac
 
+The following capabilities describe the planned first release; only the native
+foundation listed above is implemented today.
+
 - A focused quick-access panel and a native library window.
 - Keyboard-first navigation with predictable focus and text editing.
 - Restrained Liquid Glass, system typography, and accessible reading surfaces.
@@ -45,8 +48,9 @@ Open `Keeptide.xcodeproj` in full Xcode with the macOS 26 SDK or later and selec
 the shared `Keeptide` scheme. The project uses Swift 6 and Apple frameworks;
 Command Line Tools alone cannot run its XCTest suite.
 
-Run `./scripts/verify.sh all` for native tests, a Release build, and static
-analysis. See [Contributing](CONTRIBUTING.md) for focused commands and validation
+Run `./scripts/verify.sh all` for native tests, a Release build, and a Debug build
+with Swift warnings treated as errors. See [Contributing](CONTRIBUTING.md) for focused
+commands and validation
 boundaries. The application starts with capture disabled and does not access the
 system clipboard in this foundation stage.
 

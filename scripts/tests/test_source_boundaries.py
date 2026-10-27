@@ -25,7 +25,7 @@ class ProductionShellBoundaryTests(unittest.TestCase):
         self.assertEqual(
             violations,
             [],
-            "PR-01 shell must not access clipboard APIs; add clipboard behavior in its owning milestone",
+            "Foundation shell must not access clipboard APIs; add clipboard behavior in its owning milestone",
         )
 
 

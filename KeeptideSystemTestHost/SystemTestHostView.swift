@@ -32,6 +32,10 @@ private final class SyntheticHostView: NSView {
         )
         explanation.textColor = .secondaryLabelColor
 
+        let input = NSTextField(string: "")
+        input.placeholderString = "Synthetic keyboard input target"
+        input.setAccessibilityIdentifier("Synthetic input")
+
         let buttonRow = NSStackView(views: [
             makeButton("Write Text", action: #selector(writeText)),
             makeButton("Write Rich Text", action: #selector(writeRichText)),
@@ -73,6 +77,7 @@ private final class SyntheticHostView: NSView {
         let stack = NSStackView(views: [
             title,
             explanation,
+            input,
             buttonRow,
             inspectButton,
             dropContainer,

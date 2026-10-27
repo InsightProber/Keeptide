@@ -40,13 +40,14 @@ The verification entry point provides these commands:
 ./scripts/verify.sh integration AppLaunchTests
 ./scripts/verify.sh ui NativeShellUITests
 ./scripts/verify.sh release-build
-./scripts/verify.sh analyze
+./scripts/verify.sh warnings-build
 ./scripts/verify.sh all
 ```
 
-`unit` and `integration` select a class in `KeeptideTests`; `ui` selects a class
-in `KeeptideUITests`. Test builds use local ad-hoc signing without developer
-credentials. CI uses the same script. Developer ID signing, notarization, and
+`unit` and `integration` run `KeeptideTests`; `ui` runs `KeeptideUITests`.
+An optional class name narrows the selection. CI runs complete targets, and the
+script rejects empty, entirely skipped, or unreadable results. Test builds use
+local ad-hoc signing without developer credentials. CI uses the same script. Developer ID signing, notarization, and
 cloud provisioning are separate release operations.
 
 For verification-script changes, also run

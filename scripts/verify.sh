@@ -8,11 +8,11 @@ cd "$repository_root"
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  ./scripts/verify.sh unit CLASS
-  ./scripts/verify.sh integration CLASS
-  ./scripts/verify.sh ui CLASS
+  ./scripts/verify.sh unit [CLASS]
+  ./scripts/verify.sh integration [CLASS]
+  ./scripts/verify.sh ui [CLASS]
   ./scripts/verify.sh release-build
-  ./scripts/verify.sh analyze
+  ./scripts/verify.sh warnings-build
   ./scripts/verify.sh all
 EOF
 }
@@ -37,8 +37,8 @@ require_xcode() {
   fi
 }
 
-require_class() {
-  if [ "$#" -ne 2 ] || [ -z "$2" ]; then
+validate_test_arguments() {
+  if [ "$#" -gt 2 ] || { [ "$#" -eq 2 ] && [ -z "$2" ]; }; then
     usage
     exit 64
   fi
@@ -61,16 +61,19 @@ run_xcodebuild() {
 
 run_test() {
   target=$1
-  class_name=$2
-  result_bundle="$result_root/${timestamp}-${target}-${class_name}.xcresult"
+  class_name=${2:-}
+  selection=$target
+  if [ -n "$class_name" ]; then selection="$target/$class_name"; fi
+  result_bundle="$result_root/${timestamp}-${target}.xcresult"
   run_xcodebuild test \
     -resultBundlePath "$result_bundle" \
-    "-only-testing:${target}/${class_name}" \
+    "-only-testing:${selection}" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_ALLOWED=YES \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY=- \
     DEVELOPMENT_TEAM=
+  verify_test_result "$result_bundle"
 }
 
 run_all_tests() {
@@ -82,6 +85,13 @@ run_all_tests() {
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY=- \
     DEVELOPMENT_TEAM=
+  verify_test_result "$result_bundle"
+}
+
+verify_test_result() {
+  summary_path="$1.summary.json"
+  xcrun xcresulttool get test-results summary --path "$1" --compact > "$summary_path"
+  python3 scripts/check_test_result.py "$summary_path"
 }
 
 require_xcode
@@ -89,26 +99,26 @@ require_xcode
 command_name=${1:-}
 case "$command_name" in
   unit|integration)
-    require_class "$@"
-    run_test KeeptideTests "$2"
+    validate_test_arguments "$@"
+    run_test KeeptideTests "${2:-}"
     ;;
   ui)
-    require_class "$@"
-    run_test KeeptideUITests "$2"
+    validate_test_arguments "$@"
+    run_test KeeptideUITests "${2:-}"
     ;;
   release-build)
     [ "$#" -eq 1 ] || { usage; exit 64; }
     run_xcodebuild build -configuration Release CODE_SIGNING_ALLOWED=NO
     ;;
-  analyze)
+  warnings-build)
     [ "$#" -eq 1 ] || { usage; exit 64; }
-    run_xcodebuild analyze -configuration Debug CODE_SIGNING_ALLOWED=NO
+    run_xcodebuild build -configuration Debug SWIFT_TREAT_WARNINGS_AS_ERRORS=YES CODE_SIGNING_ALLOWED=NO
     ;;
   all)
     [ "$#" -eq 1 ] || { usage; exit 64; }
     run_all_tests
     run_xcodebuild build -configuration Release CODE_SIGNING_ALLOWED=NO
-    run_xcodebuild analyze -configuration Debug CODE_SIGNING_ALLOWED=NO
+    run_xcodebuild build -configuration Debug SWIFT_TREAT_WARNINGS_AS_ERRORS=YES CODE_SIGNING_ALLOWED=NO
     ;;
   *)
     usage

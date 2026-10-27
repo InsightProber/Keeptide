@@ -32,15 +32,15 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
       - name: Run unit tests
-        run: ./scripts/verify.sh unit AppLaunchTests
+        run: ./scripts/verify.sh unit
 
       - name: Run native shell UI tests
-        run: ./scripts/verify.sh ui NativeShellUITests
+        run: ./scripts/verify.sh ui
 
       - name: Build Release configuration
         if: ${{ success() || failure() }}
         run: ./scripts/verify.sh release-build
 
-      - name: Analyze
+      - name: Build with Swift warnings as errors
         if: ${{ success() || failure() }}
-        run: ./scripts/verify.sh analyze
+        run: ./scripts/verify.sh warnings-build

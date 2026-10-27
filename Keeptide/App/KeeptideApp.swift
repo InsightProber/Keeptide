@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 
 @main
 enum KeeptideApp {
@@ -31,17 +32,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             environment: processInfo.environment
         )
         menuBarController = MenuBarController(
-            panelController: environment.panelController,
-            libraryWindowController: environment.libraryWindowController,
-            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey
+            showQuickAccess: { environment.panelController.show() },
+            toggleQuickAccess: { environment.panelController.toggle() },
+            showLibrary: { environment.showLibrary() },
+            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
+            registration: launchConfiguration.usesSyntheticHotKey
+                ? .system(keyCode: { UInt32(kVK_F19) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
+                : .system()
         )
 
         if launchConfiguration.shouldShowQuickAccess {
             environment.panelController.show()
         }
         if launchConfiguration.shouldShowLibrary {
-            environment.libraryWindowController.show()
+            environment.showLibrary()
         }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        environment?.showLibrary()
+        return false
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

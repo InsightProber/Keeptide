@@ -2,19 +2,15 @@ import AppKit
 import SwiftUI
 
 struct QuickAccessView: View {
+    let searchField: QuickAccessSearchField
+
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                QuickAccessSearchField()
-                    .accessibilityLabel("Quick access query")
-                    .accessibilityIdentifier("Quick access query")
-            }
-            .padding(.horizontal, 20)
-            .frame(height: 58)
-            .background(.regularMaterial)
-
+            SearchField(field: searchField)
+                .padding(.horizontal, 20)
+                .frame(height: 58)
+                .background(.regularMaterial)
             Divider()
-
             ContentUnavailableView {
                 Label("No content yet", systemImage: "doc.on.clipboard")
             } description: {
@@ -25,64 +21,48 @@ struct QuickAccessView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color(nsColor: .textBackgroundColor))
         }
-        .frame(minWidth: 520, minHeight: 360)
     }
 }
 
-private struct QuickAccessSearchField: NSViewRepresentable {
-    func makeCoordinator() -> Coordinator {
-        Coordinator()
+private struct SearchField: NSViewRepresentable {
+    let field: QuickAccessSearchField
+    func makeNSView(context: Context) -> QuickAccessSearchField { field }
+    func updateNSView(_ nsView: QuickAccessSearchField, context: Context) {}
+}
+
+final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
+    init() {
+        super.init(frame: .zero)
+        placeholderString = "Search Keeptide"
+        font = .preferredFont(forTextStyle: .title3)
+        delegate = self
+        setAccessibilityLabel("Quick access query")
+        setAccessibilityIdentifier("Quick access query")
     }
 
-    func makeNSView(context: Context) -> FocusingSearchField {
-        let field = FocusingSearchField()
-        field.placeholderString = "Search Keeptide"
-        field.focusRingType = .default
-        field.font = .preferredFont(forTextStyle: .title3)
-        field.delegate = context.coordinator
-        field.setAccessibilityIdentifier("Quick access query")
-        return field
-    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func updateNSView(_ nsView: FocusingSearchField, context: Context) {}
-
-    @MainActor
-    final class Coordinator: NSObject, NSSearchFieldDelegate {
-        func control(
-            _ control: NSControl,
-            textView: NSTextView,
-            doCommandBy commandSelector: Selector
-        ) -> Bool {
-            guard commandSelector == #selector(NSResponder.cancelOperation(_:)),
-                  let searchField = control as? NSSearchField else {
-                return false
-            }
-
-            switch QuickAccessEscapePolicy.action(
-                hasMarkedText: textView.hasMarkedText(),
-                hasQuery: !searchField.stringValue.isEmpty
-            ) {
-            case .passToInputMethod:
-                return false
-            case .clearQuery:
-                searchField.stringValue = ""
-                return true
-            case .closePanel:
-                searchField.window?.orderOut(nil)
-                return true
-            }
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+        guard selector == #selector(NSResponder.cancelOperation(_:)) else { return false }
+        switch QuickAccessEscapePolicy.action(hasMarkedText: textView.hasMarkedText(), hasQuery: !stringValue.isEmpty) {
+        case .cancelComposition:
+            // The input method already declined Escape. Remove only its marked range;
+            // discardMarkedText alone does not clear the editor's marked range.
+            textView.insertText("", replacementRange: textView.markedRange())
+            textView.inputContext?.discardMarkedText()
+            return true
+        case .clearQuery:
+            // Use native clearing so Undo and change notifications are preserved.
+            return false
+        case .closePanel:
+            window?.performClose(nil)
+            return true
         }
     }
-}
 
-private final class FocusingSearchField: NSSearchField {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if let window {
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSWindow.didBecomeKeyNotification,
-                object: window
-            )
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: window)
         }
         super.viewWillMove(toWindow: newWindow)
     }
@@ -90,39 +70,26 @@ private final class FocusingSearchField: NSSearchField {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else { return }
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowDidBecomeKey),
-            name: NSWindow.didBecomeKeyNotification,
-            object: window
-        )
-        focusIfWindowIsKey()
+        NotificationCenter.default.addObserver(self, selector: #selector(windowDidBecomeKey),
+                                              name: NSWindow.didBecomeKeyNotification, object: window)
+        focusIfNeeded()
     }
 
-    @objc private func windowDidBecomeKey(_ notification: Notification) {
-        focusIfWindowIsKey()
-    }
+    @objc private func windowDidBecomeKey(_ notification: Notification) { focusIfNeeded() }
 
-    private func focusIfWindowIsKey() {
-        guard window?.isKeyWindow == true else { return }
+    private func focusIfNeeded() {
+        guard window?.isKeyWindow == true, currentEditor() == nil else { return }
         window?.makeFirstResponder(self)
     }
 }
 
 enum QuickAccessEscapeAction: Equatable {
-    case passToInputMethod
-    case clearQuery
-    case closePanel
+    case cancelComposition, clearQuery, closePanel
 }
 
 enum QuickAccessEscapePolicy {
     static func action(hasMarkedText: Bool, hasQuery: Bool) -> QuickAccessEscapeAction {
-        if hasMarkedText {
-            return .passToInputMethod
-        }
-        if hasQuery {
-            return .clearQuery
-        }
-        return .closePanel
+        if hasMarkedText { return .cancelComposition }
+        return hasQuery ? .clearQuery : .closePanel
     }
 }
