@@ -89,8 +89,23 @@ final class NativeShellUITests: XCTestCase {
         input.typeText("before")
         let panel = app.dialogs["KeeptideQuickAccessPanel"]
         let query = app.searchFields["Quick access query"]
+        func assertHostIsFrontmost() {
+            XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+                           "io.github.insightprober.Keeptide.SystemTestHost")
+        }
+        func typeInPanel(_ text: String, originalText: String = "before after") {
+            assertHostIsFrontmost()
+            // Using the query element would activate its application before typing.
+            // Send through the already-active host; the key panel receives the events.
+            for character in text {
+                host.typeKey(String(character), modifierFlags: [])
+            }
+            assertHostIsFrontmost()
+            XCTAssertEqual(query.value as? String, text)
+            XCTAssertEqual(input.value as? String, originalText)
+        }
 
-        // Use a reserved synthetic chord through the real Carbon registration path.
+        // Use a synthetic chord through the real Carbon registration path.
         pressSyntheticHotKey()
         guard panel.waitForExistence(timeout: 5) else {
             let beforeMenu = app.debugDescription
@@ -100,10 +115,10 @@ final class NativeShellUITests: XCTestCase {
         }
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
-        query.typeText("first session")
+        typeInPanel("first session", originalText: "before")
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
-        query.typeKey("w", modifierFlags: .command)
+        host.typeKey("w", modifierFlags: .command)
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
@@ -113,27 +128,28 @@ final class NativeShellUITests: XCTestCase {
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
-        query.typeText("toggle session")
+        typeInPanel("toggle session")
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
-        query.typeText("click away session")
+        typeInPanel("click away session")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         // One key press must open a fresh session after click-away.
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
-        query.typeKey(.escape, modifierFlags: [])
+        assertHostIsFrontmost()
+        host.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
 
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
-        query.typeText("must not return with library")
+        typeInPanel("must not return with library")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         let statusItem = app.menuBars.statusItems["Keeptide"]
@@ -145,8 +161,7 @@ final class NativeShellUITests: XCTestCase {
 
     private func pressSyntheticHotKey() {
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
-        let allowedTargets = ["io.github.insightprober.Keeptide", "io.github.insightprober.Keeptide.SystemTestHost"]
-        XCTAssertTrue(allowedTargets.contains(frontmost))
+        XCTAssertEqual(frontmost, "io.github.insightprober.Keeptide.SystemTestHost")
         XCUIApplication(bundleIdentifier: frontmost).typeKey("9", modifierFlags: [.command, .option, .control, .shift])
     }
 
