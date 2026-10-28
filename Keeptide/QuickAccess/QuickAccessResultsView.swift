@@ -189,7 +189,8 @@ struct QuickAccessRowContent: View {
         }
     }
 
-    private static func highlighted(_ snippet: SearchSnippet) -> AttributedString {
+    /// Pure string work, so it is not tied to the main actor with the view that holds it.
+    nonisolated static func highlighted(_ snippet: SearchSnippet) -> AttributedString {
         var attributed = AttributedString(snippet.text)
         let length = snippet.text.utf16.count
         for range in snippet.highlights where range.lowerBound >= 0 && range.upperBound <= length {
