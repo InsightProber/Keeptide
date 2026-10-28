@@ -30,7 +30,7 @@ enum ContentFacet: String, Codable, Equatable, Hashable, Sendable {
     case memo
 }
 
-struct ContentRef: Codable, Equatable, Sendable {
+struct ContentRef: Codable, Equatable, Hashable, Sendable {
     var itemID: ItemID
     var facet: ContentFacet
     var version: ContentVersion
@@ -269,13 +269,19 @@ struct ItemSummary: Codable, Equatable, Sendable {
     var lastCopiedAt: Date
     var history: ContentRef?
     var memo: ContentRef?
+    /// Classified from the capture's representation types; payloads are not read.
+    var kind: ContentKind
+    var sourceApp: String?
 
-    init(itemID: ItemID, title: String, lastCopiedAt: Date, history: ContentRef? = nil, memo: ContentRef? = nil) {
+    init(itemID: ItemID, title: String, lastCopiedAt: Date, history: ContentRef? = nil, memo: ContentRef? = nil,
+         kind: ContentKind = .other, sourceApp: String? = nil) {
         self.itemID = itemID
         self.title = title
         self.lastCopiedAt = lastCopiedAt
         self.history = history
         self.memo = memo
+        self.kind = kind
+        self.sourceApp = sourceApp
     }
 }
 

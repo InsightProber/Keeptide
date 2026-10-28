@@ -1,4 +1,5 @@
 import Foundation
+import XCTest
 @testable import Keeptide
 
 enum ContentStoreFixtures {
@@ -30,5 +31,27 @@ enum ContentStoreFixtures {
         let transaction = StoreTransaction(identity: try await controller.identity(),
             mutations: [.insert(.capture(capture)), .insert(.item(item))])
         _ = try await WriteCoordinator(controller: controller).commit(transaction)
+    }
+
+    /// A one-item file reference whose URL bytes live only in local file-access state.
+    static func localReferenceCapture() throws -> CaptureValue {
+        let captureID = UUID()
+        let representation = RepresentationValue(id: UUID(), snapshotID: captureID, itemIndex: 0,
+            representationIndex: 0, typeIdentifier: "public.file-url", storage: .localReference,
+            byteCount: 0, digest: Data(repeating: 0x59, count: 32), bytes: nil)
+        let manifest = CaptureManifest(version: LocalReferencePrivacy.manifestVersion, itemCount: 1,
+                                       entries: [ManifestEntry(representation)])
+        return CaptureValue(id: captureID, manifest: manifest, digest: ContentDigest.sha256(try manifest.canonicalData()),
+                            representations: [representation])
+    }
+
+    static func insertLocalReference(_ item: ItemValue, _ capture: CaptureValue,
+                                     into controller: PersistenceController) async throws {
+        let representation = try XCTUnwrap(capture.representations.first)
+        try await FileAccessStore(controller: controller).put(
+            LocalFileAccess(id: representation.id, snapshotID: capture.id, bytes: Data("file:///Synthetic/report.txt".utf8)),
+            expecting: controller.identity()
+        )
+        try await insert(item, capture, into: controller)
     }
 }

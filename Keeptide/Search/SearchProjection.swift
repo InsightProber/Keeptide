@@ -1,9 +1,4 @@
 import Foundation
-import UniformTypeIdentifiers
-
-enum ContentKind: String, Codable, Sendable {
-    case text, url, image, file, other
-}
 
 struct TextRepresentation: Equatable, Sendable {
     let itemIndex: Int
@@ -71,7 +66,8 @@ enum SearchDocumentBuilder {
 
     static func documents(for input: SearchProjectionInput) -> [SearchDocument] {
         let capture = captureText(input.textRepresentations)
-        let captureKind = kind(types: input.representationTypes, hasLocalReference: input.hasLocalReference)
+        let captureKind = ContentKind.classify(typeIdentifiers: input.representationTypes,
+                                               hasLocalReference: input.hasLocalReference)
         let merged = input.memo?.isInherited == true && input.history != nil
         var documents: [SearchDocument] = []
         if let history = input.history {
@@ -176,16 +172,5 @@ enum SearchDocumentBuilder {
             end = text.utf8.index(before: end)
         }
         return (String(text[..<end]), true)
-    }
-
-    private static func kind(types: [String], hasLocalReference: Bool) -> ContentKind {
-        let lowered = types.map { $0.lowercased() }
-        if hasLocalReference || lowered.contains("public.file-url") { return .file }
-        if types.contains(where: { UTType($0)?.conforms(to: .image) == true }) { return .image }
-        if lowered.contains("public.url") { return .url }
-        if types.contains(where: { ClipboardTextDecoder.isTextType($0) || UTType($0)?.conforms(to: .text) == true }) {
-            return .text
-        }
-        return .other
     }
 }
