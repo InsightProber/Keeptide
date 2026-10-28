@@ -50,6 +50,29 @@ final class ClipDetailTests: XCTestCase {
         XCTAssertEqual(reads, 1)
     }
 
+    func testTextIsNotReadAgainWhenTheSystemEmptiesItsCache() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let probe = ReadProbe()
+        let imageCache = NSCache<AnyObject, AnyObject>()
+        let service = makeService(harness, probe: probe, cache: ThumbnailCache(imageCache: imageCache))
+        let textRef = try await insert([[("public.utf8-plain-text", Data("Synthetic text".utf8))]], into: harness)
+        let imageRef = try await insert([[("public.png", try png(width: 40, height: 30))]], into: harness)
+        let text = try await service.detail(for: textRef, kind: .text, frameSize: stripFrame)
+        _ = try await service.detail(for: imageRef, kind: .image, frameSize: stripFrame)
+        let readsBefore = await probe.reads
+        XCTAssertEqual(readsBefore, 2)
+
+        // The system may empty an NSCache whenever memory runs short; here it happens all at once.
+        imageCache.removeAllObjects()
+        let textAgain = try await service.detail(for: textRef, kind: .text, frameSize: stripFrame)
+        _ = try await service.detail(for: imageRef, kind: .image, frameSize: stripFrame)
+
+        // Only the image is read again: its thumbnail was in the cache that was emptied, the text was not.
+        XCTAssertEqual(textAgain, text)
+        let readsAfter = await probe.reads
+        XCTAssertEqual(readsAfter, 3)
+    }
+
     func testLinkCountsTheFullURL() async throws {
         let harness = try SearchHarness.make(in: self)
         let service = makeService(harness)
@@ -68,6 +91,13 @@ final class ClipDetailTests: XCTestCase {
         let padded = try await service.detail(for: paddedRef, kind: .url, frameSize: stripFrame)
         XCTAssertEqual(padded.characterCount, 56)
         XCTAssertEqual(padded.excerpt, url)
+
+        // The excerpt only keeps the start of a very long URL, such as a data URL; the count is of all of it.
+        let long = "https://example.com/" + String(repeating: "a", count: 5_000)
+        let longRef = try await insert([[("public.url", Data(long.utf8))]], into: harness)
+        let longDetail = try await service.detail(for: longRef, kind: .url, frameSize: stripFrame)
+        XCTAssertEqual(longDetail.characterCount, 5_020)
+        XCTAssertEqual(longDetail.excerpt, String(long.prefix(2_048)))
     }
 
     func testImageSizeComesFromTheHeaderAndThumbnailsCoverTheFrame() async throws {
@@ -208,12 +238,13 @@ final class ClipDetailTests: XCTestCase {
         }
     }
 
-    private func makeService(_ harness: SearchHarness, probe: ReadProbe? = nil) -> PreviewService {
+    private func makeService(_ harness: SearchHarness, probe: ReadProbe? = nil,
+                             cache: ThumbnailCache = ThumbnailCache()) -> PreviewService {
         let repository = ContentRepository(controller: harness.controller)
         return PreviewService(read: { ref in
             await probe?.enter()
             return try await repository.read(ref)
-        })
+        }, cache: cache)
     }
 
     private func insert(_ items: [[(String, Data)]], into harness: SearchHarness) async throws -> ContentRef {

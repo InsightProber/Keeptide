@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 /// What a strip frame shows of a clip beyond its title.
 struct ClipDetail: Equatable, Sendable {
-    /// The start of a text, or a link's whole URL.
+    /// The start of a text, or of a link's URL.
     var excerpt: String?
     /// The length of the whole text or URL, counted in characters as a reader sees them.
     var characterCount: Int?
@@ -26,6 +26,9 @@ struct ClipDetail: Equatable, Sendable {
 /// and the frames on screen load side by side instead of queuing behind one another.
 final class PreviewService: Sendable {
     private static let excerptLength = 300
+    /// A frame shows a link by its host and the start of its path, so far less than this. The cut keeps
+    /// what the cache holds small even for a huge URL, such as a data URL; the count is of all of it.
+    private static let linkExcerptLength = 2_048
 
     private let read: @Sendable (ContentRef) async throws -> ResolvedContent
     private let cache: ThumbnailCache
@@ -87,7 +90,9 @@ final class PreviewService: Sendable {
         guard let text else { return ClipDetail() }
         let characterCount = text.count
         try Task.checkCancellation()
-        let excerpt = isLink ? text : String(text.drop(while: \.isWhitespace).prefix(excerptLength))
+        let excerpt = isLink
+            ? String(text.prefix(linkExcerptLength))
+            : String(text.drop(while: \.isWhitespace).prefix(excerptLength))
         return ClipDetail(excerpt: excerpt, characterCount: characterCount)
     }
 
