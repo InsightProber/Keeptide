@@ -29,6 +29,7 @@ enum PasteboardWriterError: Error, Equatable {
     case invalidRepresentationBytes(itemIndex: Int, representationIndex: Int)
     case cannotPrepareRepresentation(itemIndex: Int, representationIndex: Int)
     case writeFailed
+    case noPlainText
 }
 
 struct PreparedPasteboardContent: Sendable {
@@ -108,6 +109,35 @@ final class PasteboardWriter {
             nextRepresentationIndex += 1
         }
         return PreparedPasteboardContent(representations: ordered)
+    }
+
+    /// The first cleanly decodable text representation, written as the only
+    /// representation in UTF-8.
+    nonisolated static func preparePlainText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        guard content.isActionable else { throw PasteboardWriterError.nonActionableContent }
+        let ordered = content.representations.sorted {
+            ($0.itemIndex, $0.representationIndex) < ($1.itemIndex, $1.representationIndex)
+        }
+        for representation in ordered where ClipboardTextDecoder.isTextType(representation.typeIdentifier) {
+            guard let bytes = representation.bytes,
+                  representation.byteCount == Int64(bytes.count),
+                  representation.digest == ContentDigest.sha256(bytes) else {
+                throw PasteboardWriterError.invalidRepresentationBytes(
+                    itemIndex: representation.itemIndex,
+                    representationIndex: representation.representationIndex
+                )
+            }
+            guard let decoded = ClipboardTextDecoder.decodeText(
+                bytes, typeIdentifier: representation.typeIdentifier, maximumBytes: bytes.count
+            ), !decoded.isTruncated else { continue }
+            let utf8 = Data(decoded.text.utf8)
+            return PreparedPasteboardContent(representations: [RepresentationValue(
+                snapshotID: representation.snapshotID, itemIndex: 0, representationIndex: 0,
+                typeIdentifier: "public.utf8-plain-text", storage: .portable,
+                byteCount: Int64(utf8.count), digest: ContentDigest.sha256(utf8), bytes: utf8
+            )])
+        }
+        throw PasteboardWriterError.noPlainText
     }
 
     private func prepareItems(_ representations: [RepresentationValue]) throws -> [NSPasteboardItem] {
