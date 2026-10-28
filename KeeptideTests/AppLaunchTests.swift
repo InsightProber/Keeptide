@@ -363,7 +363,7 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
         settleLayout()
 
-        // The panel grows to hold the card above the band, and the band moves down to make room.
+        // The panel grows to hold the card above the band, and the band moves down if the card has no room there.
         assertFrame(window.frame, places: panelFrame(on: screen, density: .nine, withPreview: true))
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
         XCTAssertEqual(text.string, "newer")
@@ -461,15 +461,18 @@ final class AppLaunchTests: XCTestCase {
         let (field, editor) = try searchEditor(in: controller)
         let filters = try XCTUnwrap(views(QuickAccessFilterRow.self, in: window.contentView).first)
         let height = window.frame.height
+        let top = window.frame.maxY
         XCTAssertFalse(controller.state.filtersVisible)
         XCTAssertTrue(filters.isHidden)
 
-        // Tab shows the hidden filter row and puts the keys in it; the band grows to hold it.
+        // Tab shows the hidden filter row and puts the keys in it; the band grows down to hold it, and the search
+        // row stays where it was.
         editor.doCommand(by: #selector(NSResponder.insertTab(_:)))
         XCTAssertTrue(window.firstResponder === filters)
         XCTAssertTrue(controller.state.filtersVisible)
         XCTAssertFalse(filters.isHidden)
         XCTAssertEqual(window.frame.height, height + StripLayout.filterHeight, accuracy: 1)
+        XCTAssertEqual(window.frame.maxY, top, accuracy: 1)
 
         // With no query and no filter chosen, the row is a layer of its own: Escape hides it and keeps the panel.
         filters.keyDown(with: try key(kVK_Escape, "\u{1B}"))
@@ -478,6 +481,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
         XCTAssertTrue(isEditing(field, in: window), "The keys go back to the search field")
         XCTAssertEqual(window.frame.height, height, accuracy: 1)
+        XCTAssertEqual(window.frame.maxY, top, accuracy: 1)
 
         // The next Escape closes the panel.
         try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.cancelOperation(_:)))
@@ -585,7 +589,7 @@ final class AppLaunchTests: XCTestCase {
         let metrics = StripLayout.metrics(for: density, visibleWidth: visible.width)
         let band = StripLayout.bandFrame(metrics, filtersVisible: false, in: visible)
         guard withPreview else { return StripLayout.panelFrame(band: band, preview: nil) }
-        let placed = StripLayout.previewLayout(band: band, in: visible)
+        let placed = StripLayout.previewLayout(band: band, filtersVisible: false, in: visible)
         return StripLayout.panelFrame(band: placed.band, preview: placed.preview)
     }
 

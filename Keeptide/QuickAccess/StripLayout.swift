@@ -68,10 +68,15 @@ enum StripLayout {
         searchHeight + m.frameSize.height + captionHeight + (filtersVisible ? filterHeight : 0)
     }
 
-    /// The band, centred in the screen's visible area.
+    /// The band. Its top edge is where it is when the band without the filter row is centred in the screen's
+    /// visible area, so the filter row moves only the strip and the caption below the search row, never the
+    /// search field under the caret. On a screen too short for that, the band moves up just enough for the
+    /// panel to stay inside the visible area.
     static func bandFrame(_ m: StripMetrics, filtersVisible: Bool, in visible: NSRect) -> NSRect {
-        let size = CGSize(width: m.bandWidth, height: bandHeight(m, filtersVisible: filtersVisible))
-        return NSRect(origin: NSPoint(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2), size: size)
+        let height = bandHeight(m, filtersVisible: filtersVisible)
+        let top = visible.midY + bandHeight(m, filtersVisible: false) / 2
+        return NSRect(x: visible.midX - m.bandWidth / 2, y: max(top - height, visible.minY + shadowMargin),
+                      width: m.bandWidth, height: height)
     }
 
     /// The left edge of each frame within the band. Index 0 is the newest (or best match) and
@@ -81,15 +86,22 @@ enum StripLayout {
         (0..<count).map { m.bandWidth / 2 + CGFloat(centredIndex - $0) * m.step - m.frameSize.width / 2 }
     }
 
-    /// The card goes above the band and the pair is centred vertically as one group, so the band
-    /// moves down to make room. The card is at most `previewMaximum`; when the room is smaller it
-    /// shrinks to fit, in height and in width.
-    static func previewLayout(band: NSRect, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
+    /// The card goes above the band, which stays where it is. Where the card has no room above it, the
+    /// card and the band are centred vertically as one group, so the band moves down to make room; the
+    /// group is centred as if without the filter row, which then again moves only what is below the search
+    /// row. The card is at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and
+    /// in width.
+    static func previewLayout(band: NSRect, filtersVisible: Bool, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
         let room = visible.insetBy(dx: sideMargin, dy: shadowMargin)
         let size = CGSize(width: min(previewMaximum.width, room.width),
                           height: min(previewMaximum.height, room.height - band.height - previewGap))
-        let groupHeight = size.height + previewGap + band.height
-        let movedBand = NSRect(x: band.minX, y: room.midY - groupHeight / 2, width: band.width, height: band.height)
+        var movedBand = band
+        if band.maxY + previewGap + size.height > room.maxY {
+            let filterRow = filtersVisible ? filterHeight : 0
+            let groupHeight = size.height + previewGap + band.height - filterRow
+            let top = room.midY - groupHeight / 2 + band.height - filterRow
+            movedBand.origin.y = max(top - band.height, room.minY)
+        }
         let preview = NSRect(x: band.midX - size.width / 2, y: movedBand.maxY + previewGap,
                              width: size.width, height: size.height)
         return (preview, movedBand)

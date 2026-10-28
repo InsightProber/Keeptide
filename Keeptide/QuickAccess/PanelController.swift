@@ -163,14 +163,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// Places the panel around the band, and around the preview card above it while the preview is open, and
-    /// lays the band out to match. The band is centred on the screen's visible area; the card moves it down.
+    /// lays the band out to match. The band sits in the middle of the screen's visible area, and its search row
+    /// stays put when the filter row shows; a card with no room above the band moves it down.
     private func layoutPanel() {
         guard let window, let hosting else { return }
         let filtersVisible = state.filtersVisible
         var band = StripLayout.bandFrame(metrics, filtersVisible: filtersVisible, in: visibleFrame)
         var preview: NSRect?
         if state.isPreviewExpanded {
-            let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
+            let placed = StripLayout.previewLayout(band: band, filtersVisible: filtersVisible, in: visibleFrame)
             band = placed.band
             preview = placed.preview
         }
