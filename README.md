@@ -23,9 +23,8 @@ as a snippet, or write one directly.
 
 ## Designed for the Mac
 
-The following capabilities describe the planned first release; only the native
-foundation, local recording, and local search index listed above are implemented
-today.
+The following capabilities describe the planned first release; only the
+capabilities listed above are implemented today.
 
 - A focused quick-access panel and a native library window.
 - Keyboard-first navigation with predictable focus and text editing.

@@ -163,6 +163,72 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === results)
     }
 
+    func testTogglingThePreviewKeepsTypingInTheSearchField() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+
+        controller.togglePreview()
+        settleLayout()
+        controller.togglePreview()
+        settleLayout()
+
+        XCTAssertTrue((window.firstResponder as? NSTextView)?.delegate === field)
+        controller.state.close()
+    }
+
+    func testOpeningThePreviewFromTheResultsKeepsThemFocused() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.firstResponder is QuickAccessResultsTableView)
+
+        controller.perform(.togglePreview)
+        settleLayout()
+
+        XCTAssertTrue(window.firstResponder is QuickAccessResultsTableView)
+        controller.perform(.move(1))
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.last?.ref)
+        controller.state.close()
+    }
+
+    func testThePreviewNeedsASelection() {
+        let controller = PanelController()
+
+        controller.togglePreview()
+
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
+    func testUpFromTheFirstRowKeepsTheQueryText() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        editor.insertText("note", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            controller.state.query == "note" && controller.state.phase == .results
+        }
+
+        controller.perform(.focusResults)
+        controller.perform(.move(-1))
+
+        let returned = try XCTUnwrap(window.firstResponder as? NSTextView)
+        XCTAssertTrue(returned.delegate === field)
+        XCTAssertEqual(returned.selectedRange(), NSRange(location: 4, length: 0), "Typing continues the query")
+        controller.state.close()
+    }
+
+    func testReturnCopiesTheRowSelectedWhenTheKeyWasPressed() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"])
+
+        controller.perform(.primary)
+        controller.state.moveSelection(by: 1)
+
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "newer")
+    }
+
     func testRepeatedKeyNotificationsPreserveTheExistingEditor() throws {
         let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                styleMask: [.titled], backing: .buffered, defer: false)
@@ -189,6 +255,28 @@ final class AppLaunchTests: XCTestCase {
     private func findSearchField(in view: NSView) -> NSSearchField? {
         if let field = view as? NSSearchField { return field }
         return view.subviews.lazy.compactMap { self.findSearchField(in: $0) }.first
+    }
+
+    /// A panel over a real temporary store holding one text clip per title, newest last.
+    private func makePanelWithClips(_ titles: [String]) async throws -> (PanelController, NSPasteboard) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        for (offset, title) in titles.enumerated() {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(title.utf8))]])
+            let item = ItemValue(title: title, captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + Double(offset)), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        }
+        try await harness.consumer.synchronize()
+        let repository = ContentRepository(controller: harness.controller)
+        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
+                                 recordUse: { _ in }, didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
+        let controller = PanelController(state: QuickAccessState(services: { services }))
+        controller.state.open()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == titles.count }
+        return (controller, board)
     }
 
     private func settleLayout() {

@@ -14,7 +14,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return editor
     }()
     private(set) var isSessionOpen = false
-    private let toast = CopyToastController()
+    private let toast = CopyToastController(duration: PanelController.toastDuration)
     /// The compact frame to restore when an expanded preview collapses.
     private var compactFrame: NSRect?
 
@@ -124,8 +124,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         results.onSelect = { [weak self] in self?.state.select($0) }
         results.onCommand = { [weak self] in self?.perform($0) }
         results.onRowVisible = { [weak self] in self?.state.loadMoreIfNeeded(visibleRow: $0) }
+        results.selectionProvider = { [weak self] in self?.state.selection.selection }
         state.onCopied = { [weak self] in self?.confirmCopy() }
-        state.onPreviewCollapsed = { [weak self] in self?.restoreCompactFrame() }
+        state.onPreviewCollapsed = { [weak self] in self?.previewCollapsed() }
     }
 
     func perform(_ command: QuickAccessCommand) {
@@ -137,11 +138,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if state.selection.selection == nil { state.moveSelection(by: 1) }
             window?.makeFirstResponder(results)
         case .move(let offset):
-            if state.moveSelection(by: offset) == .atTop { window?.makeFirstResponder(searchField) }
+            if state.moveSelection(by: offset) == .atTop { focusSearchField() }
         case .primary:
-            Task { await state.copySelection(.original) }
+            copy(.original)
         case .plainText:
-            Task { await state.copySelection(.plainText) }
+            copy(.plainText)
         case .togglePreview:
             togglePreview()
         case .escape:
@@ -152,15 +153,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     func togglePreview() {
         guard let window else { return }
         let wasExpanded = state.isPreviewExpanded
+        // Nothing selected means nothing to preview.
+        guard wasExpanded || state.selection.selection != nil else { return }
+        let focus = currentFocus
         state.togglePreview()
         if state.isPreviewExpanded, compactFrame == nil,
            let visible = (window.screen ?? NSScreen.main)?.visibleFrame,
            let expanded = Self.expandedFrame(from: window.frame, in: visible) {
             compactFrame = window.frame
             window.setFrame(expanded, display: true)
-        } else if wasExpanded, !state.isPreviewExpanded {
-            restoreCompactFrame()
+        } else if wasExpanded, !state.isPreviewExpanded, let compactFrame {
+            window.setFrame(compactFrame, display: true)
+            self.compactFrame = nil
         }
+        keepFocus(focus)
     }
 
     /// Closes the panel and confirms the copy where the panel was.
@@ -170,16 +176,67 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         toast.show("Copied — press ⌘V to paste", centeredOn: frame)
     }
 
-    /// Returns to the compact layout and keeps keyboard focus in the panel.
-    private func restoreCompactFrame() {
-        guard let window else { return }
+    /// The state collapsed the preview because its row disappeared.
+    private func previewCollapsed() {
+        let focus = currentFocus
         if let compactFrame {
-            window.setFrame(compactFrame, display: true)
+            window?.setFrame(compactFrame, display: true)
             self.compactFrame = nil
         }
-        if !(window.firstResponder === results) {
-            window.makeFirstResponder(state.selection.rows.isEmpty ? searchField : results)
+        keepFocus(focus)
+    }
+
+    private enum PanelFocus {
+        case searchField, results
+    }
+
+    private var currentFocus: PanelFocus? {
+        guard let responder = window?.firstResponder else { return nil }
+        if responder === results { return .results }
+        if let editor = responder as? NSTextView, editor.isFieldEditor, editor.delegate === searchField {
+            return .searchField
         }
+        return nil
+    }
+
+    /// Restores focus now and again once SwiftUI has applied the new layout. Focus that
+    /// was in the preview goes to the results, or to the search field when there are none.
+    private func keepFocus(_ focus: PanelFocus?) {
+        restoreFocus(focus)
+        DispatchQueue.main.async { [weak self] in self?.restoreFocus(focus) }
+    }
+
+    private func restoreFocus(_ focus: PanelFocus?) {
+        guard let window else { return }
+        switch focus ?? (state.selection.rows.isEmpty ? .searchField : .results) {
+        case .results:
+            if !(window.firstResponder === results) { window.makeFirstResponder(results) }
+        case .searchField:
+            if currentFocus != .searchField { focusSearchField() }
+        }
+    }
+
+    /// NSTextField selects all of its text when it takes focus; the caret goes to the
+    /// end instead, so typing continues the query.
+    private func focusSearchField() {
+        guard let window, window.makeFirstResponder(searchField), let editor = searchField.currentEditor() else {
+            return
+        }
+        editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
+    }
+
+    /// Captures what is selected when the key is pressed; the copy finishes later.
+    private func copy(_ mode: PasteMode) {
+        guard let target = state.copyTarget else { return }
+        Task { await state.copy(target, mode: mode) }
+    }
+
+    private static var toastDuration: Duration {
+        #if DEBUG
+        // UI tests poll about once a second; keep the confirmation up long enough to observe.
+        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return .seconds(4) }
+        #endif
+        return .milliseconds(1_200)
     }
 
     func openActions() {

@@ -63,7 +63,8 @@ final class QuickAccessState {
     @ObservationIgnored private let services: @MainActor () -> QuickAccessServices?
     @ObservationIgnored private var session: PasteSession?
     @ObservationIgnored private var isOpen = false
-    @ObservationIgnored private var isCopying = false
+    /// The session a copy is running for; a reopened panel's session can copy at once.
+    @ObservationIgnored private var copying: PasteSession?
     @ObservationIgnored private var totalMatches = 0
     @ObservationIgnored private var previewedRef: ContentRef?
     @ObservationIgnored private var loading: Task<Void, Never>?
@@ -159,20 +160,35 @@ final class QuickAccessState {
         loadPreview()
     }
 
-    func copySelection(_ mode: PasteMode) async {
-        guard !isCopying, let ref = selection.executableSelection, let session,
-              let paste = services()?.paste else { return }
-        isCopying = true
-        defer { isCopying = false }
+    /// What a key press may act on, captured when the key is pressed.
+    struct CopyTarget: Equatable {
+        let ref: ContentRef
+        let generation: UInt64
+    }
+
+    var copyTarget: CopyTarget? {
+        selection.executableSelection.map { CopyTarget(ref: $0, generation: selection.generation) }
+    }
+
+    /// Copies what was selected when the key was pressed, never a row selected later.
+    func copy(_ target: CopyTarget, mode: PasteMode) async {
+        guard let session, copying !== session, let paste = services()?.paste else { return }
+        copying = session
+        defer { if copying === session { copying = nil } }
         failure = nil
-        let outcome = await paste.execute(PasteRequest(ref: ref, queryGeneration: selection.generation, mode: mode,
+        let outcome = await paste.execute(PasteRequest(ref: target.ref, queryGeneration: target.generation, mode: mode,
                                                        session: session))
         // A reopened panel or a newer selection owns the screen now.
         guard isOpen, self.session === session else { return }
         switch outcome {
         case .copied: onCopied?()
-        case .refused(let refusal): if selection.selection == ref { failure = refusal }
+        case .refused(let refusal): if selection.selection == target.ref { failure = refusal }
         }
+    }
+
+    func copySelection(_ mode: PasteMode) async {
+        guard let target = copyTarget else { return }
+        await copy(target, mode: mode)
     }
 
     func loadMoreIfNeeded(visibleRow index: Int) {
@@ -356,5 +372,34 @@ final class QuickAccessState {
         QuickAccessRow(ref: result.ref, title: result.title, snippet: result.snippet, kind: result.kind,
                        sourceApp: result.sourceApp, date: result.lastCopiedAt, savedAsMemo: result.savedAsMemo,
                        isPartiallyIndexed: result.isPartiallyIndexed, isTextUnavailable: result.isTextUnavailable)
+    }
+}
+
+/// The status text quick access shows, kept apart from the view so it can be tested.
+enum QuickAccessStatus {
+    struct Message: Equatable {
+        let text: String
+        let detail: String?
+    }
+
+    static let rebuilding = "Index is rebuilding — results may be incomplete"
+
+    /// What an empty result area says.
+    static func empty(phase: QuickAccessPhase, notice: IndexNotice?) -> Message {
+        switch phase {
+        case .noResults:
+            if notice == .searchUnavailable { return Message(text: "Search is unavailable — recent clips are still here", detail: nil) }
+            return Message(text: "No results", detail: notice == .rebuilding ? rebuilding : nil)
+        default:
+            return Message(text: "Searching…", detail: nil)
+        }
+    }
+
+    /// The line above rows that are on screen.
+    static func line(selectionLost: Bool, phase: QuickAccessPhase, isComplete: Bool, notice: IndexNotice?) -> String? {
+        if selectionLost { return "The selected item is no longer in the results" }
+        if phase == .loading || !isComplete { return "Searching…" }
+        if notice == .rebuilding { return rebuilding }
+        return nil
     }
 }

@@ -100,9 +100,9 @@ final class QuickAccessUITests: XCTestCase {
 
         app.searchFields["Quick access query"].typeKey(.return, modifierFlags: [])
 
-        // The toast lasts about 1.2 seconds, shorter than one polling interval, so check at once.
+        // UI-test builds keep the toast up for four seconds so a polling wait can see it.
         let toast = app.descendants(matching: .any)["CopyToastMessage"]
-        XCTAssertTrue(toast.exists, app.debugDescription)
+        XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
         XCTAssertEqual(text(of: toast), "Copied — press ⌘V to paste")
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
 

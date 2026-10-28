@@ -73,22 +73,25 @@ struct QuickAccessView: View {
     /// Status shown above rows that are still on screen.
     private var statusLine: String? {
         guard !state.selection.rows.isEmpty else { return nil }
-        if state.selection.selectionLost { return "The selected item is no longer in the results" }
-        if state.phase == .loading { return "Searching…" }
-        if state.indexNotice == .rebuilding { return "Index is rebuilding — results may be incomplete" }
-        return nil
+        return QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
+                                      isComplete: state.selection.isComplete, notice: state.indexNotice)
     }
 
-    @ViewBuilder
+    /// The results stay in one place in the layout whether or not the preview is open,
+    /// so the table is never rebuilt and keeps keyboard focus.
     private func content(width: CGFloat) -> some View {
-        if state.isPreviewExpanded {
-            if width >= 900 {
-                HStack(spacing: 0) {
-                    resultArea.frame(width: 400)
-                    Divider()
-                    preview
-                }
-            } else {
+        let split = state.isPreviewExpanded && width >= 900
+        let page = state.isPreviewExpanded && !split
+        return HStack(spacing: 0) {
+            resultArea
+                .frame(width: split ? 400 : (page ? 0 : nil))
+                .opacity(page ? 0 : 1)
+                .accessibilityHidden(page)
+            if split {
+                Divider()
+                preview
+            }
+            if page {
                 VStack(spacing: 0) {
                     HStack {
                         Button("Back to Results", action: actions.togglePreview)
@@ -98,8 +101,6 @@ struct QuickAccessView: View {
                     preview
                 }
             }
-        } else {
-            resultArea
         }
     }
 
@@ -115,14 +116,10 @@ struct QuickAccessView: View {
         if state.phase == .libraryUnavailable {
             emptyState("Library unavailable", detail: "Recent clips appear here once the library opens.")
         } else if rows.isEmpty {
-            switch state.phase {
-            case .noContent:
+            if state.phase == .noContent {
                 emptyState("No content yet", detail: "Your saved content will appear here.")
-            case .noResults:
-                status(state.indexNotice == .searchUnavailable
-                       ? "Search is unavailable — recent clips are still here" : "No results")
-            default:
-                status("Searching…")
+            } else {
+                status(QuickAccessStatus.empty(phase: state.phase, notice: state.indexNotice))
             }
         } else {
             QuickAccessResultsView(table: results, rows: rows, selection: state.selection.selection)
@@ -140,11 +137,16 @@ struct QuickAccessView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func status(_ text: String) -> some View {
-        Text(text)
-            .foregroundStyle(.secondary)
-            .accessibilityIdentifier("QuickAccessStatus")
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    private func status(_ message: QuickAccessStatus.Message) -> some View {
+        VStack(spacing: 6) {
+            Text(message.text)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("QuickAccessStatus")
+            if let detail = message.detail {
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

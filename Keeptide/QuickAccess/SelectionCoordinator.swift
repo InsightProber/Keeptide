@@ -33,7 +33,8 @@ struct SelectionCoordinator: Equatable {
     private(set) var selection: ContentRef?
     private(set) var selectionLost = false
     private var hasPage = false
-    private var isComplete = false
+    /// Whether the latest page of this generation ranked every candidate.
+    private(set) var isComplete = false
     private var userChose = false
 
     var executableSelection: ContentRef? {

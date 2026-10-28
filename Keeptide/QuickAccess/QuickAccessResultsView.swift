@@ -29,8 +29,11 @@ final class QuickAccessResultsTableView: NSTableView, NSTableViewDataSource, NST
     var onSelect: ((ContentRef) -> Void)?
     var onCommand: ((QuickAccessCommand) -> Void)?
     var onRowVisible: ((Int) -> Void)?
+    /// The selection the panel state actually holds.
+    var selectionProvider: (() -> ContentRef?)?
     private(set) var rows: [QuickAccessRow] = []
     private var isApplyingSelection = false
+    private var appliedSelection: ContentRef?
     private let applicationNames = ApplicationNames()
 
     init() {
@@ -60,11 +63,18 @@ final class QuickAccessResultsTableView: NSTableView, NSTableViewDataSource, NST
             self.rows = rows
             reloadData()
         }
+        // Scroll only when the selection itself changes, so loading more rows or a
+        // refresh never pulls the list away from where the pointer scrolled it.
+        apply(selection, scroll: selection != appliedSelection)
+    }
+
+    private func apply(_ selection: ContentRef?, scroll: Bool) {
         isApplyingSelection = true
         defer { isApplyingSelection = false }
+        appliedSelection = selection
         if let selection, let index = rows.firstIndex(where: { $0.ref == selection }) {
             if selectedRow != index { selectRowIndexes([index], byExtendingSelection: false) }
-            scrollRowToVisible(index)
+            if scroll { scrollRowToVisible(index) }
         } else if selectedRow != -1 {
             deselectAll(nil)
         }
@@ -82,8 +92,14 @@ final class QuickAccessResultsTableView: NSTableView, NSTableViewDataSource, NST
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !isApplyingSelection, rows.indices.contains(selectedRow) else { return }
-        onSelect?(rows[selectedRow].ref)
+        guard !isApplyingSelection else { return }
+        if rows.indices.contains(selectedRow) {
+            onSelect?(rows[selectedRow].ref)
+            window?.makeFirstResponder(self)
+        }
+        // The highlight always shows what an action would use: a click the state
+        // rejected, or a click that cleared the table, shows the state's row again.
+        apply(selectionProvider.map { $0() } ?? appliedSelection, scroll: false)
     }
 
     override func keyDown(with event: NSEvent) {

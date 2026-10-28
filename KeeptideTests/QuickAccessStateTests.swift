@@ -413,6 +413,95 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertFalse(state.selection.selectionLost)
     }
 
+    func testCopyUsesTheTargetCapturedAtTheKeyPress() async throws {
+        let fixture = try makeFixture()
+        try await insert("older", at: 1, into: fixture)
+        try await insert("newer", at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        let target = try XCTUnwrap(state.copyTarget)
+        state.moveSelection(by: 1)
+        await state.copy(target, mode: .original)
+
+        XCTAssertEqual(fixture.board.string(forType: .string), "newer")
+    }
+
+    func testReopenedPanelCanCopyWhileAnOldCopyFinishes() async throws {
+        let gate = CopyGate()
+        let fixture = try makeFixture(readGate: gate)
+        try await insert("alpha note", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let copied = CallCounter()
+        state.onCopied = { copied.count += 1 }
+        state.open()
+        try await settled(state)
+        let old = Task { await state.copySelection(.original) }
+        try await SearchTestSupport.waitUntil { await gate.entries == 1 }
+        state.close()
+        state.open()
+        try await settled(state)
+
+        let fresh = Task { await state.copySelection(.original) }
+        try await SearchTestSupport.waitUntil { await gate.entries == 2 }
+        await gate.open()
+        await old.value
+        await fresh.value
+
+        XCTAssertEqual(copied.count, 1)
+        XCTAssertEqual(fixture.board.string(forType: .string), "alpha note")
+    }
+
+    func testCopyRaisesTheClipInSearchRanking() async throws {
+        let fixture = try makeFixture()
+        try await insert("deploy two", at: 1, into: fixture)
+        try await insert("deploy one", at: 2, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.setQuery("deploy")
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["deploy one", "deploy two"])
+        let older = try XCTUnwrap(state.selection.rows.last?.ref)
+
+        state.moveSelection(by: 1)
+        await state.copySelection(.original)
+        let usage = LocalUsageStore(controller: fixture.harness.controller)
+        try await SearchTestSupport.waitUntil { try await usage.summaries(for: [older]).count == 1 }
+        try await fixture.harness.consumer.synchronize()
+        state.close()
+        state.open()
+        state.setQuery("deploy")
+        try await settled(state)
+
+        XCTAssertEqual(state.selection.rows.map(\.title), ["deploy two", "deploy one"])
+    }
+
+    func testStatusExplainsAnEmptyListWhileTheIndexRebuilds() {
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .rebuilding),
+                       QuickAccessStatus.Message(text: "No results", detail: "Index is rebuilding — results may be incomplete"))
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .searchUnavailable),
+                       QuickAccessStatus.Message(text: "Search is unavailable — recent clips are still here", detail: nil))
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: nil),
+                       QuickAccessStatus.Message(text: "No results", detail: nil))
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .loading, notice: nil),
+                       QuickAccessStatus.Message(text: "Searching…", detail: nil))
+    }
+
+    func testStatusLineAboveRows() {
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: true, phase: .results, isComplete: false, notice: .rebuilding),
+                       "The selected item is no longer in the results")
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: false, notice: nil),
+                       "Searching…")
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .loading, isComplete: true, notice: nil),
+                       "Searching…")
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true, notice: .rebuilding),
+                       "Index is rebuilding — results may be incomplete")
+        XCTAssertNil(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true, notice: nil))
+    }
+
     private struct Fixture {
         let harness: SearchHarness
         let board: NSPasteboard
