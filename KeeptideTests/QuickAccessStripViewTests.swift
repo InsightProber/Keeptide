@@ -177,20 +177,29 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.onCommand = { commands.append($0) }
         strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        // A double click on a neighbour, then on the clip in the middle.
-        for title in ["Row 1", "Row 0"] {
-            let target = try rect(titled: title, in: strip)
-            let point = NSPoint(x: target.midX, y: target.midY)
-            for count in 1...2 {
-                strip.mouseDown(with: try mouse(.leftMouseDown, at: point, clickCount: count, in: strip))
-                strip.mouseUp(with: try mouse(.leftMouseUp, at: point, clickCount: count, in: strip))
-            }
+        let click = { (point: NSPoint, count: Int) in
+            strip.mouseDown(with: try self.mouse(.leftMouseDown, at: point, clickCount: count, in: strip))
+            strip.mouseUp(with: try self.mouse(.leftMouseUp, at: point, clickCount: count, in: strip))
         }
+
+        // A double click on a neighbour. The panel takes the first click and brings that clip to the middle,
+        // so the next older frame now lies under the pointer; the second click is one more on the same clip.
+        let target = try rect(titled: "Row 1", in: strip)
+        let point = NSPoint(x: target.midX, y: target.midY)
+        try click(point, 1)
+        strip.show(rows, selection: rows[1].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(try midX(of: "Row 2", in: strip), point.x, accuracy: 0.5)
+        try click(point, 2)
+        XCTAssertEqual(asked, [rows[1].ref, rows[1].ref])
+
+        // A double click on the clip in the middle is no different.
+        let middle = NSPoint(x: centre, y: target.midY)
+        try click(middle, 1)
+        try click(middle, 2)
 
         XCTAssertFalse(commands.contains(.primary))
         XCTAssertEqual(commands, [])
-        // The second click of a double click is one more click.
-        XCTAssertEqual(asked, [rows[1].ref, rows[1].ref, rows[0].ref, rows[0].ref])
+        XCTAssertEqual(asked, Array(repeating: rows[1].ref, count: 4))
     }
 
     func testScrollMovesTicksAndRespectsTheSwitch() throws {
@@ -341,9 +350,12 @@ final class QuickAccessStripViewTests: XCTestCase {
         // Lifting them settles back on the selected clip.
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
         XCTAssertEqual(try midX(of: "Row 1", in: strip), centre, accuracy: 0.5)
-        // So does a panel that stops being key under the fingers, since their lift never reaches it.
+        // So does a panel that stops being key under the fingers, since their lift never reaches it, and the
+        // swipe it cut short is forgotten: fingers touching down again later move nothing.
         strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1.2))
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: strip.window)
+        XCTAssertEqual(try midX(of: "Row 1", in: strip), centre, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.3))
         XCTAssertEqual(try midX(of: "Row 1", in: strip), centre, accuracy: 0.5)
 
         // At the oldest clip a push stretches the end, 0.3 pt for every point pushed.
@@ -400,6 +412,44 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.show(rows, selection: rows[25].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((19...31).map { "Row \($0)" }))
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+    }
+
+    func testInMidSlideThePointerFindsTheFrameWhereItIsDrawn() throws {
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        var selected: [ContentRef] = []
+        var menus: [ContentRef] = []
+        strip.onSelect = { selected.append($0) }
+        strip.onContextMenu = { menus.append($0); return nil }
+        let rows = makeRows(40)
+        strip.show(rows, selection: rows[20].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let before = try rect(titled: "Row 19", in: strip)
+        let point = NSPoint(x: before.midX, y: before.midY)
+
+        // Time stands still from here, so the slide the next selection starts stays at its beginning, with
+        // every frame still drawn where it was.
+        content.layer?.speed = 0
+        strip.show(rows, selection: rows[24].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        // By the places the frames are sliding to, another clip already lies under the pointer.
+        XCTAssertEqual(try midX(of: "Row 23", in: strip), point.x, accuracy: 0.5)
+
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
+        _ = strip.menu(for: try mouse(.rightMouseDown, at: point, in: strip))
+
+        XCTAssertEqual(selected, [rows[19].ref])
+        XCTAssertEqual(menus, [rows[19].ref])
+
+        // A new selection before the first slide has moved takes over from where the frames are drawn: the
+        // springs add up, so the same clip stays under the pointer.
+        strip.show(rows, selection: rows[25].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
+        XCTAssertEqual(selected, [rows[19].ref, rows[19].ref])
     }
 
     func testKeysFollowThePanelAndTheRestAreDroppedSilently() throws {

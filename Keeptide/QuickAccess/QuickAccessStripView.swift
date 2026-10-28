@@ -47,7 +47,12 @@ final class QuickAccessStripView: NSView {
     /// The middle a slide started from. Its frames stay until the slide settles, so none vanishes on screen.
     private var slideStart: Int?
     private var settling: Task<Void, Never>?
+    /// Springs get names so that `ref(at:)` can tell one is running, since a layer does not list nameless
+    /// animations. Each name is new: a spring added under a running one's name would replace it.
+    private var springCount = 0
     private var hovered: ContentRef?
+    /// The clip chosen by the click that began the current run of clicks.
+    private var clickedRef: ContentRef?
     private var reported: (refs: [ContentRef], lastOnScreen: Int)?
 
     override init(frame frameRect: NSRect) {
@@ -118,9 +123,11 @@ final class QuickAccessStripView: NSView {
     }
 
     /// A swipe cannot go on in a window that is no longer key, as when the panel closes under the
-    /// fingers, so the frames go back to their places instead of waiting for a lift that never comes.
+    /// fingers, so the frames go back to their places instead of waiting for a lift that never comes, and
+    /// the scroller forgets the push it would otherwise report again with the next event.
     @objc private func windowDidResignKey(_ notification: Notification) {
         fingersDown = false
+        scroller = DetentScroller()
         push(to: 0, springing: false)
     }
 
@@ -203,7 +210,8 @@ final class QuickAccessStripView: NSView {
         spring.fromValue = displacement
         spring.toValue = 0
         spring.duration = spring.settlingDuration
-        layer.add(spring, forKey: nil)
+        springCount += 1
+        layer.add(spring, forKey: "spring \(springCount)")
         return spring.duration
     }
 
@@ -269,8 +277,10 @@ final class QuickAccessStripView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        // The click count is not looked at: a double click is two clicks and never copies.
-        guard let ref = ref(at: event) else { return super.mouseDown(with: event) }
+        // A double click is a click: it never copies, and its second click goes to the clip the first one
+        // chose, even after that clip has slid to the middle and another frame lies under the pointer.
+        if event.clickCount <= 1 { clickedRef = ref(at: event) }
+        guard let ref = clickedRef else { return super.mouseDown(with: event) }
         onSelect?(ref)
         window?.makeFirstResponder(self)
     }
