@@ -4,22 +4,29 @@ import Foundation
 final class AppEnvironment {
     let settings: AppSettings
     let captureSession: CaptureSession
+    let quickAccessPreferences: QuickAccessPreferences
     private let makePanel: () -> PanelController
     private let makeLibrary: () -> LibraryWindowController
+    private let makeSettings: () -> SettingsWindowController
     private var panel: PanelController?
     private var library: LibraryWindowController?
+    private var settingsWindow: SettingsWindowController?
 
     init(settings: AppSettings = AppSettings(),
          captureSession: CaptureSession? = nil,
+         quickAccessPreferences: QuickAccessPreferences = QuickAccessPreferences(),
          makePanel: (() -> PanelController)? = nil,
-         makeLibrary: (() -> LibraryWindowController)? = nil) {
+         makeLibrary: (() -> LibraryWindowController)? = nil,
+         makeSettings: (() -> SettingsWindowController)? = nil) {
         let captureSession = captureSession ?? CaptureSession()
         self.settings = settings
         self.captureSession = captureSession
+        self.quickAccessPreferences = quickAccessPreferences
         self.makePanel = makePanel ?? { [weak captureSession] in
             PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }))
         }
         self.makeLibrary = makeLibrary ?? { LibraryWindowController(session: captureSession) }
+        self.makeSettings = makeSettings ?? { SettingsWindowController(preferences: quickAccessPreferences) }
     }
 
     var panelController: PanelController {
@@ -38,9 +45,21 @@ final class AppEnvironment {
         return library
     }
 
+    var settingsWindowController: SettingsWindowController {
+        if let settingsWindow { return settingsWindow }
+        let settingsWindow = makeSettings()
+        self.settingsWindow = settingsWindow
+        return settingsWindow
+    }
+
     func showLibrary() {
         panel?.close()
         libraryWindowController.show()
+    }
+
+    func showSettings() {
+        panel?.close()
+        settingsWindowController.show()
     }
 }
 

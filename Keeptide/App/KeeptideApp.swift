@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showQuickAccess: { environment.panelController.show() },
             toggleQuickAccess: { environment.panelController.toggle() },
             showLibrary: { environment.showLibrary() },
+            showSettings: { environment.showSettings() },
             captureIsReady: { environment.captureSession.isReady && !environment.captureSession.isPausing },
             captureIsEnabled: { environment.captureSession.isRecording },
             captureStatus: { environment.captureSession.status },
@@ -65,6 +66,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if launchConfiguration.shouldShowLibrary {
             environment.showLibrary()
         }
+    }
+
+    /// The application menu's Settings… (⌘,), which reaches the delegate through the responder chain.
+    @objc func showSettings(_ sender: Any?) {
+        environment?.showSettings()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

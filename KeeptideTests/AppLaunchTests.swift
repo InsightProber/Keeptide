@@ -518,6 +518,20 @@ final class AppLaunchTests: XCTestCase {
         )
     }
 
+    func testApplicationMenuHasSettingsWithCommandComma() throws {
+        let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
+        let appMenu = try XCTUnwrap(menu.item(withTitle: "Keeptide")?.submenu)
+        let settings = try XCTUnwrap(appMenu.item(withTitle: "Settings…"))
+
+        let action = try XCTUnwrap(settings.action)
+
+        XCTAssertEqual(settings.keyEquivalent, ",")
+        XCTAssertEqual(settings.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(action, #selector(AppDelegate.showSettings(_:)))
+        // Nothing is sent: the delegate would open a real Settings window in the test host.
+        XCTAssertTrue(NSApplication.shared.target(forAction: action, to: settings.target, from: settings) is AppDelegate)
+    }
+
 }
 
 @MainActor
