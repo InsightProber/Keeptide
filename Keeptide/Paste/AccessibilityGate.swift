@@ -18,8 +18,7 @@ enum DirectPasteKeystroke {
     }
 }
 
-/// Everything direct paste asks of the system: the target, permission to post events, secure input,
-/// the Return key, and the ⌘V keystroke. Tests inject a fake or `unavailable`.
+/// Everything direct paste asks of the system. Tests inject a fake or `unavailable`.
 @MainActor
 struct DirectPasteSystem {
     var frontmostTarget: () -> PasteTarget?
@@ -27,9 +26,6 @@ struct DirectPasteSystem {
     var requestPostEventAccess: () -> Bool
     var openAccessibilitySettings: () -> Void
     var isSecureInputEnabled: () -> Bool
-    /// Whether Return or keypad Enter is held. Once the panel hides, a held key repeats into the
-    /// target, and a terminal would run the pasted command.
-    var returnKeyIsDown: () -> Bool
     var commandVKeyCode: () -> CGKeyCode?
     var postCommandV: (CGKeyCode) -> Bool
 
@@ -59,10 +55,6 @@ struct DirectPasteSystem {
                 NSWorkspace.shared.open(url)
             },
             isSecureInputEnabled: { IsSecureEventInputEnabled() },
-            returnKeyIsDown: {
-                CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Return))
-                    || CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_ANSI_KeypadEnter))
-            },
             // currentCommandV() calls TIS input-source APIs, which need the main thread; @MainActor guarantees it.
             commandVKeyCode: { ShortcutKeyResolver.currentCommandV().flatMap { CGKeyCode(exactly: $0) } },
             postCommandV: { keyCode in
@@ -77,7 +69,7 @@ struct DirectPasteSystem {
 
     static var unavailable: DirectPasteSystem {
         DirectPasteSystem(frontmostTarget: { nil }, canPostEvents: { false }, requestPostEventAccess: { false },
-                          openAccessibilitySettings: {}, isSecureInputEnabled: { false }, returnKeyIsDown: { false },
-                          commandVKeyCode: { nil }, postCommandV: { _ in false })
+                          openAccessibilitySettings: {}, isSecureInputEnabled: { false }, commandVKeyCode: { nil },
+                          postCommandV: { _ in false })
     }
 }
