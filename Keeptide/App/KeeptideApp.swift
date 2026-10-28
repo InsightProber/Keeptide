@@ -16,7 +16,8 @@ enum KeeptideApp {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var environment: AppEnvironment?
+    /// Made when the app finishes launching; a test gives a delegate its own.
+    var environment: AppEnvironment?
     private var menuBarController: MenuBarController?
     private var initializationTask: Task<Void, Never>?
     private var isShuttingDown = false
@@ -73,7 +74,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         environment?.showSettings()
     }
 
+    /// Opening Keeptide again, as with a click on its Dock icon, shows the Library. While a window is on screen,
+    /// such as Settings, the app comes forward with the windows it has instead.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
         environment?.showLibrary()
         return false
     }

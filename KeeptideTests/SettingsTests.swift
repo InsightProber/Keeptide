@@ -112,6 +112,21 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(created, 1)
     }
 
+    func testDockClickWhileSettingsIsOpenLeavesTheLibraryClosed() throws {
+        var libraries = 0
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let environment = AppEnvironment(quickAccessPreferences: preferences, makeLibrary: {
+            libraries += 1
+            return LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        })
+        let delegate = AppDelegate()
+        delegate.environment = environment
+
+        // With a window on screen, such as Settings, Keeptide comes forward as it is; the Library is not made.
+        XCTAssertTrue(delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: true))
+        XCTAssertEqual(libraries, 0)
+    }
+
     /// The real activation policy stays untouched: the controller reports it through `onPolicy`.
     private func makeController(onPolicy: @escaping (NSApplication.ActivationPolicy) -> Void = { _ in }) throws
         -> SettingsWindowController {
