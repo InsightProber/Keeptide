@@ -51,6 +51,12 @@ enum ClipboardTextDecoder {
         return nil
     }
 
+    /// The whole text of the first representation that decodes, in the order `preview` tries them
+    /// and without its byte limit.
+    nonisolated static func fullText(_ representations: [RepresentationValue]) -> String? {
+        preview(representations, maximumBytes: .max)?.text
+    }
+
     nonisolated static func decodeText(
         _ bytes: Data,
         typeIdentifier: String,
