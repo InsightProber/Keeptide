@@ -42,9 +42,11 @@ final class StripLayoutTests: XCTestCase {
             XCTAssertEqual(band.height, plain.height + StripLayout.filterHeight, accuracy: 0.5)
             for (shown, filtersVisible) in [(plain, false), (band, true)] {
                 XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: shown, preview: nil)), "\(visible)")
-                let (preview, moved) = StripLayout.previewLayout(band: shown, filtersVisible: filtersVisible, in: visible)
+                let (preview, moved) = StripLayout.previewLayout(band: shown, filtersVisible: filtersVisible,
+                                                                 in: visible)
                 XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: moved, preview: preview)), "\(visible)")
-                XCTAssertGreaterThanOrEqual(preview.minY, moved.maxY + StripLayout.previewGap - 0.5)  // the card sits above the band
+                // The card sits above the band.
+                XCTAssertGreaterThanOrEqual(preview.minY, moved.maxY + StripLayout.previewGap - 0.5)
             }
         }
     }

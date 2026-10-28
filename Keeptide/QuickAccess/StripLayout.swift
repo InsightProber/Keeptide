@@ -91,7 +91,8 @@ enum StripLayout {
     /// group is centred as if without the filter row, which then again moves only what is below the search
     /// row. The card is at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and
     /// in width.
-    static func previewLayout(band: NSRect, filtersVisible: Bool, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
+    static func previewLayout(band: NSRect, filtersVisible: Bool,
+                              in visible: NSRect) -> (preview: NSRect, band: NSRect) {
         let room = visible.insetBy(dx: sideMargin, dy: shadowMargin)
         let size = CGSize(width: min(previewMaximum.width, room.width),
                           height: min(previewMaximum.height, room.height - band.height - previewGap))
