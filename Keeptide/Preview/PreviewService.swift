@@ -22,8 +22,9 @@ struct ClipDetail: Equatable, Sendable {
 /// exact character count, an image's size and thumbnail, or the names of the files it refers to.
 ///
 /// It is neither main-actor isolated nor an actor on purpose. Its async methods are non-isolated, so
-/// they run on the global executor: reading, decoding and counting never happen on the main thread,
-/// and the frames on screen load side by side instead of queuing behind one another.
+/// they run on the global executor: reading, decoding and counting never happen on the main thread.
+/// The reads still queue: each takes the whole clip through the store's one writer context, in the same
+/// line as a copy's read, so a caller keeps only a few of them going at once.
 final class PreviewService: Sendable {
     private static let excerptLength = 300
     /// A frame shows a link by its host and the start of its path, so far less than this. The cut keeps

@@ -4,12 +4,14 @@ import os
 
 /// A memory cache for what the strip shows of a clip, in two parts.
 ///
-/// Text, link and file details are small, so they are kept by clip in a dictionary. Unlike an
-/// `NSCache`, it never drops an entry on its own, and that is what lets a large text be read and
-/// counted once. Content never changes under its reference, so these entries stay right, except for
-/// a file's name: it is the name the file had when its reference was first resolved, and the file
-/// can be renamed afterwards. Each entry is tiny, so only a very long session could make them add up;
-/// the dictionary is emptied when it reaches a few thousand, and a request after that reads the clip again.
+/// Every detail but an image's is small: a text's, a link's, a file clip's and any other kind's. Those
+/// are kept by clip in a dictionary. Unlike an `NSCache`, it never drops an entry on its own, and that
+/// is what lets a large text be read and counted once. Content never changes under its reference, so
+/// these entries stay right, except for file names: an entry keeps the names the files had when their
+/// references were first resolved, though a file can be renamed afterwards, and a reference that did
+/// not resolve then keeps its empty list of names. Each entry is tiny, so only a very long session could
+/// make them add up; the dictionary is emptied when it reaches 2,000 entries, and a request after that
+/// reads the clip again.
 ///
 /// An image's detail carries a thumbnail cut to the frame, which is not small, so it is kept by clip
 /// and frame size in an `NSCache`, which the system empties whenever memory runs short. A request for
@@ -18,12 +20,13 @@ import os
 /// This can be shared across threads: the dictionary sits behind a lock, `NSCache` is safe to use from
 /// any thread, and an entry is never changed once stored.
 final class ThumbnailCache: @unchecked Sendable {
-    /// Thumbnails make up nearly all of the cost; this holds about two hundred at the default density.
+    /// The image cache counts the thumbnails' memory alone; this holds about two hundred at the default density.
     private static let costLimit = 64 * 1024 * 1024
-    /// How many text details are kept before the dictionary is emptied.
+    /// How many details `texts` keeps before it is emptied.
     private static let textLimit = 2_000
 
     private let imageCache: NSCache<AnyObject, AnyObject>
+    /// Every detail but an image's: of texts and links, and of file clips and other kinds as well.
     private let texts = OSAllocatedUnfairLock(initialState: [ContentRef: ClipDetail]())
 
     /// `imageCache` is where thumbnails are kept; a test passes its own to empty it the way the system does.

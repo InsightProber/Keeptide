@@ -618,6 +618,45 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertTrue(state.details.isEmpty, "Closing drops the details that were already loaded")
     }
 
+    func testDetailsAreReadTwoAtATimeNearestTheMiddleFirst() async throws {
+        let fixture = try makeFixture()
+        for offset in 0..<5 { try await insert("clip \(offset)", at: Double(offset), into: fixture) }
+        let gate = DetailGate()
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        var gated = fixture.services
+        gated.preview = PreviewService(read: { ref in
+            await gate.enter(ref)
+            return try await repository.read(ref)
+        })
+        let services = gated
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let refs = state.selection.rows.map(\.ref)
+        XCTAssertEqual(refs.count, 5)
+        // The way the strip asks: the clip in the middle first, then outward.
+        let nearestFirst = [refs[2], refs[1], refs[3], refs[0], refs[4]]
+
+        state.loadDetails(for: nearestFirst, frameSize: stripFrame)
+
+        // The two nearest the middle are read first.
+        try await SearchTestSupport.waitUntil { await gate.started.count >= 2 }
+        var started = await gate.started
+        XCTAssertEqual(Set(started), Set(nearestFirst.prefix(2)))
+        // Each read that returns starts the next nearest, and no other read starts meanwhile.
+        for (index, next) in nearestFirst.dropFirst(2).enumerated() {
+            await gate.release(started[index])
+            try await SearchTestSupport.waitUntil { await gate.started.count == 3 + index }
+            started = await gate.started
+            XCTAssertEqual(started.last, next)
+        }
+        await gate.releaseAll()
+        try await SearchTestSupport.waitUntil { state.details.count == 5 }
+        let mostAtOnce = await gate.mostAtOnce
+        XCTAssertEqual(mostAtOnce, 2, "Never more than two reads at once")
+        state.close()
+    }
+
     func testFilterRowShowsWithQueryFiltersOrWhenRevealed() async throws {
         let fixture = try makeFixture()
         try await insert("alpha note", at: 1, into: fixture)
@@ -819,6 +858,34 @@ private actor CopyGate {
         isOpen = true
         waiters.forEach { $0.resume() }
         waiters.removeAll()
+    }
+}
+
+/// Holds each read until the test releases it, and records the order the reads started in and the most that
+/// were held at once.
+private actor DetailGate {
+    private(set) var started: [ContentRef] = []
+    private(set) var mostAtOnce = 0
+    private var held: [ContentRef: CheckedContinuation<Void, Never>] = [:]
+    private var isOpen = false
+
+    func enter(_ ref: ContentRef) async {
+        started.append(ref)
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            held[ref] = continuation
+            mostAtOnce = max(mostAtOnce, held.count)
+        }
+    }
+
+    func release(_ ref: ContentRef) {
+        held.removeValue(forKey: ref)?.resume()
+    }
+
+    func releaseAll() {
+        isOpen = true
+        held.values.forEach { $0.resume() }
+        held.removeAll()
     }
 }
 

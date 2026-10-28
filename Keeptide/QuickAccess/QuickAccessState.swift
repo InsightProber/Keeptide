@@ -56,6 +56,10 @@ final class QuickAccessState {
     nonisolated static let previewByteLimit = 262_144
     /// The preview card is at most 760 pt wide, which is 1520 px at 2x.
     static let previewImagePixels = 1520
+    /// Clip details read at once. Each read takes the whole clip through the store's one writer context, which a
+    /// copy reads through as well, so a copy made just after the panel opens waits behind these few reads and
+    /// not behind one for every frame.
+    static let detailReadLimit = 2
 
     private(set) var query = ""
     private(set) var kinds: Set<ContentKind> = []
@@ -84,9 +88,15 @@ final class QuickAccessState {
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
     @ObservationIgnored private var previewing: Task<Void, Never>?
-    /// One read per clip whose detail is wanted. A load that has finished stays listed while its clip is
-    /// still requested, so a clip that cannot be read is not read again on every request.
+    /// One read per clip whose detail is wanted, running or finished. A load that has finished stays listed
+    /// while its clip is still requested, so a clip that cannot be read is not read again on every request.
     @ObservationIgnored private var detailLoads: [ContentRef: Task<Void, Never>] = [:]
+    /// Requested clips that wait for a read, nearest the middle first, at the frame size in `detailFrameSize`.
+    @ObservationIgnored private var waitingDetails: [ContentRef] = []
+    @ObservationIgnored private var detailFrameSize = CGSize.zero
+    /// Reads started and not yet returned. One that was cancelled still counts until it returns, since it
+    /// keeps its place on the writer context until then.
+    @ObservationIgnored private var detailReadsRunning = 0
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -116,6 +126,7 @@ final class QuickAccessState {
         cancelLoads()
         detailLoads.values.forEach { $0.cancel() }
         detailLoads = [:]
+        waitingDetails = []
         details = [:]
         session?.end()
         session = nil
@@ -167,24 +178,39 @@ final class QuickAccessState {
         reload()
     }
 
-    /// Starts reading the detail of each requested clip that has none yet, and stops reading the clips no
-    /// longer requested. `frameSize` is in pixels. A clip's stored content never changes, so its detail
-    /// belongs to the clip and not to the query generation it was asked for under: it applies for as long
-    /// as the row is in the list. A clip that is not in the list is ignored.
+    /// Reads the detail of each requested clip that has none yet, `detailReadLimit` at a time in the order
+    /// given, which is nearest the middle first, and stops reading the clips no longer requested. `frameSize`
+    /// is in pixels. A clip's stored content never changes, so its detail belongs to the clip and not to the
+    /// query generation it was asked for under: it applies for as long as the row is in the list. A clip
+    /// that is not in the list is ignored.
     func loadDetails(for refs: [ContentRef], frameSize: CGSize) {
-        guard isOpen, let service = services()?.preview else { return }
+        guard isOpen, services()?.preview != nil else { return }
         let requested = Set(refs)
         for ref in detailLoads.keys where !requested.contains(ref) {
             detailLoads.removeValue(forKey: ref)?.cancel()
         }
-        for ref in refs where details[ref] == nil && detailLoads[ref] == nil {
-            guard let kind = selection.rows.first(where: { $0.ref == ref })?.kind else { continue }
+        waitingDetails = refs.filter { details[$0] == nil && detailLoads[$0] == nil }
+        detailFrameSize = frameSize
+        startDetailReads()
+    }
+
+    /// Starts the next waiting reads while fewer than `detailReadLimit` run; each read starts the next as it
+    /// returns.
+    private func startDetailReads() {
+        guard isOpen, let service = services()?.preview else { return }
+        while detailReadsRunning < Self.detailReadLimit, !waitingDetails.isEmpty {
+            let ref = waitingDetails.removeFirst()
+            guard details[ref] == nil, detailLoads[ref] == nil,
+                  let kind = selection.rows.first(where: { $0.ref == ref })?.kind else { continue }
+            detailReadsRunning += 1
+            let frameSize = detailFrameSize
             detailLoads[ref] = Task {
                 let detail = try? await service.detail(for: ref, kind: kind, frameSize: frameSize)
-                guard let detail, !Task.isCancelled, self.selection.rows.contains(where: { $0.ref == ref }) else {
-                    return
+                self.detailReadsRunning -= 1
+                if let detail, !Task.isCancelled, self.selection.rows.contains(where: { $0.ref == ref }) {
+                    self.details[ref] = detail
                 }
-                self.details[ref] = detail
+                self.startDetailReads()
             }
         }
     }
