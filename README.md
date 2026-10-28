@@ -15,10 +15,11 @@ as a snippet, or write one directly.
 > The storage foundation provides local persistence, content validation, and
 > consistent reads. Local recording now preserves complete clipboard formats,
 > deduplicates exact copies, and provides a recent-clips list with copy-back.
-> A rebuildable local full-text index supports literal search, including one-
-> and two-character Chinese queries, but no search interface uses it yet.
-> Search UI, snippet workflows, and iCloud saving are still planned. There is no
-> end-user release yet.
+> The quick-access panel browses recent clips, searches all content through a
+> rebuildable local full-text index (including one- and two-character Chinese
+> queries), previews text, and copies the selected item in its original formats
+> or as plain text. Direct paste into other apps, snippet workflows, and iCloud
+> saving are still planned. There is no end-user release yet.
 
 ## Designed for the Mac
 

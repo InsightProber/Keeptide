@@ -20,8 +20,10 @@ scheme. The storage foundation includes two local Core Data stores, typed
 transactions, content validation, consistent snapshots, and persistent change
 consumption. Local capture includes explicit recording, privacy filters, exact
 deduplication, recent clips, and original-format copy-back. A rebuildable local
-full-text index consumes persistent history; search UI, snippet workflows,
-persistent file authorization, and cloud integration remain planned.
+full-text index consumes persistent history, and the quick-access panel browses
+recent clips, searches all content, previews text, and copies the selected item.
+Direct paste into other apps, snippet workflows, persistent file authorization,
+and cloud integration remain planned.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here

@@ -2,9 +2,10 @@
 
 The table below describes the planned first release. Development builds currently
 include local recording, explicit start/pause controls, ignored applications,
-exact capture deduplication, a recent-clips list, original-format copying, and a
-local full-text search index that no interface uses yet. Other capabilities remain
-planned. There is no application release yet.
+exact capture deduplication, a recent-clips list, original-format and plain-text
+copying, and a quick-access panel that searches all content with a local
+full-text index, filters by type, and previews text. Other capabilities, including
+direct paste into other apps, remain planned. There is no application release yet.
 
 ## First release
 
