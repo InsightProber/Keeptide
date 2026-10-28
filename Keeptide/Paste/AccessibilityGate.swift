@@ -18,7 +18,8 @@ enum DirectPasteKeystroke {
     }
 }
 
-/// Everything direct paste asks of the system. Tests inject a fake or `unavailable`.
+/// Everything direct paste asks of the system: the target, permission to post events, secure input,
+/// the Return key, and the ⌘V keystroke. Tests inject a fake or `unavailable`.
 @MainActor
 struct DirectPasteSystem {
     var frontmostTarget: () -> PasteTarget?
@@ -26,20 +27,27 @@ struct DirectPasteSystem {
     var requestPostEventAccess: () -> Bool
     var openAccessibilitySettings: () -> Void
     var isSecureInputEnabled: () -> Bool
+    /// Whether Return or keypad Enter is held. Once the panel hides, a held key repeats into the
+    /// target, and a terminal would run the pasted command.
+    var returnKeyIsDown: () -> Bool
     var commandVKeyCode: () -> CGKeyCode?
     var postCommandV: (CGKeyCode) -> Bool
 
     static var live: DirectPasteSystem {
         DirectPasteSystem(
             frontmostTarget: {
-                guard let app = NSWorkspace.shared.frontmostApplication,
-                      app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+                let ownProcessIdentifier = ProcessInfo.processInfo.processIdentifier
+                guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier != ownProcessIdentifier
+                else { return nil }
                 let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
                                                          kCGNullWindowID) as? [[String: Any]] ?? []
-                guard let window = PasteTarget.frontmostWindow(in: windows, processIdentifier: app.processIdentifier)
+                guard let window = PasteTarget.targetWindow(in: windows, frontProcessIdentifier: app.processIdentifier,
+                                                            ownProcessIdentifier: ownProcessIdentifier)
                 else { return nil }
                 return PasteTarget(processIdentifier: app.processIdentifier, bundleIdentifier: app.bundleIdentifier,
-                                   name: app.localizedName ?? app.bundleIdentifier ?? "App", windowNumber: window)
+                                   name: PasteTarget.name(localizedName: app.localizedName,
+                                                          bundleIdentifier: app.bundleIdentifier),
+                                   windowNumber: window)
             },
             // Preflight answers for this process: after the user grants access, posting works at
             // once, but preflight stays false until Keeptide relaunches.
@@ -51,6 +59,11 @@ struct DirectPasteSystem {
                 NSWorkspace.shared.open(url)
             },
             isSecureInputEnabled: { IsSecureEventInputEnabled() },
+            returnKeyIsDown: {
+                CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_Return))
+                    || CGEventSource.keyState(.hidSystemState, key: CGKeyCode(kVK_ANSI_KeypadEnter))
+            },
+            // currentCommandV() calls TIS input-source APIs, which need the main thread; @MainActor guarantees it.
             commandVKeyCode: { ShortcutKeyResolver.currentCommandV().flatMap { CGKeyCode(exactly: $0) } },
             postCommandV: { keyCode in
                 guard let keystroke = DirectPasteKeystroke.make(keyCode: keyCode) else { return false }
@@ -64,7 +77,7 @@ struct DirectPasteSystem {
 
     static var unavailable: DirectPasteSystem {
         DirectPasteSystem(frontmostTarget: { nil }, canPostEvents: { false }, requestPostEventAccess: { false },
-                          openAccessibilitySettings: {}, isSecureInputEnabled: { false }, commandVKeyCode: { nil },
-                          postCommandV: { _ in false })
+                          openAccessibilitySettings: {}, isSecureInputEnabled: { false }, returnKeyIsDown: { false },
+                          commandVKeyCode: { nil }, postCommandV: { _ in false })
     }
 }
