@@ -1,26 +1,172 @@
 import AppKit
 import SwiftUI
 
+/// Actions the panel controller supplies to the view.
+struct QuickAccessViewActions {
+    let primary: () -> Void
+    let togglePreview: () -> Void
+    let openActions: () -> Void
+    let toggleKind: (ContentKind) -> Void
+}
+
+/// The compact single-column panel, with the preview opening beside the results
+/// when there is room and as a page within the panel when there is not.
 struct QuickAccessView: View {
     let searchField: QuickAccessSearchField
+    let results: QuickAccessResultsTableView
+    let state: QuickAccessState
+    let actions: QuickAccessViewActions
+    @State private var applicationNames = ApplicationNames()
 
     var body: some View {
         VStack(spacing: 0) {
-            SearchField(field: searchField)
-                .padding(.horizontal, 20)
-                .frame(height: 58)
-                .background(.regularMaterial)
-            Divider()
-            ContentUnavailableView {
-                Label("No content yet", systemImage: "doc.on.clipboard")
-            } description: {
-                Text("Your saved content will appear here.")
+            HStack(spacing: 8) {
+                SearchField(field: searchField)
+                QuickAccessFilterMenu(kinds: state.kinds, toggle: actions.toggleKind)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier("QuickAccessEmptyState")
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 20)
+            .frame(height: 58)
+            .background(.regularMaterial)
+            scopeBar
+            Divider()
+            GeometryReader { proxy in
+                content(width: proxy.size.width)
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+            }
             .background(Color(nsColor: .textBackgroundColor))
+            Divider()
+            QuickAccessActionBar(
+                canAct: state.selection.executableSelection != nil,
+                canPreview: state.selection.selection != nil,
+                isPreviewExpanded: state.isPreviewExpanded,
+                failure: state.failure,
+                primary: actions.primary,
+                togglePreview: actions.togglePreview,
+                openActions: actions.openActions
+            )
         }
+    }
+
+    private var scopeBar: some View {
+        HStack(spacing: 6) {
+            Text(state.showsRecentClips ? "Recent Clips" : "All Content")
+                .accessibilityLabel(state.scopeTitle)
+                .accessibilityIdentifier("QuickAccessScope")
+            ForEach(ContentKind.filters.filter(state.kinds.contains), id: \.self) { kind in
+                Button { actions.toggleKind(kind) } label: {
+                    Label(kind.filterTitle, systemImage: "xmark.circle.fill").labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Remove \(kind.filterTitle) filter")
+            }
+            Spacer(minLength: 8)
+            if let statusLine {
+                Text(statusLine).lineLimit(1).accessibilityIdentifier("QuickAccessStatus")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 20)
+        .frame(height: 24)
+    }
+
+    /// Status shown above rows that are still on screen.
+    private var statusLine: String? {
+        guard !state.selection.rows.isEmpty else { return nil }
+        if state.selection.selectionLost { return "The selected item is no longer in the results" }
+        if state.phase == .loading { return "Searching…" }
+        if state.indexNotice == .rebuilding { return "Index is rebuilding — results may be incomplete" }
+        return nil
+    }
+
+    @ViewBuilder
+    private func content(width: CGFloat) -> some View {
+        if state.isPreviewExpanded {
+            if width >= 900 {
+                HStack(spacing: 0) {
+                    resultArea.frame(width: 400)
+                    Divider()
+                    preview
+                }
+            } else {
+                VStack(spacing: 0) {
+                    HStack {
+                        Button("Back to Results", action: actions.togglePreview)
+                        Spacer()
+                    }
+                    .padding(8)
+                    preview
+                }
+            }
+        } else {
+            resultArea
+        }
+    }
+
+    private var preview: some View {
+        let row = state.selection.rows.first { $0.ref == state.selection.selection }
+        return QuickAccessPreviewView(preview: state.preview,
+                                      applicationName: row?.sourceApp.flatMap(applicationNames.name(for:)))
+    }
+
+    @ViewBuilder
+    private var resultArea: some View {
+        let rows = state.selection.rows
+        if state.phase == .libraryUnavailable {
+            emptyState("Library unavailable", detail: "Recent clips appear here once the library opens.")
+        } else if rows.isEmpty {
+            switch state.phase {
+            case .noContent:
+                emptyState("No content yet", detail: "Your saved content will appear here.")
+            case .noResults:
+                status(state.indexNotice == .searchUnavailable
+                       ? "Search is unavailable — recent clips are still here" : "No results")
+            default:
+                status("Searching…")
+            }
+        } else {
+            QuickAccessResultsView(table: results, rows: rows, selection: state.selection.selection)
+        }
+    }
+
+    private func emptyState(_ title: String, detail: String) -> some View {
+        ContentUnavailableView {
+            Label(title, systemImage: "doc.on.clipboard")
+        } description: {
+            Text(detail)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("QuickAccessEmptyState")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func status(_ text: String) -> some View {
+        Text(text)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("QuickAccessStatus")
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct QuickAccessFilterMenu: View {
+    let kinds: Set<ContentKind>
+    let toggle: (ContentKind) -> Void
+
+    var body: some View {
+        Menu {
+            ForEach(ContentKind.filters, id: \.self) { kind in
+                Toggle(kind.filterTitle, isOn: Binding(get: { kinds.contains(kind) }, set: { _ in toggle(kind) }))
+            }
+        } label: {
+            Image(systemName: kinds.isEmpty ? "line.3.horizontal.decrease.circle"
+                                           : "line.3.horizontal.decrease.circle.fill")
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Filter by type")
+        .accessibilityLabel("Filter by type")
+        .accessibilityIdentifier("QuickAccessFilterButton")
     }
 }
 

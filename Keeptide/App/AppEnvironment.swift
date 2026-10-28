@@ -11,12 +11,16 @@ final class AppEnvironment {
 
     init(settings: AppSettings = AppSettings(),
          captureSession: CaptureSession? = nil,
-         makePanel: @escaping () -> PanelController = { PanelController() },
+         makePanel: (() -> PanelController)? = nil,
          makeLibrary: (() -> LibraryWindowController)? = nil) {
         let captureSession = captureSession ?? CaptureSession()
         self.settings = settings
         self.captureSession = captureSession
-        self.makePanel = makePanel
+        self.makePanel = makePanel ?? {
+            PanelController(state: QuickAccessState(services: { [weak captureSession] in
+                captureSession?.quickAccessServices
+            }))
+        }
         self.makeLibrary = makeLibrary ?? { LibraryWindowController(session: captureSession) }
     }
 
@@ -24,6 +28,8 @@ final class AppEnvironment {
         if let panel { return panel }
         let panel = makePanel()
         self.panel = panel
+        captureSession.onServicesChanged = { [weak panel] in panel?.state.servicesDidChange() }
+        captureSession.onRecentClipsChanged = { [weak panel] in panel?.state.recentClipsChanged() }
         return panel
     }
 
@@ -37,5 +43,12 @@ final class AppEnvironment {
     func showLibrary() {
         panel?.close()
         libraryWindowController.show()
+    }
+}
+
+private extension CaptureSession {
+    var quickAccessServices: QuickAccessServices? {
+        guard let contentRepository, let pasteService else { return nil }
+        return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService)
     }
 }
