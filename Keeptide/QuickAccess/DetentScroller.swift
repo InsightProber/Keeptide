@@ -1,7 +1,8 @@
 import AppKit
 
-/// Where a scroll event sits in its gesture. An ordinary mouse wheel has no phase, and neither does
-/// a trackpad event that carries no movement, such as the fingers resting before a swipe.
+/// Where a scroll event sits in its gesture. `began` starts a new gesture from rest. An ordinary
+/// mouse wheel has no phase, and neither does a trackpad event that carries no movement, such as
+/// the fingers resting before a swipe.
 enum DetentPhase {
     case began, changed, ended, cancelled, none
 }
@@ -50,31 +51,48 @@ struct DetentScroller {
     static let maximumRubberBand: CGFloat = 24
     /// Stretch shown per point pushed past an end.
     private static let rubberBandRatio: CGFloat = 0.3
+    /// The most push kept past an end: just enough to stretch the band to its maximum.
+    private static let overscrollLimit = maximumRubberBand / rubberBandRatio
 
     /// Push not yet turned into steps, positive toward older clips. Where no clip is left to move
-    /// to it is overscroll, and pushing back cancels it before the strip moves again.
+    /// to it is overscroll. Only up to `overscrollLimit` of it is kept, so however long the lean on
+    /// an end, pushing back unwinds at most that much before the strip moves again.
     private var pending: CGFloat = 0
     /// Whether the current push past an end has had its tick. A step or a lift starts it over.
     private var hasTickedAtEnd = false
     private var lastTick: TimeInterval?
+    /// The progress and stretch last reported. An event that changes nothing repeats them, so the
+    /// strip does not snap back to rest in the middle of a gesture.
+    private var shownProgress: CGFloat = 0
+    private var shownRubberBand: CGFloat = 0
+
+    /// The output of an event that changes nothing.
+    private var unchanged: DetentOutput {
+        DetentOutput(steps: 0, ticks: 0, progress: shownProgress, rubberBand: shownRubberBand)
+    }
 
     /// `olderRoom` and `newerRoom` are how many more clips the selection can move each way; a
-    /// negative count is taken as none.
+    /// negative count is taken as none. An event that changes nothing, coasting or a trackpad
+    /// event without a phase, gives no steps or ticks and repeats the progress and stretch last
+    /// reported, so every output can be applied as it comes.
     mutating func handle(_ input: DetentInput, olderRoom: Int, newerRoom: Int) -> DetentOutput {
         let older = max(0, olderRoom), newer = max(0, newerRoom)
         // Coasting is ignored: the strip stops on the clip the fingers chose, and a tick played
         // after they lift would not be felt.
-        if input.isMomentum { return .atRest() }
+        if input.isMomentum { return unchanged }
         guard input.isPrecise else {
             // One clip per notch and no tick: the wheel's own click is the feedback. A wheel turned
             // so the content scrolls down (negative `deltaY`) goes toward older clips, as in a list.
             let direction = input.deltaX != 0 ? input.deltaX : -input.deltaY
             return .atRest(steps: direction > 0 ? min(1, older) : direction < 0 ? -min(1, newer) : 0)
         }
+        // A swipe starts at rest. The last one may never have ended, for example when the panel
+        // closed with the fingers down, and must not leak into this one.
+        if input.phase == .began { reset() }
         switch input.phase {
         case .began, .changed: return track(input, older: older, newer: newer)
         case .ended, .cancelled: return release(at: input.time, older: older, newer: newer)
-        case .none: return .atRest()
+        case .none: return unchanged
         }
     }
 
@@ -88,16 +106,20 @@ struct DetentScroller {
         // is overscroll, which stretches the end.
         let room = pending > 0 ? older - steps : newer + steps
         let overscroll = room > 0 ? 0 : pending
+        // Only what the band can show is kept. With room left the push is under one clip, so this
+        // only ever trims overscroll.
+        pending = max(-Self.overscrollLimit, min(Self.overscrollLimit, pending))
         if steps != 0 { hasTickedAtEnd = false }
         var wantsTick = steps != 0
         if abs(overscroll) >= Self.distance, !hasTickedAtEnd {
             hasTickedAtEnd = true
             wantsTick = true
         }
+        shownProgress = room > 0 ? pending / Self.distance : 0
+        shownRubberBand = max(-Self.maximumRubberBand, min(Self.maximumRubberBand, overscroll * Self.rubberBandRatio))
         return DetentOutput(
             steps: steps, ticks: pacedTick(wanted: wantsTick, at: input.time),
-            progress: room > 0 ? pending / Self.distance : 0,
-            rubberBand: max(-Self.maximumRubberBand, min(Self.maximumRubberBand, overscroll * Self.rubberBandRatio))
+            progress: shownProgress, rubberBand: shownRubberBand
         )
     }
 
@@ -105,9 +127,17 @@ struct DetentScroller {
     private mutating func release(at time: TimeInterval, older: Int, newer: Int) -> DetentOutput {
         let room = pending > 0 ? older : newer
         let steps = abs(pending) >= Self.distance / 2 && room > 0 ? (pending > 0 ? 1 : -1) : 0
+        reset()
+        return .atRest(steps: steps, ticks: pacedTick(wanted: steps != 0, at: time))
+    }
+
+    /// Forgets the gesture so far. The time of the last tick stays, because the minimum interval
+    /// between ticks holds across gestures.
+    private mutating func reset() {
         pending = 0
         hasTickedAtEnd = false
-        return .atRest(steps: steps, ticks: pacedTick(wanted: steps != 0, at: time))
+        shownProgress = 0
+        shownRubberBand = 0
     }
 
     /// 1 when a tick is wanted and the last one is far enough back. A tick that comes too soon is

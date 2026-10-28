@@ -52,11 +52,47 @@ final class DetentScrollerTests: XCTestCase {
                        DetentOutput(steps: 1, ticks: 0, progress: 0, rubberBand: 0))
         XCTAssertEqual(s.handle(.wheel(dy: 2, t: 0.1), olderRoom: 0, newerRoom: 0).steps, 0)
     }
+
+    func testLongPushPastTheEndUnwindsWithinTheCap() {
+        var s = DetentScroller()
+        let push = s.handle(.precise(dx: 500, t: 0), olderRoom: 0, newerRoom: 4)
+        XCTAssertEqual(push.rubberBand, DetentScroller.maximumRubberBand)
+        XCTAssertEqual(s.handle(.precise(dx: -110, t: 0.1), olderRoom: 0, newerRoom: 4).steps, -1)  // 80 pt unwinds, the other 30 pt is one frame newer
+    }
+
+    func testIgnoredEventsKeepTheCurrentOffset() {
+        var s = DetentScroller()
+        _ = s.handle(.precise(dx: 20, t: 0), olderRoom: 10, newerRoom: 10)
+        let phaseless = s.handle(.precise(dx: 50, phase: .none, t: 0.1), olderRoom: 10, newerRoom: 10)
+        XCTAssertEqual(phaseless.steps, 0); XCTAssertEqual(phaseless.ticks, 0)
+        XCTAssertEqual(phaseless.progress, 2.0 / 3, accuracy: 0.001)
+        XCTAssertEqual(s.handle(.momentum(dx: 400, t: 0.2), olderRoom: 10, newerRoom: 10).progress, 2.0 / 3, accuracy: 0.001)
+        XCTAssertEqual(s.handle(.ended(t: 0.3), olderRoom: 10, newerRoom: 10).steps, 1)  // neither event added any push
+        var edge = DetentScroller()
+        let lean = edge.handle(.precise(dx: 30, t: 0), olderRoom: 0, newerRoom: 4)
+        XCTAssertGreaterThan(lean.rubberBand, 0)
+        XCTAssertEqual(edge.handle(.momentum(dx: 400, t: 0.1), olderRoom: 0, newerRoom: 4).rubberBand, lean.rubberBand)
+    }
+
+    func testANewGestureStartsAtRest() {
+        var s = DetentScroller()
+        _ = s.handle(.precise(dx: 20, t: 0), olderRoom: 10, newerRoom: 10)
+        let began = s.handle(.precise(dx: 10, phase: .began, t: 1), olderRoom: 10, newerRoom: 10)
+        XCTAssertEqual(began.steps, 0); XCTAssertEqual(began.progress, 1.0 / 3, accuracy: 0.001)  // not a step from 20 + 10
+        var edge = DetentScroller()
+        let lean = edge.handle(.precise(dx: 30, t: 0), olderRoom: 0, newerRoom: 4)
+        let again = edge.handle(.precise(dx: 30, phase: .began, t: 1), olderRoom: 0, newerRoom: 4)
+        XCTAssertEqual(again.rubberBand, lean.rubberBand); XCTAssertEqual(again.ticks, 1)  // the lean and its end tick start over
+    }
 }
 
 private extension DetentInput {
     static func precise(dx: CGFloat, dy: CGFloat = 0, t: TimeInterval) -> DetentInput {
         DetentInput(deltaX: dx, deltaY: dy, isPrecise: true, phase: .changed, isMomentum: false, time: t)
+    }
+
+    static func precise(dx: CGFloat, phase: DetentPhase, t: TimeInterval) -> DetentInput {
+        DetentInput(deltaX: dx, deltaY: 0, isPrecise: true, phase: phase, isMomentum: false, time: t)
     }
 
     static func momentum(dx: CGFloat, t: TimeInterval) -> DetentInput {
