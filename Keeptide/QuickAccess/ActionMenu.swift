@@ -26,6 +26,12 @@ enum ActionMenu {
         menu.addItem(preview)
         return menu
     }
+
+    /// Where the menu opens: beside the centred clip, level with its top edge, so that it covers neither the
+    /// clip nor the search field. `frame` is the clip's frame in `view`.
+    static func anchor(beside frame: NSRect, in view: NSView) -> NSPoint {
+        NSPoint(x: frame.maxX + 8, y: view.isFlipped ? frame.minY : frame.maxY)
+    }
 }
 
 private final class ActionMenuItem: NSMenuItem {

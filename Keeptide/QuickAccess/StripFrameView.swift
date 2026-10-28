@@ -489,3 +489,82 @@ struct StripFrameView: View {
         }
     }
 }
+
+// MARK: Row text and source apps
+
+extension QuickAccessRow {
+    var displayTitle: String { title.isEmpty ? "Clipboard Item" : title }
+}
+
+extension ContentKind {
+    var symbolName: String {
+        switch self {
+        case .text: "doc.text"
+        case .url: "link"
+        case .image: "photo"
+        case .file: "doc"
+        case .other: "square.dashed"
+        }
+    }
+}
+
+/// Text quick access makes from a row: where it came from and how long ago, and a search snippet with its hits
+/// in bold.
+@MainActor
+enum QuickAccessRowContent {
+    private static let relativeDates: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    /// "<App> · <time>", or the time alone when the source app is not known.
+    static func detail(for row: QuickAccessRow, applicationName: String?) -> String {
+        [applicationName, relativeDates.localizedString(for: row.date, relativeTo: Date())]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    /// Pure string work, so it is not tied to the main actor.
+    nonisolated static func highlighted(_ snippet: SearchSnippet) -> AttributedString {
+        var attributed = AttributedString(snippet.text)
+        let length = snippet.text.utf16.count
+        for range in snippet.highlights where range.lowerBound >= 0 && range.upperBound <= length {
+            let lower = String.Index(utf16Offset: range.lowerBound, in: snippet.text)
+            let upper = String.Index(utf16Offset: range.upperBound, in: snippet.text)
+            guard let start = AttributedString.Index(lower, within: attributed),
+                  let end = AttributedString.Index(upper, within: attributed), start < end else { continue }
+            attributed[start..<end].inlinePresentationIntent = .stronglyEmphasized
+        }
+        return attributed
+    }
+}
+
+/// Display names and icons for source apps, looked up once per bundle identifier.
+@MainActor
+final class ApplicationNames {
+    private var names: [String: String?] = [:]
+    private var icons: [String: NSImage] = [:]
+    private lazy var genericIcon = NSWorkspace.shared.icon(for: .applicationBundle)
+
+    func name(for bundleIdentifier: String) -> String? {
+        if let cached = names[bundleIdentifier] { return cached }
+        let name = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier).map { url in
+            let display = FileManager.default.displayName(atPath: url.path)
+            return display.hasSuffix(".app") ? String(display.dropLast(4)) : display
+        }
+        names[bundleIdentifier] = name
+        return name
+    }
+
+    /// The app's icon, or the system's generic app icon for a clip without a source app or one whose app
+    /// cannot be found.
+    func icon(for bundleIdentifier: String?) -> NSImage {
+        guard let bundleIdentifier else { return genericIcon }
+        if let cached = icons[bundleIdentifier] { return cached }
+        let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) } ?? genericIcon
+        icons[bundleIdentifier] = icon
+        return icon
+    }
+}

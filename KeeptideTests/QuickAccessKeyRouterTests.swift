@@ -125,7 +125,7 @@ final class QuickAccessKeyRouterTests: XCTestCase {
                            .passThrough, "Space is text in a query")
         }
         XCTAssertEqual(command(.space, in: .filters), .toggleFilter, "the filter row toggles its filter instead")
-        XCTAssertEqual(command(.space, in: .preview), .passThrough, "Space scrolls the preview text")
+        XCTAssertEqual(command(.space, in: .preview), .togglePreview, "Space closes the preview, as Escape does")
     }
 
     func testReturnCopiesFromEveryPosition() {

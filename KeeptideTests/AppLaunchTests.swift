@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import SwiftUI
 import XCTest
 @testable import Keeptide
 
@@ -39,11 +40,12 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testWindowGeometrySurvivesHostingLayout() throws {
-        let panel = PanelController()
+        let panel = PanelController(preferences: try makePreferences(.nine))
         let library = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         settleLayout()
-        XCTAssertEqual(panel.window?.contentView?.frame.size, NSSize(width: 680, height: 496))
-        XCTAssertEqual(panel.window?.contentMinSize, NSSize(width: 520, height: 360))
+        let window = try XCTUnwrap(panel.window)
+        let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
+        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine))
         XCTAssertEqual(library.window?.contentView?.frame.size, NSSize(width: 1120, height: 740))
         XCTAssertEqual(library.window?.contentMinSize, NSSize(width: 840, height: 560))
         XCTAssertEqual(library.window?.title, "Keeptide Library")
@@ -113,39 +115,35 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(editor is QuickAccessFieldEditor)
     }
 
-    func testDownFocusesResultsAndUpOnTheFirstRowReturnsToTheSearchField() async throws {
-        let harness = try SearchHarness.make(in: self)
-        let board = NSPasteboard.withUniqueName()
-        addTeardownBlock { board.releaseGlobally() }
-        for (offset, title) in ["older", "newer"].enumerated() {
-            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(title.utf8))]])
-            let item = ItemValue(title: title, captureID: capture.id, historyEligible: true,
-                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + Double(offset)), copyCount: 1)
-            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
-        }
-        let repository = ContentRepository(controller: harness.controller)
-        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
-                                 recordUse: { _ in }, didWrite: { _ in })
-        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
-        let controller = PanelController(state: QuickAccessState(services: { services }))
-        controller.state.open()
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
+    func testDownAndUpMoveBetweenSearchFiltersAndStrip() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
-        let (_, editor) = try searchEditor(in: controller)
+        let (field, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let filters = try XCTUnwrap(views(QuickAccessFilterRow.self, in: window.contentView).first)
+        let up = try key(kVK_UpArrow, "\u{F700}"), down = try key(kVK_DownArrow, "\u{F701}")
 
+        // Without the filter row Down goes straight to the strip, and the clip in the middle stays selected.
         editor.doCommand(by: #selector(NSResponder.moveDown(_:)))
-        let table = try XCTUnwrap(window.firstResponder as? QuickAccessResultsTableView)
+        XCTAssertTrue(window.firstResponder === strip)
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref,
-                       "Down focuses the results without skipping the first row")
+                       "Down focuses the strip without skipping the first clip")
+        strip.keyDown(with: up)
+        XCTAssertTrue(isEditing(field, in: window))
 
-        table.keyDown(with: try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
-            context: nil, characters: "\u{F700}", charactersIgnoringModifiers: "\u{F700}", isARepeat: false,
-            keyCode: UInt16(kVK_UpArrow)
-        )))
-        XCTAssertTrue((window.firstResponder as? NSTextView)?.delegate === controller.window?.contentView.flatMap {
-            findSearchField(in: $0)
-        })
+        // Once the filter row shows, it lies between the two.
+        controller.perform(.cycleFocus(forward: true))
+        XCTAssertTrue(window.firstResponder === filters)
+        filters.keyDown(with: up)
+        XCTAssertTrue(isEditing(field, in: window))
+        try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.moveDown(_:)))
+        XCTAssertTrue(window.firstResponder === filters)
+        filters.keyDown(with: down)
+        XCTAssertTrue(window.firstResponder === strip)
+        strip.keyDown(with: up)
+        XCTAssertTrue(window.firstResponder === filters)
+        filters.keyDown(with: up)
+        XCTAssertTrue(isEditing(field, in: window))
         controller.state.close()
     }
 
@@ -153,14 +151,14 @@ final class AppLaunchTests: XCTestCase {
         let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                styleMask: [.titled], backing: .buffered, defer: false)
         let field = QuickAccessSearchField()
-        let results = QuickAccessResultsTableView()
+        let strip = QuickAccessStripView()
         window.contentView?.addSubview(field)
-        window.contentView?.addSubview(results)
-        XCTAssertTrue(window.makeFirstResponder(results))
+        window.contentView?.addSubview(strip)
+        XCTAssertTrue(window.makeFirstResponder(strip))
 
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
 
-        XCTAssertTrue(window.firstResponder === results)
+        XCTAssertTrue(window.firstResponder === strip)
     }
 
     func testTogglingThePreviewKeepsTypingInTheSearchField() async throws {
@@ -177,17 +175,17 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testOpeningThePreviewFromTheResultsKeepsThemFocused() async throws {
+    func testOpeningThePreviewFromTheStripKeepsItFocused() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
         controller.perform(.focusResults)
-        XCTAssertTrue(window.firstResponder is QuickAccessResultsTableView)
+        XCTAssertTrue(window.firstResponder is QuickAccessStripView)
 
         controller.perform(.togglePreview)
         settleLayout()
 
-        XCTAssertTrue(window.firstResponder is QuickAccessResultsTableView)
+        XCTAssertTrue(window.firstResponder is QuickAccessStripView)
         controller.perform(.move(1))
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.last?.ref)
         controller.state.close()
@@ -201,7 +199,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.state.isPreviewExpanded)
     }
 
-    func testUpFromTheFirstRowKeepsTheQueryText() async throws {
+    func testUpFromTheStripKeepsTheQueryText() async throws {
         let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"])
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -209,12 +207,18 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil {
             controller.state.query == "note" && controller.state.phase == .results
         }
-
         controller.perform(.focusResults)
-        controller.perform(.move(-1))
+        let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
+        let up = try key(kVK_UpArrow, "\u{F700}")
+
+        // A query shows the filter row, so Up passes through it on the way back to the field.
+        strip.keyDown(with: up)
+        let filters = try XCTUnwrap(window.firstResponder as? QuickAccessFilterRow)
+        filters.keyDown(with: up)
 
         let returned = try XCTUnwrap(window.firstResponder as? NSTextView)
         XCTAssertTrue(returned.delegate === field)
+        XCTAssertEqual(returned.string, "note")
         XCTAssertEqual(returned.selectedRange(), NSRange(location: 4, length: 0), "Typing continues the query")
         controller.state.close()
     }
@@ -252,13 +256,267 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(editor.hasMarkedText())
     }
 
+    func testPanelIsBorderlessTransparentAndFramesTheBand() throws {
+        let controller = PanelController(preferences: try makePreferences(.nine))
+        let panel = try XCTUnwrap(controller.window as? NSPanel)
+        // No frame, no background and no window shadow: the band draws its own shadow and fades out at its ends.
+        XCTAssertEqual(panel.styleMask, [.borderless, .nonactivatingPanel])
+        XCTAssertFalse(panel.isOpaque)
+        XCTAssertEqual(panel.backgroundColor, .clear)
+        XCTAssertFalse(panel.hasShadow)
+        // Still a floating panel that takes the keys without activating Keeptide, and closes when it loses them.
+        XCTAssertTrue(panel.canBecomeKey)
+        XCTAssertFalse(panel.canBecomeMain)
+        XCTAssertEqual(panel.identifier?.rawValue, "KeeptideQuickAccessPanel")
+        XCTAssertEqual(panel.accessibilityIdentifier(), "KeeptideQuickAccessPanel")
+        XCTAssertEqual(panel.title, "Keeptide Quick Access")
+        XCTAssertEqual(panel.level, .floating)
+        XCTAssertFalse(panel.becomesKeyOnlyIfNeeded)
+        XCTAssertFalse(panel.hidesOnDeactivate)
+        XCTAssertTrue(panel.collectionBehavior.isSuperset(of: [.moveToActiveSpace, .fullScreenAuxiliary]))
+
+        // The panel is the band and the room around it for the key hints and the shadow.
+        panel.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let screen = try XCTUnwrap(panel.screen ?? NSScreen.main)
+        let metrics = StripLayout.metrics(for: .nine, visibleWidth: screen.visibleFrame.width)
+        let bandHeight = StripLayout.bandHeight(metrics, filtersVisible: false)
+        XCTAssertEqual(panel.frame.width, metrics.bandWidth + 2 * StripLayout.sideMargin, accuracy: 1)
+        XCTAssertEqual(panel.frame.height, bandHeight + 2 * StripLayout.shadowMargin, accuracy: 1)
+        // The search row along its top, the strip across its whole width above the caption row.
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: panel.contentView).first)
+        let stripFrame = strip.convert(strip.bounds, to: nil)
+        XCTAssertEqual(stripFrame.width, metrics.bandWidth, accuracy: 1)
+        XCTAssertEqual(stripFrame.midX, panel.frame.width / 2, accuracy: 1)
+        XCTAssertEqual(stripFrame.midY, StripLayout.shadowMargin + StripLayout.captionHeight
+                           + metrics.frameSize.height / 2, accuracy: 1)
+        let field = try XCTUnwrap(views(QuickAccessSearchField.self, in: panel.contentView).first)
+        XCTAssertEqual(field.convert(field.bounds, to: nil).midY,
+                       StripLayout.shadowMargin + bandHeight - StripLayout.searchHeight / 2, accuracy: 1)
+    }
+
+    func testEmptyQueryArrowsStepTheStripAndKeepFocusInTheField() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let rows = controller.state.selection.rows
+
+        // An empty field has no caret to move: Left steps the strip to the older clip, which is in the middle at
+        // once, and the keys stay with the field.
+        editor.doCommand(by: #selector(NSResponder.moveLeft(_:)))
+        XCTAssertEqual(controller.state.selection.selection, rows[1].ref)
+        XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": older") == true, selectedClipLabel(in: strip) ?? "")
+        XCTAssertTrue(isEditing(field, in: window))
+
+        // Right steps back to the newest clip, and at that end it does nothing.
+        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        XCTAssertEqual(controller.state.selection.selection, rows[0].ref)
+        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        XCTAssertEqual(controller.state.selection.selection, rows[0].ref)
+        XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": newer") == true, selectedClipLabel(in: strip) ?? "")
+        XCTAssertTrue(isEditing(field, in: window))
+        controller.state.close()
+    }
+
+    func testTypingInTheStripReturnsToTheFieldWithoutLosingTheKey() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
+
+        // The key arrives the way a real one does: as the application's current event.
+        NSApp.postEvent(try key(kVK_ANSI_A, "a", windowNumber: window.windowNumber), atStart: true)
+        let typed = try XCTUnwrap(NSApp.nextEvent(matching: .keyDown, until: Date(), inMode: .default, dequeue: true))
+        strip.keyDown(with: typed)
+
+        XCTAssertTrue(isEditing(field, in: window), "Typing goes back to the search field")
+        XCTAssertEqual(field.stringValue, "a", "The key that moved focus is typed there, not lost")
+        XCTAssertEqual(controller.state.query, "a")
+        controller.state.close()
+    }
+
+    func testSpaceOpensThePreviewAboveTheBandAndEscapeClosesIt() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
+        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine))
+        controller.perform(.focusResults)
+        let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
+
+        strip.keyDown(with: try key(kVK_Space, " "))
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        settleLayout()
+
+        // The panel grows to hold the card above the band, and the band moves down to make room.
+        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine, withPreview: true))
+        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        XCTAssertEqual(text.string, "newer")
+        XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
+        XCTAssertTrue(window.firstResponder === strip, "The strip keeps the keys")
+
+        // Escape closes the card and leaves the band as it was.
+        strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
+        settleLayout()
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine))
+        XCTAssertTrue(window.firstResponder === strip)
+        controller.state.close()
+    }
+
+    func testCopyButtonCopiesAndContextMenuMatchesCommandK() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        var shown: [(menu: NSMenu, point: NSPoint, view: NSView)] = []
+        controller.presentActionMenu = { shown.append(($0, $1, $2)) }
+
+        // ⌘K opens the centred clip's actions beside it, level with its top edge.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "k", modifiers: .command)))
+        let commandK = try XCTUnwrap(shown.first)
+        let size = StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
+            .visibleFrame.width).frameSize
+        XCTAssertTrue(commandK.view === strip)
+        XCTAssertGreaterThanOrEqual(commandK.point.x, strip.bounds.midX + size.width / 2)
+        XCTAssertEqual(commandK.point.y, strip.bounds.midY + size.height / 2, accuracy: 1)
+        XCTAssertEqual(commandK.menu.items.map(\.title), ["Copy", "Copy as Plain Text", "", "Show Preview"])
+        // A right-click on the centred clip gives the same menu.
+        let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: strip.convert(NSPoint(x: strip.bounds.midX, y: strip.bounds.midY), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1
+        ))))
+        XCTAssertEqual(context.items.map(\.title), commandK.menu.items.map(\.title))
+        XCTAssertEqual(context.items.map(\.isEnabled), commandK.menu.items.map(\.isEnabled))
+        XCTAssertEqual(context.items.map(\.keyEquivalent), commandK.menu.items.map(\.keyEquivalent))
+
+        // The caption's Copy button copies the centred clip, as Return does. SwiftUI draws it with an AppKit
+        // button, the only one in the caption row.
+        let caption = NSRect(x: 0, y: StripLayout.shadowMargin, width: window.frame.width,
+                             height: StripLayout.captionHeight)
+        let copy = try XCTUnwrap(views(NSButton.self, in: window.contentView).first {
+            caption.contains($0.convert($0.bounds, to: nil))
+        })
+        XCTAssertTrue(copy.isEnabled)
+        copy.performClick(nil)
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "newer")
+    }
+
+    func testContextMenuCopiesItsOwnClipOrNothing() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let metrics = StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
+            .visibleFrame.width)
+        // The older clip lies one step left of the newer one in the middle.
+        let older = NSPoint(x: strip.bounds.midX - metrics.step, y: strip.bounds.midY)
+        let rightClick = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: strip.convert(older, to: nil), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+        ))
+
+        // The clip leaves the results while its menu is open: Copy then copies nothing, least of all the clip in
+        // the middle.
+        let stale = try XCTUnwrap(strip.menu(for: rightClick))
+        editor.insertText("newer", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            controller.state.phase == .results && controller.state.selection.rows.map(\.title) == ["newer"]
+        }
+        stale.performActionForItem(at: 0)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(board.string(forType: .string))
+
+        // Back among the recent clips, the menu copies the clip it was opened on and moves it to the middle.
+        try XCTUnwrap(controller.window?.firstResponder as? NSTextView)
+            .doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.count == 2 }
+        try XCTUnwrap(strip.menu(for: rightClick)).performActionForItem(at: 0)
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.last?.ref)
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "older")
+        controller.state.close()
+    }
+
+    func testTabRevealsTheFiltersAndEscapeHidesThem() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        let filters = try XCTUnwrap(views(QuickAccessFilterRow.self, in: window.contentView).first)
+        let height = window.frame.height
+        XCTAssertFalse(controller.state.filtersVisible)
+        XCTAssertTrue(filters.isHidden)
+
+        // Tab shows the hidden filter row and puts the keys in it; the band grows to hold it.
+        editor.doCommand(by: #selector(NSResponder.insertTab(_:)))
+        XCTAssertTrue(window.firstResponder === filters)
+        XCTAssertTrue(controller.state.filtersVisible)
+        XCTAssertFalse(filters.isHidden)
+        XCTAssertEqual(window.frame.height, height + StripLayout.filterHeight, accuracy: 1)
+
+        // With no query and no filter chosen, the row is a layer of its own: Escape hides it and keeps the panel.
+        filters.keyDown(with: try key(kVK_Escape, "\u{1B}"))
+        XCTAssertFalse(controller.state.filtersVisible)
+        XCTAssertTrue(filters.isHidden)
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertTrue(isEditing(field, in: window), "The keys go back to the search field")
+        XCTAssertEqual(window.frame.height, height, accuracy: 1)
+
+        // The next Escape closes the panel.
+        try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertFalse(controller.isSessionOpen)
+        XCTAssertFalse(window.isVisible)
+    }
+
+    func testEmptyLibraryShowsTheStripCopyWithoutKeycaps() async throws {
+        let (controller, harness) = try await makeEmptyPanel()
+        let window = try XCTUnwrap(controller.window)
+        try await SearchTestSupport.waitUntil { controller.state.phase == .noContent }
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+
+        // Where the clips would be, the band says how they get there; there are no frames and no key hints.
+        // SwiftUI's own accessibility is not built without an assistive app, so the copy is checked as drawn.
+        XCTAssertEqual(QuickAccessStatus.empty(phase: controller.state.phase, notice: controller.state.indexNotice).text,
+                       "No clips yet. Copy something and it shows up here.")
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        XCTAssertEqual(strip.accessibilityChildren()?.count ?? 0, 0)
+        XCTAssertTrue(views(NSHostingView<StripFrameView>.self, in: strip).isEmpty)
+        let middle = strip.convert(NSRect(x: strip.bounds.midX - 40, y: strip.bounds.midY - 10, width: 80, height: 20),
+                                   to: nil)
+        XCTAssertGreaterThan(try contrast(in: window, at: middle), 0.3, "The copy is drawn where the clips would be")
+        XCTAssertLessThan(try contrast(in: window, at: middle.offsetBy(dx: -0.3 * strip.bounds.width, dy: 0)), 0.05,
+                          "and nothing else is")
+        XCTAssertLessThan(try contrast(in: window, at: keyHintArea(in: window)), 0.05, "No key hints")
+
+        // The first clip brings its frame, and the hints with it.
+        let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("first".utf8))]])
+        let item = ItemValue(title: "first", captureID: capture.id, historyEligible: true,
+                             lastCopiedAt: Date(timeIntervalSince1970: 1_000), copyCount: 1)
+        try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        controller.state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 1 }
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        XCTAssertEqual(strip.accessibilityChildren()?.count, 1)
+        XCTAssertGreaterThan(try contrast(in: window, at: keyHintArea(in: window)), 0.1, "Key hints")
+        controller.state.close()
+    }
+
     private func findSearchField(in view: NSView) -> NSSearchField? {
         if let field = view as? NSSearchField { return field }
         return view.subviews.lazy.compactMap { self.findSearchField(in: $0) }.first
     }
 
-    /// A panel over a real temporary store holding one text clip per title, newest last.
-    private func makePanelWithClips(_ titles: [String]) async throws -> (PanelController, NSPasteboard) {
+    /// A panel over a real temporary store holding one text clip per title, newest last. A shown panel opens the
+    /// way the shortcut opens it; otherwise only its state does, and the window stays off screen.
+    private func makePanelWithClips(_ titles: [String], shown: Bool = false) async throws
+        -> (PanelController, NSPasteboard) {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -269,14 +527,87 @@ final class AppLaunchTests: XCTestCase {
             try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
         }
         try await harness.consumer.synchronize()
-        let repository = ContentRepository(controller: harness.controller)
-        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
-                                 recordUse: { _ in }, didWrite: { _ in })
-        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
-        let controller = PanelController(state: QuickAccessState(services: { services }))
-        controller.state.open()
+        let controller = try makePanel(over: harness, pasteboard: board)
+        if shown {
+            controller.show()
+            addTeardownBlock { controller.close() }
+        } else {
+            controller.state.open()
+        }
         try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == titles.count }
         return (controller, board)
+    }
+
+    /// A panel over a real temporary store with nothing in it yet.
+    private func makeEmptyPanel() async throws -> (PanelController, SearchHarness) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let controller = try makePanel(over: harness, pasteboard: board)
+        controller.state.open()
+        return (controller, harness)
+    }
+
+    private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard) throws -> PanelController {
+        let repository = ContentRepository(controller: harness.controller)
+        let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
+                                 recordUse: { _ in }, didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
+        return PanelController(state: QuickAccessState(services: { services }), preferences: try makePreferences(.nine))
+    }
+
+    /// Settings of the panel's own, so its density does not depend on this machine's.
+    private func makePreferences(_ density: StripDensity) throws -> QuickAccessPreferences {
+        let suiteName = "AppLaunchTests.quickAccess.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        preferences.density = density
+        return preferences
+    }
+
+    /// Where `StripLayout` puts the panel on `screen`: around the band alone, or around the band and the
+    /// preview card above it.
+    private func panelFrame(on screen: NSScreen, density: StripDensity, withPreview: Bool = false) -> NSRect {
+        let visible = screen.visibleFrame
+        let metrics = StripLayout.metrics(for: density, visibleWidth: visible.width)
+        let band = StripLayout.bandFrame(metrics, filtersVisible: false, in: visible)
+        guard withPreview else { return StripLayout.panelFrame(band: band, preview: nil) }
+        let placed = StripLayout.previewLayout(band: band, in: visible)
+        return StripLayout.panelFrame(band: placed.band, preview: placed.preview)
+    }
+
+    /// The window sits where `expected` is, moved at most half a point so that it starts on whole pixels.
+    private func assertFrame(_ frame: NSRect, places expected: NSRect, file: StaticString = #filePath,
+                             line: UInt = #line) {
+        XCTAssertEqual(frame.size, expected.size, file: file, line: line)
+        XCTAssertEqual(frame.minX, expected.minX, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(frame.minY, expected.minY, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(frame.minX, frame.minX.rounded(), "\(frame) is on whole points", file: file, line: line)
+        XCTAssertEqual(frame.minY, frame.minY.rounded(), "\(frame) is on whole points", file: file, line: line)
+    }
+
+    private func views<View: NSView>(_ type: View.Type, in view: NSView?) -> [View] {
+        guard let view else { return [] }
+        return ((view as? View).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
+    }
+
+    private func isEditing(_ field: NSSearchField, in window: NSWindow) -> Bool {
+        (window.firstResponder as? NSTextView)?.delegate === field
+    }
+
+    /// What VoiceOver reads for the selected clip.
+    private func selectedClipLabel(in strip: QuickAccessStripView) -> String? {
+        (strip.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
+    }
+
+    private func key(_ code: Int, _ characters: String, modifiers: NSEvent.ModifierFlags = [],
+                     windowNumber: Int = 0) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: windowNumber,
+            context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false,
+            keyCode: UInt16(code)
+        ))
     }
 
     private func settleLayout() {
@@ -290,6 +621,37 @@ final class AppLaunchTests: XCTestCase {
         let field = try XCTUnwrap(window.contentView.flatMap(findSearchField))
         XCTAssertTrue(window.makeFirstResponder(field))
         return (field, try XCTUnwrap(field.currentEditor() as? NSTextView))
+    }
+
+    /// Where the ← hint goes, in window coordinates: in the room left of the band, level with the clips.
+    private func keyHintArea(in window: NSWindow) throws -> NSRect {
+        let metrics = StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
+            .visibleFrame.width)
+        let middle = StripLayout.shadowMargin + StripLayout.captionHeight + metrics.frameSize.height / 2
+        return NSRect(x: 0, y: middle - 16, width: StripLayout.sideMargin, height: 32)
+    }
+
+    /// How far apart the colours the window draws in `area` (window coordinates) are: 0 where nothing or one
+    /// even colour is drawn, more where there are strokes such as text.
+    private func contrast(in window: NSWindow, at area: NSRect) throws -> CGFloat {
+        let content = try XCTUnwrap(window.contentView)
+        let rect = content.convert(area, from: nil)
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: rect))
+        content.cacheDisplay(in: rect, to: bitmap)
+        var low: [CGFloat] = [1, 1, 1, 1], high: [CGFloat] = [0, 0, 0, 0]
+        for x in 0..<bitmap.pixelsWide {
+            for y in 0..<bitmap.pixelsHigh {
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                let alpha = color.alphaComponent
+                let channels = [color.redComponent * alpha, color.greenComponent * alpha, color.blueComponent * alpha,
+                                alpha]
+                for index in channels.indices {
+                    low[index] = min(low[index], channels[index])
+                    high[index] = max(high[index], channels[index])
+                }
+            }
+        }
+        return zip(high, low).map { $0 - $1 }.max() ?? 0
     }
 
     func testSeedingRequiresAnExplicitUITestSession() {
@@ -448,45 +810,6 @@ final class AppLaunchTests: XCTestCase {
         settleLayout()
         XCTAssertEqual(restored.window?.frame, saved)
         XCTAssertEqual(restored.window?.title, "Keeptide Library")
-    }
-
-    func testPanelPlacementFitsNegativeAndSmallVisibleFrames() {
-        for visible in [NSRect(x: -1800, y: 30, width: 1600, height: 1000),
-                        NSRect(x: 0, y: 900, width: 400, height: 300)] {
-            let frame = PanelController.frame(for: NSSize(width: 680, height: 496), in: visible)
-            XCTAssertTrue(visible.contains(frame))
-            XCTAssertEqual(frame.midX, visible.midX)
-            XCTAssertEqual(frame.midY, visible.midY)
-        }
-    }
-
-    func testExpandedFrameKeepsTopEdgeAndFitsTheScreen() throws {
-        let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let compact = PanelController.frame(for: NSSize(width: 680, height: 496), in: visible)
-
-        let expanded = try XCTUnwrap(PanelController.expandedFrame(from: compact, in: visible))
-
-        XCTAssertEqual(expanded.size, NSSize(width: 960, height: 560))
-        XCTAssertEqual(expanded.maxY, compact.maxY)
-        XCTAssertEqual(expanded.midX, compact.midX)
-        XCTAssertTrue(visible.contains(expanded))
-    }
-
-    func testExpandedFrameShiftsInsideAScreenEdge() throws {
-        let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let compact = NSRect(x: 1440 - 680, y: 300, width: 680, height: 496)
-
-        let expanded = try XCTUnwrap(PanelController.expandedFrame(from: compact, in: visible))
-
-        XCTAssertLessThanOrEqual(expanded.maxX, visible.maxX)
-        XCTAssertTrue(visible.contains(expanded))
-    }
-
-    func testNarrowScreenUsesThePreviewPage() {
-        let visible = NSRect(x: 0, y: 0, width: 900, height: 900)
-        let compact = PanelController.frame(for: NSSize(width: 680, height: 496), in: visible)
-
-        XCTAssertNil(PanelController.expandedFrame(from: compact, in: visible))
     }
 
     func testApplicationMenuBindsStandardResponderActions() throws {

@@ -23,7 +23,9 @@ final class AppEnvironment {
         self.captureSession = captureSession
         self.quickAccessPreferences = quickAccessPreferences
         self.makePanel = makePanel ?? { [weak captureSession] in
-            PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }))
+            // The panel reads the same preferences the Settings window edits.
+            PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }),
+                            preferences: quickAccessPreferences)
         }
         self.makeLibrary = makeLibrary ?? { LibraryWindowController(session: captureSession) }
         self.makeSettings = makeSettings ?? { SettingsWindowController(preferences: quickAccessPreferences) }

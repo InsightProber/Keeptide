@@ -30,15 +30,16 @@ enum PreviewContent: Equatable {
 }
 
 extension ContentKind {
-    /// The kinds quick access filters by, in menu order.
+    /// The kinds quick access filters by, in the filter row's order.
     static let filters: [ContentKind] = [.text, .url, .image, .file]
 
+    /// The kind's name in the filter row.
     var filterTitle: String {
         switch self {
         case .text: "Text"
-        case .url: "Link"
-        case .image: "Image"
-        case .file: "File"
+        case .url: "Links"
+        case .image: "Images"
+        case .file: "Files"
         case .other: "Other"
         }
     }
@@ -98,12 +99,6 @@ final class QuickAccessState {
 
     /// The filter row shows while there is a query or a filter, and when it was brought up by hand.
     var filtersVisible: Bool { hasFiltersOrQuery || filtersRevealed }
-
-    var scopeTitle: String {
-        guard !showsRecentClips else { return "Recent Clips" }
-        return (["All Content"] + ContentKind.filters.filter(kinds.contains).map(\.filterTitle))
-            .joined(separator: " · ")
-    }
 
     func open() {
         isOpen = true

@@ -21,7 +21,6 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
 
         XCTAssertEqual(state.selection.rows.map(\.title), ["newest", "middle", "oldest"])
-        XCTAssertEqual(state.scopeTitle, "Recent Clips")
         XCTAssertEqual(state.selection.executableSelection, state.selection.rows.first?.ref)
     }
 
@@ -37,7 +36,6 @@ final class QuickAccessStateTests: XCTestCase {
         state.setQuery("  \u{200B} ")
         try await settled(state)
 
-        XCTAssertEqual(state.scopeTitle, "Recent Clips")
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 
@@ -55,7 +53,6 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
 
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note"])
-        XCTAssertEqual(state.scopeTitle, "All Content")
     }
 
     func testKindFilterSearchesWithEmptyQuery() async throws {
@@ -73,7 +70,6 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
 
         XCTAssertEqual(state.selection.rows.map(\.kind), [.url])
-        XCTAssertEqual(state.scopeTitle, "All Content · Link")
     }
 
     func testClearQueryAndFiltersReturnsToRecent() async throws {
@@ -93,7 +89,6 @@ final class QuickAccessStateTests: XCTestCase {
 
         XCTAssertEqual(state.query, "")
         XCTAssertEqual(state.kinds, [])
-        XCTAssertEqual(state.scopeTitle, "Recent Clips")
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 

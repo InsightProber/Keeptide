@@ -23,6 +23,10 @@ final class QuickAccessStripView: NSView {
     /// What a key means here depends on the rest of the panel, which keeps these current.
     var filtersVisible = false
     var queryIsEmpty = true
+    /// While the preview is open, the frames beside the selected one step back to half strength.
+    var dimsSideFrames = false {
+        didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
+    }
 
     /// Frames kept beyond each end of the visible ones, so a step or a push never shows a gap.
     private static let spareFrames = 2
@@ -169,6 +173,11 @@ final class QuickAccessStripView: NSView {
             host.frame = backingAlignedRect(rect, options: .alignAllEdgesNearest)
         }
         spare.forEach { $0.removeFromSuperview() }
+        dimSideFrames()
+    }
+
+    private func dimSideFrames() {
+        for (row, host) in frames { host.alphaValue = dimsSideFrames && row != selection ? 0.5 : 1 }
     }
 
     private func addFrame(_ view: StripFrameView) -> StripFrameHost {
@@ -328,7 +337,7 @@ final class QuickAccessStripView: NSView {
     /// Tab and ⇧Tab are `tab` and `backTab`, and Space, Return and Tab are never typing. Any other key
     /// that types text with neither ⌘ nor ⌃ held is `character`, including a dead key, which types
     /// nothing yet but starts an accent.
-    private static func key(for event: NSEvent) -> QuickAccessKey {
+    static func key(for event: NSEvent) -> QuickAccessKey {
         switch Int(event.keyCode) {
         case kVK_UpArrow: return .up
         case kVK_DownArrow: return .down

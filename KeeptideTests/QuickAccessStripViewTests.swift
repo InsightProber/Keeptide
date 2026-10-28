@@ -497,6 +497,23 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(asked, [rows[2].ref])
     }
 
+    func testPreviewDimsTheFramesBesideTheCentre() throws {
+        let strip = makeStrip()
+        let rows = makeRows(5)
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(opacities(in: strip), ["Row 0": 1, "Row 1": 1, "Row 2": 1, "Row 3": 1, "Row 4": 1])
+
+        // While the preview is open the clips beside the selected one step back to half strength.
+        strip.dimsSideFrames = true
+        XCTAssertEqual(opacities(in: strip), ["Row 0": 0.5, "Row 1": 0.5, "Row 2": 1, "Row 3": 0.5, "Row 4": 0.5])
+        // The clip that moves to the middle comes forward, and the one that leaves it steps back.
+        strip.show(rows, selection: rows[3].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(opacities(in: strip), ["Row 0": 0.5, "Row 1": 0.5, "Row 2": 0.5, "Row 3": 1, "Row 4": 0.5])
+
+        strip.dimsSideFrames = false
+        XCTAssertEqual(opacities(in: strip), ["Row 0": 1, "Row 1": 1, "Row 2": 1, "Row 3": 1, "Row 4": 1])
+    }
+
     func testApplicationIconsAreCachedWithAGenericFallback() {
         let names = ApplicationNames()
         let generic = names.icon(for: nil)
@@ -552,6 +569,21 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     private func selectedTitle(in strip: NSView) -> String? {
         drawings(in: strip).first { $0.rootView.isSelected }.flatMap(title(of:))
+    }
+
+    /// How strongly each frame is drawn, by title: the opacity of its drawing and of every view up to the strip.
+    private func opacities(in strip: NSView) -> [String: CGFloat] {
+        var result: [String: CGFloat] = [:]
+        for drawing in drawings(in: strip) {
+            var opacity: CGFloat = 1
+            var view: NSView? = drawing
+            while let current = view, current !== strip {
+                opacity *= current.alphaValue
+                view = current.superview
+            }
+            if let title = title(of: drawing) { result[title] = opacity }
+        }
+        return result
     }
 
     private func mouse(_ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 1,
