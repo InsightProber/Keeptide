@@ -147,6 +147,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             togglePreview()
         case .escape:
             escape()
+        case .focusSearchField:
+            // The results list sends this on Up; it has no filter row above it.
+            focusSearchField()
+        case .focusFilters, .cycleFocus, .moveFilter, .toggleFilter, .typeIntoSearch:
+            // Strip commands; they are implemented together with the strip views.
+            break
         }
     }
 
