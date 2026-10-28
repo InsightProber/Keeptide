@@ -14,6 +14,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return editor
     }()
     private(set) var isSessionOpen = false
+    private let toast = CopyToastController()
     /// The compact frame to restore when an expanded preview collapses.
     private var compactFrame: NSRect?
 
@@ -123,7 +124,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         results.onSelect = { [weak self] in self?.state.select($0) }
         results.onCommand = { [weak self] in self?.perform($0) }
         results.onRowVisible = { [weak self] in self?.state.loadMoreIfNeeded(visibleRow: $0) }
-        state.onCopied = { [weak self] in self?.close() }
+        state.onCopied = { [weak self] in self?.confirmCopy() }
         state.onPreviewCollapsed = { [weak self] in self?.restoreCompactFrame() }
     }
 
@@ -160,6 +161,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         } else if wasExpanded, !state.isPreviewExpanded {
             restoreCompactFrame()
         }
+    }
+
+    /// Closes the panel and confirms the copy where the panel was.
+    private func confirmCopy() {
+        let frame = window?.frame ?? .zero
+        close()
+        toast.show("Copied — press ⌘V to paste", centeredOn: frame)
     }
 
     /// Returns to the compact layout and keeps keyboard focus in the panel.

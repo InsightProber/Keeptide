@@ -94,11 +94,54 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].exists)
     }
 
+    func testReturnCopiesTheFirstRowClosesThePanelAndShowsTheToast() throws {
+        let (app, host) = launchKeeptideWithHost()
+        _ = try openPanel(app)
+
+        app.searchFields["Quick access query"].typeKey(.return, modifierFlags: [])
+
+        // The toast lasts about 1.2 seconds, shorter than one polling interval, so check at once.
+        let toast = app.descendants(matching: .any)["CopyToastMessage"]
+        XCTAssertTrue(toast.exists, app.debugDescription)
+        XCTAssertEqual(text(of: toast), "Copied — press ⌘V to paste")
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
+
+        host.activate()
+        host.buttons["Inspect Synthetic Pasteboard"].click()
+        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
+        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription)
+        XCTAssertEqual(received.value as? String, "Synthetic alpha note")
+    }
+
+    func testShiftReturnOnTheImageRowShowsTheReason() throws {
+        let (app, host) = launchKeeptideWithHost()
+        let rows = try openPanel(app)
+        let image = rows.matching(NSPredicate(format: "label == %@", "Copied content")).firstMatch
+        XCTAssertTrue(image.waitForExistence(timeout: 5), app.debugDescription)
+
+        image.click()
+        app.typeKey(.return, modifierFlags: .shift)
+
+        let failure = app.descendants(matching: .any)["QuickAccessFailure"]
+        XCTAssertTrue(failure.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(text(of: failure), "This item has no plain text.")
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].exists)
+        host.activate()
+        host.buttons["Inspect Synthetic Pasteboard"].click()
+        XCTAssertEqual(text(of: host.staticTexts["Synthetic host status"]), "No synthetic payload received")
+    }
+
     // MARK: - Helpers
 
-    private func launchKeeptide() -> XCUIApplication {
-        continueAfterFailure = false
+    /// Launches the test host first, so the panel opens last and keeps keyboard focus.
+    private func launchKeeptideWithHost() -> (XCUIApplication, XCUIApplication) {
         let sessionID = UUID()
+        let host = launchSystemTestHost(sessionID: sessionID)
+        return (launchKeeptide(sessionID: sessionID), host)
+    }
+
+    private func launchKeeptide(sessionID: UUID = UUID()) -> XCUIApplication {
+        continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-global-hotkey", "--show-quick-access",
                                "--capture-test-session", sessionID.uuidString, "--seed-synthetic-clips"]
@@ -108,10 +151,10 @@ final class QuickAccessUITests: XCTestCase {
         return app
     }
 
-    func launchSystemTestHost() -> XCUIApplication {
+    private func launchSystemTestHost(sessionID: UUID) -> XCUIApplication {
         let hostURL = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent("KeeptideSystemTestHost.app")
         let host = XCUIApplication(url: hostURL)
-        host.launchArguments = ["--capture-test-session", sessionID?.uuidString ?? ""]
+        host.launchArguments = ["--capture-test-session", sessionID.uuidString]
         self.host = host
         host.launch()
         return host
