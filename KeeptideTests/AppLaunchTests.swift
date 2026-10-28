@@ -349,6 +349,42 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
+    func testHeldReturnEscapeAndSpaceActOnceInTheSearchField() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let (field, editor) = try searchEditor(in: controller)
+        let search = try XCTUnwrap(field as? QuickAccessSearchField)
+        var commands: [QuickAccessCommand] = []
+        search.onCommand = { commands.append($0) }
+        var escapes: [QuickAccessEscapeAction] = []
+        search.onEscape = { escapes.append($0) }
+
+        // In the empty field Space opens the preview and Return copies. A key held down acts on its first press
+        // alone: a repeat does nothing, and Space is not typed instead.
+        for (code, characters, command) in [(kVK_Space, " ", QuickAccessCommand.togglePreview),
+                                            (kVK_Return, "\r", .primary)] {
+            editor.keyDown(with: try key(code, characters, isARepeat: true))
+            XCTAssertEqual(commands, [], "A repeat of \(command)")
+            editor.keyDown(with: try key(code, characters))
+            XCTAssertEqual(commands, [command])
+            commands = []
+        }
+        XCTAssertEqual(field.stringValue, "")
+
+        // In a query Space is text, and a held one keeps typing.
+        editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.keyDown(with: try key(kVK_Space, " "))
+        editor.keyDown(with: try key(kVK_Space, " ", isARepeat: true))
+        XCTAssertEqual(field.stringValue, "ab  ")
+
+        // A repeated Escape leaves the query alone; pressed, Escape clears it.
+        editor.keyDown(with: try key(kVK_Escape, "\u{1B}", isARepeat: true))
+        XCTAssertEqual(escapes, [])
+        XCTAssertEqual(field.stringValue, "ab  ")
+        editor.keyDown(with: try key(kVK_Escape, "\u{1B}"))
+        XCTAssertEqual(escapes, [.clearQuery])
+        controller.state.close()
+    }
+
     func testSpaceOpensThePreviewAboveTheBandAndEscapeClosesIt() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
@@ -618,10 +654,10 @@ final class AppLaunchTests: XCTestCase {
     }
 
     private func key(_ code: Int, _ characters: String, modifiers: NSEvent.ModifierFlags = [],
-                     windowNumber: Int = 0) throws -> NSEvent {
+                     windowNumber: Int = 0, isARepeat: Bool = false) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(
             with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: windowNumber,
-            context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false,
+            context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: isARepeat,
             keyCode: UInt16(code)
         ))
     }

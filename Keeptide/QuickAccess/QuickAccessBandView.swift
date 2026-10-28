@@ -315,8 +315,11 @@ final class QuickAccessFilterRow: NSView {
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        let key = QuickAccessStripView.key(for: event)
+        // A held Space, Return or Escape has acted already.
+        guard !(event.isARepeat && key.actsOnceWhenHeld) else { return }
         let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
-            key: QuickAccessStripView.key(for: event), shift: event.modifierFlags.contains(.shift), focus: .filters,
+            key: key, shift: event.modifierFlags.contains(.shift), focus: .filters,
             queryIsEmpty: queryIsEmpty, filtersVisible: true
         ))
         // A key with no meaning here is dropped, not passed on to end in the alert sound.

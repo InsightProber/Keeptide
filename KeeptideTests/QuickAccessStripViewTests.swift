@@ -262,6 +262,45 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(haptics.ticks, 0)
     }
 
+    func testHeldSpaceReturnAndEscapeActOnceWhileArrowsRepeat() throws {
+        let strip = makeStrip()
+        let parent = try XCTUnwrap(strip.superview as? KeyRecordingView)
+        var commands: [QuickAccessCommand] = []
+        strip.onCommand = { commands.append($0) }
+        let rows = makeRows(5)
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // Held down, each acts on its first press alone. Repeating, Space would toggle the preview at the key
+        // repeat rate, Return would copy again, and Escape would peel the panel's layers one after another.
+        let held = [(kVK_Space, " "), (kVK_Return, "\r"), (kVK_ANSI_KeypadEnter, "\u{3}"), (kVK_Escape, "\u{1B}")]
+        for (code, characters) in held {
+            strip.keyDown(with: try key(code, characters))
+            strip.keyDown(with: try key(code, characters, isARepeat: true))
+            strip.keyDown(with: try key(code, characters, isARepeat: true))
+        }
+        XCTAssertEqual(commands, [.togglePreview, .primary, .primary, .escape])
+        XCTAssertEqual(parent.keys, 0, "The repeats are dropped, not passed on to end in an alert")
+
+        // The arrows keep stepping while held.
+        commands = []
+        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
+        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}", isARepeat: true))
+        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}", isARepeat: true))
+        XCTAssertEqual(commands, [.move(1), .move(1), .move(1)])
+
+        // The filter row drops them the same way, and its cursor keeps moving while an arrow is held.
+        let filters = QuickAccessFilterRow()
+        var filterCommands: [QuickAccessCommand] = []
+        filters.onCommand = { filterCommands.append($0) }
+        for (code, characters) in held {
+            filters.keyDown(with: try key(code, characters))
+            filters.keyDown(with: try key(code, characters, isARepeat: true))
+        }
+        filters.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
+        filters.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
+        XCTAssertEqual(filterCommands, [.toggleFilter, .primary, .primary, .escape, .moveFilter(1), .moveFilter(1)])
+    }
+
     func testTypingInTheStripRoutesToTheSearchField() throws {
         let strip = makeStrip()
         var commands: [QuickAccessCommand] = []

@@ -66,21 +66,22 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     }
 
     /// Space types text, so it never arrives here as a command; the field editor asks before typing it. An
-    /// empty field has no use for it and opens the preview; in a query or a composition it is a space.
-    func handleSpace(in editor: QuickAccessFieldEditor) -> Bool {
-        route(.space, in: editor)
+    /// empty field has no use for it and opens the preview; in a query or a composition it is a space. Held
+    /// in an empty field, it acts once: its repeats are taken and dropped, not typed.
+    func handleSpace(in editor: QuickAccessFieldEditor, isRepeat: Bool) -> Bool {
+        route(.space, in: editor, acts: !isRepeat)
     }
 
     /// Keys with native meaning in the field, such as the arrows in a query, and keys that belong to a
-    /// composition pass through.
-    private func route(_ key: QuickAccessKey, in editor: NSTextView) -> Bool {
+    /// composition pass through. A key that does not `act` is still taken when it has a command here.
+    private func route(_ key: QuickAccessKey, in editor: NSTextView, acts: Bool = true) -> Bool {
         let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
             key: key, shift: NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false, focus: .searchField,
             eventBeganWithMarkedText: (editor as? QuickAccessFieldEditor)?.currentEventBeganWithMarkedText ?? false,
             queryIsEmpty: editor.string.isEmpty, filtersVisible: filtersVisible
         ))
         guard command != .passThrough else { return false }
-        onCommand?(command)
+        if acts { onCommand?(command) }
         return true
     }
 
@@ -143,9 +144,13 @@ final class QuickAccessFieldEditor: NSTextView {
     override func keyDown(with event: NSEvent) {
         currentEventBeganWithMarkedText = hasMarkedText()
         defer { currentEventBeganWithMarkedText = false }
+        let keyCode = Int(event.keyCode)
+        // A held Return or Escape has acted already; a composition's keys are the input method's even then.
+        if event.isARepeat, !currentEventBeganWithMarkedText,
+           [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Escape].contains(keyCode) { return }
         // The field being edited is the editor's delegate.
-        if Int(event.keyCode) == kVK_Space, let field = (delegate as AnyObject?) as? QuickAccessSearchField,
-           field.handleSpace(in: self) { return }
+        if keyCode == kVK_Space, let field = (delegate as AnyObject?) as? QuickAccessSearchField,
+           field.handleSpace(in: self, isRepeat: event.isARepeat) { return }
         super.keyDown(with: event)
     }
 }
