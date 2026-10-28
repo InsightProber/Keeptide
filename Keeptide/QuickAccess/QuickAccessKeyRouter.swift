@@ -72,12 +72,13 @@ enum QuickAccessKeyRouter {
         // Typing below the search field belongs in the search field.
         case (.character, .filters), (.character, .results):
             return .typeIntoSearch
-        // Return and Tab work from all three positions; the preview keeps its own keys.
-        case (.returnKey, .searchField), (.returnKey, .filters), (.returnKey, .results):
+        // Return copies and Tab cycles from any focus, the expanded preview included. The preview
+        // keeps Space and the arrows for its own text.
+        case (.returnKey, _):
             return input.shift ? .plainText : .primary
-        case (.tab, .searchField), (.tab, .filters), (.tab, .results):
+        case (.tab, _):
             return .cycleFocus(forward: true)
-        case (.backTab, .searchField), (.backTab, .filters), (.backTab, .results):
+        case (.backTab, _):
             return .cycleFocus(forward: false)
         default:
             return .passThrough

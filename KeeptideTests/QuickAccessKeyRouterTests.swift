@@ -32,6 +32,10 @@ final class QuickAccessKeyRouterTests: XCTestCase {
             XCTAssertEqual(command(.left, in: .results, queryIsEmpty: queryIsEmpty), .move(1))
             XCTAssertEqual(command(.right, in: .results, queryIsEmpty: queryIsEmpty), .move(-1))
         }
+        // The expanded preview keeps the arrows for its own text.
+        for key in [QuickAccessKey.up, .down, .left, .right] {
+            XCTAssertEqual(command(key, in: .preview), .passThrough, "\(key) in the preview")
+        }
     }
 
     func testArrowsEditTextWhenTheQueryIsNotEmpty() {
@@ -85,7 +89,7 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     }
 
     func testTabCyclesFocusFromEveryPosition() {
-        for focus in [QuickAccessFocus.searchField, .filters, .results] {
+        for focus in [QuickAccessFocus.searchField, .filters, .results, .preview] {
             for filtersVisible in [false, true] {
                 XCTAssertEqual(command(.tab, in: focus, filtersVisible: filtersVisible),
                                .cycleFocus(forward: true), "Tab in \(focus), filtersVisible \(filtersVisible)")
@@ -125,7 +129,7 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     }
 
     func testReturnCopiesFromEveryPosition() {
-        for focus in [QuickAccessFocus.searchField, .filters, .results] {
+        for focus in [QuickAccessFocus.searchField, .filters, .results, .preview] {
             for (queryIsEmpty, filtersVisible) in [(true, false), (false, true)] {
                 XCTAssertEqual(command(.returnKey, in: focus, queryIsEmpty: queryIsEmpty,
                                        filtersVisible: filtersVisible), .primary, "Return in \(focus)")
