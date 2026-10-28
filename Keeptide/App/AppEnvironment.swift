@@ -16,10 +16,8 @@ final class AppEnvironment {
         let captureSession = captureSession ?? CaptureSession()
         self.settings = settings
         self.captureSession = captureSession
-        self.makePanel = makePanel ?? {
-            PanelController(state: QuickAccessState(services: { [weak captureSession] in
-                captureSession?.quickAccessServices
-            }))
+        self.makePanel = makePanel ?? { [weak captureSession] in
+            PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }))
         }
         self.makeLibrary = makeLibrary ?? { LibraryWindowController(session: captureSession) }
     }
