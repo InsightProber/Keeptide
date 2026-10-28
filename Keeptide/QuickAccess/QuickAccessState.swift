@@ -87,6 +87,8 @@ final class QuickAccessState {
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
+    /// Set once a page of the current generation added no rows; the generation asks for no more pages.
+    @ObservationIgnored private var pagingStopped = false
     @ObservationIgnored private var previewing: Task<Void, Never>?
     /// One read per clip whose detail is wanted, running or finished. A load that has finished stays listed
     /// while its clip is still requested, so a clip that cannot be read is not read again on every request.
@@ -268,7 +270,7 @@ final class QuickAccessState {
     }
 
     func loadMoreIfNeeded(visibleRow index: Int) {
-        guard !showsRecentClips, loadingMore == nil, phase == .results,
+        guard !showsRecentClips, loadingMore == nil, !pagingStopped, phase == .results,
               index >= selection.rows.count - 10, totalMatches > selection.rows.count,
               let search = services()?.search, let generation = currentGeneration else { return }
         let request = SearchRequest(query: query, kinds: kinds, generation: generation,
@@ -278,8 +280,12 @@ final class QuickAccessState {
             do {
                 for try await page in search.search(request) where page.isComplete {
                     guard self.isCurrent(generation) else { return }
+                    let listed = self.selection.rows.count
                     self.selection.append(page.results.map { Self.row(from: $0) }, generation: generation)
                     self.totalMatches = page.totalMatches
+                    // A page whose rows are all listed already, as when a clip copied again moved up into the
+                    // list, would come back the same however often it is asked for.
+                    if self.selection.rows.count == listed { self.pagingStopped = true }
                 }
             } catch {
                 // The rows already shown stay usable; the next scroll asks again.
@@ -316,6 +322,7 @@ final class QuickAccessState {
         let generation = session.advanceQueryGeneration()
         selection.beginGeneration(generation)
         totalMatches = 0
+        pagingStopped = false
         phase = .loading
         if showsRecentClips {
             indexNotice = nil

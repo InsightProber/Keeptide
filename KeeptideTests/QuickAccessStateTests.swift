@@ -215,6 +215,39 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.selection.selection, first)
     }
 
+    func testPagingStopsOnceAPageAddsNoRows() async throws {
+        // A two-letter query is scanned rather than looked up, and each scan of this small index reports its
+        // progress once, so the reports count the searches the state makes.
+        let scans = ScanCount()
+        let fixture = try makeFixture(onScanProgress: { _ in scans.increment() })
+        var clips: [ItemValue] = []
+        for offset in 0..<61 { clips.append(try await insert("ab \(offset)", at: Double(offset), into: fixture)) }
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.setQuery("ab")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        XCTAssertEqual(state.selection.rows.count, 60)
+
+        // The one clip left out is copied again and ranks first, so the next page holds only a clip already
+        // listed, while the search still counts one match more than the list holds.
+        var oldest = clips[0]
+        oldest.lastCopiedAt = Date(timeIntervalSince1970: 2_000)
+        try await fixture.harness.update(.item(oldest.id), to: .item(oldest))
+        try await fixture.harness.consumer.synchronize()
+        let searched = scans.count
+
+        for _ in 0..<3 {
+            state.loadMoreIfNeeded(visibleRow: 55)
+            try await searchesFinished(in: fixture)
+        }
+
+        XCTAssertEqual(scans.count, searched + 1, "Once a page adds nothing, the same page is not asked for again")
+        XCTAssertEqual(state.selection.rows.count, 60)
+        state.close()
+    }
+
     func testPreviewLoadsOnlyForTheCurrentSelection() async throws {
         let fixture = try makeFixture()
         try await insert("first", body: "first body", at: 1, into: fixture)
@@ -766,9 +799,14 @@ final class QuickAccessStateTests: XCTestCase {
         let services: QuickAccessServices
     }
 
+    /// `onScanProgress`, when given, gets the progress of every search that scans rather than looks its terms up.
     private func makeFixture(search: SearchService? = nil, withoutSearch: Bool = false, withoutPreview: Bool = false,
-                             readGate: CopyGate? = nil, previewGate: CopyGate? = nil) throws -> Fixture {
+                             readGate: CopyGate? = nil, previewGate: CopyGate? = nil,
+                             onScanProgress: (@Sendable (Int64) -> Void)? = nil) throws -> Fixture {
         let harness = try SearchHarness.make(in: self)
+        let scanning = onScanProgress.map {
+            SearchService(index: harness.index, status: harness.status, onScanProgress: $0)
+        }
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         let repository = ContentRepository(controller: harness.controller)
@@ -782,8 +820,8 @@ final class QuickAccessStateTests: XCTestCase {
             return try await repository.read(ref)
         })
         let services = QuickAccessServices(repository: repository,
-                                           search: withoutSearch ? nil : search ?? harness.service, paste: paste,
-                                           preview: withoutPreview ? nil : preview)
+                                           search: withoutSearch ? nil : search ?? scanning ?? harness.service,
+                                           paste: paste, preview: withoutPreview ? nil : preview)
         return Fixture(harness: harness, board: board, services: services)
     }
 
@@ -829,6 +867,14 @@ final class QuickAccessStateTests: XCTestCase {
     private func settled(_ state: QuickAccessState) async throws {
         try await SearchTestSupport.waitUntil { state.phase != .loading }
     }
+
+    /// Returns once every search asked for so far has run and handed its pages to the state. The yield lets a
+    /// search the state has just asked for reach the search queue. Searches run there one at a time, so one made
+    /// after it finishes after it, and resumes this test only after its pages have reached the main actor.
+    private func searchesFinished(in fixture: Fixture) async throws {
+        await Task.yield()
+        _ = try await fixture.harness.search("settle")
+    }
 }
 
 @MainActor
@@ -839,6 +885,18 @@ private final class ServicesBox {
 @MainActor
 private final class CallCounter {
     var count = 0
+}
+
+/// Counts the scanned ranges searches report, from the search queue.
+private final class ScanCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    var count: Int { lock.withLock { value } }
+
+    func increment() {
+        lock.withLock { value += 1 }
+    }
 }
 
 
