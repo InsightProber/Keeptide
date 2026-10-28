@@ -8,6 +8,9 @@ final class SyntheticPasteboardHarness {
     private(set) var status = "No synthetic payload written"
     private(set) var receivedTypes: [String] = []
     private(set) var receivedText = ""
+    private(set) var receivedPasteCount = 0
+    private(set) var receivedPasteText = ""
+    private(set) var receivedPasteModifiers = ""
 
     private let pasteboard: NSPasteboard
 
@@ -88,6 +91,19 @@ final class SyntheticPasteboardHarness {
         receivedTypes = pasteboard.types?.map(\.rawValue).sorted() ?? []
         receivedText = pasteboard.string(forType: .string) ?? ""
         status = receivedTypes.isEmpty ? "No synthetic payload received" : "Synthetic payload received"
+    }
+
+    /// A ⌘V in the paste receiver. It reads this session's named pasteboard, never the general one, and records the
+    /// modifiers the key arrived with, written in the order ⌃⌥⇧⌘.
+    func receivePaste(modifiers: NSEvent.ModifierFlags) -> String {
+        let text = pasteboard.string(forType: .string) ?? ""
+        receivedPasteCount += 1
+        receivedPasteText = text
+        let symbols: [(NSEvent.ModifierFlags, String)] = [
+            (.control, "⌃"), (.option, "⌥"), (.shift, "⇧"), (.command, "⌘"),
+        ]
+        receivedPasteModifiers = symbols.filter { modifiers.contains($0.0) }.map(\.1).joined()
+        return text
     }
 
     func receiveDroppedFiles(_ urls: [URL]) {
