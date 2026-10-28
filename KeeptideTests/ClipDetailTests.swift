@@ -112,7 +112,8 @@ final class ClipDetailTests: XCTestCase {
         let thumbnail = try XCTUnwrap(detail.thumbnail)
         XCTAssertGreaterThanOrEqual(thumbnail.width, 328)
         XCTAssertGreaterThanOrEqual(thumbnail.height, 218)
-        XCTAssertLessThanOrEqual(thumbnail.width, 1200)
+        // Just covering the frame, not decoded at the picture's own size: 328 × 219, give or take ImageIO's rounding.
+        XCTAssertLessThanOrEqual(thumbnail.width, 329)
     }
 
     func testExtremeImagesFitInsteadOfFilling() async throws {
