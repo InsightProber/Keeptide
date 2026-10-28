@@ -46,12 +46,14 @@ final class CaptureSessionTests: XCTestCase {
         await session.initialize(testSessionID: configuration.id)
 
         XCTAssertNotNil(session.pasteService)
+        XCTAssertNotNil(session.previewService)
         XCTAssertNotNil(session.contentRepository)
         XCTAssertNotNil(session.usageStore)
         XCTAssertEqual(changes.count, 1)
 
         await session.shutdown()
         XCTAssertNil(session.pasteService)
+        XCTAssertNil(session.previewService)
         XCTAssertNil(session.contentRepository)
         XCTAssertNil(session.usageStore)
         XCTAssertEqual(changes.count, 2)

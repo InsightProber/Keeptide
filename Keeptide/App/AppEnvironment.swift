@@ -47,6 +47,7 @@ final class AppEnvironment {
 private extension CaptureSession {
     var quickAccessServices: QuickAccessServices? {
         guard let contentRepository, let pasteService else { return nil }
-        return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService)
+        return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService,
+                                   preview: previewService)
     }
 }

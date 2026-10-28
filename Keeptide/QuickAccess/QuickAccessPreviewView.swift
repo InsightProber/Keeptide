@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// The expanded preview of the selected row. Text is selectable and scrolls; other
-/// kinds show what is known without pretending to render them.
+/// The expanded preview of the selected row. Text is selectable and scrolls, an image is
+/// shown whole, and other kinds show what is known without pretending to render them.
 struct QuickAccessPreviewView: View {
     let preview: PreviewContent?
     let applicationName: String?
@@ -22,6 +22,8 @@ struct QuickAccessPreviewView: View {
                             .padding(6)
                     }
                 }
+            case .image(let image, _)?:
+                Image(decorative: image, scale: 1).resizable().scaledToFit().padding()
             case .info(let kind, _)?:
                 VStack(spacing: 8) {
                     Image(systemName: kind.symbolName).font(.largeTitle).foregroundStyle(.secondary)

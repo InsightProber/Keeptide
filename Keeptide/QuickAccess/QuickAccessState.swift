@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Observation
 
@@ -8,6 +9,9 @@ struct QuickAccessServices {
     let repository: ContentRepository
     let search: SearchService?
     let paste: PasteService
+    /// What the strip frames and the image preview show comes from here; without it they show only what a
+    /// row already knows.
+    var preview: PreviewService? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -20,6 +24,7 @@ enum IndexNotice: Equatable {
 
 enum PreviewContent: Equatable {
     case text(String, isTruncated: Bool)
+    case image(CGImage, pixelSize: CGSize)
     case info(kind: ContentKind, sourceApp: String?)
     case failed(PasteRefusal)
 }
@@ -41,12 +46,15 @@ extension ContentKind {
 
 /// What the quick access panel lists, which row is selected, and what an action may
 /// touch. Every load belongs to one query generation of the panel's paste session, so
-/// results that arrive after the query, filters or session changed are dropped.
+/// results that arrive after the query, filters or session changed are dropped. Clip
+/// details are the exception: they belong to the clip, not to a generation.
 @MainActor @Observable
 final class QuickAccessState {
     static let recentLimit = 200
     static let pageSize = 60
     nonisolated static let previewByteLimit = 262_144
+    /// The preview card is at most 760 pt wide, which is 1520 px at 2x.
+    static let previewImagePixels = 1520
 
     private(set) var query = ""
     private(set) var kinds: Set<ContentKind> = []
@@ -56,6 +64,10 @@ final class QuickAccessState {
     private(set) var isPreviewExpanded = false
     private(set) var preview: PreviewContent?
     private(set) var failure: PasteRefusal?
+    /// What strip frames show of a clip beyond its title. Only clips still in the list keep one.
+    private(set) var details: [ContentRef: ClipDetail] = [:]
+    /// Whether the filter row was brought up by hand, as opposed to by a query or a filter.
+    private(set) var filtersRevealed = false
     @ObservationIgnored var onCopied: (@MainActor () -> Void)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
@@ -71,6 +83,9 @@ final class QuickAccessState {
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
     @ObservationIgnored private var previewing: Task<Void, Never>?
+    /// One read per clip whose detail is wanted. A load that has finished stays listed while its clip is
+    /// still requested, so a clip that cannot be read is not read again on every request.
+    @ObservationIgnored private var detailLoads: [ContentRef: Task<Void, Never>] = [:]
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -80,6 +95,9 @@ final class QuickAccessState {
     var showsRecentClips: Bool { ParsedQuery(query).isEmpty && kinds.isEmpty }
 
     var hasFiltersOrQuery: Bool { !query.isEmpty || !kinds.isEmpty }
+
+    /// The filter row shows while there is a query or a filter, and when it was brought up by hand.
+    var filtersVisible: Bool { hasFiltersOrQuery || filtersRevealed }
 
     var scopeTitle: String {
         guard !showsRecentClips else { return "Recent Clips" }
@@ -91,14 +109,19 @@ final class QuickAccessState {
         isOpen = true
         query = ""
         kinds = []
+        filtersRevealed = false
         isPreviewExpanded = false
         selection = SelectionCoordinator()
+        dropDetailsOfUnlistedRows()
         startSession()
     }
 
     func close() {
         isOpen = false
         cancelLoads()
+        detailLoads.values.forEach { $0.cancel() }
+        detailLoads = [:]
+        details = [:]
         session?.end()
         session = nil
         isPreviewExpanded = false
@@ -132,11 +155,43 @@ final class QuickAccessState {
         reload()
     }
 
+    func revealFilters() {
+        filtersRevealed = true
+    }
+
+    func toggleFiltersRevealed() {
+        filtersRevealed.toggle()
+    }
+
     func clearQueryAndFilters() {
+        // A filter row brought up by hand is a layer of its own; hiding it does not reload the list.
+        filtersRevealed = false
         guard hasFiltersOrQuery else { return }
         query = ""
         kinds = []
         reload()
+    }
+
+    /// Starts reading the detail of each requested clip that has none yet, and stops reading the clips no
+    /// longer requested. `frameSize` is in pixels. A clip's stored content never changes, so its detail
+    /// belongs to the clip and not to the query generation it was asked for under: it applies for as long
+    /// as the row is in the list. A clip that is not in the list is ignored.
+    func loadDetails(for refs: [ContentRef], frameSize: CGSize) {
+        guard isOpen, let service = services()?.preview else { return }
+        let requested = Set(refs)
+        for ref in detailLoads.keys where !requested.contains(ref) {
+            detailLoads.removeValue(forKey: ref)?.cancel()
+        }
+        for ref in refs where details[ref] == nil && detailLoads[ref] == nil {
+            guard let kind = selection.rows.first(where: { $0.ref == ref })?.kind else { continue }
+            detailLoads[ref] = Task {
+                let detail = try? await service.detail(for: ref, kind: kind, frameSize: frameSize)
+                guard let detail, !Task.isCancelled, self.selection.rows.contains(where: { $0.ref == ref }) else {
+                    return
+                }
+                self.details[ref] = detail
+            }
+        }
     }
 
     func select(_ ref: ContentRef) {
@@ -232,6 +287,7 @@ final class QuickAccessState {
         preview = nil
         guard isOpen, let services = services(), let session else {
             selection = SelectionCoordinator()
+            dropDetailsOfUnlistedRows()
             phase = .libraryUnavailable
             indexNotice = nil
             return
@@ -256,6 +312,7 @@ final class QuickAccessState {
         if summaries == nil, isRefresh { return }
         let rows = (summaries ?? []).compactMap { Self.row(from: $0) }
         selection.apply(rows, generation: generation, isComplete: true)
+        dropDetailsOfUnlistedRows()
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
         followSelection()
     }
@@ -271,6 +328,7 @@ final class QuickAccessState {
                 guard isCurrent(generation) else { return }
                 selection.apply(page.results.map { Self.row(from: $0) }, generation: generation,
                                 isComplete: page.isComplete, keepsChosenRow: true)
+                dropDetailsOfUnlistedRows()
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
                 phase = !page.results.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
@@ -284,8 +342,20 @@ final class QuickAccessState {
 
     private func showSearchUnavailable(_ generation: UInt64) {
         selection.apply([], generation: generation, isComplete: true)
+        dropDetailsOfUnlistedRows()
         indexNotice = .searchUnavailable
         phase = .noResults
+    }
+
+    /// A clip that left the list takes its detail, and any read of it, along.
+    private func dropDetailsOfUnlistedRows() {
+        let listed = Set(selection.rows.map(\.ref))
+        for ref in detailLoads.keys where !listed.contains(ref) {
+            detailLoads.removeValue(forKey: ref)?.cancel()
+        }
+        for ref in details.keys where !listed.contains(ref) {
+            details[ref] = nil
+        }
     }
 
     private func selectionChanged() {
@@ -315,16 +385,26 @@ final class QuickAccessState {
         previewedRef = ref
         let row = selection.rows.first { $0.ref == ref }
         let kind = row?.kind ?? .other
-        // Only text is decoded; other kinds show what the row already knows.
-        guard kind == .text || kind == .url else {
+        let imageService = kind == .image ? services()?.preview : nil
+        // Text is decoded, and so is an image when there is a preview service; other kinds show what the
+        // row already knows.
+        guard kind == .text || kind == .url || imageService != nil else {
             preview = .info(kind: kind, sourceApp: row?.sourceApp)
             return
         }
         previewing = Task {
             let content: PreviewContent
             do {
-                let resolved = try await repository.read(ref)
-                content = await Task.detached(priority: .userInitiated) { Self.preview(of: resolved, row: row) }.value
+                if let imageService {
+                    if let loaded = try await imageService.image(for: ref, maximumPixels: Self.previewImagePixels) {
+                        content = .image(loaded.image, pixelSize: loaded.pixelSize)
+                    } else {
+                        content = .info(kind: kind, sourceApp: row?.sourceApp)
+                    }
+                } else {
+                    let resolved = try await repository.read(ref)
+                    content = await Task.detached(priority: .userInitiated) { Self.preview(of: resolved, row: row) }.value
+                }
             } catch {
                 content = .failed(.contentUnavailable)
             }
@@ -387,6 +467,10 @@ enum QuickAccessStatus {
     /// What an empty result area says.
     static func empty(phase: QuickAccessPhase, notice: IndexNotice?) -> Message {
         switch phase {
+        case .noContent:
+            return Message(text: "No clips yet. Copy something and it shows up here.", detail: nil)
+        case .libraryUnavailable:
+            return Message(text: "Library unavailable", detail: "Recent clips appear here once the library opens.")
         case .noResults:
             if notice == .searchUnavailable { return Message(text: "Search is unavailable — recent clips are still here", detail: nil) }
             return Message(text: "No results", detail: notice == .rebuilding ? rebuilding : nil)
