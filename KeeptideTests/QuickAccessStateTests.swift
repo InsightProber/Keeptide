@@ -278,23 +278,161 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.failure, .noPlainText)
     }
 
+    func testCopyFromAClosedSessionDoesNotTouchTheReopenedPanel() async throws {
+        let gate = CopyGate()
+        let fixture = try makeFixture(readGate: gate)
+        try await insert("alpha note", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let copied = CallCounter()
+        state.onCopied = { copied.count += 1 }
+        state.open()
+        try await settled(state)
+        let before = fixture.board.changeCount
+
+        let copy = Task { await state.copySelection(.original) }
+        try await SearchTestSupport.waitUntil { await gate.entries == 1 }
+        state.close()
+        state.open()
+        try await settled(state)
+        await gate.open()
+        await copy.value
+
+        XCTAssertNil(state.failure)
+        XCTAssertEqual(copied.count, 0)
+        XCTAssertEqual(fixture.board.changeCount, before)
+    }
+
+    func testReturnWhileACopyIsInFlightIsIgnored() async throws {
+        let gate = CopyGate()
+        let fixture = try makeFixture(readGate: gate)
+        try await insert("alpha note", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        let first = Task { await state.copySelection(.original) }
+        try await SearchTestSupport.waitUntil { await gate.entries == 1 }
+        let ignored = expectation(description: "A second copy returns without waiting")
+        let second = Task {
+            await state.copySelection(.original)
+            ignored.fulfill()
+        }
+        await fulfillment(of: [ignored], timeout: 2)
+        await gate.open()
+        await first.value
+        await second.value
+
+        let entries = await gate.entries
+        XCTAssertEqual(entries, 1)
+    }
+
+    func testPreviewCollapsesWhenTheSelectionVanishes() async throws {
+        let fixture = try makeFixture()
+        try await insert("older", at: 1, into: fixture)
+        var doomed = try await insert("doomed", at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let collapsed = CallCounter()
+        state.onPreviewCollapsed = { collapsed.count += 1 }
+        state.open()
+        try await settled(state)
+        state.togglePreview()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+
+        doomed.historyDeletedAt = Date()
+        try await fixture.harness.update(.item(doomed.id), to: .item(doomed))
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { state.selection.selectionLost }
+
+        XCTAssertFalse(state.isPreviewExpanded)
+        XCTAssertNil(state.preview)
+        XCTAssertEqual(collapsed.count, 1)
+    }
+
+    func testReopeningDoesNotShowThePreviousSessionsRows() async throws {
+        let fixture = try makeFixture()
+        try await insert("alpha note", at: 1, into: fixture)
+        try await insert("beta note", at: 2, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.setQuery("alpha")
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["alpha note"])
+
+        state.close()
+        state.open()
+
+        XCTAssertEqual(state.selection.rows, [])
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
+    }
+
+    func testNonTextPreviewShowsKnownInformationWithoutReading() async throws {
+        let fixture = try makeFixture()
+        try await insert("pixel", types: [("public.png", Data([0x89, 0x50, 0x4E, 0x47]))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.togglePreview()
+
+        XCTAssertEqual(state.preview, .info(kind: .image, sourceApp: "test.source"))
+    }
+
+    func testStaleUnavailableSearchDoesNotLeaveANoticeOnRecentClips() async throws {
+        let fixture = try makeFixture(withoutSearch: true)
+        try await insert("alpha note", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.setQuery("a")
+        state.setQuery("")
+        try await SearchTestSupport.waitUntil { state.phase == .results }
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertNil(state.indexNotice)
+        XCTAssertEqual(state.phase, .results)
+    }
+
+    func testFailedRefreshKeepsTheListedClips() async throws {
+        let fixture = try makeFixture()
+        try await insert("alpha note", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let rows = state.selection.rows
+
+        try await fixture.harness.close()
+        state.recentClipsChanged()
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(state.selection.rows, rows)
+        XCTAssertEqual(state.phase, .results)
+        XCTAssertFalse(state.selection.selectionLost)
+    }
+
     private struct Fixture {
         let harness: SearchHarness
         let board: NSPasteboard
         let services: QuickAccessServices
     }
 
-    private func makeFixture(search: SearchService? = nil) throws -> Fixture {
+    private func makeFixture(search: SearchService? = nil, withoutSearch: Bool = false,
+                             readGate: CopyGate? = nil) throws -> Fixture {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         let repository = ContentRepository(controller: harness.controller)
         let usage = LocalUsageStore(controller: harness.controller)
-        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
-                                 recordUse: { try await usage.record($0) }, didWrite: { _ in })
-        return Fixture(harness: harness, board: board,
-                       services: QuickAccessServices(repository: repository, search: search ?? harness.service,
-                                                     paste: paste))
+        let paste = PasteService(pasteboard: board, read: { ref in
+            await readGate?.enter()
+            return try await repository.read(ref)
+        }, recordUse: { try await usage.record($0) }, didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository,
+                                           search: withoutSearch ? nil : search ?? harness.service, paste: paste)
+        return Fixture(harness: harness, board: board, services: services)
     }
 
     @discardableResult
@@ -323,4 +461,24 @@ private final class ServicesBox {
 @MainActor
 private final class CallCounter {
     var count = 0
+}
+
+
+/// Holds copies at their content read until the test opens it.
+private actor CopyGate {
+    private(set) var entries = 0
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func enter() async {
+        entries += 1
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
 }

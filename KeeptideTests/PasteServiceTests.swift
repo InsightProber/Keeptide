@@ -136,17 +136,74 @@ final class PasteServiceTests: XCTestCase {
         let controller = try makeStore()
         let board = makeBoard()
         let ref = try await insert([[("public.utf8-plain-text", text)]], into: controller)
+        let usage = LocalUsageStore(controller: controller)
         let paste = service(controller, board)
         let session = paste.beginSession()
 
         _ = await paste.execute(request(ref, session, .original))
         _ = await paste.execute(request(ref, session, .plainText))
+        try await SearchTestSupport.waitUntil { try await usage.summaries(for: [ref]).map(\.useCount) == [2] }
         let stale = request(ref, session, .original)
         session.advanceQueryGeneration()
         _ = await paste.execute(stale)
+        try await Task.sleep(for: .milliseconds(100))
 
-        let usage = try await LocalUsageStore(controller: controller).summaries(for: [ref])
-        XCTAssertEqual(usage.map(\.useCount), [2])
+        let summaries = try await usage.summaries(for: [ref])
+        XCTAssertEqual(summaries.map(\.useCount), [2])
+    }
+
+    func testCopiedReturnsBeforeTheReceiptIsStored() async throws {
+        let controller = try makeStore()
+        let board = makeBoard()
+        let ref = try await insert([[("public.utf8-plain-text", text)]], into: controller)
+        let usage = LocalUsageStore(controller: controller)
+        let gate = ReadGate()
+        let paste = service(controller, board, recordUse: { receipt in
+            await gate.wait()
+            try await usage.record(receipt)
+        })
+        let session = paste.beginSession()
+        let finished = expectation(description: "Copy reported before its receipt")
+
+        let copy = Task {
+            let outcome = await paste.execute(self.request(ref, session, .original))
+            finished.fulfill()
+            return outcome
+        }
+        await fulfillment(of: [finished], timeout: 2)
+        await gate.open()
+
+        let outcome = await copy.value
+        XCTAssertEqual(outcome, .copied)
+        XCTAssertEqual(board.string(forType: .string), "Synthetic")
+        try await SearchTestSupport.waitUntil { try await usage.summaries(for: [ref]).map(\.useCount) == [1] }
+    }
+
+    func testGenerationsNeverRepeatAcrossSessions() throws {
+        let paste = service(try makeStore(), makeBoard())
+
+        let first = paste.beginSession().advanceQueryGeneration()
+        let second = paste.beginSession().advanceQueryGeneration()
+
+        XCTAssertNotEqual(first, second)
+    }
+
+    func testPlainTextJoinsEveryItemAndPrefersTextOverLinks() async throws {
+        let controller = try makeStore()
+        let board = makeBoard()
+        let ref = try await insert([
+            [("public.url", Data("https://example.com/a".utf8)), ("public.utf8-plain-text", Data("first".utf8))],
+            [("public.utf8-plain-text", Data("second".utf8))],
+            [("public.url", Data("https://example.com/c".utf8))],
+        ], into: controller)
+        let paste = service(controller, board)
+        let session = paste.beginSession()
+
+        let outcome = await paste.execute(request(ref, session, .plainText))
+
+        XCTAssertEqual(outcome, .copied)
+        XCTAssertEqual(board.pasteboardItems?.count, 1)
+        XCTAssertEqual(board.string(forType: .string), "first\nsecond\nhttps://example.com/c")
     }
 
     func testReceiptFailureStillReportsCopied() async throws {

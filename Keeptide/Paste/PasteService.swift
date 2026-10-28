@@ -23,12 +23,15 @@ enum PasteOutcome: Equatable, Sendable {
 /// made for; advancing the generation or ending the session refuses it.
 @MainActor
 final class PasteSession {
+    /// Shared by every session, so a number from one session never matches another's.
+    private static var lastGeneration: UInt64 = 0
     private(set) var queryGeneration: UInt64 = 0
     private(set) var isOpen = true
 
     @discardableResult
     func advanceQueryGeneration() -> UInt64 {
-        queryGeneration += 1
+        Self.lastGeneration += 1
+        queryGeneration = Self.lastGeneration
         return queryGeneration
     }
 
@@ -108,8 +111,11 @@ final class PasteService {
             return .refused(.writeFailed)
         }
         didWrite(token)
-        // A receipt that cannot be stored never undoes a completed copy.
-        try? await recordUse(UseReceipt(ref: request.ref, outcome: .success))
+        // The copy is done once the clipboard is written: the receipt is stored without
+        // holding up the caller, and one that cannot be stored never undoes the copy.
+        let recordUse = recordUse
+        let receipt = UseReceipt(ref: request.ref, outcome: .success)
+        Task { try? await recordUse(receipt) }
         return .copied
     }
 }

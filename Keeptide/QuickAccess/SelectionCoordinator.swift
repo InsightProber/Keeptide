@@ -22,10 +22,11 @@ enum SelectionMove: Equatable {
 
 /// Which row is selected, and whether it may be acted on, for one query generation.
 ///
-/// A new generation keeps the old rows on screen but makes them inert. Its first
-/// page selects the top row; incomplete pages keep following the top until the user
-/// chooses a row. After that, refreshes keep the chosen identity, and a selection
-/// that disappears is cleared rather than moved to a neighbour the user never saw.
+/// A new generation keeps the old rows on screen but makes them inert: they cannot be
+/// chosen. Its first page selects the top row; incomplete pages keep following the top
+/// until the user chooses a row. After that, pages of the same search keep the chosen
+/// row even when late ranking pushes it out of the window, and a re-read that no longer
+/// contains the selection clears it rather than moving to a neighbour the user never saw.
 struct SelectionCoordinator: Equatable {
     private(set) var generation: UInt64 = 0
     private(set) var rows: [QuickAccessRow] = []
@@ -48,17 +49,24 @@ struct SelectionCoordinator: Equatable {
         selectionLost = false
     }
 
-    mutating func apply(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool) {
+    mutating func apply(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool,
+                        keepsChosenRow: Bool = false) {
         guard generation == self.generation else { return }
         let followsTop = !hasPage || (!self.isComplete && !userChose)
+        let previousRows = self.rows
         self.rows = rows
         hasPage = true
         self.isComplete = isComplete
         if followsTop {
             selection = rows.first?.ref
         } else if let selection, !rows.contains(where: { $0.ref == selection }) {
-            self.selection = nil
-            selectionLost = true
+            if keepsChosenRow, let index = previousRows.firstIndex(where: { $0.ref == selection }) {
+                // One search reads one snapshot, so the row was re-ranked, not removed.
+                self.rows.insert(previousRows[index], at: min(index, self.rows.count))
+            } else {
+                self.selection = nil
+                selectionLost = true
+            }
         }
     }
 
@@ -69,11 +77,12 @@ struct SelectionCoordinator: Equatable {
     }
 
     mutating func select(_ ref: ContentRef) {
-        guard rows.contains(where: { $0.ref == ref }) else { return }
+        guard hasPage, rows.contains(where: { $0.ref == ref }) else { return }
         choose(ref)
     }
 
     mutating func move(by offset: Int) -> SelectionMove {
+        guard hasPage else { return .unchanged }
         guard !rows.isEmpty else { return offset < 0 ? .atTop : .unchanged }
         guard let selection, let index = rows.firstIndex(where: { $0.ref == selection }) else {
             guard offset > 0 else { return .atTop }

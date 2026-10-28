@@ -82,8 +82,9 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(session.actionMessage, "Copied")
         let board = NSPasteboard(name: .init(configuration.pasteboardName))
         XCTAssertEqual(board.string(forType: .string), "Synthetic alpha note")
-        let usage = try await XCTUnwrap(session.usageStore).summaries(for: [ref])
-        XCTAssertEqual(usage.map(\.useCount), [1])
+        let usage = try XCTUnwrap(session.usageStore)
+        // The receipt is stored after the copy reports success, without delaying it.
+        try await SearchTestSupport.waitUntil { try await usage.summaries(for: [ref]).map(\.useCount) == [1] }
         await session.shutdown()
     }
 

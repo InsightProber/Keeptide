@@ -124,6 +124,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         results.onCommand = { [weak self] in self?.perform($0) }
         results.onRowVisible = { [weak self] in self?.state.loadMoreIfNeeded(visibleRow: $0) }
         state.onCopied = { [weak self] in self?.close() }
+        state.onPreviewCollapsed = { [weak self] in self?.restoreCompactFrame() }
     }
 
     func perform(_ command: QuickAccessCommand) {
@@ -156,11 +157,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
            let expanded = Self.expandedFrame(from: window.frame, in: visible) {
             compactFrame = window.frame
             window.setFrame(expanded, display: true)
-        } else if !state.isPreviewExpanded, let compactFrame {
+        } else if wasExpanded, !state.isPreviewExpanded {
+            restoreCompactFrame()
+        }
+    }
+
+    /// Returns to the compact layout and keeps keyboard focus in the panel.
+    private func restoreCompactFrame() {
+        guard let window else { return }
+        if let compactFrame {
             window.setFrame(compactFrame, display: true)
             self.compactFrame = nil
         }
-        if wasExpanded, !state.isPreviewExpanded, !(window.firstResponder === results) {
+        if !(window.firstResponder === results) {
             window.makeFirstResponder(state.selection.rows.isEmpty ? searchField : results)
         }
     }

@@ -20,7 +20,7 @@ enum IndexNotice: Equatable {
 
 enum PreviewContent: Equatable {
     case text(String, isTruncated: Bool)
-    case info(kind: ContentKind, sourceApp: String?, byteCount: Int)
+    case info(kind: ContentKind, sourceApp: String?)
     case failed(PasteRefusal)
 }
 
@@ -57,10 +57,13 @@ final class QuickAccessState {
     private(set) var preview: PreviewContent?
     private(set) var failure: PasteRefusal?
     @ObservationIgnored var onCopied: (@MainActor () -> Void)?
+    /// Called when the state collapses the preview itself, so the panel can restore its frame.
+    @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
 
     @ObservationIgnored private let services: @MainActor () -> QuickAccessServices?
     @ObservationIgnored private var session: PasteSession?
     @ObservationIgnored private var isOpen = false
+    @ObservationIgnored private var isCopying = false
     @ObservationIgnored private var totalMatches = 0
     @ObservationIgnored private var previewedRef: ContentRef?
     @ObservationIgnored private var loading: Task<Void, Never>?
@@ -88,6 +91,7 @@ final class QuickAccessState {
         query = ""
         kinds = []
         isPreviewExpanded = false
+        selection = SelectionCoordinator()
         startSession()
     }
 
@@ -113,7 +117,7 @@ final class QuickAccessState {
             return
         }
         refreshing?.cancel()
-        refreshing = Task { await loadRecent(repository, generation: generation) }
+        refreshing = Task { await loadRecent(repository, generation: generation, isRefresh: true) }
     }
 
     func setQuery(_ text: String) {
@@ -156,14 +160,18 @@ final class QuickAccessState {
     }
 
     func copySelection(_ mode: PasteMode) async {
-        guard let ref = selection.executableSelection, let session, let paste = services()?.paste else { return }
+        guard !isCopying, let ref = selection.executableSelection, let session,
+              let paste = services()?.paste else { return }
+        isCopying = true
+        defer { isCopying = false }
         failure = nil
         let outcome = await paste.execute(PasteRequest(ref: ref, queryGeneration: selection.generation, mode: mode,
                                                        session: session))
-        guard isOpen else { return }
+        // A reopened panel or a newer selection owns the screen now.
+        guard isOpen, self.session === session else { return }
         switch outcome {
         case .copied: onCopied?()
-        case .refused(let refusal): failure = refusal
+        case .refused(let refusal): if selection.selection == ref { failure = refusal }
         }
     }
 
@@ -218,16 +226,18 @@ final class QuickAccessState {
         phase = .loading
         if showsRecentClips {
             indexNotice = nil
-            loading = Task { await loadRecent(services.repository, generation: generation) }
+            loading = Task { await loadRecent(services.repository, generation: generation, isRefresh: false) }
         } else {
             let request = SearchRequest(query: query, kinds: kinds, generation: generation, limit: Self.pageSize)
             loading = Task { await loadSearch(services.search, request) }
         }
     }
 
-    private func loadRecent(_ repository: ContentRepository, generation: UInt64) async {
+    private func loadRecent(_ repository: ContentRepository, generation: UInt64, isRefresh: Bool) async {
         let summaries = try? await repository.recent(limit: Self.recentLimit)
         guard isCurrent(generation) else { return }
+        // A refresh that fails keeps the clips already listed.
+        if summaries == nil, isRefresh { return }
         let rows = (summaries ?? []).compactMap { Self.row(from: $0) }
         selection.apply(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
@@ -236,12 +246,15 @@ final class QuickAccessState {
 
     private func loadSearch(_ search: SearchService?, _ request: SearchRequest) async {
         let generation = request.generation
-        guard let search else { return showSearchUnavailable(generation) }
+        guard let search else {
+            if isCurrent(generation) { showSearchUnavailable(generation) }
+            return
+        }
         do {
             for try await page in search.search(request) {
                 guard isCurrent(generation) else { return }
                 selection.apply(page.results.map { Self.row(from: $0) }, generation: generation,
-                                isComplete: page.isComplete)
+                                isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
                 phase = !page.results.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
@@ -264,10 +277,17 @@ final class QuickAccessState {
         followSelection()
     }
 
-    /// Keeps an open preview on the selected row; it never shows another row's content.
+    /// Keeps an open preview on the selected row; it never shows another row's content,
+    /// and it collapses when the selected row is gone.
     private func followSelection() {
-        guard isPreviewExpanded, selection.selection != previewedRef else { return }
-        loadPreview()
+        guard isPreviewExpanded else { return }
+        if selection.selectionLost {
+            isPreviewExpanded = false
+            loadPreview()
+            onPreviewCollapsed?()
+        } else if selection.selection != previewedRef {
+            loadPreview()
+        }
     }
 
     private func loadPreview() {
@@ -278,6 +298,12 @@ final class QuickAccessState {
         guard isPreviewExpanded, let ref = selection.selection, let repository = services()?.repository else { return }
         previewedRef = ref
         let row = selection.rows.first { $0.ref == ref }
+        let kind = row?.kind ?? .other
+        // Only text is decoded; other kinds show what the row already knows.
+        guard kind == .text || kind == .url else {
+            preview = .info(kind: kind, sourceApp: row?.sourceApp)
+            return
+        }
         previewing = Task {
             let content: PreviewContent
             do {
@@ -305,13 +331,10 @@ final class QuickAccessState {
 
     nonisolated private static func preview(of content: ResolvedContent, row: QuickAccessRow?) -> PreviewContent {
         guard content.isActionable else { return .failed(.contentUnavailable) }
-        let kind = row?.kind ?? .other
-        if kind == .text || kind == .url,
-           let text = ClipboardTextDecoder.preview(content.representations, maximumBytes: previewByteLimit) {
-            return .text(text.text, isTruncated: text.isTruncated)
+        guard let text = ClipboardTextDecoder.preview(content.representations, maximumBytes: previewByteLimit) else {
+            return .info(kind: row?.kind ?? .other, sourceApp: row?.sourceApp)
         }
-        let bytes = content.representations.reduce(Int64(0)) { $0 + $1.byteCount }
-        return .info(kind: kind, sourceApp: row?.sourceApp, byteCount: Int(bytes))
+        return .text(text.text, isTruncated: text.isTruncated)
     }
 
     private static func notice(for state: SearchIndexState) -> IndexNotice? {

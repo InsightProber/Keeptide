@@ -139,6 +139,34 @@ final class SelectionCoordinatorTests: XCTestCase {
         XCTAssertFalse(selection.selectionLost)
     }
 
+    func testInertRowsCannotBeChosenBeforeTheFirstPage() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b], generation: 1, isComplete: true)
+        selection.beginGeneration(2)
+
+        XCTAssertEqual(selection.move(by: 1), .unchanged)
+        selection.select(b.ref)
+        selection.apply([fresh, c], generation: 2, isComplete: false)
+
+        XCTAssertEqual(selection.selection, fresh.ref)
+        XCTAssertNil(selection.executableSelection, "An incomplete page stays inert until the user chooses on it")
+    }
+
+    func testChosenRowSurvivesReRankingWithinOneStream() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c], generation: 1, isComplete: false, keepsChosenRow: true)
+        XCTAssertEqual(selection.move(by: 1), .moved)
+
+        selection.apply([fresh, a, c], generation: 1, isComplete: true, keepsChosenRow: true)
+
+        XCTAssertEqual(selection.selection, b.ref)
+        XCTAssertEqual(selection.rows.map(\.title), ["fresh", "b", "a", "c"], "The chosen row keeps its place")
+        XCTAssertFalse(selection.selectionLost)
+        XCTAssertEqual(selection.executableSelection, b.ref)
+    }
+
     func testAppendKeepsSelectionAndSkipsDuplicates() {
         var selection = SelectionCoordinator()
         selection.beginGeneration(1)

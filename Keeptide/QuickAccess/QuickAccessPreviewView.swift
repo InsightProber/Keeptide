@@ -22,14 +22,12 @@ struct QuickAccessPreviewView: View {
                             .padding(6)
                     }
                 }
-            case .info(let kind, _, let byteCount)?:
+            case .info(let kind, _)?:
                 VStack(spacing: 8) {
                     Image(systemName: kind.symbolName).font(.largeTitle).foregroundStyle(.secondary)
                         .accessibilityHidden(true)
                     Text(kind.filterTitle).font(.headline)
                     if let applicationName { Text(applicationName).foregroundStyle(.secondary) }
-                    Text(ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file))
-                        .foregroundStyle(.secondary)
                     Text("Preview for this type isn't available yet.").foregroundStyle(.secondary)
                 }
                 .padding()
