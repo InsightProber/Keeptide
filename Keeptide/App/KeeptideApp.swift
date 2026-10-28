@@ -37,7 +37,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             initializationTask = Task {
                 await environment.captureSession.initialize(
                     testSessionID: launchConfiguration.captureTestSessionID,
-                    cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession
+                    cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
+                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
                 )
             }
         }

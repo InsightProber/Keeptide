@@ -127,6 +127,17 @@ final class AppLaunchTests: XCTestCase {
         return (field, try XCTUnwrap(field.currentEditor() as? NSTextView))
     }
 
+    func testSeedingRequiresAnExplicitUITestSession() {
+        let id = UUID().uuidString
+        func seeds(_ arguments: [String]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: [:]).shouldSeedSyntheticClips
+        }
+        XCTAssertTrue(seeds(["--ui-testing", "--capture-test-session", id, "--seed-synthetic-clips"]))
+        XCTAssertFalse(seeds(["--ui-testing", "--seed-synthetic-clips"]))
+        XCTAssertFalse(seeds(["--capture-test-session", id, "--seed-synthetic-clips"]))
+        XCTAssertFalse(seeds(["--ui-testing", "--capture-test-session", id]))
+    }
+
     func testXCTestLaunchDoesNotRegisterTheGlobalShortcut() {
         let configuration = LaunchConfiguration(
             arguments: [],

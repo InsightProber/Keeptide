@@ -38,6 +38,55 @@ final class CaptureSessionTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testInitializedSessionProvidesPasteServicesUntilShutdown() async throws {
+        let configuration = try makeIsolatedSession()
+        let session = CaptureSession()
+        let changes = CallCounter()
+        session.onServicesChanged = { changes.count += 1 }
+        await session.initialize(testSessionID: configuration.id)
+
+        XCTAssertNotNil(session.pasteService)
+        XCTAssertNotNil(session.contentRepository)
+        XCTAssertNotNil(session.usageStore)
+        XCTAssertEqual(changes.count, 1)
+
+        await session.shutdown()
+        XCTAssertNil(session.pasteService)
+        XCTAssertNil(session.contentRepository)
+        XCTAssertNil(session.usageStore)
+        XCTAssertEqual(changes.count, 2)
+    }
+
+    func testSyntheticSeedListsClipsNewestFirst() async throws {
+        let configuration = try makeIsolatedSession()
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
+
+        XCTAssertEqual(session.recent.map(\.title), [
+            "Synthetic alpha note", "echo synthetic-beta", "set -e", "合成中文剪贴板条目，用于快捷面板测试",
+            "https://example.com/synthetic", "Synthetic rich text", "Copied content",
+        ])
+        XCTAssertEqual(session.recent.map(\.kind), [.text, .text, .text, .text, .url, .text, .image])
+        await session.shutdown()
+    }
+
+    func testLibraryCopyRecordsAUseReceipt() async throws {
+        let configuration = try makeIsolatedSession()
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
+        let ref = try XCTUnwrap(session.recent.first?.history)
+
+        await session.select(ref)
+        await session.copy(ref)
+
+        XCTAssertEqual(session.actionMessage, "Copied")
+        let board = NSPasteboard(name: .init(configuration.pasteboardName))
+        XCTAssertEqual(board.string(forType: .string), "Synthetic alpha note")
+        let usage = try await XCTUnwrap(session.usageStore).summaries(for: [ref])
+        XCTAssertEqual(usage.map(\.useCount), [1])
+        await session.shutdown()
+    }
+
     private func makeIsolatedSession() throws -> CaptureTestConfiguration {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
@@ -346,4 +395,9 @@ private actor DelayedCaptureRead {
     }
 
     func finish() { continuation?.resume(returning: content); continuation = nil }
+}
+
+@MainActor
+private final class CallCounter {
+    var count = 0
 }
