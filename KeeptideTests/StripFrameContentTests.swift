@@ -4,6 +4,13 @@ import XCTest
 @testable import Keeptide
 
 final class StripFrameContentTests: XCTestCase {
+    func testFramesGetAHairlineOnlyWhenTransparencyIsReduced() {
+        // With Reduce Transparency the band is solid and can be the paper's very color, so a frame draws its edge.
+        XCTAssertEqual(StripFrameView.paperStroke(reduceTransparency: true), 1)
+        // Otherwise the glass behind the frames sets them apart, and they have no line.
+        XCTAssertNil(StripFrameView.paperStroke(reduceTransparency: false))
+    }
+
     func testFrameContentBeforeDetailsIsTitleAndSymbol() {
         let apple = makeRow(kind: .url, title: "Apple docs", savedAsMemo: true, isPartiallyIndexed: true, isTextUnavailable: true)
 

@@ -166,6 +166,7 @@ struct StripFrameView: View {
     let isSelected: Bool
 
     @Environment(\.colorSchemeContrast) private var contrast
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private static let selectionGap: CGFloat = 3
     /// The black behind a picture's caption and corner marks. White text on it keeps a contrast of
@@ -192,7 +193,20 @@ struct StripFrameView: View {
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .overlay {
+            if let width = Self.paperStroke(reduceTransparency: reduceTransparency) {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: width)
+            }
+        }
         .overlay { selectionRing(radius: radius) }
+    }
+
+    /// The width of the hairline along a frame's edge, if it has one. With Reduce Transparency the band is
+    /// solid and can be the very color of the paper, so each frame draws a line of its own to show where it
+    /// ends; otherwise the glass behind it does that.
+    nonisolated static func paperStroke(reduceTransparency: Bool) -> CGFloat? {
+        reduceTransparency ? 1 : nil
     }
 
     /// 12 pt at the full size, smaller with the frame but never under 8 pt, as `StripLayout` sets it.
