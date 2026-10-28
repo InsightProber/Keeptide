@@ -87,6 +87,148 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(field.stringValue, "")
     }
 
+    func testTextChangesDuringCompositionDoNotSearch() throws {
+        let controller = PanelController()
+        let (field, editor) = try searchEditor(in: controller)
+        let searchField = try XCTUnwrap(field as? QuickAccessSearchField)
+        let reported = QueryLog()
+        searchField.onQueryChange = { reported.queries.append($0) }
+
+        editor.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        // A real input method reports each composition change; a direct call does not.
+        editor.didChangeText()
+        settleLayout()
+        XCTAssertEqual(reported.queries, [])
+
+        editor.insertText("中", replacementRange: editor.markedRange())
+        settleLayout()
+        XCTAssertFalse(editor.hasMarkedText())
+        XCTAssertEqual(reported.queries, ["中"])
+    }
+
+    func testSearchFieldUsesTheMarkedTextAwareFieldEditor() throws {
+        let controller = PanelController()
+        let (_, editor) = try searchEditor(in: controller)
+        XCTAssertTrue(editor is QuickAccessFieldEditor)
+    }
+
+    func testDownFocusesResultsAndUpOnTheFirstRowReturnsToTheSearchField() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        for (offset, title) in ["older", "newer"].enumerated() {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(title.utf8))]])
+            let item = ItemValue(title: title, captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + Double(offset)), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        }
+        let repository = ContentRepository(controller: harness.controller)
+        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
+                                 recordUse: { _ in }, didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
+        let controller = PanelController(state: QuickAccessState(services: { services }))
+        controller.state.open()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+
+        editor.doCommand(by: #selector(NSResponder.moveDown(_:)))
+        let table = try XCTUnwrap(window.firstResponder as? QuickAccessResultsTableView)
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref,
+                       "Down focuses the results without skipping the first row")
+
+        table.keyDown(with: try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+            context: nil, characters: "\u{F700}", charactersIgnoringModifiers: "\u{F700}", isARepeat: false,
+            keyCode: UInt16(kVK_UpArrow)
+        )))
+        XCTAssertTrue((window.firstResponder as? NSTextView)?.delegate === controller.window?.contentView.flatMap {
+            findSearchField(in: $0)
+        })
+        controller.state.close()
+    }
+
+    func testBecomingKeyAgainKeepsFocusThatAnotherControlHolds() throws {
+        let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                               styleMask: [.titled], backing: .buffered, defer: false)
+        let field = QuickAccessSearchField()
+        let results = QuickAccessResultsTableView()
+        window.contentView?.addSubview(field)
+        window.contentView?.addSubview(results)
+        XCTAssertTrue(window.makeFirstResponder(results))
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+
+        XCTAssertTrue(window.firstResponder === results)
+    }
+
+    func testTogglingThePreviewKeepsTypingInTheSearchField() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+
+        controller.togglePreview()
+        settleLayout()
+        controller.togglePreview()
+        settleLayout()
+
+        XCTAssertTrue((window.firstResponder as? NSTextView)?.delegate === field)
+        controller.state.close()
+    }
+
+    func testOpeningThePreviewFromTheResultsKeepsThemFocused() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.firstResponder is QuickAccessResultsTableView)
+
+        controller.perform(.togglePreview)
+        settleLayout()
+
+        XCTAssertTrue(window.firstResponder is QuickAccessResultsTableView)
+        controller.perform(.move(1))
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.last?.ref)
+        controller.state.close()
+    }
+
+    func testThePreviewNeedsASelection() {
+        let controller = PanelController()
+
+        controller.togglePreview()
+
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
+    func testUpFromTheFirstRowKeepsTheQueryText() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        editor.insertText("note", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            controller.state.query == "note" && controller.state.phase == .results
+        }
+
+        controller.perform(.focusResults)
+        controller.perform(.move(-1))
+
+        let returned = try XCTUnwrap(window.firstResponder as? NSTextView)
+        XCTAssertTrue(returned.delegate === field)
+        XCTAssertEqual(returned.selectedRange(), NSRange(location: 4, length: 0), "Typing continues the query")
+        controller.state.close()
+    }
+
+    func testReturnCopiesTheRowSelectedWhenTheKeyWasPressed() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"])
+
+        controller.perform(.primary)
+        controller.state.moveSelection(by: 1)
+
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "newer")
+    }
+
     func testRepeatedKeyNotificationsPreserveTheExistingEditor() throws {
         let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                styleMask: [.titled], backing: .buffered, defer: false)
@@ -110,6 +252,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(editor.hasMarkedText())
     }
 
+    private func findSearchField(in view: NSView) -> NSSearchField? {
+        if let field = view as? NSSearchField { return field }
+        return view.subviews.lazy.compactMap { self.findSearchField(in: $0) }.first
+    }
+
+    /// A panel over a real temporary store holding one text clip per title, newest last.
+    private func makePanelWithClips(_ titles: [String]) async throws -> (PanelController, NSPasteboard) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        for (offset, title) in titles.enumerated() {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(title.utf8))]])
+            let item = ItemValue(title: title, captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + Double(offset)), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        }
+        try await harness.consumer.synchronize()
+        let repository = ContentRepository(controller: harness.controller)
+        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
+                                 recordUse: { _ in }, didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
+        let controller = PanelController(state: QuickAccessState(services: { services }))
+        controller.state.open()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == titles.count }
+        return (controller, board)
+    }
+
     private func settleLayout() {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
     }
@@ -118,13 +287,20 @@ final class AppLaunchTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         window.contentView?.layoutSubtreeIfNeeded()
         settleLayout()
-        func findField(_ view: NSView) -> NSSearchField? {
-            if let field = view as? NSSearchField { return field }
-            return view.subviews.lazy.compactMap { findField($0) }.first
-        }
-        let field = try XCTUnwrap(window.contentView.flatMap(findField))
+        let field = try XCTUnwrap(window.contentView.flatMap(findSearchField))
         XCTAssertTrue(window.makeFirstResponder(field))
         return (field, try XCTUnwrap(field.currentEditor() as? NSTextView))
+    }
+
+    func testSeedingRequiresAnExplicitUITestSession() {
+        let id = UUID().uuidString
+        func seeds(_ arguments: [String]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: [:]).shouldSeedSyntheticClips
+        }
+        XCTAssertTrue(seeds(["--ui-testing", "--capture-test-session", id, "--seed-synthetic-clips"]))
+        XCTAssertFalse(seeds(["--ui-testing", "--seed-synthetic-clips"]))
+        XCTAssertFalse(seeds(["--capture-test-session", id, "--seed-synthetic-clips"]))
+        XCTAssertFalse(seeds(["--ui-testing", "--capture-test-session", id]))
     }
 
     func testXCTestLaunchDoesNotRegisterTheGlobalShortcut() {
@@ -284,6 +460,35 @@ final class AppLaunchTests: XCTestCase {
         }
     }
 
+    func testExpandedFrameKeepsTopEdgeAndFitsTheScreen() throws {
+        let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let compact = PanelController.frame(for: NSSize(width: 680, height: 496), in: visible)
+
+        let expanded = try XCTUnwrap(PanelController.expandedFrame(from: compact, in: visible))
+
+        XCTAssertEqual(expanded.size, NSSize(width: 960, height: 560))
+        XCTAssertEqual(expanded.maxY, compact.maxY)
+        XCTAssertEqual(expanded.midX, compact.midX)
+        XCTAssertTrue(visible.contains(expanded))
+    }
+
+    func testExpandedFrameShiftsInsideAScreenEdge() throws {
+        let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let compact = NSRect(x: 1440 - 680, y: 300, width: 680, height: 496)
+
+        let expanded = try XCTUnwrap(PanelController.expandedFrame(from: compact, in: visible))
+
+        XCTAssertLessThanOrEqual(expanded.maxX, visible.maxX)
+        XCTAssertTrue(visible.contains(expanded))
+    }
+
+    func testNarrowScreenUsesThePreviewPage() {
+        let visible = NSRect(x: 0, y: 0, width: 900, height: 900)
+        let compact = PanelController.frame(for: NSSize(width: 680, height: 496), in: visible)
+
+        XCTAssertNil(PanelController.expandedFrame(from: compact, in: visible))
+    }
+
     func testApplicationMenuBindsStandardResponderActions() throws {
         let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
         let appMenu = try XCTUnwrap(menu.item(withTitle: "Keeptide")?.submenu)
@@ -313,6 +518,11 @@ final class AppLaunchTests: XCTestCase {
         )
     }
 
+}
+
+@MainActor
+private final class QueryLog {
+    var queries: [String] = []
 }
 
 // Exercise key-window notifications without taking focus from another application.

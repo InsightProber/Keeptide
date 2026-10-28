@@ -213,8 +213,11 @@ enum StoredRecords {
             guard !rows.isEmpty else { break }
 
             let projection = try readProjection(items: rows, strict: false, in: context)
+            let manifests = try captureManifests(
+                captureIDs: Set(projection.items.compactMap { $0["captureID"] as? UUID }), in: context
+            )
             for row in projection.items where summaries.count < limit {
-                guard let summary = summary(row, projection: projection) else { continue }
+                guard let summary = summary(row, projection: projection, manifests: manifests) else { continue }
                 summaries.append(summary)
             }
             guard rows.count == batchSize else { break }
@@ -515,7 +518,7 @@ extension StoredRecords {
                 memoRow: item.memoID.flatMap { projection.memos[$0] }
             )
         }
-        let manifests = try searchManifests(captureIDs: Set(visible.values.compactMap(\.item.captureID)), in: context)
+        let manifests = try captureManifests(captureIDs: Set(visible.values.compactMap(\.item.captureID)), in: context)
 
         var included: [SearchVisibleItem] = []
         var processed = 0
@@ -623,7 +626,7 @@ extension StoredRecords {
         manifest.entries.filter { $0.storage == .portable && ClipboardTextDecoder.isTextType($0.typeIdentifier) }
     }
 
-    private static func searchManifests(
+    private static func captureManifests(
         captureIDs: Set<UUID>, in context: NSManagedObjectContext
     ) throws -> [UUID: CaptureManifest] {
         var manifests: [UUID: CaptureManifest] = [:]
@@ -758,7 +761,9 @@ private extension StoredRecords {
         )
     }
 
-    static func summary(_ row: NSDictionary, projection: ReadProjection) -> ItemSummary? {
+    static func summary(
+        _ row: NSDictionary, projection: ReadProjection, manifests: [UUID: CaptureManifest]
+    ) -> ItemSummary? {
         guard let item = try? validatedItemMetadata(row),
               item.deletedAt == nil,
               !projection.itemMarkerIDs.contains(item.id.rawValue) else { return nil }
@@ -770,12 +775,18 @@ private extension StoredRecords {
             projection: projection
         )
         guard history != nil || memo != nil else { return nil }
+        let manifest = item.captureID.flatMap { manifests[$0] }
         return ItemSummary(
             itemID: item.id,
             title: item.title,
             lastCopiedAt: item.lastCopiedAt,
             history: history,
-            memo: memo
+            memo: memo,
+            kind: ContentKind.classify(
+                typeIdentifiers: manifest?.entries.map(\.typeIdentifier) ?? [],
+                hasLocalReference: manifest?.entries.contains { $0.storage == .localReference } ?? false
+            ),
+            sourceApp: row["sourceApp"] as? String
         )
     }
 

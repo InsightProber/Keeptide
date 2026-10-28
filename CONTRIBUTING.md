@@ -4,8 +4,9 @@ Thank you for taking an interest in Keeptide. The project is in early native
 development. A menu-bar application, quick-access panel, library shell, and
 verification infrastructure are present. Local persistence and content validation
 are implemented, together with local recording, a recent-clips list,
-original-format copying, and a rebuildable local search index. Search UI,
-snippets, and cloud integration remain planned.
+original-format copying, a rebuildable local search index, and a quick-access
+panel that searches, previews text, and copies. Direct paste, snippets, and
+cloud integration remain planned.
 
 ## Before making a change
 

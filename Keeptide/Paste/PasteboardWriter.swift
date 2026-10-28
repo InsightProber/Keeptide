@@ -29,6 +29,7 @@ enum PasteboardWriterError: Error, Equatable {
     case invalidRepresentationBytes(itemIndex: Int, representationIndex: Int)
     case cannotPrepareRepresentation(itemIndex: Int, representationIndex: Int)
     case writeFailed
+    case noPlainText
 }
 
 struct PreparedPasteboardContent: Sendable {
@@ -108,6 +109,45 @@ final class PasteboardWriter {
             nextRepresentationIndex += 1
         }
         return PreparedPasteboardContent(representations: ordered)
+    }
+
+    /// Plain text built like the search body: each item's first cleanly decodable text,
+    /// preferring text over a link, joined by line breaks and written as the only
+    /// representation in UTF-8.
+    nonisolated static func preparePlainText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        guard content.isActionable else { throw PasteboardWriterError.nonActionableContent }
+        let items = Dictionary(grouping: content.representations, by: \.itemIndex)
+        var texts: [String] = []
+        for itemIndex in items.keys.sorted() {
+            let candidates = items[itemIndex, default: []]
+                .filter { ClipboardTextDecoder.isTextType($0.typeIdentifier) }
+                .sorted { $0.representationIndex < $1.representationIndex }
+            let isLink: (RepresentationValue) -> Bool = { $0.typeIdentifier.lowercased() == "public.url" }
+            for representation in candidates.filter({ !isLink($0) }) + candidates.filter(isLink) {
+                guard let bytes = representation.bytes,
+                      representation.byteCount == Int64(bytes.count),
+                      representation.digest == ContentDigest.sha256(bytes) else {
+                    throw PasteboardWriterError.invalidRepresentationBytes(
+                        itemIndex: representation.itemIndex,
+                        representationIndex: representation.representationIndex
+                    )
+                }
+                guard let decoded = ClipboardTextDecoder.decodeText(
+                    bytes, typeIdentifier: representation.typeIdentifier, maximumBytes: bytes.count
+                ), !decoded.isTruncated else { continue }
+                texts.append(decoded.text)
+                break
+            }
+        }
+        guard let snapshotID = content.representations.first?.snapshotID, !texts.isEmpty else {
+            throw PasteboardWriterError.noPlainText
+        }
+        let utf8 = Data(texts.joined(separator: "\n").utf8)
+        return PreparedPasteboardContent(representations: [RepresentationValue(
+            snapshotID: snapshotID, itemIndex: 0, representationIndex: 0,
+            typeIdentifier: "public.utf8-plain-text", storage: .portable,
+            byteCount: Int64(utf8.count), digest: ContentDigest.sha256(utf8), bytes: utf8
+        )])
     }
 
     private func prepareItems(_ representations: [RepresentationValue]) throws -> [NSPasteboardItem] {

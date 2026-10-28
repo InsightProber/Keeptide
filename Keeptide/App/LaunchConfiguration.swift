@@ -8,6 +8,7 @@ struct LaunchConfiguration: Sendable {
     let shouldInitializeCaptureSession: Bool
     let captureTestSessionID: UUID?
     let shouldCleanupCaptureTestSession: Bool
+    let shouldSeedSyntheticClips: Bool
 
     init(arguments: [String], environment: [String: String]) {
         let isUITesting = arguments.contains("--ui-testing")
@@ -21,9 +22,11 @@ struct LaunchConfiguration: Sendable {
         #if DEBUG
         captureTestSessionID = isUITesting ? (try? CaptureTestConfiguration.parse(arguments))?.id : nil
         shouldCleanupCaptureTestSession = captureTestSessionID != nil && arguments.contains("--cleanup-capture-test-session")
+        shouldSeedSyntheticClips = captureTestSessionID != nil && arguments.contains("--seed-synthetic-clips")
         #else
         captureTestSessionID = nil
         shouldCleanupCaptureTestSession = false
+        shouldSeedSyntheticClips = false
         #endif
         shouldInitializeCaptureSession = captureTestSessionID != nil || (!isRunningTests && !isUITesting)
     }

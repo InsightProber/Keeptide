@@ -20,8 +20,16 @@ final class CaptureSession {
     @ObservationIgnored private var initializing = false
     @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
     @ObservationIgnored private var selectionRead: Task<(ResolvedContent, ClipTextPreview?), Error>?
-    @ObservationIgnored private var copyGeneration = 0
     @ObservationIgnored private var readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)?
+    /// Every copy goes through this service; nil until the store opens.
+    @ObservationIgnored private(set) var pasteService: PasteService?
+    @ObservationIgnored private(set) var usageStore: LocalUsageStore?
+    /// The library window's copies share one session; selections and newer copies refuse older ones.
+    @ObservationIgnored private var librarySession: PasteSession?
+    /// Called when the store-backed services appear or go away.
+    @ObservationIgnored var onServicesChanged: (@MainActor () -> Void)?
+    /// Called after recent clips are reloaded, for example after a new capture.
+    @ObservationIgnored var onRecentClipsChanged: (@MainActor () -> Void)?
     /// Search over the local index; nil until the store opens. No UI uses it yet.
     @ObservationIgnored private(set) var searchService: SearchService?
     @ObservationIgnored private var searchIndex: SQLiteSearchIndex?
@@ -30,14 +38,19 @@ final class CaptureSession {
     var status: String { monitor?.status ?? message ?? "Not recording" }
     var isPausing: Bool { monitor?.isPausing ?? false }
     var isRecording: Bool { isReady && (monitor?.isRecording ?? false) }
+    var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
 
     init(readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil) {
         self.readContent = readContent
         self.pasteboard = pasteboard
+        if let readContent, let pasteboard {
+            pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in }, didWrite: { _ in })
+        }
     }
 
-    func initialize(testSessionID: UUID? = nil, cleanupTestSession: Bool = false) async {
+    func initialize(testSessionID: UUID? = nil, cleanupTestSession: Bool = false,
+                    seedSyntheticClips: Bool = false) async {
         guard !isReady, !initializing else { return }
         initializing = true
         defer { initializing = false }
@@ -72,11 +85,15 @@ final class CaptureSession {
                 message = "The library requires recovery before recording can resume."
                 return
             }
+            #if DEBUG
+            if seedSyntheticClips, testSessionID != nil { try await SyntheticClipSeeder.seed(into: store) }
+            #endif
             controller = store
-            readContent = { ref in
+            let read: @Sendable (ContentRef) async throws -> ResolvedContent = { ref in
                 try Task.checkCancellation()
                 return try await ContentRepository(controller: store).read(ref)
             }
+            readContent = read
             pasteboard = board
             let monitor = PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
                 service: CaptureService(controller: store), preferences: preferences,
@@ -91,11 +108,16 @@ final class CaptureSession {
                 MainActor.assumeIsolated { monitor?.foregroundApplicationChanged(to: identifier) }
             }
             self.monitor = monitor
+            let usage = LocalUsageStore(controller: store)
+            usageStore = usage
+            pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
+                                        didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) })
             await startSearch(store: store, directory: directory)
             isReady = true
             message = nil
             await refresh()
             monitor.start()
+            onServicesChanged?()
         } catch {
             message = "The local library could not be opened. Recording is unavailable."
         }
@@ -129,6 +151,7 @@ final class CaptureSession {
             guard generation == refreshGeneration else { return }
             recent = rows.filter { $0.history != nil }
             actionMessage = nil
+            onRecentClipsChanged?()
         } catch {
             actionMessage = "Recent clips could not be loaded."
         }
@@ -137,7 +160,7 @@ final class CaptureSession {
     func select(_ ref: ContentRef?) async {
         selectionRead?.cancel()
         selectionGeneration += 1
-        copyGeneration += 1
+        librarySession?.advanceQueryGeneration()
         actionMessage = nil; selectionError = nil; selectedContent = nil; selectedPreview = nil
         selectionIsLoading = false
         let generation = selectionGeneration
@@ -168,28 +191,25 @@ final class CaptureSession {
     }
 
     func copy(_ ref: ContentRef) async {
-        guard let readContent, let pasteboard else { return }
-        copyGeneration += 1
-        let generation = copyGeneration
+        guard let pasteService else { return }
+        let session = librarySession ?? pasteService.beginSession()
+        librarySession = session
+        let generation = session.advanceQueryGeneration()
         actionMessage = nil
-        do {
-            let content = try await readContent(ref)
-            guard generation == copyGeneration else { return }
-            let prepared = try await Task.detached(priority: .userInitiated) {
-                try PasteboardWriter.prepare(content)
-            }.value
-            guard generation == copyGeneration, !Task.isCancelled else { return }
-            let token = try PasteboardWriter(pasteboard: pasteboard).write(prepared)
-            monitor?.suppressOwnWrite(token)
+        switch await pasteService.execute(PasteRequest(ref: ref, queryGeneration: generation, mode: .original,
+                                                       session: session)) {
+        case .copied:
             actionMessage = "Copied"
-        } catch {
-            guard generation == copyGeneration else { return }
+        case .refused(.stale):
+            break // A newer selection or copy owns the message.
+        case .refused:
             actionMessage = "This clip could not be copied. Its original formats must all be available."
         }
     }
 
     func shutdown() async {
-        copyGeneration += 1
+        librarySession?.end()
+        librarySession = nil
         selectionGeneration += 1
         selectionRead?.cancel()
         selectionRead = nil
@@ -209,6 +229,9 @@ final class CaptureSession {
         searchIndex = nil
         searchService = nil
         readContent = nil
+        pasteService = nil
+        usageStore = nil
         isReady = false
+        onServicesChanged?()
     }
 }

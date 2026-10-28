@@ -28,13 +28,14 @@ enum SearchTestSupport {
         sourceApp: String? = "test.source",
         collectionID: CollectionID? = nil,
         lastCopiedAt: Date = Date(timeIntervalSince1970: 1_000),
-        bodyPartial: Bool = false
+        bodyPartial: Bool = false,
+        textUnavailable: Bool = false
     ) -> SearchDocument {
         SearchDocument(
             ref: ContentRef(itemID: itemID, facet: facet, version: version, digest: Data(repeating: 7, count: 32)),
             captureID: captureID, memoID: memoID, merged: merged, savedAsMemo: savedAsMemo, kind: kind,
             sourceApp: sourceApp, collectionID: collectionID, lastCopiedAt: lastCopiedAt,
-            title: title, body: body, url: url, note: note, bodyPartial: bodyPartial, textUnavailable: false,
+            title: title, body: body, url: url, note: note, bodyPartial: bodyPartial, textUnavailable: textUnavailable,
             normalizedTitle: SearchNormalizer.normalize(title), normalizedBody: SearchNormalizer.normalize(body),
             normalizedURL: SearchNormalizer.normalize(url), normalizedNote: SearchNormalizer.normalize(note)
         )

@@ -58,6 +58,7 @@ struct SearchResult: Equatable, Sendable {
     let lastCopiedAt: Date
     let savedAsMemo: Bool
     let isPartiallyIndexed: Bool
+    let isTextUnavailable: Bool
 }
 
 struct SearchPage: Sendable {
@@ -114,6 +115,10 @@ final class SearchIndexStatus: @unchecked Sendable {
 }
 
 struct SearchService: Sendable {
+    static let queueLabel = "io.github.insightprober.keeptide.search"
+    /// Every search's blocking SQLite work runs here, never on Swift's cooperative pool.
+    private static let queue = DispatchQueue(label: queueLabel, qos: .userInitiated)
+
     private let index: SQLiteSearchIndex?
     private let status: SearchIndexStatus
     private let scanChunkSize: Int
@@ -132,9 +137,11 @@ struct SearchService: Sendable {
 
     func search(_ request: SearchRequest) -> AsyncThrowingStream<SearchPage, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task.detached(priority: .userInitiated) {
+            let cancellation = SearchCancellation()
+            continuation.onTermination = { _ in cancellation.cancel() }
+            Self.queue.async {
                 do {
-                    try await execute(request) { continuation.yield($0) }
+                    try execute(request, cancellation) { continuation.yield($0) }
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
@@ -142,45 +149,55 @@ struct SearchService: Sendable {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
-    private func execute(_ request: SearchRequest, emit: (SearchPage) -> Void) async throws {
+    private func execute(
+        _ request: SearchRequest, _ cancellation: SearchCancellation, emit: (SearchPage) -> Void
+    ) throws {
         guard (1...1_000).contains(request.limit), request.offset >= 0 else { throw SearchError.invalidRequest }
         let query = ParsedQuery(request.query)
         let unavailable = SearchPage(generation: request.generation, results: [], totalMatches: 0, isComplete: true,
                                      indexState: .unavailable, queryWasTruncated: query.wasTruncated)
+        guard !cancellation.isCancelled else { throw CancellationError() }
         // An index that cannot be written may still hold deleted clips, so it is not read.
         guard let index, status.state != .unavailable, let reader = try? index.openReader() else {
             emit(unavailable)
             return
         }
         defer { reader.close() }
+        guard cancellation.attach(reader) else { throw CancellationError() }
+        defer { cancellation.detach() }
         do {
-            try await withTaskCancellationHandler {
-                try Task.checkCancellation()
-                // One snapshot per search: counts, ranks and scanned ranges all see
-                // the same documents even while the consumer replaces them.
-                try reader.snapshot {
-                    if query.isEmpty {
-                        emit(try browse(query, request, reader))
-                    } else if query.longTerms.isEmpty {
-                        try scan(query, request, reader, emit: emit)
-                    } else {
-                        emit(try ranked(query, request, reader))
-                    }
+            // One snapshot per search: counts, ranks, scanned ranges and the reported
+            // index state all see the same documents even while the consumer replaces them.
+            try reader.snapshot {
+                let state = try indexState(reader)
+                if query.isEmpty {
+                    emit(try browse(query, request, reader, state))
+                } else if query.longTerms.isEmpty {
+                    try scan(query, request, reader, state, cancellation, emit: emit)
+                } else {
+                    emit(try ranked(query, request, reader, state))
                 }
-            } onCancel: {
-                reader.interrupt()
             }
         } catch let error as SearchIndexError {
+            if cancellation.isCancelled { throw CancellationError() }
             if error == .corrupt { status.reportReadFailure() }
             emit(unavailable)
         }
     }
 
-    private func browse(_ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader) throws -> SearchPage {
+    /// A rebuild interrupted in an earlier run leaves the file mid-build until the
+    /// consumer's next pass; that shows only in the file, not in `status`.
+    private func indexState(_ reader: SearchIndexReader) throws -> SearchIndexState {
+        let rows = try reader.rows("SELECT value FROM meta WHERE key = 'state'", [])
+        return rows.first?.first == .text(IndexBuildState.building.rawValue) ? .rebuilding : status.state
+    }
+
+    private func browse(
+        _ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader, _ state: SearchIndexState
+    ) throws -> SearchPage {
         var counter = SQLBuilder()
         let countConditions = conditions(query, request, &counter)
         let total = try count(reader.rows("SELECT count(*) FROM doc d WHERE \(countConditions)", counter.bindings))
@@ -196,10 +213,13 @@ struct SearchService: Sendable {
             guard case .integer(let id) = row[0] else { throw SearchIndexError.corrupt }
             return (id, Int64(SearchRelevance.allTermsAnywhere.rawValue))
         }
-        return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true)
+        return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true,
+                    state: state)
     }
 
-    private func ranked(_ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader) throws -> SearchPage {
+    private func ranked(
+        _ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader, _ state: SearchIndexState
+    ) throws -> SearchPage {
         var counter = SQLBuilder()
         let countConditions = conditions(query, request, &counter)
         let total = try count(reader.rows("SELECT count(*) FROM doc d WHERE \(countConditions)", counter.bindings))
@@ -221,17 +241,19 @@ struct SearchService: Sendable {
             }
             return (id, tier)
         }
-        return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true)
+        return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true,
+                    state: state)
     }
 
     /// Terms shorter than three scalars cannot use the trigram index, so every
     /// row is checked in id ranges. The first batch is published as soon as the
     /// first range is done; the final page is complete.
     private func scan(
-        _ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader, emit: (SearchPage) -> Void
+        _ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader, _ state: SearchIndexState,
+        _ cancellation: SearchCancellation, emit: (SearchPage) -> Void
     ) throws {
         guard case .integer(let maximum)? = try reader.rows("SELECT max(id) FROM doc", []).first?.first else {
-            emit(page(request, query, [], total: 0, complete: true))
+            emit(page(request, query, [], total: 0, complete: true, state: state))
             return
         }
         var keys: [RankKey] = []
@@ -239,7 +261,7 @@ struct SearchService: Sendable {
         var lastEmission: ContinuousClock.Instant?
         var lastWindow: [Int64] = []
         while lower < maximum {
-            try Task.checkCancellation()
+            if cancellation.isCancelled { throw CancellationError() }
             let upper = min(maximum, lower + Int64(scanChunkSize))
             var builder = SQLBuilder()
             let tier = relevance(query, &builder)
@@ -262,17 +284,18 @@ struct SearchService: Sendable {
             let window = Array(keys.dropFirst(request.offset).prefix(request.limit))
             guard complete || lastEmission == nil || window.map(\.id) != lastWindow else { continue }
             let results = try results(for: window.map { (id: $0.id, tier: $0.tier) }, query: query, reader)
-            emit(page(request, query, results, total: keys.count, complete: complete))
+            emit(page(request, query, results, total: keys.count, complete: complete, state: state))
             lastEmission = now
             lastWindow = window.map(\.id)
         }
     }
 
     private func page(
-        _ request: SearchRequest, _ query: ParsedQuery, _ results: [SearchResult], total: Int, complete: Bool
+        _ request: SearchRequest, _ query: ParsedQuery, _ results: [SearchResult], total: Int, complete: Bool,
+        state: SearchIndexState
     ) -> SearchPage {
         SearchPage(generation: request.generation, results: results, totalMatches: total, isComplete: complete,
-                   indexState: status.state, queryWasTruncated: query.wasTruncated)
+                   indexState: state, queryWasTruncated: query.wasTruncated)
     }
 
     private func count(_ rows: [[SQLiteValue]]) throws -> Int {
@@ -319,9 +342,13 @@ struct SearchService: Sendable {
         let titleHasAll = query.terms
             .map { "instr(d.n_title, \(builder.bind(.text($0)))) > 0" }
             .joined(separator: " AND ")
+        // Byte lengths come first so trim() never copies a long body; a body with more
+        // than 1 KiB of whitespace around the phrase is not an exact match.
         return """
             CASE
-                WHEN d.n_title = \(phrase) OR trim(d.n_body, ' ' || char(9, 10, 13)) = \(phrase) THEN 0
+                WHEN d.n_title = \(phrase)
+                     OR (octet_length(d.n_body) BETWEEN octet_length(\(phrase)) AND octet_length(\(phrase)) + 1024
+                         AND trim(d.n_body, ' ' || char(9, 10, 13)) = \(phrase)) THEN 0
                 WHEN substr(d.n_title, 1, length(\(phrase))) = \(phrase) THEN 1
                 WHEN \(titleHasAll) THEN 2
                 WHEN instr(d.n_title, \(phrase)) > 0 OR instr(d.n_body, \(phrase)) > 0
@@ -348,20 +375,20 @@ struct SearchService: Sendable {
         let rows = try reader.rows("""
             SELECT d.id, d.item_id, d.facet, d.version, d.digest, d.saved_as_memo, d.kind, d.source_app,
                    d.last_copied_at, d.title, d.body_partial, \(hits.joined(separator: ", ")),
-                   \(start), substr(d.body, \(start), 600), length(d.body)
+                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable
             FROM doc d WHERE d.id IN (\(ids))
             """, builder.bindings)
         var byID: [Int64: SearchResult] = [:]
         let tiers = Dictionary(keys.map { ($0.id, $0.tier) }, uniquingKeysWith: { first, _ in first })
         for row in rows {
-            guard row.count == 18, case .integer(let id) = row[0], let itemID = row[1].uuid,
+            guard row.count == 19, case .integer(let id) = row[0], let itemID = row[1].uuid,
                   case .text(let facetText) = row[2], let facet = ContentFacet(rawValue: facetText),
                   let version = row[3].uuid, case .blob(let digest) = row[4],
                   case .integer(let savedAsMemo) = row[5], case .text(let kindText) = row[6],
                   let kind = ContentKind(rawValue: kindText), case .real(let copiedAt) = row[8],
                   case .text(let title) = row[9], case .integer(let partial) = row[10],
                   case .integer(let windowStart) = row[15], case .text(let window) = row[16],
-                  case .integer(let bodyLength) = row[17] else {
+                  case .integer(let bodyLength) = row[17], case .integer(let unavailable) = row[18] else {
                 throw SearchIndexError.corrupt
             }
             let fields: [SearchMatchField] = [.title, .body, .url, .note]
@@ -378,7 +405,8 @@ struct SearchService: Sendable {
                 relevance: SearchRelevance(rawValue: Int(tiers[id] ?? 4)) ?? .allTermsAnywhere,
                 kind: kind, sourceApp: row[7].text,
                 lastCopiedAt: Date(timeIntervalSinceReferenceDate: copiedAt),
-                savedAsMemo: savedAsMemo != 0, isPartiallyIndexed: partial != 0
+                savedAsMemo: savedAsMemo != 0, isPartiallyIndexed: partial != 0,
+                isTextUnavailable: unavailable != 0
             )
         }
         return keys.compactMap { byID[$0.id] }
@@ -392,10 +420,12 @@ struct SearchService: Sendable {
         let match = terms.sorted { $0.unicodeScalars.count > $1.unicodeScalars.count }
             .lazy.compactMap { window.range(of: $0, options: snippetOptions) }.first
         guard let match else {
+            // No term is in the window: show its first line. A window that starts
+            // mid-body (folding moved the match) is marked so it never reads as the start.
             let line = window.split(whereSeparator: \.isNewline)
                 .lazy.map { $0.trimmingCharacters(in: .whitespaces) }
                 .first { !$0.isEmpty }
-            return line.map { SearchSnippet(text: String($0.prefix(160)), highlights: []) }
+            return line.map { SearchSnippet(text: (windowStart > 1 ? "…" : "") + $0.prefix(160), highlights: []) }
         }
         let start = window.index(match.lowerBound, offsetBy: -40, limitedBy: window.startIndex) ?? window.startIndex
         let end = window.index(start, offsetBy: 160, limitedBy: window.endIndex) ?? window.endIndex
@@ -479,5 +509,34 @@ private extension SQLiteValue {
         case .real(let value): value
         default: nil
         }
+    }
+}
+
+/// Cancels one search from any thread: marks it and interrupts its reader.
+private final class SearchCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private var reader: SearchIndexReader?
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+
+    func cancel() {
+        lock.withLock {
+            cancelled = true
+            reader?.interrupt()
+        }
+    }
+
+    /// Returns false when the search was cancelled before its reader opened.
+    func attach(_ reader: SearchIndexReader) -> Bool {
+        lock.withLock {
+            guard !cancelled else { return false }
+            self.reader = reader
+            return true
+        }
+    }
+
+    func detach() {
+        lock.withLock { reader = nil }
     }
 }
