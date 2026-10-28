@@ -37,6 +37,24 @@ final class LocalUsageTests: XCTestCase {
         try await reopened.close()
     }
 
+    func testAllSummariesReturnsEveryPersistedSummary() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let once = makeRef()
+        let twice = makeRef()
+        for ref in [once, twice, twice] {
+            try await store.record(
+                UseReceipt(executionID: UUID(), ref: ref, occurredAt: Date(timeIntervalSince1970: 100), outcome: .success),
+                now: Date(timeIntervalSince1970: 1_000)
+            )
+        }
+
+        let summaries = try await store.allSummaries().sorted { $0.useCount < $1.useCount }
+
+        XCTAssertEqual(summaries.map(\.itemID), [once.itemID, twice.itemID])
+        XCTAssertEqual(summaries.map(\.useCount), [1, 2])
+    }
+
     func testConcurrentDuplicateExecutionCountsExactlyOnce() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)

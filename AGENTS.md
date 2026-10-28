@@ -19,8 +19,9 @@ unit and UI test targets, a separate `KeeptideSystemTestHost`, and a shared Xcod
 scheme. The storage foundation includes two local Core Data stores, typed
 transactions, content validation, consistent snapshots, and persistent change
 consumption. Local capture includes explicit recording, privacy filters, exact
-deduplication, recent clips, and original-format copy-back. Search, snippet
-workflows, persistent file authorization, and cloud integration remain planned.
+deduplication, recent clips, and original-format copy-back. A rebuildable local
+full-text index consumes persistent history; search UI, snippet workflows,
+persistent file authorization, and cloud integration remain planned.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here

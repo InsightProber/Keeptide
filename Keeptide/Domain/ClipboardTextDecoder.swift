@@ -39,17 +39,32 @@ enum ClipboardTextDecoder {
         _ representations: [RepresentationValue],
         maximumBytes: Int = 8_192
     ) -> ClipTextPreview? {
-        guard maximumBytes > 0 else { return nil }
         for representation in representations {
             guard let bytes = representation.bytes,
-                  let decoded = decode(
+                  let decoded = decodeText(
                     bytes,
                     typeIdentifier: representation.typeIdentifier,
                     maximumBytes: maximumBytes
                   ) else { continue }
-            return ClipTextPreview(text: sanitize(decoded.text), isTruncated: decoded.isTruncated)
+            return decoded
         }
         return nil
+    }
+
+    nonisolated static func decodeText(
+        _ bytes: Data,
+        typeIdentifier: String,
+        maximumBytes: Int
+    ) -> ClipTextPreview? {
+        guard maximumBytes > 0,
+              let decoded = decode(bytes, typeIdentifier: typeIdentifier, maximumBytes: maximumBytes) else {
+            return nil
+        }
+        return ClipTextPreview(text: sanitize(decoded.text), isTruncated: decoded.isTruncated)
+    }
+
+    nonisolated static func isTextType(_ typeIdentifier: String) -> Bool {
+        supportedTypes.contains(typeIdentifier.lowercased())
     }
 
     private nonisolated static func decode(

@@ -479,6 +479,200 @@ enum StoredRecords {
     }
 }
 
+
+// Search projection lives in this file so it reuses the same private
+// visibility rules as `summaries(limit:)` and `resolve(_:in:)`.
+extension StoredRecords {
+    /// Visible facets of the requested items as raw Sendable values. Items with
+    /// no visible facet are omitted; callers remove their index documents.
+    static func searchProjection(itemIDs: [ItemID], in context: NSManagedObjectContext) throws -> [SearchProjectionInput] {
+        try searchProjection(itemIDs: itemIDs, maximumTextBytes: .max, in: context).inputs
+    }
+
+    /// Projects the longest prefix of `itemIDs` whose text payloads fit
+    /// `maximumTextBytes`, so one batch never holds unbounded bytes. The first
+    /// visible item is always included, so callers always make progress.
+    static func searchProjection(
+        itemIDs: [ItemID], maximumTextBytes: Int64, in context: NSManagedObjectContext
+    ) throws -> (inputs: [SearchProjectionInput], processed: Int) {
+        var rows: [NSDictionary] = []
+        for ids in batches(itemIDs.map(\.rawValue)) {
+            rows += try context.fetch(dictionaryRequest(
+                entity: "LibraryItem", properties: itemMetadataProperties, predicate: NSPredicate(format: "id IN %@", ids)
+            ))
+        }
+        let projection = try readProjection(items: rows, strict: false, in: context)
+        var visible: [UUID: SearchVisibleItem] = [:]
+        for row in projection.items {
+            guard let item = try? validatedItemMetadata(row), item.deletedAt == nil,
+                  !projection.itemMarkerIDs.contains(item.id.rawValue) else { continue }
+            let history = projectedHistoryRef(item: item, projection: projection)
+            let memo = try? projectedMemoRef(item: item, memoID: item.memoID,
+                                             memo: item.memoID.flatMap { projection.memos[$0] }, projection: projection)
+            guard history != nil || memo != nil else { continue }
+            visible[item.id.rawValue] = SearchVisibleItem(
+                row: row, item: item, history: history, memo: memo,
+                memoRow: item.memoID.flatMap { projection.memos[$0] }
+            )
+        }
+        let manifests = try searchManifests(captureIDs: Set(visible.values.compactMap(\.item.captureID)), in: context)
+
+        var included: [SearchVisibleItem] = []
+        var processed = 0
+        var usedBytes: Int64 = 0
+        for id in itemIDs {
+            if let entry = visible[id.rawValue] {
+                let bytes = entry.item.captureID.flatMap { manifests[$0] }
+                    .map { searchTextEntries($0).reduce(Int64(0)) { $0 + $1.byteCount } } ?? 0
+                if !included.isEmpty, usedBytes > maximumTextBytes - bytes { break }
+                usedBytes += bytes
+                included.append(entry)
+            }
+            processed += 1
+        }
+
+        let ownedMemoIDs = included.compactMap { entry -> UUID? in
+            guard entry.memo != nil, let memoID = entry.item.memoID, !entry.isInherited else { return nil }
+            return memoID
+        }
+        var bodies: [UUID: Data] = [:]
+        for ids in batches(ownedMemoIDs) {
+            for row in try context.fetch(dictionaryRequest(
+                entity: "MemoDocument", properties: ["id", "body"], predicate: NSPredicate(format: "id IN %@", ids)
+            )) {
+                if let id = row["id"] as? UUID, let body = row["body"] as? Data { bodies[id] = body }
+            }
+        }
+        let captureIDs = Set(included.compactMap(\.item.captureID))
+        let texts = try searchCaptureText(manifests: manifests.filter { captureIDs.contains($0.key) }, in: context)
+
+        let inputs = included.map { entry in
+            let memo = entry.memo.flatMap { ref -> MemoProjection? in
+                guard let memoID = entry.item.memoID, let memoRow = entry.memoRow else { return nil }
+                return MemoProjection(
+                    ref: ref, memoID: memoID, title: memoRow["title"] as? String ?? "",
+                    note: memoRow["note"] as? String ?? "", isInherited: entry.isInherited,
+                    body: entry.isInherited ? nil : bodies[memoID]
+                )
+            }
+            let manifest = entry.item.captureID.flatMap { manifests[$0] }
+            return SearchProjectionInput(
+                itemID: entry.item.id, title: entry.item.title, sourceApp: entry.row["sourceApp"] as? String,
+                collectionID: (entry.row["collectionID"] as? UUID).map(CollectionID.init(rawValue:)),
+                lastCopiedAt: entry.item.lastCopiedAt, history: entry.history, memo: memo,
+                captureID: entry.item.captureID, representationTypes: manifest?.entries.map(\.typeIdentifier) ?? [],
+                hasLocalReference: manifest?.entries.contains { $0.storage == .localReference } ?? false,
+                textRepresentations: entry.item.captureID.flatMap { texts[$0] } ?? []
+            )
+        }
+        return (inputs, processed)
+    }
+
+    /// Every item ID, newest copy first, for a full index rebuild.
+    static func searchAllItemIDs(in context: NSManagedObjectContext) throws -> [ItemID] {
+        try context.fetch(dictionaryRequest(
+            entity: "LibraryItem", properties: ["id"],
+            sortDescriptors: [NSSortDescriptor(key: "lastCopiedAt", ascending: false)]
+        )).compactMap { ($0["id"] as? UUID).map(ItemID.init(rawValue:)) }
+    }
+
+    /// Items affected by history changes, as far as current rows can tell.
+    /// Deleted captures and memos are resolved by the index's own references.
+    static func searchItemIDs(for changes: [StoreChange], in context: NSManagedObjectContext) throws -> Set<ItemID> {
+        var items = Set<UUID>()
+        var captures = Set<UUID>()
+        var memos = Set<UUID>()
+        var representations = Set<UUID>()
+        var markers = Set<UUID>()
+        for change in changes {
+            switch change.entity {
+            case "LibraryItem", "ItemDeletionMarker": items.insert(change.id)
+            case "CaptureSnapshot": captures.insert(change.id)
+            case "CaptureRepresentation": representations.insert(change.id)
+            case "MemoDocument": memos.insert(change.id)
+            case "FacetDeletionMarker": markers.insert(change.id)
+            default: break
+            }
+        }
+        func values(_ entity: String, _ property: String, where key: String, in ids: Set<UUID>) throws -> [UUID] {
+            try batches(Array(ids)).flatMap { batch in
+                try context.fetch(dictionaryRequest(
+                    entity: entity, properties: [property], predicate: NSPredicate(format: "%K IN %@", key, batch)
+                )).compactMap { $0[property] as? UUID }
+            }
+        }
+        captures.formUnion(try values("CaptureRepresentation", "snapshotID", where: "id", in: representations))
+        items.formUnion(try values("FacetDeletionMarker", "itemID", where: "id", in: markers))
+        items.formUnion(try values("MemoDocument", "itemID", where: "id", in: memos))
+        items.formUnion(try values("LibraryItem", "id", where: "memoID", in: memos))
+        items.formUnion(try values("LibraryItem", "id", where: "captureID", in: captures))
+        return Set(items.map(ItemID.init(rawValue:)))
+    }
+
+    private struct SearchVisibleItem {
+        let row: NSDictionary
+        let item: ValidatedItemMetadata
+        let history: ContentRef?
+        let memo: ContentRef?
+        let memoRow: NSDictionary?
+
+        var isInherited: Bool { memoRow?["bodyMode"] as? String == MemoBodyMode.inheritedCapture.rawValue }
+    }
+
+    private static func searchTextEntries(_ manifest: CaptureManifest) -> [ManifestEntry] {
+        manifest.entries.filter { $0.storage == .portable && ClipboardTextDecoder.isTextType($0.typeIdentifier) }
+    }
+
+    private static func searchManifests(
+        captureIDs: Set<UUID>, in context: NSManagedObjectContext
+    ) throws -> [UUID: CaptureManifest] {
+        var manifests: [UUID: CaptureManifest] = [:]
+        for ids in batches(Array(captureIDs)) {
+            for row in try context.fetch(dictionaryRequest(
+                entity: "CaptureSnapshot", properties: ["id", "manifest"], predicate: NSPredicate(format: "id IN %@", ids)
+            )) {
+                guard let id = row["id"] as? UUID, let data = row["manifest"] as? Data,
+                      let manifest = try? decodeManifest(data) else { continue }
+                manifests[id] = manifest
+            }
+        }
+        return manifests
+    }
+
+    /// Bytes of portable text representations only; image and file payloads are
+    /// never loaded. Byte count and digest come from the manifest, so a missing
+    /// or altered row fails the later integrity check instead of being indexed.
+    private static func searchCaptureText(
+        manifests: [UUID: CaptureManifest], in context: NSManagedObjectContext
+    ) throws -> [UUID: [TextRepresentation]] {
+        let wanted = manifests.mapValues(searchTextEntries)
+        let types = Array(Set(wanted.values.flatMap { $0.map(\.typeIdentifier) }))
+        var bytes: [UUID: [[Int]: Data]] = [:]
+        for ids in batches(wanted.filter { !$0.value.isEmpty }.map(\.key)) {
+            for row in try context.fetch(dictionaryRequest(
+                entity: "CaptureRepresentation", properties: ["snapshotID", "itemIndex", "representationIndex", "bytes"],
+                predicate: NSPredicate(format: "snapshotID IN %@ AND storage == %@ AND typeIdentifier IN %@",
+                                       ids, RepresentationStorage.portable.rawValue, types)
+            )) {
+                guard let snapshotID = row["snapshotID"] as? UUID, let item = row["itemIndex"] as? Int64,
+                      let representation = row["representationIndex"] as? Int64 else { continue }
+                bytes[snapshotID, default: [:]][[Int(item), Int(representation)]] = row["bytes"] as? Data ?? Data()
+            }
+        }
+        var result: [UUID: [TextRepresentation]] = [:]
+        for (id, entries) in wanted {
+            result[id] = entries.map { entry in
+                TextRepresentation(
+                    itemIndex: entry.itemIndex, representationIndex: entry.representationIndex,
+                    typeIdentifier: entry.typeIdentifier, byteCount: entry.byteCount, digest: entry.digest,
+                    bytes: bytes[id]?[[entry.itemIndex, entry.representationIndex]] ?? Data()
+                )
+            }
+        }
+        return result
+    }
+}
+
 private extension StoredRecords {
     static let itemMetadataProperties = [
         "id", "createdAt", "sourceApp", "title", "captureID", "memoID", "collectionID",

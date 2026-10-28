@@ -428,3 +428,49 @@ private struct HistoryCheckpoint: Codable {
     let token: Data
     let transactionNumber: Int64
 }
+
+extension StoreChangeReader {
+    /// The checkpoint of the newest history transaction, in the same format as
+    /// `ChangeBatch.token`, or nil when the store has no history. Reading after
+    /// it returns only transactions committed later.
+    func currentCheckpoint() async throws -> Data? {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            let store = controller.contentStore
+            guard try Self.hasHistory(after: nil, in: store, context: context) else { return nil }
+            let (entity, numberProperty) = try Self.historyTransactionMetadata(in: context)
+            func hasTransactions(after lowerBound: Int64) throws -> Bool {
+                try Self.historyCount(after: lowerBound, through: Int64.max, entity: entity,
+                                      numberProperty: numberProperty, store: store, context: context) > 0
+            }
+            // Grow an empty upper bound, then bisect to the last populated number.
+            var populated: Int64 = 0
+            var empty = Int64(Self.transactionPageSize)
+            while try hasTransactions(after: empty) {
+                populated = empty
+                guard empty <= Int64.max / 2 else { throw StoreError.corruptStore }
+                empty *= 2
+            }
+            while empty - populated > 1 {
+                let midpoint = populated + (empty - populated) / 2
+                if try hasTransactions(after: midpoint) { populated = midpoint } else { empty = midpoint }
+            }
+            let latest = try Self.transactions(after: populated, through: empty, resultType: .transactionsOnly,
+                                               entity: entity, numberProperty: numberProperty,
+                                               store: store, context: context)
+            guard latest.count == 1, let transaction = latest.first else { throw StoreError.corruptStore }
+            return try Self.checkpoint(transaction, identity: controller.runtime.identity)
+        }
+    }
+
+    /// The history transaction number a checkpoint points at.
+    static func sequence(of checkpoint: Data) throws -> Int64 {
+        guard checkpoint.count < 1_048_576,
+              let envelope = try? JSONDecoder().decode(HistoryCheckpoint.self, from: checkpoint),
+              envelope.version == 2, envelope.transactionNumber >= 0 else {
+            throw StoreError.invalidToken
+        }
+        return envelope.transactionNumber
+    }
+}
