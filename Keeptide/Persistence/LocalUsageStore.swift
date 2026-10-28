@@ -204,6 +204,65 @@ final class LocalUsageStore: @unchecked Sendable {
     }
 }
 
+/// Changes whenever a summary is added, removed or receives another use.
+struct UsageSummaryFingerprint: Equatable, Sendable {
+    let count: Int
+    let totalUses: Int64
+    let latestUse: Date?
+}
+
+extension LocalUsageStore {
+    func allSummaries() async throws -> [UsageSummary] {
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSDictionary>(entityName: "UsageSummary")
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = ["itemID", "facet", "lastUsedAt", "useCount"]
+            return try context.fetch(request).map { row in
+                guard let itemID = row["itemID"] as? UUID,
+                      let facetValue = row["facet"] as? String,
+                      let facet = ContentFacet(rawValue: facetValue),
+                      let lastUsedAt = row["lastUsedAt"] as? Date else {
+                    throw StoreError.corruptStore
+                }
+                return UsageSummary(
+                    itemID: ItemID(rawValue: itemID),
+                    facet: facet,
+                    lastUsedAt: lastUsedAt,
+                    useCount: (row["useCount"] as? NSNumber)?.int64Value ?? 0
+                )
+            }
+        }
+    }
+
+    /// A single aggregate query, so callers can skip reading unchanged summaries.
+    func summaryFingerprint() async throws -> UsageSummaryFingerprint {
+        try await controller.perform { context in
+            func aggregate(_ name: String, _ function: String, _ keyPath: String,
+                           _ type: NSAttributeType) -> NSExpressionDescription {
+                let description = NSExpressionDescription()
+                description.name = name
+                description.expression = NSExpression(forFunction: function,
+                                                      arguments: [NSExpression(forKeyPath: keyPath)])
+                description.expressionResultType = type
+                return description
+            }
+            let request = NSFetchRequest<NSDictionary>(entityName: "UsageSummary")
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = [
+                aggregate("count", "count:", "itemID", .integer64AttributeType),
+                aggregate("uses", "sum:", "useCount", .integer64AttributeType),
+                aggregate("latest", "max:", "lastUsedAt", .dateAttributeType),
+            ]
+            let row = try context.fetch(request).first
+            return UsageSummaryFingerprint(
+                count: (row?["count"] as? NSNumber)?.intValue ?? 0,
+                totalUses: (row?["uses"] as? NSNumber)?.int64Value ?? 0,
+                latestUse: row?["latest"] as? Date
+            )
+        }
+    }
+}
+
 private struct UsageKey: Hashable, Sendable {
     let itemID: ItemID
     let facet: ContentFacet

@@ -4,6 +4,37 @@ import XCTest
 
 @MainActor
 final class StoreChangeReaderTests: XCTestCase {
+    func testCurrentCheckpointSkipsExistingTransactionsAndSeesNewOnes() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = try PersistenceController(directory: directory)
+        addTeardownBlock { try await store.close(); try FileManager.default.removeItem(at: directory) }
+        let reader = StoreChangeReader(controller: store)
+        if try await reader.currentCheckpoint() == nil {
+            let initial = try await reader.read(after: nil)
+            XCTAssertTrue(initial.transactions.isEmpty)
+        }
+        for index in 0..<3 {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("before \(index)".utf8))]])
+            try await ContentStoreFixtures.insert(ContentStoreFixtures.item(capture), capture, into: store)
+        }
+
+        let checkpoint = try await reader.currentCheckpoint()
+        let caughtUp = try await reader.read(after: try XCTUnwrap(checkpoint))
+        let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("after".utf8))]])
+        let item = ContentStoreFixtures.item(capture)
+        try await ContentStoreFixtures.insert(item, capture, into: store)
+        let next = try await reader.read(after: try XCTUnwrap(checkpoint))
+
+        XCTAssertTrue(caughtUp.transactions.isEmpty)
+        XCTAssertEqual(Set(next.transactions.flatMap(\.changes).map(\.id)),
+                       Set([capture.id, item.id.rawValue] + capture.representations.map(\.id)))
+        XCTAssertLessThan(try StoreChangeReader.sequence(of: try XCTUnwrap(checkpoint)),
+                          try XCTUnwrap(next.transactions.first).sequence)
+        XCTAssertThrowsError(try StoreChangeReader.sequence(of: Data("x".utf8))) { error in
+            XCTAssertEqual(error as? StoreError, .invalidToken)
+        }
+    }
+
     func testReplayIdentifiesRecordsDeletedBeforeTheFirstRead() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = try PersistenceController(directory: directory)

@@ -3,6 +3,24 @@ import XCTest
 @testable import Keeptide
 
 final class ClipboardTextDecoderTests: XCTestCase {
+    func testDecodeTextHonorsLargerLimitWithoutChangingPreview() {
+        let bytes = Data(String(repeating: "a", count: 20_000).utf8)
+        let decoded = ClipboardTextDecoder.decodeText(
+            bytes, typeIdentifier: "public.utf8-plain-text", maximumBytes: 1_048_576
+        )
+        let representation = RepresentationValue(
+            snapshotID: UUID(), itemIndex: 0, representationIndex: 0,
+            typeIdentifier: "public.utf8-plain-text", storage: .portable,
+            byteCount: Int64(bytes.count), digest: ContentDigest.sha256(bytes), bytes: bytes
+        )
+
+        XCTAssertEqual(decoded?.text.utf8.count, 20_000)
+        XCTAssertEqual(decoded?.isTruncated, false)
+        XCTAssertEqual(ClipboardTextDecoder.preview([representation])?.isTruncated, true)
+        XCTAssertTrue(ClipboardTextDecoder.isTextType("PUBLIC.UTF8-PLAIN-TEXT"))
+        XCTAssertFalse(ClipboardTextDecoder.isTextType("public.rtf"))
+    }
+
     func testTitleUsesShortFirstLineWhenBoundedPrefixEndsInsideMultibyteScalar() {
         let suffix = String(repeating: "a", count: 4_088) + "🙂"
         let bytes = Data(("标题\n" + suffix).utf8)

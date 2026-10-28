@@ -4,6 +4,59 @@ import XCTest
 
 @MainActor
 final class CaptureSessionTests: XCTestCase {
+    func testInitializedTestSessionBuildsSearchIndex() async throws {
+        let configuration = try makeIsolatedSession()
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id)
+        let service = try XCTUnwrap(session.searchService)
+        let indexFile = configuration.directory.appendingPathComponent("Search/\(SQLiteSearchIndex.fileName)")
+
+        try await SearchTestSupport.waitUntil {
+            guard FileManager.default.fileExists(atPath: indexFile.path) else { return false }
+            return try await lastSearchPage(service, "").indexState == .ready
+        }
+        await session.shutdown()
+
+        XCTAssertNil(session.searchService)
+        let reopened = try SQLiteSearchIndex(directory: configuration.directory.appendingPathComponent("Search"))
+        defer { reopened.close() }
+        XCTAssertEqual(try reopened.metadata()?.state, .ready)
+    }
+
+    func testSearchIndexFailureDoesNotPreventRecording() async throws {
+        let configuration = try makeIsolatedSession()
+        try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
+        try Data("not a directory".utf8).write(to: configuration.directory.appendingPathComponent("Search"))
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id)
+
+        let page = try await lastSearchPage(try XCTUnwrap(session.searchService), "anything")
+
+        XCTAssertTrue(session.isReady)
+        XCTAssertEqual(page.indexState, .unavailable)
+        XCTAssertEqual(page.results, [])
+        await session.shutdown()
+    }
+
+    private func makeIsolatedSession() throws -> CaptureTestConfiguration {
+        let configuration = CaptureTestConfiguration(id: UUID())
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        addTeardownBlock {
+            if FileManager.default.fileExists(atPath: configuration.directory.path) {
+                try FileManager.default.removeItem(at: configuration.directory)
+            }
+            defaults.removePersistentDomain(forName: configuration.preferencesSuite)
+            NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
+        }
+        return configuration
+    }
+
+    private func lastSearchPage(_ service: SearchService, _ query: String) async throws -> SearchPage {
+        var last: SearchPage?
+        for try await page in service.search(SearchRequest(query: query, generation: 1)) { last = page }
+        return try XCTUnwrap(last)
+    }
+
     func testMissingLocalStateKeepsEnabledTestSessionInRecoveryAndNotRecording() async throws {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
