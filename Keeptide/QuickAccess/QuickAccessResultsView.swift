@@ -1,6 +1,7 @@
 import AppKit
 import Carbon.HIToolbox
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Hosts the panel's result table. AppKit owns focus, selection, scrolling and keys;
 /// SwiftUI draws each row's content.
@@ -232,10 +233,12 @@ extension ContentKind {
     }
 }
 
-/// Display names for source apps, looked up once per bundle identifier.
+/// Display names and icons for source apps, looked up once per bundle identifier.
 @MainActor
 final class ApplicationNames {
     private var names: [String: String?] = [:]
+    private var icons: [String: NSImage] = [:]
+    private lazy var genericIcon = NSWorkspace.shared.icon(for: .applicationBundle)
 
     func name(for bundleIdentifier: String) -> String? {
         if let cached = names[bundleIdentifier] { return cached }
@@ -245,5 +248,16 @@ final class ApplicationNames {
         }
         names[bundleIdentifier] = name
         return name
+    }
+
+    /// The app's icon, or the system's generic app icon for a clip without a source app or one whose app
+    /// cannot be found.
+    func icon(for bundleIdentifier: String?) -> NSImage {
+        guard let bundleIdentifier else { return genericIcon }
+        if let cached = icons[bundleIdentifier] { return cached }
+        let icon = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier)
+            .map { NSWorkspace.shared.icon(forFile: $0.path) } ?? genericIcon
+        icons[bundleIdentifier] = icon
+        return icon
     }
 }

@@ -12,6 +12,10 @@ enum QuickAccessKey: Equatable {
     case character
 }
 
+/// A view that builds this from a key event follows these rules: Tab and ⇧Tab are `tab` and `backTab`;
+/// Space, Return and Tab are never `character`, which is a key that types text with neither ⌘ nor ⌃
+/// held; `queryIsEmpty` and `filtersVisible` are always passed, never left to their defaults; and a key
+/// routed to `passThrough` that the view has no native use for is dropped without an alert sound.
 struct QuickAccessKeyInput: Equatable {
     var key: QuickAccessKey
     var shift = false
