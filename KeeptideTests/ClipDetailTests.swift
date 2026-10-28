@@ -54,13 +54,20 @@ final class ClipDetailTests: XCTestCase {
         let harness = try SearchHarness.make(in: self)
         let service = makeService(harness)
         let url = "https://developer.apple.com/documentation/appkit/nspanel"
-        let ref = try await insert([[("public.url", Data(url.utf8)), ("public.utf8-plain-text", Data(url.utf8))]],
-                                   into: harness)
+        // The plain text stored before the URL is a title, which is not the link.
+        let ref = try await insert(
+            [[("public.utf8-plain-text", Data("Apple Developer".utf8)), ("public.url", Data(url.utf8))]], into: harness)
 
         let detail = try await service.detail(for: ref, kind: .url, frameSize: stripFrame)
 
         XCTAssertEqual(detail.characterCount, 56)
         XCTAssertEqual(detail.excerpt, url)
+
+        // A newline after the URL is not part of it.
+        let paddedRef = try await insert([[("public.url", Data(" \(url)\r\n".utf8))]], into: harness)
+        let padded = try await service.detail(for: paddedRef, kind: .url, frameSize: stripFrame)
+        XCTAssertEqual(padded.characterCount, 56)
+        XCTAssertEqual(padded.excerpt, url)
     }
 
     func testImageSizeComesFromTheHeaderAndThumbnailsCoverTheFrame() async throws {
@@ -108,6 +115,47 @@ final class ClipDetailTests: XCTestCase {
         // A file clip holds a local reference, so there is no text and no image to measure.
         XCTAssertNil(detail.characterCount)
         XCTAssertNil(detail.pixelSize)
+    }
+
+    func testFinderFileReferencesTakeNamesFromTheFilenamesList() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = makeService(harness)
+        // Finder names its files by number in the URLs it writes, and lists their paths in the legacy filenames type.
+        let list = try PropertyListSerialization.data(
+            fromPropertyList: ["/Synthetic/Quarterly Report.pdf", "/Synthetic/notes.txt"], format: .xml, options: 0)
+        let ref = try await insertLocalReferences([
+            [("public.file-url", Data("file:///.file/id=6571367.1".utf8)), ("NSFilenamesPboardType", list)],
+            [("public.file-url", Data("file:///.file/id=6571367.2".utf8))],
+        ], into: harness)
+
+        let detail = try await service.detail(for: ref, kind: .file, frameSize: stripFrame)
+
+        XCTAssertEqual(detail.fileNames, ["Quarterly Report.pdf", "notes.txt"])
+        XCTAssertEqual(detail.itemCount, 2)
+    }
+
+    func testFileReferenceURLResolvesToItsName() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = makeService(harness)
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("KeeptideDetail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("Synthetic Name.txt")
+        try Data("synthetic".utf8).write(to: file)
+        let reference = try fileReferenceString(for: file)
+        let ref = try await insertLocalReferences([[("public.file-url", Data(reference.utf8))]], into: harness)
+
+        let detail = try await service.detail(for: ref, kind: .file, frameSize: stripFrame)
+
+        XCTAssertEqual(detail.fileNames, ["Synthetic Name.txt"])
+
+        // Once the file is gone the reference names nothing, and that is no name at all.
+        try FileManager.default.removeItem(at: file)
+        let goneRef = try await insertLocalReferences([[("public.file-url", Data(reference.utf8))]], into: harness)
+        let gone = try await service.detail(for: goneRef, kind: .file, frameSize: stripFrame)
+        XCTAssertEqual(gone.fileNames, [])
+        XCTAssertEqual(gone.itemCount, 1)
     }
 
     func testCancelledDetailDoesNotPopulateTheCache() async throws {
@@ -173,6 +221,46 @@ final class ClipDetailTests: XCTestCase {
         let item = ContentStoreFixtures.item(capture)
         try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
         return ContentStoreFixtures.ref(item, capture)
+    }
+
+    /// A clip of file references stored the way capture stores them: every representation a local
+    /// reference, with its bytes kept in the file access state.
+    private func insertLocalReferences(_ items: [[(String, Data)]], into harness: SearchHarness) async throws -> ContentRef {
+        let captureID = UUID()
+        var representations: [RepresentationValue] = []
+        var access: [LocalFileAccess] = []
+        for (itemIndex, item) in items.enumerated() {
+            for (representationIndex, entry) in item.enumerated() {
+                let representation = RepresentationValue(
+                    snapshotID: captureID, itemIndex: itemIndex, representationIndex: representationIndex,
+                    typeIdentifier: entry.0, storage: .localReference, byteCount: 0,
+                    digest: LocalReferencePrivacy.makeRelocationToken(), bytes: nil)
+                representations.append(representation)
+                access.append(LocalFileAccess(id: representation.id, snapshotID: captureID, bytes: entry.1))
+            }
+        }
+        let manifest = CaptureManifest(version: LocalReferencePrivacy.manifestVersion, itemCount: items.count,
+                                       entries: representations.map(ManifestEntry.init))
+        let capture = CaptureValue(id: captureID, manifest: manifest,
+                                   digest: ContentDigest.sha256(try manifest.canonicalData()),
+                                   representations: representations)
+        let item = ContentStoreFixtures.item(capture)
+        try await FileAccessStore(controller: harness.controller)
+            .putPrepared(access, expecting: harness.controller.identity())
+        try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        return ContentStoreFixtures.ref(item, capture)
+    }
+
+    /// The file-reference form of a file's URL, `file:///.file/id=…`. From Swift on recent systems
+    /// `(url as NSURL).fileReferenceURL()` returns an ordinary path URL, which would never exercise
+    /// resolving a reference, so this asks Core Foundation. The assertion keeps the test from passing
+    /// without a real reference.
+    private func fileReferenceString(for file: URL) throws -> String {
+        let url = try XCTUnwrap(CFURLCreateWithFileSystemPath(nil, file.path as CFString, .cfurlposixPathStyle, false))
+        let reference = try XCTUnwrap(CFURLCreateFileReferenceURL(nil, url, nil)?.takeRetainedValue())
+        let string = CFURLGetString(reference) as String
+        XCTAssertTrue(string.hasPrefix("file:///.file/id="), "The file did not get a file-reference URL")
+        return string
     }
 
     private func textDetail(_ text: String, in harness: SearchHarness, using service: PreviewService) async throws -> ClipDetail {

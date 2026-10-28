@@ -57,6 +57,16 @@ enum ClipboardTextDecoder {
         preview(representations, maximumBytes: .max)?.text
     }
 
+    /// A link's URL as text, without the whitespace around it. The plain text stored beside a link
+    /// can be a title or a Markdown link, so the `public.url` representations are tried first and the
+    /// other text only stands in when none of them holds a URL.
+    nonisolated static func linkText(_ representations: [RepresentationValue]) -> String? {
+        for representation in representations where representation.typeIdentifier.lowercased() == "public.url" {
+            if let url = trimmed(fullText([representation])) { return url }
+        }
+        return trimmed(fullText(representations))
+    }
+
     nonisolated static func decodeText(
         _ bytes: Data,
         typeIdentifier: String,
@@ -125,5 +135,11 @@ enum ClipboardTextDecoder {
 
     private nonisolated static func sanitize(_ text: String) -> String {
         String(text.unicodeScalars.filter { $0.value != 0 })
+    }
+
+    /// The text without the whitespace and newlines around it; nil when nothing else is left.
+    private nonisolated static func trimmed(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 }

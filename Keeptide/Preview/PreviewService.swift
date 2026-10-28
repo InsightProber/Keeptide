@@ -82,7 +82,7 @@ final class PreviewService: Sendable {
     }
 
     private static func textDetail(_ representations: [RepresentationValue], isLink: Bool) throws -> ClipDetail {
-        let text = ClipboardTextDecoder.fullText(representations)
+        let text = isLink ? ClipboardTextDecoder.linkText(representations) : ClipboardTextDecoder.fullText(representations)
         try Task.checkCancellation()
         guard let text else { return ClipDetail() }
         let characterCount = text.count
@@ -153,15 +153,42 @@ final class PreviewService: Sendable {
         return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
     }
 
-    /// The last path component of each file URL in the clip, one for each file. A payload that is
-    /// not a URL gives no name, so there can be fewer names than files.
+    /// The names of the files a clip refers to, in order. A file whose name cannot be told is left
+    /// out, so there can be fewer names than files. Only names leave this function: the full paths
+    /// they come from are private and are never kept or logged.
     private static func fileNames(in representations: [RepresentationValue]) -> [String] {
-        representations.compactMap { representation in
+        if let listed = listedFileNames(in: representations) { return listed }
+        return representations.compactMap { representation in
             guard representation.typeIdentifier.lowercased() == "public.file-url",
                   let bytes = representation.bytes,
-                  let string = String(data: bytes, encoding: .utf8),
-                  let url = URL(string: string) else { return nil }
-            return url.lastPathComponent
+                  let string = String(data: bytes, encoding: .utf8) else { return nil }
+            return fileName(ofURL: string)
         }
+    }
+
+    /// Finder names its files by number in the URLs it writes, but it also lists their full paths in
+    /// the legacy `NSFilenamesPboardType` property list, which needs no file system access.
+    private static func listedFileNames(in representations: [RepresentationValue]) -> [String]? {
+        for representation in representations
+        where SystemFileReferenceClassifier.filenamesListIdentifiers.contains(representation.typeIdentifier.lowercased()) {
+            guard let bytes = representation.bytes,
+                  let list = try? PropertyListSerialization.propertyList(from: bytes, options: [], format: nil),
+                  let paths = list as? [String] else { continue }
+            let names = paths.map { ($0 as NSString).lastPathComponent }.filter { !$0.isEmpty }
+            if !names.isEmpty { return names }
+        }
+        return nil
+    }
+
+    /// A file-reference URL such as `file:///.file/id=6571367.2` names a file by number; its name is
+    /// on the path the reference resolves to, and a reference that no longer resolves gives none.
+    /// Recent Foundation resolves a reference inside `URL.path` and gives an empty path when it
+    /// cannot, so a reference is recognised by its text rather than by its path.
+    private static func fileName(ofURL string: String) -> String? {
+        guard let url = URL(string: string) else { return nil }
+        let isReference = string.hasPrefix("file:///.file/id=")
+        let name = isReference ? (url as NSURL).filePathURL?.lastPathComponent : url.lastPathComponent
+        guard let name, !name.isEmpty else { return nil }
+        return name
     }
 }
