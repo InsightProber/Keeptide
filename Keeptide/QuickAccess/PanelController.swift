@@ -25,6 +25,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private var metrics: StripMetrics
     /// Where the band is on screen, for the copy confirmation.
     private var bandFrame = NSRect.zero
+    /// The key last posted again for the search field. Posting copies an event, so the copy is known by when
+    /// it was pressed and which key it is; no two presses share a time.
+    private var repostedKey: (timestamp: TimeInterval, keyCode: UInt16)?
     /// Shows the actions menu. Tests replace it, since a real menu waits for a choice.
     var presentActionMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
@@ -314,13 +317,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         update()
     }
 
-    /// A key typed below the search field belongs in it. The field takes the keys and gets the same key event,
-    /// which goes through its input context, so the key can start an input method's composition.
+    /// A key typed below the search field belongs in it. The field takes the keys, and the key event is posted
+    /// again at the front of the queue, so that it reaches the field after the change of focus, once the field's
+    /// input context is active and the key can start an input method's composition. Should the key come back
+    /// here all the same, it is dropped rather than posted once more.
     private func typeIntoSearch() {
         let event = NSApp.currentEvent
+        if let event, let reposted = repostedKey, reposted == (event.timestamp, event.keyCode) {
+            repostedKey = nil
+            return
+        }
         focusSearchField()
-        guard let event, event.type == .keyDown, let editor = searchField.currentEditor() else { return }
-        editor.keyDown(with: event)
+        guard let event, event.type == .keyDown, searchField.currentEditor() != nil else { return }
+        repostedKey = (event.timestamp, event.keyCode)
+        NSApp.postEvent(event, atStart: true)
     }
 
     // MARK: Focus

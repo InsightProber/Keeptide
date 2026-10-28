@@ -342,10 +342,33 @@ final class AppLaunchTests: XCTestCase {
         NSApp.postEvent(try key(kVK_ANSI_A, "a", windowNumber: window.windowNumber), atStart: true)
         let typed = try XCTUnwrap(NSApp.nextEvent(matching: .keyDown, until: Date(), inMode: .default, dequeue: true))
         strip.keyDown(with: typed)
-
         XCTAssertTrue(isEditing(field, in: window), "Typing goes back to the search field")
+
+        // The key is posted again for the field, so that it arrives after the change of focus, when an input
+        // method can start a composition with it. The event loop hands it to the field's editor.
+        try deliverQueuedKeys(in: window) { field.stringValue == "a" }
+
         XCTAssertEqual(field.stringValue, "a", "The key that moved focus is typed there, not lost")
         XCTAssertEqual(controller.state.query, "a")
+        controller.state.close()
+    }
+
+    func testAKeyPostedAgainForTheFieldIsNeverPostedTwice() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
+        NSApp.postEvent(try key(kVK_ANSI_A, "a", windowNumber: window.windowNumber), atStart: true)
+        strip.keyDown(with: try XCTUnwrap(NSApp.nextEvent(matching: .keyDown, until: Date(), inMode: .default,
+                                                          dequeue: true)))
+
+        // Should the key come back to the strip instead of reaching the field, it is dropped, not posted again.
+        let reposted = try XCTUnwrap(NSApp.nextEvent(matching: .keyDown, until: Date(timeIntervalSinceNow: 1),
+                                                     inMode: .default, dequeue: true))
+        strip.keyDown(with: reposted)
+
+        XCTAssertNil(NSApp.nextEvent(matching: .keyDown, until: Date(), inMode: .default, dequeue: true))
         controller.state.close()
     }
 
@@ -664,6 +687,18 @@ final class AppLaunchTests: XCTestCase {
 
     private func settleLayout() {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+    }
+
+    /// Hands the key events waiting in the application's queue to the window's first responder, as the event loop
+    /// would, until `condition` holds or two seconds have passed. A test runs inside the event loop, which does
+    /// not take another event until the test returns.
+    private func deliverQueuedKeys(in window: NSWindow, until condition: () -> Bool) throws {
+        let deadline = Date(timeIntervalSinceNow: 2)
+        while !condition(), Date() < deadline {
+            guard let event = NSApp.nextEvent(matching: .keyDown, until: Date(timeIntervalSinceNow: 0.05),
+                                              inMode: .default, dequeue: true) else { continue }
+            try XCTUnwrap(window.firstResponder).keyDown(with: event)
+        }
     }
 
     private func searchEditor(in controller: PanelController) throws -> (NSSearchField, NSTextView) {
