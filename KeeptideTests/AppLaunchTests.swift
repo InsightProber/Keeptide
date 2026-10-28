@@ -149,6 +149,20 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
+    func testBecomingKeyAgainKeepsFocusThatAnotherControlHolds() throws {
+        let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                               styleMask: [.titled], backing: .buffered, defer: false)
+        let field = QuickAccessSearchField()
+        let results = QuickAccessResultsTableView()
+        window.contentView?.addSubview(field)
+        window.contentView?.addSubview(results)
+        XCTAssertTrue(window.makeFirstResponder(results))
+
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+
+        XCTAssertTrue(window.firstResponder === results)
+    }
+
     func testRepeatedKeyNotificationsPreserveTheExistingEditor() throws {
         let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                styleMask: [.titled], backing: .buffered, defer: false)

@@ -274,8 +274,10 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     @objc private func windowDidBecomeKey(_ notification: Notification) { focusIfNeeded() }
 
     private func focusIfNeeded() {
-        guard window?.isKeyWindow == true, currentEditor() == nil else { return }
-        window?.makeFirstResponder(self)
+        guard let window, window.isKeyWindow, currentEditor() == nil else { return }
+        // Keep focus another control in the panel already holds, such as the results.
+        guard window.firstResponder == nil || window.firstResponder === window else { return }
+        window.makeFirstResponder(self)
     }
 }
 
