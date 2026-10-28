@@ -99,8 +99,9 @@ final class QuickAccessKeyRouterTests: XCTestCase {
         }
     }
 
-    func testTypingInTheStripOrFiltersReturnsToTheSearchField() {
-        for focus in [QuickAccessFocus.filters, .results] {
+    func testTypingInTheStripFiltersOrPreviewReturnsToTheSearchField() {
+        // The preview's text cannot be edited, so a key typed there would only beep.
+        for focus in [QuickAccessFocus.filters, .results, .preview] {
             for queryIsEmpty in [true, false] {
                 for shift in [false, true] {
                     XCTAssertEqual(command(.character, shift: shift, in: focus, queryIsEmpty: queryIsEmpty),

@@ -81,8 +81,9 @@ enum QuickAccessKeyRouter {
         // The expanded preview closes on Space, as on Escape; it keeps the arrows for its own text.
         case (.space, .preview):
             return .togglePreview
-        // Typing below the search field belongs in the search field.
-        case (.character, .filters), (.character, .results):
+        // Typing below the search field belongs in the search field, and so does typing in the preview's text,
+        // which cannot be edited.
+        case (.character, .filters), (.character, .results), (.character, .preview):
             return .typeIntoSearch
         // Return copies and Tab cycles from any focus, the expanded preview included.
         case (.returnKey, _):

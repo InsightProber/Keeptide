@@ -6,7 +6,8 @@ import SwiftUI
 struct QuickAccessPreviewView: View {
     let preview: PreviewContent?
     let applicationName: String?
-    /// Keys pressed in the preview's text that act on the panel: Space and Escape close it, Return copies.
+    /// Keys pressed in the preview's text that act on the panel: Space and Escape close it, Return copies, and
+    /// typing goes to the search field.
     var onCommand: (QuickAccessCommand) -> Void = { _ in }
 
     var body: some View {
@@ -92,7 +93,8 @@ private struct PreviewText: NSViewRepresentable {
 }
 
 /// The preview's text takes the keys once it is clicked. Space and Escape close the preview, Return copies
-/// and Tab moves on, as they do anywhere in the panel; the arrows and the rest stay with the text.
+/// and Tab moves on, as they do anywhere in the panel, and a key that types goes to the search field, since
+/// this text cannot be edited; the arrows and the rest stay with the text.
 private final class PreviewTextView: NSTextView {
     var onCommand: (QuickAccessCommand) -> Void = { _ in }
 
