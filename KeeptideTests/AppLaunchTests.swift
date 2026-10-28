@@ -87,6 +87,32 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(field.stringValue, "")
     }
 
+    func testTextChangesDuringCompositionDoNotSearch() throws {
+        let controller = PanelController()
+        let (field, editor) = try searchEditor(in: controller)
+        let searchField = try XCTUnwrap(field as? QuickAccessSearchField)
+        let reported = QueryLog()
+        searchField.onQueryChange = { reported.queries.append($0) }
+
+        editor.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        // A real input method reports each composition change; a direct call does not.
+        editor.didChangeText()
+        settleLayout()
+        XCTAssertEqual(reported.queries, [])
+
+        editor.insertText("中", replacementRange: editor.markedRange())
+        settleLayout()
+        XCTAssertFalse(editor.hasMarkedText())
+        XCTAssertEqual(reported.queries, ["中"])
+    }
+
+    func testSearchFieldUsesTheMarkedTextAwareFieldEditor() throws {
+        let controller = PanelController()
+        let (_, editor) = try searchEditor(in: controller)
+        XCTAssertTrue(editor is QuickAccessFieldEditor)
+    }
+
     func testRepeatedKeyNotificationsPreserveTheExistingEditor() throws {
         let window = KeyWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
                                styleMask: [.titled], backing: .buffered, defer: false)
@@ -324,6 +350,11 @@ final class AppLaunchTests: XCTestCase {
         )
     }
 
+}
+
+@MainActor
+private final class QueryLog {
+    var queries: [String] = []
 }
 
 // Exercise key-window notifications without taking focus from another application.

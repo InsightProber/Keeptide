@@ -5,6 +5,11 @@ import SwiftUI
 final class PanelController: NSWindowController, NSWindowDelegate {
     private static let defaultSize = NSSize(width: 680, height: 496)
     private let searchField = QuickAccessSearchField()
+    private lazy var fieldEditor: QuickAccessFieldEditor = {
+        let editor = QuickAccessFieldEditor()
+        editor.isFieldEditor = true
+        return editor
+    }()
     private(set) var isSessionOpen = false
 
     init() {
@@ -64,6 +69,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) { close() }
+
+    func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
+        (client as? QuickAccessSearchField) === searchField ? fieldEditor : nil
+    }
 
     static func frame(for size: NSSize, in visibleFrame: NSRect) -> NSRect {
         let size = NSSize(width: min(size.width, visibleFrame.width), height: min(size.height, visibleFrame.height))
