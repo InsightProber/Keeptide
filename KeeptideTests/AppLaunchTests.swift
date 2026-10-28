@@ -39,6 +39,18 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(panel.hidesOnDeactivate)
     }
 
+    func testTheWindowMenuCloseIsEnabledForThePanel() throws {
+        let panel = try XCTUnwrap(PanelController().window)
+        let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
+        let close = try XCTUnwrap(menu.item(withTitle: "Window")?.submenu?.item(withTitle: "Close"))
+        XCTAssertEqual(close.action, #selector(NSWindow.performClose(_:)))
+        XCTAssertEqual(close.keyEquivalent, "w")
+
+        // NSWindow disables Close for a window without a close button, and the borderless panel has none; ⌘W
+        // would then only beep and leave the panel open.
+        XCTAssertTrue(panel.validateMenuItem(close))
+    }
+
     func testWindowGeometrySurvivesHostingLayout() throws {
         let panel = PanelController(preferences: try makePreferences(.nine))
         let library = LibraryWindowController(session: CaptureSession(), autosaveName: nil)

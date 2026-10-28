@@ -483,6 +483,12 @@ private final class QuickAccessPanel: NSPanel {
         if delegate?.windowShouldClose?(self) ?? true { close() }
     }
 
+    /// ⌘W reaches `performClose` through the Window menu's Close, which NSWindow disables for a window without a
+    /// close button; ⌘W would then only beep.
+    override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        menuItem.action == #selector(performClose(_:)) || super.validateMenuItem(menuItem)
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         onKeyEquivalent?(event) == true || super.performKeyEquivalent(with: event)
     }
