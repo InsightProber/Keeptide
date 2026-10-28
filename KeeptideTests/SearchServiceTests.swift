@@ -378,6 +378,69 @@ final class SearchServiceTests: XCTestCase {
                      lastUsedAt: Date(timeIntervalSince1970: 50), useCount: count)
     }
 
+    func testPageReportsRebuildingWhileTheIndexFileIsMidBuild() async throws {
+        let directory = SearchTestSupport.directory()
+        let index = try SQLiteSearchIndex(directory: directory)
+        addTeardownBlock {
+            index.close()
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let document = SearchTestSupport.document(title: "partial build")
+        try index.reset(identity: SearchTestSupport.identity())
+        try index.apply([IndexedItemChange(itemID: document.ref.itemID, documents: [document])],
+                        sequence: 1, checkpoint: .keep)
+
+        let page = try await lastPage(SearchService(index: index, status: SearchIndexStatus(.ready)),
+                                      request("partial"))
+
+        XCTAssertEqual(page.indexState, .rebuilding)
+        XCTAssertEqual(page.results.map(\.ref), [document.ref])
+    }
+
+    func testSearchWorkRunsOnTheSearchQueue() async throws {
+        let labels = LabelRecorder()
+        let service = try makeService((0..<300).map { SearchTestSupport.document(body: "row \($0) 贴板") },
+                                      chunk: 100, onScanProgress: { _ in
+                                          labels.record(String(cString: __dispatch_queue_get_label(nil)))
+                                      })
+
+        _ = try await lastPage(service, request("贴板"))
+
+        XCTAssertFalse(labels.all.isEmpty)
+        XCTAssertEqual(Set(labels.all), [SearchService.queueLabel])
+    }
+
+    func testExactBodyTierChecksLengthBeforeTrimming() async throws {
+        let padded = SearchTestSupport.document(body: "  ls -la\n")
+        let flooded = SearchTestSupport.document(body: String(repeating: " ", count: 2_000) + "ls -la")
+        let service = try makeService([padded, flooded])
+
+        let page = try await lastPage(service, request("ls -la"))
+        let relevance = Dictionary(uniqueKeysWithValues: page.results.map { ($0.ref, $0.relevance) })
+
+        XCTAssertEqual(relevance[padded.ref], .exactMatch)
+        XCTAssertEqual(relevance[flooded.ref], .contiguousPhrase)
+    }
+
+    func testTextUnavailableIsReported() async throws {
+        let unreadable = SearchTestSupport.document(title: "Unreadable synthetic clip", textUnavailable: true)
+        let readable = SearchTestSupport.document(title: "Readable synthetic clip")
+        let service = try makeService([unreadable, readable])
+
+        let page = try await lastPage(service, request("synthetic clip"))
+        let flags = Dictionary(uniqueKeysWithValues: page.results.map { ($0.ref, $0.isTextUnavailable) })
+
+        XCTAssertEqual(flags[unreadable.ref], true)
+        XCTAssertEqual(flags[readable.ref], false)
+    }
+
+    func testFallbackSnippetMarksElision() {
+        XCTAssertEqual(SearchService.snippet(window: "first line\nsecond", windowStart: 401, bodyLength: 1_000,
+                                             terms: ["zzz"])?.text, "…first line")
+        XCTAssertEqual(SearchService.snippet(window: "only line", windowStart: 1, bodyLength: 9,
+                                             terms: ["zzz"])?.text, "only line")
+    }
+
     private func request(
         _ query: String, scope: SearchScope = .all, kinds: Set<ContentKind> = [],
         collection: CollectionFilter? = nil, sourceApp: String? = nil, generation: UInt64 = 1,
@@ -440,5 +503,16 @@ private final class ScanProgress: @unchecked Sendable {
 
     func isIdle(for duration: Duration) -> Bool {
         lock.withLock { ContinuousClock.now - last >= duration }
+    }
+}
+
+private final class LabelRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var labels: [String] = []
+
+    var all: [String] { lock.withLock { labels } }
+
+    func record(_ label: String) {
+        lock.withLock { labels.append(label) }
     }
 }
