@@ -79,6 +79,50 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertEqual(linkContent.body, .link(host: "developer.apple.com", rest: "/"))
     }
 
+    func testSearchTextFramesShowTheSnippetBeforeDetailsArrive() {
+        // Highlights count UTF-16 units, and the emoji takes two of them.
+        let snippet = SearchSnippet(text: "…😀 quick brown fox", highlights: [4..<9])
+        let row = makeRow(snippet: snippet, isPartiallyIndexed: true)
+
+        let before = StripFrameContent.make(row: row, detail: nil, density: .nine)
+
+        // The snippet came with the search result, so it is shown at once and only the caption waits.
+        guard case .text(let text, let size) = before.body else { return XCTFail("Expected a text body") }
+        XCTAssertEqual(String(text.characters), "…😀 quick brown fox")
+        XCTAssertEqual(size, 15)
+        var emphasised: [String] = []
+        for run in text.runs where run.inlinePresentationIntent == .stronglyEmphasized {
+            emphasised.append(String(text[run.range].characters))
+        }
+        XCTAssertEqual(emphasised, ["quick"])
+        XCTAssertNil(before.info)
+        XCTAssertEqual(before.extraItems, 0)
+        XCTAssertEqual(before.markers, [.partiallyIndexed])
+
+        // The details add the caption and change nothing else.
+        let after = StripFrameContent.make(row: row, detail: ClipDetail(excerpt: "x", characterCount: 35), density: .nine)
+        XCTAssertEqual(after.body, before.body)
+        XCTAssertEqual(after.info, "35 characters")
+
+        // The memo title rule applies to it as to any text body: the title goes above, the body is capped.
+        let memo = StripFrameContent.make(
+            row: makeRow(title: "Release checklist", snippet: SearchSnippet(text: "…notarize and ship", highlights: []),
+                         savedAsMemo: true),
+            detail: nil, density: .seven)
+        XCTAssertEqual(memo.memoTitle, "Release checklist")
+        XCTAssertEqual(memo.body, .text(AttributedString("…notarize and ship"), size: 14))
+
+        // Every other row without details keeps the placeholder, snippet or not.
+        let others: [(kind: ContentKind, symbol: String)] = [(.url, "link"), (.image, "photo"), (.file, "doc"), (.other, "square.dashed")]
+        for (kind, symbol) in others {
+            let content = StripFrameContent.make(row: makeRow(kind: kind, title: "Other", snippet: snippet), detail: nil,
+                                                 density: .nine)
+            XCTAssertEqual(content.body, .placeholder(symbol: symbol, title: "Other"), "\(kind)")
+        }
+        let recent = StripFrameContent.make(row: makeRow(title: "Recent"), detail: nil, density: .nine)
+        XCTAssertEqual(recent.body, .placeholder(symbol: "doc.text", title: "Recent"))
+    }
+
     func testMemoTitleShowsOnlyWhenItIsNotTheStartOfTheBody() {
         let memo = makeRow(title: "Release checklist", savedAsMemo: true)
 

@@ -14,8 +14,8 @@ struct StripFrameContent: Equatable {
         case link(host: String, rest: String)
         case image(CGImage, fills: Bool)
         case file(name: String, typeIdentifier: String?)
-        /// The kind's symbol and the clip's title: shown until the details arrive, and for a clip
-        /// whose details hold nothing to draw.
+        /// The kind's symbol and the clip's title. It stands in until the details arrive (a text search
+        /// result shows its snippet at once instead) and for a clip whose details hold nothing to draw.
         case placeholder(symbol: String, title: String)
     }
 
@@ -33,7 +33,8 @@ struct StripFrameContent: Equatable {
     /// shape from here and not from the thumbnail.
     var imageAspectRatio: CGFloat?
 
-    /// `detail` is nil until the details have arrived, and when they could not be read.
+    /// `detail` is nil until the details have arrived, and when they could not be read. A text search
+    /// result already has its snippet, so it shows it without them and only its caption waits.
     static func make(row: QuickAccessRow, detail: ClipDetail?, density: StripDensity) -> StripFrameContent {
         var content = StripFrameContent(
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
@@ -41,16 +42,16 @@ struct StripFrameContent: Equatable {
         )
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
-        guard let detail else { return content }
+        guard let detail else {
+            content.showSnippet(of: row, density: density)
+            return content
+        }
 
         content.extraItems = max(0, detail.itemCount - 1)
         content.info = info(for: row.kind, detail: detail)
         switch row.kind {
         case .text:
-            // Only a text frame shows the search's snippet; the other kinds look as they do for a recent clip.
-            if let snippet = row.snippet, !snippet.text.isEmpty {
-                content.setText(QuickAccessRowContent.highlighted(snippet), plain: snippet.text, for: row, density: density)
-            } else if let excerpt = detail.excerpt, !excerpt.isEmpty {
+            if !content.showSnippet(of: row, density: density), let excerpt = detail.excerpt, !excerpt.isEmpty {
                 content.setText(AttributedString(excerpt), plain: excerpt, for: row, density: density)
             }
         case .url:
@@ -96,6 +97,15 @@ struct StripFrameContent: Equatable {
         case .text, .url: return detail.characterCount.map { ClipInfoFormatter.characters($0) }
         case .file, .other: return nil
         }
+    }
+
+    /// Shows the snippet a text search result brings along, with its hits in bold. Only a text frame
+    /// does that; the other kinds look as they do for a recent clip. Returns whether there was one.
+    @discardableResult
+    private mutating func showSnippet(of row: QuickAccessRow, density: StripDensity) -> Bool {
+        guard row.kind == .text, let snippet = row.snippet, !snippet.text.isEmpty else { return false }
+        setText(QuickAccessRowContent.highlighted(snippet), plain: snippet.text, for: row, density: density)
+        return true
     }
 
     /// Sets a text body at the size its length gives. Under a memo title it goes no larger than the
@@ -258,7 +268,7 @@ struct StripFrameView: View {
                 Text("Text unavailable")
                     .font(.system(size: type.tiers[3]))
                     .lineHeight(.exact(points: lineHeight(of: type.tiers[3])))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(secondaryTextStyle())
             }
         } else {
             switch content.body {
@@ -305,7 +315,7 @@ struct StripFrameView: View {
             if !rest.isEmpty, pathLines > 0 {
                 Text(rest)
                     .font(.system(size: type.linkPath))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(secondaryTextStyle())
                     .lineHeight(.exact(points: lineHeight(of: type.linkPath)))
                     .lineLimit(pathLines)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -411,7 +421,7 @@ struct StripFrameView: View {
                 Text(info)
                     .font(.system(size: type.info))
                     .lineLimit(1)
-                    .foregroundStyle(captionStyle(onImage: onImage))
+                    .foregroundStyle(secondaryTextStyle(onImage: onImage))
             }
         }
     }
@@ -423,7 +433,7 @@ struct StripFrameView: View {
             if content.extraItems > 0 {
                 Text("+\(content.extraItems)")
                     .font(.system(size: type.info, weight: .medium))
-                    .foregroundStyle(captionStyle(onImage: onImage))
+                    .foregroundStyle(secondaryTextStyle(onImage: onImage))
                     .padding(.horizontal, 6)
                     .background(Capsule().fill(onImage ? Self.scrim : Color(nsColor: .quaternaryLabelColor)))
                     .accessibilityHidden(true)
@@ -441,16 +451,27 @@ struct StripFrameView: View {
         }
         return Image(systemName: symbol)
             .font(.system(size: type.info))
-            .foregroundStyle(captionStyle(onImage: onImage))
+            .foregroundStyle(symbolStyle(onImage: onImage))
             .padding(onImage ? 4 : 0)
             .background(Circle().fill(onImage ? Self.scrim : Color.clear))
             .help(name)
             .accessibilityLabel(name)
     }
 
-    /// White on a picture's dark fade; on paper secondary, or primary with Increase Contrast.
-    private func captionStyle(onImage: Bool) -> AnyShapeStyle {
-        onImage ? AnyShapeStyle(.white) : (increasedContrast ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+    /// Text that is not a frame's main text: the caption, a link's path, the count and the notice. On
+    /// paper it is the primary color at 70 percent, which keeps text at 4.5:1 or better where the
+    /// system's secondary color does not (3.95:1 on light paper); with Increase Contrast it is the
+    /// primary color in full. On a picture it is white, on the dark fade.
+    private func secondaryTextStyle(onImage: Bool = false) -> AnyShapeStyle {
+        if onImage { return AnyShapeStyle(.white) }
+        return increasedContrast ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.primary.opacity(0.7))
+    }
+
+    /// Symbols need 3:1 and not 4.5:1, so they keep the system's secondary color on paper, or the
+    /// primary color with Increase Contrast. White on a picture.
+    private func symbolStyle(onImage: Bool) -> AnyShapeStyle {
+        if onImage { return AnyShapeStyle(.white) }
+        return increasedContrast ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
     // MARK: Selection
