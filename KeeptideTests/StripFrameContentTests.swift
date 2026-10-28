@@ -83,7 +83,7 @@ final class StripFrameContentTests: XCTestCase {
         let link = makeRow(kind: .url, snippet: SearchSnippet(text: "…developer", highlights: [1..<10]))
         let linkContent = StripFrameContent.make(
             row: link, detail: ClipDetail(excerpt: "https://developer.apple.com/", characterCount: 28), density: .nine)
-        XCTAssertEqual(linkContent.body, .link(host: "developer.apple.com", rest: "/"))
+        XCTAssertEqual(linkContent.body, .link(host: "developer.apple.com", rest: ""))
     }
 
     func testSearchTextFramesShowTheSnippetBeforeDetailsArrive() {
@@ -199,16 +199,35 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertEqual(content.body, .link(host: "developer.apple.com", rest: "/documentation/appkit/nspanel"))
         XCTAssertEqual(content.info, "56 characters")
 
-        // The port, query and fragment belong to the rest, as written.
+        // The port, query and fragment belong to the rest, which reads with its escapes decoded; the count stays
+        // that of the link as stored.
         let detailed = StripFrameContent.make(
             row: makeRow(kind: .url),
             detail: ClipDetail(excerpt: "https://example.com:8443/search?q=swift%20ui&page=2#top", characterCount: 55),
             density: .nine)
-        XCTAssertEqual(detailed.body, .link(host: "example.com", rest: ":8443/search?q=swift%20ui&page=2#top"))
-        // A host alone has no rest.
+        XCTAssertEqual(detailed.body, .link(host: "example.com", rest: ":8443/search?q=swift ui&page=2#top"))
+        XCTAssertEqual(detailed.info, "55 characters")
+        // A Chinese address reads as Chinese, whether it was copied escaped or not.
+        for address in ["https://zh.wikipedia.org/wiki/中文?q=测试",
+                        "https://zh.wikipedia.org/wiki/%E4%B8%AD%E6%96%87?q=%E6%B5%8B%E8%AF%95"] {
+            let chinese = StripFrameContent.make(
+                row: makeRow(kind: .url), detail: ClipDetail(excerpt: address, characterCount: address.count),
+                density: .nine)
+            XCTAssertEqual(chinese.body, .link(host: "zh.wikipedia.org", rest: "/wiki/中文?q=测试"), address)
+            XCTAssertEqual(chinese.info, "\(address.count) characters", address)
+        }
+        // An escape that does not decode leaves the rest as written.
+        let undecodable = StripFrameContent.make(
+            row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://example.com/a%FFb?q=1", characterCount: 29),
+            density: .nine)
+        XCTAssertEqual(undecodable.body, .link(host: "example.com", rest: "/a%FFb?q=1"))
+        // A host alone has no rest, and neither has a host with only the root path.
         let bare = StripFrameContent.make(
             row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://example.com", characterCount: 19), density: .nine)
         XCTAssertEqual(bare.body, .link(host: "example.com", rest: ""))
+        let root = StripFrameContent.make(
+            row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://apple.com/", characterCount: 18), density: .nine)
+        XCTAssertEqual(root.body, .link(host: "apple.com", rest: ""))
 
         // A link that does not split into a host and the rest is set as text.
         let mail = StripFrameContent.make(

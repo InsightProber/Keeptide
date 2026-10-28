@@ -131,15 +131,18 @@ struct StripFrameContent: Equatable {
         return tiers[min(index + 1, tiers.count - 1)]
     }
 
-    /// The host, and everything after it as written: port, path, query and fragment. Nil when the text
-    /// has no host to split off.
+    /// The host, and everything after it: the port, then the path, query and fragment with their percent
+    /// escapes decoded, so that `/wiki/%E4%B8%AD` reads `/wiki/中`. When an escape does not decode, they stay
+    /// as written. A path that is only "/" says nothing and is left out. Nil when the text has no host to
+    /// split off. Only the frame shows the decoded text; the character count is of the link as stored.
     private static func split(link text: String) -> (host: String, rest: String)? {
         guard let components = URLComponents(string: text), let host = components.host, !host.isEmpty else { return nil }
-        var rest = components.port.map { ":\($0)" } ?? ""
-        rest += components.percentEncodedPath
-        if let query = components.percentEncodedQuery { rest += "?" + query }
-        if let fragment = components.percentEncodedFragment { rest += "#" + fragment }
-        return (host, rest)
+        var written = components.percentEncodedPath
+        if let query = components.percentEncodedQuery { written += "?" + query }
+        if let fragment = components.percentEncodedFragment { written += "#" + fragment }
+        let decoded = written.removingPercentEncoding ?? written
+        let port = components.port.map { ":\($0)" } ?? ""
+        return (host, port + (decoded == "/" ? "" : decoded))
     }
 }
 
