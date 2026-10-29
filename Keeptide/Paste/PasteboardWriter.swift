@@ -30,6 +30,7 @@ enum PasteboardWriterError: Error, Equatable {
     case cannotPrepareRepresentation(itemIndex: Int, representationIndex: Int)
     case writeFailed
     case noPlainText
+    case commandTooLong
 }
 
 struct PreparedPasteboardContent: Sendable {
@@ -111,6 +112,29 @@ final class PasteboardWriter {
         return PreparedPasteboardContent(representations: ordered)
     }
 
+    /// `prepare`, less every representation of text or a link (`ContentKind.isText`). Images, file URLs and other
+    /// data stay, in their order, and an item left with nothing is dropped. Throws `.emptyContent` when nothing is
+    /// left.
+    nonisolated static func prepareWithoutText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        var kept: [RepresentationValue] = []
+        var lastSourceItem: Int?
+        for var representation in try prepare(content).representations
+        where !ContentKind.isText(representation.typeIdentifier) {
+            // Numbered again from zero, as the write expects: dropped items and representations leave no gap.
+            if representation.itemIndex == lastSourceItem, let previous = kept.last {
+                representation.itemIndex = previous.itemIndex
+                representation.representationIndex = previous.representationIndex + 1
+            } else {
+                lastSourceItem = representation.itemIndex
+                representation.itemIndex = (kept.last?.itemIndex ?? -1) + 1
+                representation.representationIndex = 0
+            }
+            kept.append(representation)
+        }
+        guard !kept.isEmpty else { throw PasteboardWriterError.emptyContent }
+        return PreparedPasteboardContent(representations: kept)
+    }
+
     /// Plain text built like the search body: each item's first cleanly decodable text,
     /// preferring text over a link, joined by line breaks and written as the only
     /// representation in UTF-8.
@@ -151,10 +175,16 @@ final class PasteboardWriter {
     }
 
     /// One `public.utf8-plain-text` representation holding `command.text`; the clip's other formats are not
-    /// written. Throws `.noPlainText` when there is no text, or nothing is left after removing the line break.
-    nonisolated static func prepareCommand(_ content: ResolvedContent) throws
+    /// written. Throws `.noPlainText` when there is no text, or nothing is left after removing the line break, and
+    /// `.commandTooLong` when the command's text has more than `maximumByteCount` UTF-8 bytes. A command that long
+    /// is never made, shown or encoded.
+    nonisolated static func prepareCommand(_ content: ResolvedContent, maximumByteCount: Int) throws
         -> (PreparedPasteboardContent, TerminalCommand) {
-        let command = try TerminalCommand(plainText: plainText(content))
+        let text = try plainText(content)
+        guard TerminalCommand.commandText(in: text).utf8.count <= maximumByteCount else {
+            throw PasteboardWriterError.commandTooLong
+        }
+        let command = TerminalCommand(plainText: text)
         guard !command.text.isEmpty else { throw PasteboardWriterError.noPlainText }
         return (try utf8PlainText(command.text, of: content), command)
     }

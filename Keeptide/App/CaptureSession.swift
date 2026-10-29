@@ -196,7 +196,8 @@ final class CaptureSession {
 
     func copy(_ ref: ContentRef) async {
         guard let pasteService else { return }
-        let session = librarySession ?? pasteService.beginSession()
+        // The library window only copies, so its session has no target and the front window is not probed.
+        let session = librarySession ?? pasteService.beginSession(target: nil)
         librarySession = session
         let generation = session.advanceQueryGeneration()
         actionMessage = nil

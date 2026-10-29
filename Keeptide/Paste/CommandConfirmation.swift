@@ -43,20 +43,24 @@ struct TerminalCommand: Equatable, Sendable {
     /// - A control character in U+0000-U+001F shows as its control picture (ESC as `␛`), U+007F as `␡`.
     /// - Any other control or invisible character shows as `⟨U+XXXX⟩`: its code point in upper-case hex with at
     ///   least four digits, such as `⟨U+202E⟩` and `⟨U+E0100⟩`.
-    /// - Two keep an emoji whole and are left as they are: a ZWJ that joins two emoji, and U+FE0E or U+FE0F in
-    ///   an emoji.
+    /// - Two keep an emoji whole and are left as they are: a ZWJ that joins two emoji, and U+FE0E or U+FE0F right
+    ///   after an emoji scalar in an emoji.
     let visibleText: String
 
     nonisolated init(plainText: String) {
-        var text = plainText
-        // "\r\n" is one Character, so a CRLF goes whole. A lone "\r" stays, because it is what Return sends.
-        if text.last == "\n" || text.last == "\r\n" { text.removeLast() }
+        let text = String(Self.commandText(in: plainText))
         let lineBreaks = text.lazy.filter(\.isNewline).count
         self.text = text
         lineCount = 1 + lineBreaks
         needsConfirmation = lineBreaks > 0 || Self.containsControlOrInvisible(text)
         // With nothing to review, the tabs are all there is to show.
         visibleText = needsConfirmation ? Self.visible(text) : text.replacing("\t", with: "⇥\t")
+    }
+
+    /// The text of the command made from `plainText`, without making it: all but one trailing "\n" or "\r\n".
+    /// "\r\n" is one Character, so a CRLF goes whole. A lone "\r" stays, because it is what Return sends.
+    nonisolated static func commandText(in plainText: String) -> Substring {
+        plainText.last == "\n" || plainText.last == "\r\n" ? plainText.dropLast() : plainText[...]
     }
 
     /// Whether `text` holds a control or invisible character other than a tab. ASCII has neither format nor
@@ -92,8 +96,10 @@ struct TerminalCommand: Equatable, Sendable {
                 let scalars = Array(character.unicodeScalars)
                 let inEmoji = isEmoji(character)
                 for (index, scalar) in scalars.enumerated() {
+                    let previous = index > 0 ? scalars[index - 1] : nil
                     if isControlOrInvisible(scalar),
-                       !keepsEmojiWhole(scalar, next: scalars.dropFirst(index + 1).first, inEmoji: inEmoji) {
+                       !keepsEmojiWhole(scalar, previous: previous, next: scalars.dropFirst(index + 1).first,
+                                        inEmoji: inEmoji) {
                         shown += symbol(for: scalar)
                     } else {
                         shown.unicodeScalars.append(scalar)
@@ -113,19 +119,20 @@ struct TerminalCommand: Equatable, Sendable {
         return !first.isASCII || character.unicodeScalars.contains("\u{20E3}")
     }
 
-    /// An invisible scalar that `visibleText` leaves as it is, so that an emoji stays whole. `next` is the scalar
-    /// after it in the same Character.
+    /// An invisible scalar that `visibleText` leaves as it is, so that an emoji stays whole. `previous` and `next`
+    /// are the scalars around it in the same Character.
     /// - A ZWJ with an emoji after it, as in a family emoji. A skin-tone modifier attaches to anything, even a
     ///   letter, so a ZWJ before one joins nothing; neither does a ZWJ at the end of a Character.
-    /// - U+FE0E or U+FE0F in an emoji Character.
-    private nonisolated static func keepsEmojiWhole(_ scalar: Unicode.Scalar, next: Unicode.Scalar?,
-                                                    inEmoji: Bool) -> Bool {
+    /// - U+FE0E or U+FE0F right after an emoji scalar, in an emoji Character. A selector after anything else
+    ///   selects nothing and can only carry hidden data, so it shows.
+    private nonisolated static func keepsEmojiWhole(_ scalar: Unicode.Scalar, previous: Unicode.Scalar?,
+                                                    next: Unicode.Scalar?, inEmoji: Bool) -> Bool {
         switch scalar {
         case "\u{200D}":
             guard let next else { return false }
             return next.properties.isEmoji && !(0x1F3FB...0x1F3FF).contains(next.value)
         case "\u{FE0E}", "\u{FE0F}":
-            return inEmoji
+            return inEmoji && previous?.properties.isEmoji == true
         default:
             return false
         }

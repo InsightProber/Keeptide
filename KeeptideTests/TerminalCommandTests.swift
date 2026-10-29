@@ -169,12 +169,20 @@ final class TerminalCommandTests: XCTestCase {
     func testEmojiStayWholeButStillNeedConfirmation() {
         // A ZWJ that joins two emoji, and U+FE0E or U+FE0F in an emoji, are left as they are so that the emoji
         // stays whole. They are still invisible, so the command needs a review.
-        for emoji in ["\u{1F469}\u{200D}\u{1F4BB}", "\u{2764}\u{FE0F}", "\u{1F600}\u{FE0E}", "1\u{FE0F}\u{20E3}"] {
+        let wholeEmoji = ["\u{1F469}\u{200D}\u{1F4BB}", "\u{2764}\u{FE0F}", "\u{1F600}\u{FE0E}", "1\u{FE0F}\u{20E3}",
+                          "\u{1F469}\u{200D}\u{2764}\u{FE0F}\u{200D}\u{1F468}"]
+        for emoji in wholeEmoji {
             let command = TerminalCommand(plainText: "echo " + emoji + "\n")
             XCTAssertTrue(command.needsConfirmation, emoji.debugDescription)
             XCTAssertEqual(Array(command.visibleText.unicodeScalars), Array(("echo " + emoji).unicodeScalars),
                            emoji.debugDescription)
         }
+        // A selector selects the emoji right before it. One after another selector selects nothing, so it can only
+        // carry hidden data, and it shows.
+        let repeated = TerminalCommand(plainText: "echo \u{1F600}\u{FE0F}\u{FE0F}\u{FE0F}")
+        XCTAssertTrue(repeated.needsConfirmation)
+        XCTAssertEqual(Array(repeated.visibleText.unicodeScalars),
+                       Array("echo \u{1F600}\u{FE0F}⟨U+FE0F⟩⟨U+FE0F⟩".unicodeScalars))
         // A skin-tone modifier attaches to whatever comes before it, so a ZWJ before one joins nothing and shows.
         XCTAssertEqual(TerminalCommand(plainText: "a\u{200D}\u{1F3FB}").visibleText, "a⟨U+200D⟩\u{1F3FB}")
         XCTAssertEqual(TerminalCommand(plainText: "\u{1F469}\u{200D}\u{1F3FB}").visibleText,
@@ -192,7 +200,7 @@ final class TerminalCommandTests: XCTestCase {
         let rtf = Data("{\\rtf1\\ansi echo x}".utf8)
         let rich = try content([[("public.rtf", rtf), ("public.utf8-plain-text", Data("echo x\n".utf8))]])
 
-        let (prepared, command) = try PasteboardWriter.prepareCommand(rich)
+        let (prepared, command) = try PasteboardWriter.prepareCommand(rich, maximumByteCount: .max)
         let token = try PasteboardWriter(pasteboard: board).write(prepared)
 
         XCTAssertEqual(command, TerminalCommand(plainText: "echo x\n"))
@@ -208,7 +216,7 @@ final class TerminalCommandTests: XCTestCase {
         // The board gets the text itself. The visible symbols are for the confirmation card only.
         let raw = "a\tb\nc\u{1B}d\r\n"
         let (preparedRaw, rawCommand) = try PasteboardWriter.prepareCommand(
-            content([[("public.utf8-plain-text", Data(raw.utf8))]]))
+            content([[("public.utf8-plain-text", Data(raw.utf8))]]), maximumByteCount: .max)
         _ = try PasteboardWriter(pasteboard: board).write(preparedRaw)
         XCTAssertTrue(rawCommand.needsConfirmation)
         XCTAssertEqual(rawCommand.lineCount, 2)
@@ -219,7 +227,7 @@ final class TerminalCommandTests: XCTestCase {
         // The decoder drops a leading BOM only. A U+FEFF in the middle of the text reaches the command as a
         // format character, so it is kept and the command needs a review.
         let (preparedBOM, bomCommand) = try PasteboardWriter.prepareCommand(
-            content([[("public.utf8-plain-text", Data("echo \u{FEFF}x\n".utf8))]]))
+            content([[("public.utf8-plain-text", Data("echo \u{FEFF}x\n".utf8))]]), maximumByteCount: .max)
         _ = try PasteboardWriter(pasteboard: board).write(preparedBOM)
         XCTAssertEqual(Array(bomCommand.text.utf8), Array("echo \u{FEFF}x".utf8))
         XCTAssertTrue(bomCommand.needsConfirmation)
@@ -230,7 +238,7 @@ final class TerminalCommandTests: XCTestCase {
         let joined = try PasteboardWriter.prepareCommand(content([
             [("public.utf8-plain-text", Data("first\n".utf8))],
             [("public.utf8-plain-text", Data("second\n".utf8))],
-        ])).1
+        ]), maximumByteCount: .max).1
         XCTAssertEqual(joined.text, "first\n\nsecond")
         XCTAssertTrue(joined.needsConfirmation)
         XCTAssertEqual(joined.lineCount, 3)
@@ -249,11 +257,18 @@ final class TerminalCommandTests: XCTestCase {
                       .invalidRepresentationBytes(itemIndex: 0, representationIndex: 1))
         assertRefused(ResolvedContent(ref: rich.ref, integrity: .corrupt, representations: rich.representations),
                       .nonActionableContent)
+        // The maximum counts the command's text, after the line break goes: a trailing CRLF still fits, one more
+        // byte does not.
+        let atMaximum = try content([[("public.utf8-plain-text", Data("echo x\r\n".utf8))]])
+        XCTAssertEqual(try PasteboardWriter.prepareCommand(atMaximum, maximumByteCount: 6).1.text, "echo x")
+        assertRefused(try content([[("public.utf8-plain-text", Data("echo xy\n".utf8))]]), .commandTooLong,
+                      maximumByteCount: 6)
     }
 
     private func assertRefused(_ content: ResolvedContent, _ expected: PasteboardWriterError,
-                               file: StaticString = #filePath, line: UInt = #line) {
-        XCTAssertThrowsError(try PasteboardWriter.prepareCommand(content), file: file, line: line) { error in
+                               maximumByteCount: Int = .max, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertThrowsError(try PasteboardWriter.prepareCommand(content, maximumByteCount: maximumByteCount),
+                             file: file, line: line) { error in
             XCTAssertEqual(error as? PasteboardWriterError, expected, file: file, line: line)
         }
     }

@@ -12,13 +12,18 @@ enum PasteFormat: Equatable, Sendable {
     case original, plainText
     /// The clip's plain text without one trailing line break, reviewed first when it needs it: `TerminalCommand`.
     case command
+    /// The clip's formats except its text and links.
+    case originalWithoutText
 
-    /// Text and links for a terminal are a command in either mode, so no request can paste one another way. Copy
-    /// As-Is keeps the clip as captured.
+    /// For a terminal, text reaches the clipboard only as a command, so no request can paste it another way:
+    /// - text and links are a command in either mode;
+    /// - any other clip is a command as plain text, and keeps its own formats without its text and links.
+    ///
+    /// Copy As-Is keeps the clip as captured, and every other target gets the format asked for.
     static func resolve(mode: PasteMode, target: PasteTarget?, kind: ContentKind) -> PasteFormat {
-        if mode == .asIs { return .original }
-        if target?.isTerminal == true, kind == .text || kind == .url { return .command }
-        return mode == .plainText ? .plainText : .original
+        guard mode != .asIs, target?.isTerminal == true else { return mode == .plainText ? .plainText : .original }
+        if kind == .text || kind == .url || mode == .plainText { return .command }
+        return .originalWithoutText
     }
 }
 
@@ -118,8 +123,10 @@ struct PasteRequest {
 /// review is written only once the user confirms it.
 @MainActor
 final class PasteService {
-    /// The longest command, in UTF-8 bytes. The confirmation card shows a command's whole text, so a longer one is
-    /// refused rather than reviewed in part. Copy As-Is is not a command and has no limit.
+    /// The longest command, in UTF-8 bytes once its trailing line break is removed. Every command is held to it,
+    /// whether or not it needs a review, and a longer one is refused before it is reviewed or encoded: the
+    /// confirmation card shows a command's whole text, so a command is never reviewed in part. Copy As-Is is not a
+    /// command and has no limit.
     private static let maximumCommandByteCount = 262_144
 
     private let pasteboard: NSPasteboard
@@ -195,6 +202,7 @@ final class PasteService {
 
         let mode = request.mode
         let target = session.target
+        let maximumCommandByteCount = Self.maximumCommandByteCount
         let prepared: (content: PreparedPasteboardContent, command: TerminalCommand?)
         do {
             prepared = try await Task.detached(priority: .userInitiated) {
@@ -205,24 +213,28 @@ final class PasteService {
                                                 hasLocalReference: hasLocalReference)
                 switch PasteFormat.resolve(mode: mode, target: target, kind: kind) {
                 case .original: return (try PasteboardWriter.prepare(content), nil)
+                case .originalWithoutText: return (try PasteboardWriter.prepareWithoutText(content), nil)
                 case .plainText: return (try PasteboardWriter.preparePlainText(content), nil)
-                case .command: return try PasteboardWriter.prepareCommand(content)
+                case .command:
+                    return try PasteboardWriter.prepareCommand(content, maximumByteCount: maximumCommandByteCount)
                 }
             }.value
         } catch {
             guard session.accepts(generation) else { return .refused(.stale) }
-            return .refused(error as? PasteboardWriterError == .noPlainText ? .noPlainText : .contentUnavailable)
+            switch error as? PasteboardWriterError {
+            case .noPlainText?: return .refused(.noPlainText)
+            case .commandTooLong?: return .refused(.commandTooLong)
+            default: return .refused(.contentUnavailable)
+            }
         }
         guard session.accepts(generation) else { return .refused(.stale) }
-        if let command = prepared.command, command.text.utf8.count > Self.maximumCommandByteCount {
-            return .refused(.commandTooLong)
-        }
         return deliver(prepared.content, command: prepared.command, of: content.ref, for: request)
     }
 
     /// Writes the clip and, for a paste whose checks all pass before the write and again after the panel hides,
     /// posts one ⌘V. A command that needs a review is written only with the session's pending confirmation for
-    /// exactly this content, mode and delivery. It is synchronous so that the compiler rejects any suspension here:
+    /// exactly this content, mode and delivery. `ref` is the content read: the confirmation and the use receipt
+    /// both name it. It is synchronous so that the compiler rejects any suspension here:
     /// nothing else on the main actor runs between the checks, the confirmation, the write, hiding the panel and
     /// the keystroke.
     private func deliver(_ prepared: PreparedPasteboardContent, command: TerminalCommand?, of ref: ContentRef,
@@ -267,7 +279,7 @@ final class PasteService {
         // The copy is done once the clipboard is written, whatever happens to the paste: one receipt per
         // action, stored without holding up the caller. One that cannot be stored never undoes the copy.
         let recordUse = recordUse
-        let receipt = UseReceipt(ref: request.ref, outcome: .success)
+        let receipt = UseReceipt(ref: ref, outcome: .success)
         Task { try? await recordUse(receipt) }
         switch check {
         case nil: return .copied

@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import Keeptide
 
@@ -15,19 +16,24 @@ final class CommandConfirmationTests: XCTestCase {
             XCTAssertEqual(PasteFormat.resolve(mode: .original, target: .terminal, kind: kind), .command, "\(kind)")
             XCTAssertEqual(PasteFormat.resolve(mode: .plainText, target: .terminal, kind: kind), .command, "\(kind)")
         }
-        // Images, files and other content go to a terminal as they would anywhere else.
+        // Text reaches a terminal only as a command: images, files and other content keep their own formats
+        // without their text, and their plain text is a command too.
         for kind in [ContentKind.image, .file, .other] {
-            XCTAssertEqual(PasteFormat.resolve(mode: .original, target: .terminal, kind: kind), .original, "\(kind)")
-            XCTAssertEqual(PasteFormat.resolve(mode: .plainText, target: .terminal, kind: kind), .plainText, "\(kind)")
+            XCTAssertEqual(PasteFormat.resolve(mode: .original, target: .terminal, kind: kind), .originalWithoutText,
+                           "\(kind)")
+            XCTAssertEqual(PasteFormat.resolve(mode: .plainText, target: .terminal, kind: kind), .command, "\(kind)")
         }
         // Another app, or no target, gets what was asked for.
         for target in [PasteTarget.textEdit, nil] {
-            XCTAssertEqual(PasteFormat.resolve(mode: .original, target: target, kind: .text), .original)
-            XCTAssertEqual(PasteFormat.resolve(mode: .plainText, target: target, kind: .text), .plainText)
+            for kind in [ContentKind.text, .url, .image, .file, .other] {
+                XCTAssertEqual(PasteFormat.resolve(mode: .original, target: target, kind: kind), .original, "\(kind)")
+                XCTAssertEqual(PasteFormat.resolve(mode: .plainText, target: target, kind: kind), .plainText,
+                               "\(kind)")
+            }
         }
         // Copy As-Is is the clip as captured, everywhere.
         for target in [PasteTarget.terminal, .textEdit, nil] {
-            for kind in [ContentKind.text, .url, .image] {
+            for kind in [ContentKind.text, .url, .image, .file, .other] {
                 XCTAssertEqual(PasteFormat.resolve(mode: .asIs, target: target, kind: kind), .original, "\(kind)")
             }
         }
@@ -46,6 +52,17 @@ final class CommandConfirmationTests: XCTestCase {
         let item = try XCTUnwrap(fixture.board.pasteboardItems?.first)
         XCTAssertEqual(contentTypes(item), ["public.utf8-plain-text"])
         XCTAssertEqual(item.data(forType: .init("public.utf8-plain-text")), Data("echo synthetic-beta".utf8))
+
+        // A link is a command too: its text, without the line break, and nothing else.
+        let link = try await fixture.insert([[("public.url", Data("https://example.invalid/a".utf8)),
+                                              ("public.utf8-plain-text", Data("https://example.invalid/a\n".utf8))]])
+        let pastedLink = await paste.execute(request(link, paste.beginSession()))
+        XCTAssertEqual(pastedLink, .dispatched(.terminal))
+        XCTAssertEqual(fake.sent, [9, 9])
+        let linkItem = try XCTUnwrap(fixture.board.pasteboardItems?.first)
+        XCTAssertEqual(fixture.board.pasteboardItems?.count, 1)
+        XCTAssertEqual(contentTypes(linkItem), ["public.utf8-plain-text"])
+        XCTAssertEqual(linkItem.data(forType: .init("public.utf8-plain-text")), Data("https://example.invalid/a".utf8))
     }
 
     func testMultiLineCommandNeedsConfirmationAndNeitherSendsNorCopies() async throws {
@@ -268,6 +285,10 @@ final class CommandConfirmationTests: XCTestCase {
         let pasteReview = try XCTUnwrap(pasteOutcome.review)
         XCTAssertEqual(pasteReview.confirmation.delivery, .copy)
         XCTAssertEqual(fake.sent, [])
+        // A review for a copy counts as no use either.
+        try await Task.sleep(for: .milliseconds(100))
+        let uses = try await fixture.useCount(multi)
+        XCTAssertEqual(uses, 0)
     }
 
     func testCopyAsIsKeepsTheTrailingNewlineAndNeverSends() async throws {
@@ -314,6 +335,67 @@ final class CommandConfirmationTests: XCTestCase {
         XCTAssertEqual(pastedImage, .dispatched(.terminal))
         XCTAssertEqual(fixture.board.data(forType: .png), png)
         XCTAssertNil(fixture.board.data(forType: .string))
+    }
+
+    func testImageWithTextInATerminalNeverWritesItsText() async throws {
+        let fixture = try PasteFixture(self)
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        let ref = try await fixture.insert([[("public.png", png),
+                                             ("public.utf8-plain-text", Data(Self.multiLine.utf8))]])
+        let fake = terminal()
+        let paste = fixture.service(system: fake.system)
+        let session = paste.beginSession()
+
+        // The original formats go without the text, so the text cannot reach the terminal unreviewed.
+        let original = await paste.execute(request(ref, session, mode: .original))
+
+        XCTAssertEqual(original, .dispatched(.terminal))
+        XCTAssertEqual(fixture.board.data(forType: .png), png)
+        XCTAssertEqual(textLikeTypes(on: fixture.board), [])
+        XCTAssertEqual(fake.sent, [9])
+
+        // Its plain text is a command, and this one needs a review first.
+        let before = fixture.board.changeCount
+        let plainText = await paste.execute(request(ref, session, mode: .plainText))
+        let review = try XCTUnwrap(plainText.review)
+        XCTAssertEqual(review.command.lineCount, 2)
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [9])
+
+        // An item of text alone is left out, and the image item after it is written as the first.
+        let separate = try await fixture.insert([[("public.utf8-plain-text", Data(Self.multiLine.utf8))],
+                                                 [("public.png", png)]])
+        let pastedSeparate = await paste.execute(request(separate, session, mode: .original))
+        XCTAssertEqual(pastedSeparate, .dispatched(.terminal))
+        XCTAssertEqual(fixture.board.pasteboardItems?.count, 1)
+        XCTAssertEqual(fixture.board.data(forType: .png), png)
+        XCTAssertEqual(textLikeTypes(on: fixture.board), [])
+        XCTAssertEqual(fake.sent, [9, 9])
+    }
+
+    func testFileInATerminalKeepsOnlyItsFileURL() async throws {
+        let fixture = try PasteFixture(self)
+        let fileURL = Data(URL(fileURLWithPath: "/tmp/synthetic.txt").absoluteString.utf8)
+        let name = Data("synthetic.txt\n".utf8)
+        let file = try await capture([("public.file-url", fileURL), ("public.utf8-plain-text", name)], into: fixture)
+        let fake = terminal()
+        let paste = fixture.service(system: fake.system)
+        let session = paste.beginSession()
+
+        let outcome = await paste.execute(request(file, session, mode: .original))
+
+        XCTAssertEqual(outcome, .dispatched(.terminal))
+        XCTAssertEqual(fixture.board.data(forType: .fileURL), fileURL)
+        XCTAssertEqual(textLikeTypes(on: fixture.board), [])
+        XCTAssertEqual(fake.sent, [9])
+
+        // A file whose every format is text or a link has nothing left to paste.
+        let link = try await capture([("public.url", fileURL), ("public.utf8-plain-text", name)], into: fixture)
+        let before = fixture.board.changeCount
+        let refused = await paste.execute(request(link, session, mode: .original))
+        XCTAssertEqual(refused, .refused(.contentUnavailable))
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [9])
     }
 
     func testOversizedCommandIsRefusedButCopyAsIsWorks() async throws {
@@ -374,6 +456,22 @@ final class CommandConfirmationTests: XCTestCase {
 
     private func contentTypes(_ item: NSPasteboardItem) -> [String] {
         item.types.map(\.rawValue).filter { $0 != OwnWriteToken.typeIdentifier }
+    }
+
+    /// Types on the board that are text or a link, by the rule that classifies a clip as text.
+    private func textLikeTypes(on board: NSPasteboard) -> [String] {
+        (board.pasteboardItems ?? []).flatMap(contentTypes).filter {
+            ClipboardTextDecoder.isTextType($0) || UTType($0)?.conforms(to: .text) == true
+        }
+    }
+
+    /// One item stored as capture stores it: an item with a file reference keeps every format local.
+    private func capture(_ representations: [(String, Data)], into fixture: PasteFixture) async throws -> ContentRef {
+        let item = CapturedPasteboardItem(representations: representations.map {
+            CapturedRepresentation(typeIdentifier: $0.0, bytes: $0.1)
+        })
+        let snapshot = CaptureSnapshotValue(items: [item], changeCount: 1, sourceApp: nil)
+        return try await CaptureService(controller: fixture.controller).capture(snapshot).ref
     }
 }
 
