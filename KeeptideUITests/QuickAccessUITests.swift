@@ -3,6 +3,11 @@ import XCTest
 
 /// Quick access against an isolated test session seeded with synthetic clips.
 /// Every pasteboard involved is the session's named pasteboard.
+///
+/// The seeded clips, newest first: "Synthetic alpha note", "echo synthetic-beta" (stored with a trailing
+/// newline), a shell snippet, a Chinese note, a link, rich text and, oldest, an image. The strip opens on
+/// the newest, which is selected and leftmost, with the older clips on its right. Above the clips, the band's
+/// toolbar holds the search, folded to its icon until it is wanted, and the filters.
 @MainActor
 final class QuickAccessUITests: XCTestCase {
     private var sessionID: UUID?
@@ -20,38 +25,80 @@ final class QuickAccessUITests: XCTestCase {
 
     func testRecentClipsAppearNewestFirst() throws {
         let app = launchKeeptide()
-        let rows = try openPanel(app)
+        let frames = try openPanel(app)
+        let newest = clip("Synthetic alpha note", in: frames)
+        let older = clip("echo synthetic-beta", in: frames)
 
-        XCTAssertEqual(rows.element(boundBy: 0).label, "Synthetic alpha note")
-        XCTAssertEqual(rows.element(boundBy: 1).label, "echo synthetic-beta")
-        XCTAssertEqual(text(of: app.staticTexts["QuickAccessScope"]), "Recent Clips")
+        XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(older.waitForExistence(timeout: 5), app.debugDescription)
+        // The search opens folded to its icon, with the filters beside it, all above the clips.
+        let search = app.buttons["Search clips"]
+        XCTAssertTrue(search.exists, app.debugDescription)
+        XCTAssertFalse(app.buttons["Clear search"].exists)
+        let filters = app.descendants(matching: .any)["QuickAccessFilters"]
+        XCTAssertTrue(filters.exists, app.debugDescription)
+        for title in ["All", "Text", "Links", "Images", "Files"] {
+            XCTAssertTrue(filters.descendants(matching: .any)[title].exists, "\(title)\n\(app.debugDescription)")
+        }
+        XCTAssertLessThan(search.frame.maxY, newest.frame.minY, app.debugDescription)
+        // The newest clip is the leftmost frame and the next older clip the frame on its right. That the newest is
+        // the one selected shows in what Return copies.
+        let lefts = frames.allElementsBoundByIndex.map(\.frame.minX)
+        XCTAssertEqual(newest.frame.minX, lefts.min() ?? .infinity, accuracy: 1, app.debugDescription)
+        XCTAssertTrue(isRightNeighbour(older, of: newest), app.debugDescription)
     }
 
     func testDownDoesNotSkipTheFirstRowAndUpReturnsToSearch() throws {
         let app = launchKeeptide()
-        _ = try openPanel(app)
+        let frames = try openPanel(app)
         let query = app.searchFields["Quick access query"]
+        let newest = clip("Synthetic alpha note", in: frames)
+        XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
 
+        // ↓ goes into the strip and leaves the newest clip selected instead of stepping past it. Nothing else here
+        // shows the selection, so the frames' own selected state is read where the system reports it.
         query.typeKey(.downArrow, modifierFlags: [])
-        let firstRow = app.tables["QuickAccessResults"].tableRows.element(boundBy: 0)
-        XCTAssertTrue(firstRow.waitForExistence(timeout: 5))
-        XCTAssertTrue(firstRow.isSelected)
+        if let selected = selectedClip(in: frames) {
+            XCTAssertEqual(selected.label, newest.label, app.debugDescription)
+        } else {
+            XCTContext.runActivity(named: "AXSelected not reported; selection check skipped") { _ in }
+        }
 
         app.typeKey(.upArrow, modifierFlags: [])
         app.typeText("x")
         XCTAssertEqual(query.value as? String, "x")
     }
 
+    func testDownThenReturnCopiesTheNewestClip() throws {
+        let (app, host) = launchKeeptideWithHost()
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
+        // ↓ never steps past the newest clip. Return copies the selected clip, so what it copies shows which clip ↓
+        // left selected, whether or not the system reports the frames' selected state.
+        app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        let toast = app.descendants(matching: .any)["CopyToastMessage"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
+
+        XCTAssertEqual(copiedText(host: host), "Synthetic alpha note")
+    }
+
     func testTypingSearchesAllContent() throws {
         let app = launchKeeptide()
-        _ = try openPanel(app)
+        let frames = try openPanel(app)
+        let unrelated = clip("Synthetic alpha note", in: frames)
+        XCTAssertTrue(unrelated.waitForExistence(timeout: 5), app.debugDescription)
 
         app.searchFields["Quick access query"].typeText("beta")
 
-        let match = app.tables["QuickAccessResults"].cells
-            .matching(NSPredicate(format: "label == %@", "echo synthetic-beta")).firstMatch
-        XCTAssertTrue(match.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(text(of: app.staticTexts["QuickAccessScope"]).hasPrefix("All Content"))
+        // Only what matches stays in the strip: the other recent clip leaves and the match remains. Typing opened the
+        // search, which can now be cleared with the pointer.
+        XCTAssertTrue(unrelated.waitForNonExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(clip("echo synthetic-beta", in: frames).exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["Clear search"].exists, app.debugDescription)
+        XCTAssertFalse(app.buttons["Search clips"].exists, app.debugDescription)
     }
 
     func testSpaceOpensPreviewAndEscapeClosesOneLayerAtATime() throws {
@@ -69,11 +116,15 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(preview.waitForNonExistence(timeout: 5))
         XCTAssertTrue(panel.exists)
 
-        query.click()
+        // The search is folded to its icon; a click on it opens the search with the keys in its field.
+        app.buttons["Search clips"].click()
+        XCTAssertTrue(app.buttons["Search clips"].waitForNonExistence(timeout: 5), app.debugDescription)
         query.typeText("x")
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(query.value as? String, "")
         XCTAssertTrue(panel.exists)
+        // Clearing the query folded the search again.
+        XCTAssertTrue(app.buttons["Search clips"].exists, app.debugDescription)
 
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
@@ -85,7 +136,8 @@ final class QuickAccessUITests: XCTestCase {
         let query = app.searchFields["Quick access query"]
 
         query.typeText("zzzz-no-match")
-        let status = app.descendants(matching: .any)["QuickAccessStatus"]
+        // In the card area, where the clips would be; the toolbar's status is another element.
+        let status = app.descendants(matching: .any)["QuickAccessEmptyState"]
         let noResults = NSPredicate(format: "label == %@ OR value == %@", "No results", "No results")
         expectation(for: noResults, evaluatedWith: status)
         waitForExpectations(timeout: 8)
@@ -106,20 +158,41 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertEqual(text(of: toast), "Copied — press ⌘V to paste")
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
 
-        host.activate()
-        host.buttons["Inspect Synthetic Pasteboard"].click()
-        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
-        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription)
-        XCTAssertEqual(received.value as? String, "Synthetic alpha note")
+        XCTAssertEqual(copiedText(host: host), "Synthetic alpha note")
+    }
+
+    func testArrowKeysStepTheStripAndReturnCopiesTheSelectedClip() throws {
+        let (app, host) = launchKeeptideWithHost()
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(clip("echo synthetic-beta", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
+        // Nothing is newer than the newest clip, so ← leaves the selection on it; → steps one clip older. Return
+        // copies the selected clip, wherever the keys are, so what it copies shows where the steps went.
+        app.searchFields["Quick access query"].typeKey(.leftArrow, modifierFlags: [])
+        app.typeKey(.rightArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        let toast = app.descendants(matching: .any)["CopyToastMessage"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
+
+        // The seeded clip ends with a newline.
+        XCTAssertEqual(copiedText(host: host)?.trimmingCharacters(in: .whitespacesAndNewlines), "echo synthetic-beta")
     }
 
     func testShiftReturnOnTheImageRowShowsTheReason() throws {
         let (app, host) = launchKeeptideWithHost()
-        let rows = try openPanel(app)
-        let image = rows.matching(NSPredicate(format: "label == %@", "Copied content")).firstMatch
-        XCTAssertTrue(image.waitForExistence(timeout: 5), app.debugDescription)
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
 
-        image.click()
+        // The image is the oldest of the seven seeded clips, at the right end. A screen too narrow for all seven makes
+        // its card only as the strip comes near it. ↓ puts the keys in the strip, and each → selects the next older
+        // clip; at the oldest one → does nothing more. The reason Shift-Return gives shows that the image is the clip
+        // selected.
+        app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
+        for _ in 0..<7 { app.typeKey(.rightArrow, modifierFlags: []) }
+        XCTAssertTrue(clip("Copied content", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
         app.typeKey(.return, modifierFlags: .shift)
 
         let failure = app.descendants(matching: .any)["QuickAccessFailure"]
@@ -160,14 +233,50 @@ final class QuickAccessUITests: XCTestCase {
         return host
     }
 
-    /// Waits for the panel `--show-quick-access` opened and for its seeded rows. The
-    /// status menu path is covered by NativeShellUITests.
+    /// Waits for the panel `--show-quick-access` opened and for the frames of its seeded clips, which it
+    /// returns. The status menu path is covered by NativeShellUITests.
     @discardableResult
     func openPanel(_ app: XCUIApplication) throws -> XCUIElementQuery {
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForExistence(timeout: 8), app.debugDescription)
-        let rows = app.tables["QuickAccessResults"].cells
-        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
-        return rows
+        let strip = stripElement(in: app)
+        XCTAssertTrue(strip.waitForExistence(timeout: 10), app.debugDescription)
+        let frames = strip.descendants(matching: .any)
+        XCTAssertTrue(frames.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+        return frames
+    }
+
+    private func stripElement(in app: XCUIApplication) -> XCUIElement {
+        app.descendants(matching: .any)["QuickAccessStrip"]
+    }
+
+    /// The frame of the clip with this title. A frame is labelled "<Kind>, <time>, from <App>, <footer>: <title>",
+    /// with the clip's marks after the title when it has any, so the title is matched inside the label.
+    private func clip(_ title: String, in frames: XCUIElementQuery) -> XCUIElement {
+        frames.matching(NSPredicate(format: "label CONTAINS %@", ": \(title)")).firstMatch
+    }
+
+    /// The frame that reports itself selected, or nil where none does, as on a system that does not report the
+    /// frames' selected state. The selected clip is not always in the middle, so where it is cannot tell.
+    private func selectedClip(in frames: XCUIElementQuery) -> XCUIElement? {
+        let selected = frames.matching(NSPredicate(format: "selected == true")).firstMatch
+        return selected.waitForExistence(timeout: 2) ? selected : nil
+    }
+
+    /// Whether `clip` is the frame directly to the right of `other`: it starts after `other` ends, with less
+    /// than a frame's width between them, since a gap that wide would hold another clip.
+    private func isRightNeighbour(_ clip: XCUIElement, of other: XCUIElement) -> Bool {
+        guard clip.exists, other.exists else { return false }
+        let gap = clip.frame.minX - other.frame.maxX
+        return gap >= 0 && gap < other.frame.width
+    }
+
+    /// The text the session's pasteboard received, as the test host shows it when asked to inspect it.
+    private func copiedText(host: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> String? {
+        host.activate()
+        host.buttons["Inspect Synthetic Pasteboard"].click()
+        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
+        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription, file: file, line: line)
+        return received.value as? String
     }
 
     func text(of element: XCUIElement) -> String {

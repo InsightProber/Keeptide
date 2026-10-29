@@ -1,6 +1,12 @@
 import AppKit
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import XCTest
 @testable import Keeptide
+
+/// A strip frame in pixels, the way the strip asks for details: points times two.
+private let stripFrame = CGSize(width: 328, height: 218)
 
 @MainActor
 final class QuickAccessStateTests: XCTestCase {
@@ -15,7 +21,6 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
 
         XCTAssertEqual(state.selection.rows.map(\.title), ["newest", "middle", "oldest"])
-        XCTAssertEqual(state.scopeTitle, "Recent Clips")
         XCTAssertEqual(state.selection.executableSelection, state.selection.rows.first?.ref)
     }
 
@@ -31,7 +36,6 @@ final class QuickAccessStateTests: XCTestCase {
         state.setQuery("  \u{200B} ")
         try await settled(state)
 
-        XCTAssertEqual(state.scopeTitle, "Recent Clips")
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 
@@ -49,7 +53,6 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
 
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note"])
-        XCTAssertEqual(state.scopeTitle, "All Content")
     }
 
     func testKindFilterSearchesWithEmptyQuery() async throws {
@@ -67,7 +70,6 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
 
         XCTAssertEqual(state.selection.rows.map(\.kind), [.url])
-        XCTAssertEqual(state.scopeTitle, "All Content · Link")
     }
 
     func testClearQueryAndFiltersReturnsToRecent() async throws {
@@ -87,7 +89,6 @@ final class QuickAccessStateTests: XCTestCase {
 
         XCTAssertEqual(state.query, "")
         XCTAssertEqual(state.kinds, [])
-        XCTAssertEqual(state.scopeTitle, "Recent Clips")
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 
@@ -212,6 +213,71 @@ final class QuickAccessStateTests: XCTestCase {
 
         XCTAssertEqual(Set(state.selection.rows.map(\.ref)).count, 70)
         XCTAssertEqual(state.selection.selection, first)
+    }
+
+    func testPagingStopsOnceAPageAddsNoRows() async throws {
+        // A two-letter query is scanned rather than looked up, and each scan of this small index reports its
+        // progress once, so the reports count the searches the state makes.
+        let scans = ScanCount()
+        let fixture = try makeFixture(onScanProgress: { _ in scans.increment() })
+        var clips: [ItemValue] = []
+        for offset in 0..<61 { clips.append(try await insert("ab \(offset)", at: Double(offset), into: fixture)) }
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.setQuery("ab")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        XCTAssertEqual(state.selection.rows.count, 60)
+
+        // The one clip left out is copied again and ranks first, so the next page holds only a clip already
+        // listed, while the search still counts one match more than the list holds.
+        var oldest = clips[0]
+        oldest.lastCopiedAt = Date(timeIntervalSince1970: 2_000)
+        try await fixture.harness.update(.item(oldest.id), to: .item(oldest))
+        try await fixture.harness.consumer.synchronize()
+        let searched = scans.count
+
+        for _ in 0..<3 {
+            state.loadMoreIfNeeded(visibleRow: 55)
+            try await searchesFinished(in: fixture)
+        }
+
+        XCTAssertEqual(scans.count, searched + 1, "Once a page adds nothing, the same page is not asked for again")
+        XCTAssertEqual(state.selection.rows.count, 60)
+        state.close()
+    }
+
+    func testHasMoreRowsOnlyWhileASearchHasAnotherPage() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for offset in 0..<61 { clips.append(try await insert("ab \(offset)", at: Double(offset), into: fixture)) }
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        // Recent clips come in one read, so none follow.
+        XCTAssertEqual(state.selection.rows.count, 61)
+        XCTAssertFalse(state.hasMoreRows)
+
+        // A search that matched more than its first page has another page to fetch.
+        state.setQuery("ab")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        XCTAssertEqual(state.selection.rows.count, 60)
+        XCTAssertTrue(state.hasMoreRows)
+
+        // The clip left out is copied again and ranks first, so the next page adds nothing and paging stops.
+        var oldest = clips[0]
+        oldest.lastCopiedAt = Date(timeIntervalSince1970: 2_000)
+        try await fixture.harness.update(.item(oldest.id), to: .item(oldest))
+        try await fixture.harness.consumer.synchronize()
+        state.loadMoreIfNeeded(visibleRow: 55)
+        try await searchesFinished(in: fixture)
+
+        XCTAssertEqual(state.selection.rows.count, 60)
+        XCTAssertFalse(state.hasMoreRows)
+        state.close()
     }
 
     func testPreviewLoadsOnlyForTheCurrentSelection() async throws {
@@ -369,7 +435,8 @@ final class QuickAccessStateTests: XCTestCase {
     }
 
     func testNonTextPreviewShowsKnownInformationWithoutReading() async throws {
-        let fixture = try makeFixture()
+        // An image is read through the preview service, so this is the case without one.
+        let fixture = try makeFixture(withoutPreview: true)
         try await insert("pixel", types: [("public.png", Data([0x89, 0x50, 0x4E, 0x47]))], at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         state.open()
@@ -491,15 +558,269 @@ final class QuickAccessStateTests: XCTestCase {
     }
 
     func testStatusLineAboveRows() {
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: true, phase: .results, isComplete: false, notice: .rebuilding),
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: true, phase: .results, isComplete: false),
                        "The selected item is no longer in the results")
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: false, notice: nil),
-                       "Searching…")
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .loading, isComplete: true, notice: nil),
-                       "Searching…")
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true, notice: .rebuilding),
-                       "Index is rebuilding — results may be incomplete")
-        XCTAssertNil(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true, notice: nil))
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: false), "Searching…")
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .loading, isComplete: true), "Searching…")
+        // With nothing else to say, the toolbar shows Return's hint; a rebuilding index is told under the rows.
+        XCTAssertNil(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true))
+    }
+
+    func testDetailsLoadForRequestedRowsOnly() async throws {
+        let gate = CopyGate()
+        await gate.open()
+        let fixture = try makeFixture(previewGate: gate)
+        try await insert("oldest", at: 1, into: fixture)
+        try await insert("middle", body: "middle body", at: 2, into: fixture)
+        try await insert("newest", body: "newest body here", at: 3, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let refs = state.selection.rows.map(\.ref)
+
+        state.loadDetails(for: [refs[0], refs[1]], frameSize: stripFrame)
+        try await SearchTestSupport.waitUntil { state.details.count == 2 }
+
+        XCTAssertEqual(state.details[refs[0]]?.excerpt, "newest body here")
+        XCTAssertEqual(state.details[refs[1]]?.characterCount, 11)
+        XCTAssertNil(state.details[refs[2]])
+        let reads = await gate.entries
+        XCTAssertEqual(reads, 2, "The row that was not requested is never read")
+    }
+
+    func testDetailsForRowsNoLongerShownAreDropped() async throws {
+        let gate = CopyGate()
+        let fixture = try makeFixture(previewGate: gate)
+        try await insert("alpha note", at: 1, into: fixture)
+        try await insert("beta note", at: 2, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let beta = try XCTUnwrap(state.selection.rows.first?.ref)
+        let alpha = try XCTUnwrap(state.selection.rows.last?.ref)
+
+        // Both reads are held while the query changes, so they finish after the alpha row has left the list.
+        state.loadDetails(for: [alpha, beta], frameSize: stripFrame)
+        try await SearchTestSupport.waitUntil { await gate.entries == 2 }
+        state.setQuery("beta")
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.ref), [beta])
+        await gate.open()
+
+        // A detail belongs to its clip, not to the query it was asked for, so the row that stayed gets it.
+        try await SearchTestSupport.waitUntil { state.details[beta] != nil }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(state.details[alpha])
+        XCTAssertEqual(Set(state.details.keys), [beta])
+    }
+
+    func testDetailsOfALoadedRowGoWhenItLeavesTheList() async throws {
+        let gate = CopyGate()
+        await gate.open()
+        let fixture = try makeFixture(previewGate: gate)
+        try await insert("alpha note", at: 1, into: fixture)
+        try await insert("beta note", at: 2, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let beta = try XCTUnwrap(state.selection.rows.first?.ref)
+        let alpha = try XCTUnwrap(state.selection.rows.last?.ref)
+        state.loadDetails(for: [alpha, beta], frameSize: stripFrame)
+        try await SearchTestSupport.waitUntil { state.details.count == 2 }
+
+        state.setQuery("beta")
+        try await settled(state)
+
+        XCTAssertEqual(Set(state.details.keys), [beta])
+    }
+
+    func testDetailsStopLoadingForRowsNoLongerRequested() async throws {
+        let fixture = try makeFixture()
+        try await insert("older", at: 1, into: fixture)
+        try await insert("newer", at: 2, into: fixture)
+        let watch = ReadWatch()
+        let services = servicesHolding(watch, in: fixture)
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let newer = try XCTUnwrap(state.selection.rows.first?.ref)
+        let older = try XCTUnwrap(state.selection.rows.last?.ref)
+        await watch.choose(newer)
+
+        state.loadDetails(for: [newer], frameSize: stripFrame)
+        try await SearchTestSupport.waitUntil { await watch.waiting == 1 }
+        state.loadDetails(for: [older], frameSize: stripFrame)
+
+        try await SearchTestSupport.waitUntil { await watch.cancelled == 1 }
+        try await SearchTestSupport.waitUntil { state.details[older] != nil }
+        XCTAssertNil(state.details[newer])
+    }
+
+    func testClosingCancelsDetailLoads() async throws {
+        let fixture = try makeFixture()
+        try await insert("done", at: 1, into: fixture)
+        try await insert("stuck", at: 2, into: fixture)
+        let watch = ReadWatch()
+        let services = servicesHolding(watch, in: fixture)
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let stuck = try XCTUnwrap(state.selection.rows.first?.ref)
+        let done = try XCTUnwrap(state.selection.rows.last?.ref)
+        await watch.choose(stuck)
+        state.loadDetails(for: [done, stuck], frameSize: stripFrame)
+        try await SearchTestSupport.waitUntil { state.details[done] != nil }
+        try await SearchTestSupport.waitUntil { await watch.waiting == 1 }
+
+        state.close()
+
+        try await SearchTestSupport.waitUntil { await watch.cancelled == 1 }
+        XCTAssertTrue(state.details.isEmpty, "Closing drops the details that were already loaded")
+    }
+
+    func testDetailsAreReadTwoAtATimeNearestTheMiddleFirst() async throws {
+        let fixture = try makeFixture()
+        for offset in 0..<5 { try await insert("clip \(offset)", at: Double(offset), into: fixture) }
+        let gate = DetailGate()
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        var gated = fixture.services
+        gated.preview = PreviewService(read: { ref in
+            await gate.enter(ref)
+            return try await repository.read(ref)
+        })
+        let services = gated
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let refs = state.selection.rows.map(\.ref)
+        XCTAssertEqual(refs.count, 5)
+        // The way the strip asks: the clip in the middle first, then outward.
+        let nearestFirst = [refs[2], refs[1], refs[3], refs[0], refs[4]]
+
+        state.loadDetails(for: nearestFirst, frameSize: stripFrame)
+
+        // The two nearest the middle are read first.
+        try await SearchTestSupport.waitUntil { await gate.started.count >= 2 }
+        var started = await gate.started
+        XCTAssertEqual(Set(started), Set(nearestFirst.prefix(2)))
+        // Each read that returns starts the next nearest, and no other read starts meanwhile.
+        for (index, next) in nearestFirst.dropFirst(2).enumerated() {
+            await gate.release(started[index])
+            try await SearchTestSupport.waitUntil { await gate.started.count == 3 + index }
+            started = await gate.started
+            XCTAssertEqual(started.last, next)
+        }
+        await gate.releaseAll()
+        try await SearchTestSupport.waitUntil { state.details.count == 5 }
+        let mostAtOnce = await gate.mostAtOnce
+        XCTAssertEqual(mostAtOnce, 2, "Never more than two reads at once")
+        state.close()
+    }
+
+    func testTheSearchIsOpenWhileItHasAQueryOrOnceUnfolded() async throws {
+        let fixture = try makeFixture()
+        try await insert("alpha note", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        XCTAssertFalse(state.isSearchExpanded, "The panel opens with the search folded")
+
+        // A query holds the search open; without one it folds again.
+        state.setQuery("alpha")
+        XCTAssertTrue(state.isSearchExpanded)
+        state.setQuery("")
+        XCTAssertFalse(state.isSearchExpanded)
+
+        // A filter alone does not open it.
+        state.toggleKind(.text)
+        XCTAssertFalse(state.isSearchExpanded)
+        state.toggleKind(.text)
+
+        // Unfolded by hand, it stays open with or without a query, until it is folded.
+        state.unfoldSearch()
+        XCTAssertTrue(state.isSearchExpanded)
+        state.setQuery("alpha")
+        state.setQuery("")
+        XCTAssertTrue(state.isSearchExpanded)
+        state.foldSearch()
+        XCTAssertFalse(state.isSearchExpanded)
+
+        // Each time the panel opens, the search starts folded again.
+        state.unfoldSearch()
+        state.close()
+        state.open()
+        XCTAssertFalse(state.isSearchExpanded)
+        try await settled(state)
+    }
+
+    func testClearingQueryAndFiltersFoldsTheSearch() async throws {
+        let fixture = try makeFixture()
+        try await insert("alpha note", at: 1, into: fixture)
+        try await insert("beta note", at: 2, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let chosen = state.selection.selection
+
+        // Folding an open search with nothing in it does not search again.
+        state.unfoldSearch()
+        state.foldSearch()
+        XCTAssertEqual(state.phase, .results, "Folding an empty search does not search again")
+        XCTAssertEqual(state.selection.selection, chosen)
+
+        state.unfoldSearch()
+        state.setQuery("alpha")
+        state.toggleKind(.text)
+        try await settled(state)
+        state.clearQueryAndFilters()
+        try await settled(state)
+
+        XCTAssertFalse(state.isSearchExpanded)
+        XCTAssertEqual(state.query, "")
+        XCTAssertEqual(state.kinds, [])
+        XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
+    }
+
+    func testImagePreviewComesFromThePreviewService() async throws {
+        let fixture = try makeFixture()
+        try await insert("pixel", types: [("public.png", try png(width: 3000, height: 2000))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.togglePreview()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+
+        guard case .image(let image, let pixelSize)? = state.preview else {
+            return XCTFail("Expected an image preview, got \(String(describing: state.preview))")
+        }
+        XCTAssertEqual(pixelSize, CGSize(width: 3000, height: 2000))
+        // The picture is cut down to what the preview card can show, while its size stays the real one.
+        XCTAssertEqual(max(image.width, image.height), 1520)
+    }
+
+    func testImagePreviewFallsBackToInfoWhenNothingDecodes() async throws {
+        let fixture = try makeFixture()
+        try await insert("pixel", types: [("public.png", Data([0x89, 0x50, 0x4E, 0x47]))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.togglePreview()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+
+        XCTAssertEqual(state.preview, .info(kind: .image, sourceApp: "test.source"))
+    }
+
+    func testEmptyStatesUseTheStripCopy() {
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noContent, notice: nil),
+                       QuickAccessStatus.Message(text: "No clips yet. Copy something and it shows up here.", detail: nil))
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .libraryUnavailable, notice: nil),
+                       QuickAccessStatus.Message(text: "Library unavailable",
+                                                 detail: "Recent clips appear here once the library opens."))
     }
 
     private struct Fixture {
@@ -508,9 +829,14 @@ final class QuickAccessStateTests: XCTestCase {
         let services: QuickAccessServices
     }
 
-    private func makeFixture(search: SearchService? = nil, withoutSearch: Bool = false,
-                             readGate: CopyGate? = nil) throws -> Fixture {
+    /// `onScanProgress`, when given, gets the progress of every search that scans rather than looks its terms up.
+    private func makeFixture(search: SearchService? = nil, withoutSearch: Bool = false, withoutPreview: Bool = false,
+                             readGate: CopyGate? = nil, previewGate: CopyGate? = nil,
+                             onScanProgress: (@Sendable (Int64) -> Void)? = nil) throws -> Fixture {
         let harness = try SearchHarness.make(in: self)
+        let scanning = onScanProgress.map {
+            SearchService(index: harness.index, status: harness.status, onScanProgress: $0)
+        }
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         let repository = ContentRepository(controller: harness.controller)
@@ -519,9 +845,40 @@ final class QuickAccessStateTests: XCTestCase {
             await readGate?.enter()
             return try await repository.read(ref)
         }, recordUse: { try await usage.record($0) }, didWrite: { _ in })
+        let preview = PreviewService(read: { ref in
+            await previewGate?.enter()
+            return try await repository.read(ref)
+        })
         let services = QuickAccessServices(repository: repository,
-                                           search: withoutSearch ? nil : search ?? harness.service, paste: paste)
+                                           search: withoutSearch ? nil : search ?? scanning ?? harness.service,
+                                           paste: paste, preview: withoutPreview ? nil : preview)
         return Fixture(harness: harness, board: board, services: services)
+    }
+
+    /// The fixture's services, with a preview service whose read of the clip `watch` has chosen hangs.
+    private func servicesHolding(_ watch: ReadWatch, in fixture: Fixture) -> QuickAccessServices {
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        var services = fixture.services
+        services.preview = PreviewService(read: { ref in
+            try await watch.read(ref)
+            return try await repository.read(ref)
+        })
+        return services
+    }
+
+    /// A synthetic PNG of the given size, drawn with Core Graphics.
+    private func png(width: Int, height: Int) throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let output = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(output, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return output as Data
     }
 
     @discardableResult
@@ -540,6 +897,14 @@ final class QuickAccessStateTests: XCTestCase {
     private func settled(_ state: QuickAccessState) async throws {
         try await SearchTestSupport.waitUntil { state.phase != .loading }
     }
+
+    /// Returns once every search asked for so far has run and handed its pages to the state. The yield lets a
+    /// search the state has just asked for reach the search queue. Searches run there one at a time, so one made
+    /// after it finishes after it, and resumes this test only after its pages have reached the main actor.
+    private func searchesFinished(in fixture: Fixture) async throws {
+        await Task.yield()
+        _ = try await fixture.harness.search("settle")
+    }
 }
 
 @MainActor
@@ -552,8 +917,20 @@ private final class CallCounter {
     var count = 0
 }
 
+/// Counts the scanned ranges searches report, from the search queue.
+private final class ScanCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
 
-/// Holds copies at their content read until the test opens it.
+    var count: Int { lock.withLock { value } }
+
+    func increment() {
+        lock.withLock { value += 1 }
+    }
+}
+
+
+/// Holds reads at their content read until the test opens it, and counts how many arrived.
 private actor CopyGate {
     private(set) var entries = 0
     private var isOpen = false
@@ -569,5 +946,56 @@ private actor CopyGate {
         isOpen = true
         waiters.forEach { $0.resume() }
         waiters.removeAll()
+    }
+}
+
+/// Holds each read until the test releases it, and records the order the reads started in and the most that
+/// were held at once.
+private actor DetailGate {
+    private(set) var started: [ContentRef] = []
+    private(set) var mostAtOnce = 0
+    private var held: [ContentRef: CheckedContinuation<Void, Never>] = [:]
+    private var isOpen = false
+
+    func enter(_ ref: ContentRef) async {
+        started.append(ref)
+        guard !isOpen else { return }
+        await withCheckedContinuation { continuation in
+            held[ref] = continuation
+            mostAtOnce = max(mostAtOnce, held.count)
+        }
+    }
+
+    func release(_ ref: ContentRef) {
+        held.removeValue(forKey: ref)?.resume()
+    }
+
+    func releaseAll() {
+        isOpen = true
+        held.values.forEach { $0.resume() }
+        held.removeAll()
+    }
+}
+
+/// Makes the read of one chosen clip wait until it is cancelled, and counts the reads that waited and
+/// the ones that were cancelled while waiting.
+private actor ReadWatch {
+    private var chosen: ContentRef?
+    private(set) var waiting = 0
+    private(set) var cancelled = 0
+
+    func choose(_ ref: ContentRef) {
+        chosen = ref
+    }
+
+    func read(_ ref: ContentRef) async throws {
+        guard ref == chosen else { return }
+        waiting += 1
+        do {
+            try await Task.sleep(for: .seconds(60))
+        } catch {
+            cancelled += 1
+            throw error
+        }
     }
 }

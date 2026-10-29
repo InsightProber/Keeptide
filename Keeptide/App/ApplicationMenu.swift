@@ -14,6 +14,15 @@ enum ApplicationMenuBuilder {
             )
         )
         applicationMenu.addItem(.separator())
+        // No target: the responder chain ends at the application delegate, which opens the window.
+        applicationMenu.addItem(
+            item(
+                title: "Settings…",
+                action: #selector(AppDelegate.showSettings(_:)),
+                keyEquivalent: ","
+            )
+        )
+        applicationMenu.addItem(.separator())
         applicationMenu.addItem(
             item(
                 title: "Quit \(applicationName)",

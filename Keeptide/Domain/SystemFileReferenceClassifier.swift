@@ -21,9 +21,17 @@ enum SystemFileReferenceClassifier {
         return urlPayloadMustRemainLocal(bytes)
     }
 
-    private static let unconditionalIdentifiers: Set<String> = [
-        UTType.fileURL.identifier,
+    /// The legacy `NSFilenamesPboardType` and the dynamic identifiers the system gives it. Its payload
+    /// is a property list of the full paths of the files.
+    static let filenamesListIdentifiers: Set<String> = [
         "nsfilenamespboardtype",
+        // Dynamic UTI produced by the system for NSFilenamesPboardType.
+        "dyn.agu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn",
+        "dyn.ah62d4rv4gu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn"
+    ]
+
+    private static let unconditionalIdentifiers: Set<String> = filenamesListIdentifiers.union([
+        UTType.fileURL.identifier,
         "com.apple.pasteboard.promised-file-url",
         "com.apple.alias-record",
         "com.apple.alias-file",
@@ -31,11 +39,8 @@ enum SystemFileReferenceClassifier {
         "com.apple.security.bookmark",
         "com.apple.cocoa.pasteboard.alias",
         "com.apple.cocoa.pasteboard.bookmark",
-        "public.bookmark",
-        // Dynamic UTI produced by the system for NSFilenamesPboardType.
-        "dyn.agu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn",
-        "dyn.ah62d4rv4gu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn"
-    ]
+        "public.bookmark"
+    ])
 
     private static let urlPayloadIdentifiers: Set<String> = [
         UTType.url.identifier,

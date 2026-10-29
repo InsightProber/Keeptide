@@ -69,7 +69,11 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(queryField.value as? String, "plain input")
         queryField.typeKey("z", modifierFlags: [.command, .shift])
         XCTAssertEqual(queryField.value as? String, "")
+        // Undo brought text back, which opened the search again. Open and empty, it folds at the first Escape and the
+        // panel closes at the next.
         queryField.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(quickAccessPanel.exists)
+        app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(quickAccessPanel.waitForNonExistence(timeout: 5))
     }
 

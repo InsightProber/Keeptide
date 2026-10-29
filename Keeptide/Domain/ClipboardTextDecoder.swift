@@ -51,6 +51,35 @@ enum ClipboardTextDecoder {
         return nil
     }
 
+    /// The whole text of the first representation that decodes, in the order `preview` tries them
+    /// and without its byte limit.
+    nonisolated static func fullText(_ representations: [RepresentationValue]) -> String? {
+        preview(representations, maximumBytes: .max)?.text
+    }
+
+    /// A link's URL as text, without the whitespace around it. The plain text stored beside a link
+    /// can be a title or a Markdown link, so the `public.url` representations are tried first and the
+    /// other text only stands in when none of them holds a URL.
+    nonisolated static func linkText(_ representations: [RepresentationValue]) -> String? {
+        for representation in representations where representation.typeIdentifier.lowercased() == "public.url" {
+            if let url = trimmed(fullText([representation])) { return url }
+        }
+        return trimmed(fullText(representations))
+    }
+
+    /// The title of the page a link was copied from, which a browser writes as `public.url-name` beside the URL,
+    /// decoded as any text is, from its first 4 KB as a clip's title is, and without the whitespace around it. Nil
+    /// when there is none or it is blank. It is not a text type of its own, so titles and previews never read it.
+    nonisolated static func linkTitle(_ representations: [RepresentationValue]) -> String? {
+        for representation in representations where representation.typeIdentifier.lowercased() == "public.url-name" {
+            guard let bytes = representation.bytes,
+                  let decoded = decodeBytes(bytes, normalizedType: "public.url-name", maximumBytes: 4_096),
+                  let title = trimmed(sanitize(decoded.text)) else { continue }
+            return title
+        }
+        return nil
+    }
+
     nonisolated static func decodeText(
         _ bytes: Data,
         typeIdentifier: String,
@@ -73,7 +102,18 @@ enum ClipboardTextDecoder {
         maximumBytes: Int
     ) -> ClipTextPreview? {
         let normalizedType = typeIdentifier.lowercased()
-        guard supportedTypes.contains(normalizedType), !bytes.isEmpty else { return nil }
+        guard supportedTypes.contains(normalizedType) else { return nil }
+        return decodeBytes(bytes, normalizedType: normalizedType, maximumBytes: maximumBytes)
+    }
+
+    /// Decodes text of a known type: a byte order mark chooses UTF-16, the UTF-16 types are UTF-16 without one, and
+    /// everything else is UTF-8. A prefix cut inside a character is shortened until it decodes.
+    private nonisolated static func decodeBytes(
+        _ bytes: Data,
+        normalizedType: String,
+        maximumBytes: Int
+    ) -> ClipTextPreview? {
+        guard !bytes.isEmpty else { return nil }
 
         let encoding: String.Encoding
         let bomByteCount: Int
@@ -119,5 +159,11 @@ enum ClipboardTextDecoder {
 
     private nonisolated static func sanitize(_ text: String) -> String {
         String(text.unicodeScalars.filter { $0.value != 0 })
+    }
+
+    /// The text without the whitespace and newlines around it; nil when nothing else is left.
+    private nonisolated static func trimmed(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return text
     }
 }

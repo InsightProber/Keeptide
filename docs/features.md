@@ -3,8 +3,12 @@
 The table below describes the planned first release. Development builds currently
 include local recording, explicit start/pause controls, ignored applications,
 exact capture deduplication, a recent-clips list, original-format and plain-text
-copying, and a quick-access panel that searches all content with a local
-full-text index, filters by type, and previews text. Other capabilities, including
+copying, and a quick-access panel. The panel shows clips as a row of large cards
+in a wide band, in small, medium or large sizes as set in a minimal Settings
+window, and steps through them with the arrow keys or a trackpad swipe, one clip
+per detent with a haptic tick on a Force Touch trackpad. It searches all content
+with a local full-text index from a search that folds into an icon until you
+type, filters by type, and previews text and images. Other capabilities, including
 direct paste into other apps, remain planned. There is no application release yet.
 
 ## First release
@@ -14,7 +18,7 @@ direct paste into other apps, remain planned. There is no application release ye
 | Clipboard history | Capture supported text, rich content, images, URLs and file references, preserving original representations |
 | Reusable snippets | Save a capture or create a short note, command, prompt or code fragment directly |
 | Editing | Native text editing, recoverable drafts, light Markdown and preservation of the original capture |
-| Quick access | A global shortcut, compact results, keyboard navigation and explicit actions |
+| Quick access | A global shortcut, a band of clip cards, keyboard navigation and explicit actions |
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections with one collection per saved snippet, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |

@@ -44,6 +44,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let showQuickAccess: () -> Void
     private let toggleQuickAccess: () -> Void
     private let showLibrary: () -> Void
+    private let showSettings: () -> Void
     private let captureIsReady: () -> Bool
     private let captureIsEnabled: () -> Bool
     private let captureStatus: () -> String
@@ -65,6 +66,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         showQuickAccess: @escaping () -> Void,
         toggleQuickAccess: @escaping () -> Void,
         showLibrary: @escaping () -> Void,
+        showSettings: @escaping () -> Void = {},
         captureIsReady: @escaping () -> Bool = { true },
         captureIsEnabled: @escaping () -> Bool = { false },
         captureStatus: @escaping () -> String = { "Clipboard recording is off" },
@@ -77,6 +79,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         self.showQuickAccess = showQuickAccess
         self.toggleQuickAccess = toggleQuickAccess
         self.showLibrary = showLibrary
+        self.showSettings = showSettings
         self.captureIsReady = captureIsReady
         self.captureIsEnabled = captureIsEnabled
         self.captureStatus = captureStatus
@@ -203,6 +206,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.addItem(withTitle: "Open Quick Access", action: #selector(openQuickAccess), keyEquivalent: "")
         menu.addItem(withTitle: "Open Library", action: #selector(openLibrary), keyEquivalent: "")
+        menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
 
         menu.addItem(.separator())
         let captureToggleItem = menu.addItem(
@@ -262,6 +266,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     @objc private func openLibrary() {
         showLibrary()
+    }
+
+    @objc private func openSettings() {
+        showSettings()
     }
 
     @objc private func toggleCaptureRecording() {
