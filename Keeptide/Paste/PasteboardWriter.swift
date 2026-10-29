@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct OwnWriteToken: Equatable, Sendable {
     static let typeIdentifier = CaptureWire.ownWriteTypeIdentifier
@@ -112,14 +113,16 @@ final class PasteboardWriter {
         return PreparedPasteboardContent(representations: ordered)
     }
 
-    /// `prepare`, less every representation of text or a link (`ContentKind.isText`). Images, file URLs and other
-    /// data stay, in their order, and an item left with nothing is dropped. Throws `.emptyContent` when nothing is
-    /// left.
+    /// What a terminal gets from a clip that is not text: `prepare`, keeping only images, file URLs and the legacy
+    /// list of file paths. Everything else is left out, whatever it is: a terminal can make text out of more formats
+    /// than a list of text formats names, such as rich text with attachments, web archives and old text flavours.
+    /// The order is kept, and an item left with nothing is dropped. Throws `.noPlainText` when nothing is left: the
+    /// clip has neither text to review nor an image or a file, so only Copy As-Is copies it.
     nonisolated static func prepareWithoutText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
         var kept: [RepresentationValue] = []
         var lastSourceItem: Int?
         for var representation in try prepare(content).representations
-        where !ContentKind.isText(representation.typeIdentifier) {
+        where isImageOrFileReference(representation.typeIdentifier) {
             // Numbered again from zero, as the write expects: dropped items and representations leave no gap.
             if representation.itemIndex == lastSourceItem, let previous = kept.last {
                 representation.itemIndex = previous.itemIndex
@@ -131,8 +134,17 @@ final class PasteboardWriter {
             }
             kept.append(representation)
         }
-        guard !kept.isEmpty else { throw PasteboardWriterError.emptyContent }
+        guard !kept.isEmpty else { throw PasteboardWriterError.noPlainText }
         return PreparedPasteboardContent(representations: kept)
+    }
+
+    /// The formats `prepareWithoutText` keeps: a type that conforms to `public.image`, `public.file-url`, and
+    /// NSFilenamesPboardType under its legacy name or the dynamic identifiers an item's types give it. Identifiers
+    /// are compared without regard to case.
+    private nonisolated static func isImageOrFileReference(_ typeIdentifier: String) -> Bool {
+        let lowered = typeIdentifier.lowercased()
+        return lowered == "public.file-url" || SystemFileReferenceClassifier.filenamesListIdentifiers.contains(lowered)
+            || UTType(typeIdentifier)?.conforms(to: .image) == true
     }
 
     /// Plain text built like the search body: each item's first cleanly decodable text,

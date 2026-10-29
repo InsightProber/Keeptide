@@ -12,12 +12,13 @@ enum PasteFormat: Equatable, Sendable {
     case original, plainText
     /// The clip's plain text without one trailing line break, reviewed first when it needs it: `TerminalCommand`.
     case command
-    /// The clip's formats except its text and links.
+    /// Only the clip's images and file references (`PasteboardWriter.prepareWithoutText`): never its text, its links
+    /// or any other data.
     case originalWithoutText
 
     /// For a terminal, text reaches the clipboard only as a command, so no request can paste it another way:
     /// - text and links are a command in either mode;
-    /// - any other clip is a command as plain text, and keeps its own formats without its text and links.
+    /// - any other clip is a command as plain text, and otherwise keeps only its images and file references.
     ///
     /// Copy As-Is keeps the clip as captured, and every other target gets the format asked for.
     static func resolve(mode: PasteMode, target: PasteTarget?, kind: ContentKind) -> PasteFormat {

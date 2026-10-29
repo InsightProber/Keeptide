@@ -16,8 +16,8 @@ final class CommandConfirmationTests: XCTestCase {
             XCTAssertEqual(PasteFormat.resolve(mode: .original, target: .terminal, kind: kind), .command, "\(kind)")
             XCTAssertEqual(PasteFormat.resolve(mode: .plainText, target: .terminal, kind: kind), .command, "\(kind)")
         }
-        // Text reaches a terminal only as a command: images, files and other content keep their own formats
-        // without their text, and their plain text is a command too.
+        // Text reaches a terminal only as a command: images, files and other content keep only their images and
+        // file references, and their plain text is a command too.
         for kind in [ContentKind.image, .file, .other] {
             XCTAssertEqual(PasteFormat.resolve(mode: .original, target: .terminal, kind: kind), .originalWithoutText,
                            "\(kind)")
@@ -371,13 +371,32 @@ final class CommandConfirmationTests: XCTestCase {
         XCTAssertEqual(fixture.board.data(forType: .png), png)
         XCTAssertEqual(textLikeTypes(on: fixture.board), [])
         XCTAssertEqual(fake.sent, [9, 9])
+
+        // Only the image goes: a terminal could make text out of rich text with attachments or a web archive.
+        let rich = try await fixture.insert([[("public.png", png),
+                                              ("com.apple.flat-rtfd", Data("synthetic rtfd".utf8)),
+                                              ("com.apple.webarchive", Data("synthetic webarchive".utf8))]])
+        let pastedRich = await paste.execute(request(rich, session, mode: .original))
+        XCTAssertEqual(pastedRich, .dispatched(.terminal))
+        XCTAssertEqual(fixture.board.pasteboardItems?.count, 1)
+        XCTAssertEqual(fixture.board.data(forType: .png), png)
+        XCTAssertNil(fixture.board.data(forType: .init("com.apple.flat-rtfd")))
+        XCTAssertNil(fixture.board.data(forType: .init("com.apple.webarchive")))
+        XCTAssertEqual(textLikeTypes(on: fixture.board), [])
+        XCTAssertEqual(fake.sent, [9, 9, 9])
     }
 
     func testFileInATerminalKeepsOnlyItsFileURL() async throws {
         let fixture = try PasteFixture(self)
         let fileURL = Data(URL(fileURLWithPath: "/tmp/synthetic.txt").absoluteString.utf8)
+        let paths = try PropertyListSerialization.data(fromPropertyList: ["/tmp/synthetic.txt"], format: .xml,
+                                                       options: 0)
+        // The list of file paths under the identifier a capture records for NSFilenamesPboardType: an item's types
+        // are UTIs, and the legacy name is not one.
+        let pathsType = "dyn.ah62d4rv4gu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn"
         let name = Data("synthetic.txt\n".utf8)
-        let file = try await capture([("public.file-url", fileURL), ("public.utf8-plain-text", name)], into: fixture)
+        let file = try await capture([("public.file-url", fileURL), (pathsType, paths),
+                                      ("public.utf8-plain-text", name)], into: fixture)
         let fake = terminal()
         let paste = fixture.service(system: fake.system)
         let session = paste.beginSession()
@@ -385,17 +404,54 @@ final class CommandConfirmationTests: XCTestCase {
         let outcome = await paste.execute(request(file, session, mode: .original))
 
         XCTAssertEqual(outcome, .dispatched(.terminal))
-        XCTAssertEqual(fixture.board.data(forType: .fileURL), fileURL)
+        // The written types, not what the board would derive: it can make a list of paths from a file URL.
+        let item = try XCTUnwrap(fixture.board.pasteboardItems?.first)
+        XCTAssertEqual(Set(contentTypes(item)), ["public.file-url", pathsType])
+        XCTAssertEqual(item.data(forType: .fileURL), fileURL)
+        XCTAssertEqual(item.data(forType: .init(pathsType)), paths)
         XCTAssertEqual(textLikeTypes(on: fixture.board), [])
         XCTAssertEqual(fake.sent, [9])
 
-        // A file whose every format is text or a link has nothing left to paste.
+        // A file known only by its list of paths keeps that list.
+        let listed = try await capture([(pathsType, paths), ("public.utf8-plain-text", name)], into: fixture)
+        let pastedList = await paste.execute(request(listed, session, mode: .original))
+        XCTAssertEqual(pastedList, .dispatched(.terminal))
+        XCTAssertEqual(fixture.board.data(forType: .init(pathsType)), paths)
+        XCTAssertEqual(textLikeTypes(on: fixture.board), [])
+        XCTAssertEqual(fake.sent, [9, 9])
+
+        // A file item made only of a link and its name has neither an image nor a file reference to paste.
         let link = try await capture([("public.url", fileURL), ("public.utf8-plain-text", name)], into: fixture)
         let before = fixture.board.changeCount
         let refused = await paste.execute(request(link, session, mode: .original))
-        XCTAssertEqual(refused, .refused(.contentUnavailable))
+        XCTAssertEqual(refused, .refused(.noPlainText))
         XCTAssertEqual(fixture.board.changeCount, before)
-        XCTAssertEqual(fake.sent, [9])
+        XCTAssertEqual(fake.sent, [9, 9])
+    }
+
+    func testOtherDataInATerminalIsRefused() async throws {
+        let fixture = try PasteFixture(self)
+        let pdf = Data("%PDF-1.7 synthetic".utf8)
+        let ref = try await fixture.insert([[("com.adobe.pdf", pdf)]])
+        let fake = terminal()
+        let paste = fixture.service(system: fake.system)
+        let session = paste.beginSession()
+        let before = fixture.board.changeCount
+
+        // A terminal takes reviewed text, images and files. Anything else has no plain text for it, either way.
+        let original = await paste.execute(request(ref, session, mode: .original))
+        let plainText = await paste.execute(request(ref, session, mode: .plainText))
+
+        XCTAssertEqual(original, .refused(.noPlainText))
+        XCTAssertEqual(plainText, .refused(.noPlainText))
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [])
+
+        // Copy As-Is still copies it, as captured.
+        let copied = await paste.execute(request(ref, session, mode: .asIs))
+        XCTAssertEqual(copied, .copied)
+        XCTAssertEqual(fixture.board.data(forType: .pdf), pdf)
+        XCTAssertEqual(fake.sent, [])
     }
 
     func testOversizedCommandIsRefusedButCopyAsIsWorks() async throws {
