@@ -43,7 +43,8 @@ enum PasteOutcome: Equatable, Sendable {
 final class PasteSession {
     /// Shared by every session, so a number from one session never matches another's.
     private static var lastGeneration: UInt64 = 0
-    /// The app window in front when the session began. Without one, the session only copies.
+    /// The app window recorded for this session, by `beginSession()` or carried over by `beginSession(target:)`;
+    /// nil means copy only.
     let target: PasteTarget?
     let sessionGeneration: UInt64
     private(set) var queryGeneration: UInt64 = 0
@@ -99,6 +100,8 @@ final class PasteService {
     private let directPasteOnlyTo: String?
     /// Only the newest session may paste.
     private var latestSessionGeneration: UInt64 = 0
+    /// Called on a caller's programming error. Debug builds stop here; tests replace it to watch for a call.
+    var reportProgrammingError: @MainActor (String) -> Void = { assertionFailure($0) }
 
     init(pasteboard: NSPasteboard,
          read: @escaping @Sendable (ContentRef) async throws -> ResolvedContent,
@@ -172,10 +175,25 @@ final class PasteService {
             return .refused(error as? PasteboardWriterError == .noPlainText ? .noPlainText : .contentUnavailable)
         }
         guard session.accepts(generation) else { return .refused(.stale) }
+        return deliver(prepared, for: request)
+    }
 
-        // From here to the keystroke nothing awaits, so nothing else on the main actor runs between the
-        // checks, the write, hiding the panel and the post.
-        let check = request.delivery == .paste ? availability(for: session) : nil
+    /// Writes the clip and, for a paste whose checks all pass before the write and again after the panel hides,
+    /// posts one ⌘V. It is synchronous so that the compiler rejects any suspension here: nothing else on the main
+    /// actor runs between the checks, the write, hiding the panel and the keystroke.
+    private func deliver(_ prepared: PreparedPasteboardContent, for request: PasteRequest) -> PasteOutcome {
+        let session = request.session
+        let check: DirectPasteAvailability?
+        switch request.delivery {
+        case .copy:
+            check = nil
+        case .paste where request.dismiss == nil:
+            // Never post while the panel may still be key: the keystroke could reach Keeptide's own panel.
+            reportProgrammingError("A paste request must be able to hide the panel before ⌘V is posted.")
+            check = .copy(.cannotSendKeystroke)
+        case .paste:
+            check = availability(for: session)
+        }
         let token: OwnWriteToken
         do {
             token = try PasteboardWriter(pasteboard: pasteboard).write(prepared)
@@ -194,12 +212,12 @@ final class PasteService {
         case .paste?: break
         }
         request.dismiss?()
-        // Hiding the panel can bring another window forward, so every check runs again, and the key code
-        // is resolved for the layout in use now.
+        // Hiding the panel can bring another window forward, so every check runs again.
         switch availability(for: session) {
         case .copy(let fallback):
             return .copiedInstead(fallback)
         case .paste(let target):
+            // Resolved again here, after `dismiss`: the keyboard layout can change while the panel hides.
             guard let keyCode = system.commandVKeyCode(), system.postCommandV(keyCode) else {
                 return .copiedInstead(.cannotSendKeystroke)
             }

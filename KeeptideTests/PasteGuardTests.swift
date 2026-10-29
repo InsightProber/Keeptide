@@ -54,6 +54,8 @@ final class PasteGuardTests: XCTestCase {
         XCTAssertEqual(fixture.board.string(forType: .string), clip)
         XCTAssertEqual(fake.sent, [])
         XCTAssertEqual(log.dismissals, 0)
+        // A copy runs no target check: the only probe is the one that recorded the session's target.
+        XCTAssertEqual(fake.probes, 1)
     }
 
     func testTargetAppSwitchedCopiesInstead() async throws {
@@ -184,6 +186,13 @@ final class PasteGuardTests: XCTestCase {
 
         XCTAssertEqual(intoTextEdit, .copiedInstead(.testSessionTarget))
         XCTAssertEqual(fixture.board.string(forType: .string), clip)
+        XCTAssertEqual(fake.sent, [])
+
+        // An app without a bundle identifier is not the host either.
+        fake.front = PasteTarget(processIdentifier: 505, bundleIdentifier: nil, name: "App", windowNumber: 51)
+        let intoUnidentified = await paste.execute(request(ref, paste.beginSession()))
+
+        XCTAssertEqual(intoUnidentified, .copiedInstead(.testSessionTarget))
         XCTAssertEqual(fake.sent, [])
 
         fake.front = .testHost
@@ -330,6 +339,36 @@ final class PasteGuardTests: XCTestCase {
         XCTAssertEqual(fake.settingsOpened, 0)
     }
 
+    /// Each pair of neighbouring checks fails together here, and the earlier one must be the reason.
+    /// `testAvailabilityReflectsTheChecksAtOpen` pins secure input before the key code.
+    func testAnEarlierCheckWinsOverTheNextOne() throws {
+        let fixture = try PasteFixture(self)
+        let fake = FakeDirectPasteSystem()
+        let testSession = fixture.service(system: fake.system,
+                                          directPasteOnlyTo: "io.github.insightprober.Keeptide.SystemTestHost")
+
+        // No target comes before the test session's host rule.
+        XCTAssertEqual(testSession.availability(for: testSession.beginSession(target: nil)), .copy(.noTarget))
+
+        // The host rule comes before permission.
+        let nonHost = testSession.beginSession()
+        fake.permitted = false
+        XCTAssertEqual(testSession.availability(for: nonHost), .copy(.testSessionTarget))
+
+        // Permission comes before the target, and without it the window list is not read.
+        let paste = fixture.service(system: fake.system)
+        let session = paste.beginSession()
+        fake.front = Self.otherTextEditWindow
+        let probes = fake.probes
+        XCTAssertEqual(paste.availability(for: session), .copy(.notPermitted))
+        XCTAssertEqual(fake.probes, probes)
+
+        // The target comes before secure input.
+        fake.permitted = true
+        fake.secureInput = true
+        XCTAssertEqual(paste.availability(for: session), .copy(.targetChanged))
+    }
+
     func testBeginSessionProbesOnceAndAnExplicitTargetIsNotProbed() throws {
         let fixture = try PasteFixture(self)
         let fake = FakeDirectPasteSystem()
@@ -396,14 +435,42 @@ final class PasteGuardTests: XCTestCase {
         XCTAssertEqual(granting.settingsOpened, 0)
     }
 
+    func testAPasteRequestThatCannotHideThePanelOnlyCopies() async throws {
+        let (fixture, ref) = try await makeFixture()
+        let fake = FakeDirectPasteSystem()
+        let paste = fixture.service(system: fake.system)
+        let log = PasteLog()
+        // A debug build stops at the report; the test records it instead.
+        paste.reportProgrammingError = { log.programmingErrors.append($0) }
+        let session = paste.beginSession()
+        let unhidable = PasteRequest(ref: ref, queryGeneration: session.queryGeneration, mode: .original,
+                                     session: session, delivery: .paste)
+
+        let outcome = await paste.execute(unhidable)
+
+        XCTAssertEqual(outcome, .copiedInstead(.cannotSendKeystroke))
+        XCTAssertEqual(fixture.board.string(forType: .string), clip)
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(log.programmingErrors.count, 1)
+
+        // It is the reason whatever the checks would say.
+        fake.permitted = false
+        let withoutPermission = await paste.execute(unhidable)
+        XCTAssertEqual(withoutPermission, .copiedInstead(.cannotSendKeystroke))
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(log.programmingErrors.count, 2)
+    }
+
     private func makeFixture() async throws -> (PasteFixture, ContentRef) {
         let fixture = try PasteFixture(self)
         let ref = try await fixture.insert([[("public.utf8-plain-text", Data(clip.utf8))]])
         return (fixture, ref)
     }
 
+    /// Every request can hide the panel, as the panel's are: a paste request without `dismiss` is a programming
+    /// error, which `testAPasteRequestThatCannotHideThePanelOnlyCopies` covers.
     private func request(_ ref: ContentRef, _ session: PasteSession, delivery: PasteDelivery = .paste,
-                         dismiss: (@MainActor () -> Void)? = nil) -> PasteRequest {
+                         dismiss: @escaping @MainActor () -> Void = {}) -> PasteRequest {
         PasteRequest(ref: ref, queryGeneration: session.queryGeneration, mode: .original, session: session,
                      delivery: delivery, dismiss: dismiss)
     }
@@ -418,4 +485,5 @@ private final class PasteLog {
     var dismissalsAtSend: Int?
     var queuedJobRan = false
     var queuedJobRanAtSend: Bool?
+    var programmingErrors: [String] = []
 }
