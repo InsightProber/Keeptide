@@ -18,7 +18,7 @@ direct paste into other apps, remain planned. There is no application release ye
 | Clipboard history | Capture supported text, rich content, images, URLs and file references, preserving original representations |
 | Reusable snippets | Save a capture or create a short note, command, prompt or code fragment directly |
 | Editing | Native text editing, recoverable drafts, light Markdown and preservation of the original capture |
-| Quick access | A global shortcut, a centered strip of clips, keyboard navigation and explicit actions |
+| Quick access | A global shortcut, a band of clip cards, keyboard navigation and explicit actions |
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections with one collection per saved snippet, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
