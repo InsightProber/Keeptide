@@ -201,7 +201,7 @@ final class QuickAccessToolbarTests: XCTestCase {
             XCTAssertTrue(isCut(notice), "\(note): cut short")
             XCTAssertEqual(notice.lineBreakMode, .byTruncatingTail)
             XCTAssertEqual(notice.toolTip, "Index is rebuilding — results may be incomplete", "\(note)")
-            XCTAssertEqual(notice.accessibilityValue() as? String, "Index is rebuilding — results may be incomplete",
+            XCTAssertEqual(notice.accessibilityValue(), "Index is rebuilding — results may be incomplete",
                            "\(note): read whole")
         }
     }

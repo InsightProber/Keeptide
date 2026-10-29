@@ -185,7 +185,7 @@ final class SearchIndexTests: XCTestCase {
         }
         try await harness?.consumer.synchronize()
         let expected = [exact.itemID, rarely.itemID, often.itemID]
-        let before = try await try XCTUnwrap(harness).search("deploy").results.map(\.ref.itemID)
+        let before = try await XCTUnwrap(harness).search("deploy").results.map(\.ref.itemID)
         try await harness?.close()
         harness = nil
 
