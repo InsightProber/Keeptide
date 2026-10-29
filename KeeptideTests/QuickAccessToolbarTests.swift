@@ -117,7 +117,7 @@ final class QuickAccessToolbarTests: XCTestCase {
             let filters = toolbar.filters.frame
             XCTAssertFalse(status.isHidden, "\(width)")
             XCTAssertEqual(status.stringValue, failure)
-            XCTAssertGreaterThanOrEqual(status.frame.width, status.intrinsicContentSize.width, "\(width): read in full")
+            XCTAssertFalse(isCut(status), "\(width): read in full")
             XCTAssertGreaterThanOrEqual(status.frame.minX, filters.maxX + 12, "\(width): clear of the filters")
             XCTAssertEqual(status.frame.maxX, toolbar.moreButton.frame.minX - 12, "\(width)")
             XCTAssertNil(status.toolTip, "\(width): nothing is cut, so there is no help tag")
@@ -140,7 +140,88 @@ final class QuickAccessToolbarTests: XCTestCase {
         toolbar.note = .status("Searching…")
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
-        XCTAssertGreaterThanOrEqual(toolbar.statusLabel.frame.width, toolbar.statusLabel.intrinsicContentSize.width)
+        XCTAssertFalse(isCut(toolbar.statusLabel))
+    }
+
+    func testTheRebuildNoticeTakesTheRowsLeftEnd() throws {
+        // While there are clips and the index rebuilds, the row's left end says so: 16 pt in, level with the row, in a
+        // status's type and colour, and at least the right end's 12 pt gap clear of the search's ring, folded or open.
+        // The search and the filters stay centred, and the right end keeps Return's hint, word and all.
+        for expanded in [false, true] {
+            let toolbar = makeToolbar(width: 1376)
+            toolbar.setSearchExpanded(expanded)
+            toolbar.note = .copy(enabled: true)
+            toolbar.hasClips = true
+            toolbar.indexNotice = .rebuilding
+            toolbar.layoutSubtreeIfNeeded()
+            let notice = toolbar.indexNoticeLabel
+            let halo = toolbar.search.frame.insetBy(dx: -3, dy: -3)
+            let name = expanded ? "open" : "folded"
+            XCTAssertFalse(notice.isHidden, name)
+            XCTAssertEqual(notice.stringValue, "Index is rebuilding — results may be incomplete", name)
+            XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessIndexNotice", name)
+            XCTAssertEqual(notice.frame.minX, 16, name)
+            XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, name)
+            XCTAssertLessThanOrEqual(notice.frame.maxX, halo.minX - 12, name)
+            XCTAssertFalse(isCut(notice), "\(name): in full")
+            XCTAssertNil(notice.toolTip, name)
+            XCTAssertEqual(notice.font, toolbar.statusLabel.font, name)
+            XCTAssertEqual(notice.textColor, ToolbarPalette.secondary, name)
+            XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX,
+                           accuracy: 0.5, name)
+            XCTAssertFalse(toolbar.copyHint.isHidden, name)
+            XCTAssertTrue(toolbar.copyHint.showsTitle, name)
+        }
+    }
+
+    func testOnANarrowRowTheRebuildNoticeGivesWayToTheRightEnd() throws {
+        // A 960 pt row, as a 1024 pt screen gives, with the search open. The right end has what it needs first, and the
+        // notice keeps clear of the search and its ring whatever it says. Beside Return's hint, or a short failure that
+        // moves the search a little to the left, the notice is cut short, its whole text in its help tag and read whole.
+        // A failure that moves the search as far left as it goes leaves it no room, and it is not shown.
+        let cases: [(note: QuickAccessToolbar.Note, shown: Bool)] = [
+            (.copy(enabled: true), true), (.failure("This item has no plain text."), true),
+            (.failure("This item changed or is no longer available."), false),
+        ]
+        for (note, shown) in cases {
+            let toolbar = makeToolbar(width: 960)
+            toolbar.setSearchExpanded(true)
+            toolbar.hasClips = true
+            toolbar.indexNotice = .rebuilding
+            toolbar.note = note
+            toolbar.layoutSubtreeIfNeeded()
+            let notice = toolbar.indexNoticeLabel
+            let status = toolbar.statusLabel
+            let halo = toolbar.search.frame.insetBy(dx: -3, dy: -3)
+            if case .failure = note { XCTAssertFalse(isCut(status), "\(note): read in full") }
+            XCTAssertEqual(!notice.isHidden, shown, "\(note)")
+            guard shown else { continue }
+            XCTAssertEqual(notice.frame.minX, 16, "\(note)")
+            XCTAssertLessThanOrEqual(notice.frame.maxX, halo.minX - 12, "\(note): clear of the search's ring")
+            XCTAssertTrue(isCut(notice), "\(note): cut short")
+            XCTAssertEqual(notice.lineBreakMode, .byTruncatingTail)
+            XCTAssertEqual(notice.toolTip, "Index is rebuilding — results may be incomplete", "\(note)")
+            XCTAssertEqual(notice.accessibilityValue() as? String, "Index is rebuilding — results may be incomplete",
+                           "\(note): read whole")
+        }
+    }
+
+    func testTheRebuildNoticeShowsOnlyOverClipsWhileTheIndexRebuilds() throws {
+        // With no clips the empty state says the index is rebuilding, and an index that is ready, or one that is
+        // unavailable, has nothing to say here.
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.note = .copy(enabled: true)
+        // In this order each step changes one input at a time where it can, so either alone brings the notice or takes it.
+        let cases: [(hasClips: Bool, notice: IndexNotice?, shown: Bool)] = [
+            (true, .rebuilding, true), (false, .rebuilding, false), (true, .rebuilding, true), (true, nil, false),
+            (true, .searchUnavailable, false), (false, nil, false), (false, .rebuilding, false),
+        ]
+        for (hasClips, notice, shown) in cases {
+            toolbar.hasClips = hasClips
+            toolbar.indexNotice = notice
+            toolbar.layoutSubtreeIfNeeded()
+            XCTAssertEqual(!toolbar.indexNoticeLabel.isHidden, shown, "clips \(hasClips), \(String(describing: notice))")
+        }
     }
 
     func testTheSearchFoldsInAFifthOfASecondOrAtOnceWithReduceMotion() throws {
@@ -279,6 +360,11 @@ final class QuickAccessToolbarTests: XCTestCase {
         let selector = NSSelectorFromString("accessibilityAttributeValue:")
         guard element.responds(to: selector) else { return nil }
         return element.perform(selector, with: name)?.takeUnretainedValue()
+    }
+
+    /// Whether a label shows less than its whole text, as its cell tells: a cell whose text fits needs no expansion.
+    private func isCut(_ label: NSTextField) -> Bool {
+        label.cell?.expansionFrame(withFrame: label.bounds, in: label) != .zero
     }
 
     /// The WCAG 2 contrast ratio of two opaque sRGB colours.

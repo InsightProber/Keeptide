@@ -626,25 +626,27 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testTheRebuildNoticeShowsUnderTheClipsAndLeavesTheCopyHint() async throws {
+    func testTheRebuildNoticeShowsAtTheToolbarsLeftAndLeavesTheCopyHint() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         try await insertClips(["deploy one", "deploy two"], into: harness)
         try await harness.consumer.synchronize()
-        let controller = try makePanel(over: harness, pasteboard: board)
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 875))
         controller.state.open()
         addTeardownBlock { controller.state.close() }
         try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let notice = toolbar.indexNoticeLabel
         // The middle of the band's padding under the clips.
         let band = try bandRect(in: window)
         let underTheClips = NSRect(x: band.midX - 100, y: band.minY + 4, width: 200, height: 8)
 
-        // While the index rebuilds, a search that finds clips says so under them. The toolbar has nothing to say, so
-        // its right end keeps Return's hint, word and all.
+        // While the index rebuilds, a search that finds clips says so at the toolbar's left end, in its row and left of
+        // the search. The right end has nothing to say, so it keeps Return's hint, word and all.
         harness.status.update(.rebuilding)
         editor.insertText("deploy", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
@@ -652,22 +654,26 @@ final class AppLaunchTests: XCTestCase {
             return state.query == "deploy" && state.phase == .results && state.selection.isComplete
                 && state.selection.rows.count == 2 && state.indexNotice == .rebuilding
         }
-        try await SearchTestSupport.waitUntil { toolbar.note == .copy(enabled: true) }
-        toolbar.layoutSubtreeIfNeeded()
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return toolbar.note == .copy(enabled: true) && !notice.isHidden
+        }
         XCTAssertFalse(toolbar.copyHint.isHidden)
         XCTAssertTrue(toolbar.copyHint.showsTitle)
         XCTAssertTrue(toolbar.statusLabel.isHidden)
-        // The band draws the notice a moment after the results arrive. Text there reads about 0.3 apart; the empty
-        // padding reads 0.
-        var drawn: CGFloat = 0
-        try await SearchTestSupport.waitUntil {
-            window.contentView?.layoutSubtreeIfNeeded()
-            drawn = try self.contrast(in: window, at: underTheClips)
-            return drawn > 0.15
-        }
-        XCTAssertGreaterThan(drawn, 0.15, "The notice is drawn under the clips")
+        XCTAssertFalse(notice.isHidden)
+        XCTAssertEqual(notice.stringValue, QuickAccessStatus.rebuilding)
+        XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessIndexNotice")
+        XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, "In the toolbar's row")
+        XCTAssertLessThan(notice.frame.maxX, toolbar.search.frame.minX, "Left of the search")
+        // The clips have nothing under them; the band draws them in full first.
+        _ = try await clipStrip(in: window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        settleLayout()
+        XCTAssertLessThan(try contrast(in: window, at: underTheClips), 0.05, "Nothing is drawn under the clips")
 
-        // With the index ready again, the same clips have nothing under them.
+        // With the index ready again, the same clips bring no notice.
         harness.status.update(.ready)
         toolbar.filters.chips[1].performClick(nil)
         try await SearchTestSupport.waitUntil {
@@ -676,11 +682,10 @@ final class AppLaunchTests: XCTestCase {
                 && state.selection.rows.count == 2 && state.indexNotice == nil
         }
         try await SearchTestSupport.waitUntil {
-            window.contentView?.layoutSubtreeIfNeeded()
-            drawn = try self.contrast(in: window, at: underTheClips)
-            return drawn < 0.05
+            toolbar.layoutSubtreeIfNeeded()
+            return notice.isHidden
         }
-        XCTAssertLessThan(drawn, 0.05, "Nothing is drawn under the clips")
+        XCTAssertTrue(notice.isHidden)
         XCTAssertEqual(toolbar.note, .copy(enabled: true))
     }
 

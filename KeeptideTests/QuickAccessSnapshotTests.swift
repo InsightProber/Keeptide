@@ -110,7 +110,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
         XCTAssertEqual(controller.state.selection.rows.count, 3)
         try await write(window, as: "panel-search", into: output)
 
-        // The same search while the index rebuilds: the notice under the clips, Return's hint still in the toolbar.
+        // The same search while the index rebuilds: the notice at the toolbar's left end, Return's hint at its right.
         harness.status.update(.rebuilding)
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.deleteBackward(nil)
@@ -121,6 +121,26 @@ final class QuickAccessSnapshotTests: XCTestCase {
                 && state.indexNotice == .rebuilding && state.selection.rows.allSatisfy { state.details[$0.ref] != nil }
         }
         try await write(window, as: "panel-rebuilding", into: output)
+
+        // The same on a screen 1024 pt wide, where the open search leaves the notice less room.
+        controller.state.close()
+        let narrow = PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
+                                     visibleFrame: NSRect(x: 0, y: 0, width: 1024, height: 640))
+        addTeardownBlock { narrow.state.close() }
+        let narrowWindow = try XCTUnwrap(narrow.window)
+        narrow.state.open()
+        let narrowField = try XCTUnwrap(narrowWindow.contentView.flatMap {
+            views(QuickAccessSearchField.self, in: $0).first
+        })
+        XCTAssertTrue(narrowWindow.makeFirstResponder(narrowField))
+        try XCTUnwrap(narrowField.currentEditor() as? NSTextView)
+            .insertText("rebase", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let state = narrow.state
+            return state.query == "rebase" && state.phase == .results && state.selection.isComplete
+                && state.indexNotice == .rebuilding && state.selection.rows.allSatisfy { state.details[$0.ref] != nil }
+        }
+        try await write(narrowWindow, as: "panel-rebuilding-1024", into: output)
         print("Panel snapshots written to \(output.directory.path)")
     }
 

@@ -208,6 +208,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
         toolbar.search.hasText = !state.query.isEmpty
         toolbar.note = toolbarNote
+        toolbar.hasClips = !state.selection.rows.isEmpty
+        toolbar.indexNotice = state.indexNotice
         filterRow.queryIsEmpty = state.query.isEmpty
         filterRow.show(kinds: state.kinds)
         strip.queryIsEmpty = state.query.isEmpty
@@ -219,7 +221,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     /// What the toolbar's right end says. A refused copy's reason answers what was just done, so it comes first;
     /// then a status over clips on screen; then, with a clip selected, what Return does. With no clips the empty
-    /// state says it all. An index that is rebuilding is told under the clips, and leaves Return's hint in place.
+    /// state says it all. An index that is rebuilding is told at the toolbar's left end, and leaves Return's hint in
+    /// place.
     private var toolbarNote: QuickAccessToolbar.Note {
         if let failure = state.failure { return .failure(failure.message) }
         if !state.selection.rows.isEmpty,

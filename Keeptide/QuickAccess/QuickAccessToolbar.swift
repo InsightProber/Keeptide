@@ -1,9 +1,10 @@
 import AppKit
 
 /// The band's top row. In the middle, the search, folded to a round icon until it is wanted, and the filters; at the
-/// right end what Return does, or in its place what the panel has to say, and the ⋯ menu. The search field is in the
-/// row all the time and keeps the keys while it is folded, its caret hidden with it, so the first key typed goes
-/// straight into it, an input method's composition included.
+/// right end what Return does, or in its place what the panel has to say, and the ⋯ menu; at the left end, while the
+/// index rebuilds, that results may be incomplete. The search field is in the row all the time and keeps the keys while
+/// it is folded, its caret hidden with it, so the first key typed goes straight into it, an input method's composition
+/// included.
 @MainActor
 final class QuickAccessToolbar: NSView {
     /// What the right end says before the ⋯ button.
@@ -23,10 +24,12 @@ final class QuickAccessToolbar: NSView {
     static let height = StripLayout.toolbarHeight + 2 * focusRoom
     /// Between the search and the filters.
     static let searchGap: CGFloat = 12
-    /// The right end keeps this far from the row's edge, and its parts this far from each other and from the filters.
+    /// The right end keeps this far from the row's edge, and its parts this far from each other and from the filters;
+    /// the rebuild notice at the left end keeps as far from the search's ring.
     static let trailingInset: CGFloat = 16
     static let trailingGap: CGFloat = 12
-    /// A note moves the search and the filters left, when it needs the room, no nearer than this to the row's edge.
+    /// The rebuild notice starts this far from the row's left edge, and a note at the right end that needs the room
+    /// moves the search and the filters left no nearer than this to it.
     static let leadingInset: CGFloat = 16
     /// A status cut shorter than this would say nothing, so it is left out.
     private static let shortestStatus: CGFloat = 24
@@ -39,8 +42,18 @@ final class QuickAccessToolbar: NSView {
     let copyHint = QuickAccessCopyHint()
     let statusLabel = NSTextField(labelWithString: "")
     let moreButton = QuickAccessMoreButton()
+    /// The rebuild notice at the row's left end, in a status's type.
+    let indexNoticeLabel = NSTextField(labelWithString: QuickAccessStatus.rebuilding)
     var note = Note.none {
         didSet { if note != oldValue { showNote() } }
+    }
+    /// Whether there are clips, and what the index says about itself. While there are clips and the index rebuilds,
+    /// the row's left end says so; with no clips the empty state says it instead.
+    var hasClips = false {
+        didSet { if hasClips != oldValue { needsLayout = true } }
+    }
+    var indexNotice: IndexNotice? {
+        didSet { if indexNotice != oldValue { needsLayout = true } }
     }
     /// Whether the search field has the keys. The open search is ringed then.
     var showsSearchFocus = false {
@@ -61,13 +74,19 @@ final class QuickAccessToolbar: NSView {
         super.init(frame: .zero)
         // Layers let the search grow and shrink, and the filters move with it, as one animation.
         wantsLayer = true
-        statusLabel.font = .systemFont(ofSize: 13)
-        statusLabel.lineBreakMode = .byTruncatingTail
-        statusLabel.maximumNumberOfLines = 1
-        statusLabel.isHidden = true
+        for label in [statusLabel, indexNoticeLabel] {
+            label.font = .systemFont(ofSize: 13)
+            label.lineBreakMode = .byTruncatingTail
+            label.maximumNumberOfLines = 1
+            label.isHidden = true
+        }
+        indexNoticeLabel.textColor = ToolbarPalette.secondary
+        indexNoticeLabel.setAccessibilityIdentifier("QuickAccessIndexNotice")
         copyHint.isHidden = true
         focusHalo.isHidden = true
-        for view in [focusHalo, search, filters, copyHint, statusLabel, moreButton] as [NSView] { addSubview(view) }
+        for view in [focusHalo, indexNoticeLabel, search, filters, copyHint, statusLabel, moreButton] as [NSView] {
+            addSubview(view)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -129,14 +148,40 @@ final class QuickAccessToolbar: NSView {
         // The field has moved, as it does when a note moves it aside, so an input method's candidates move with it.
         if fieldMoves { (search.field.currentEditor() as? NSTextView)?.inputContext?.invalidateCharacterCoordinates() }
         layoutNote(endingAt: end, room: end - (filtersFrame.maxX + Self.trailingGap))
+        layoutIndexNotice(endingBefore: focusHalo.frame.minX - Self.trailingGap)
+    }
+
+    /// The rebuild notice starts `leadingInset` from the row's left edge and ends by `end`, `trailingGap` before the
+    /// search's ring: it takes only the room the search and the filters leave once the right end has what it needs.
+    /// Short of that room it is cut short with an ellipsis, its whole text in its help tag; below `shortestStatus` it is
+    /// left out. VoiceOver reads its whole text either way.
+    private func layoutIndexNotice(endingBefore end: CGFloat) {
+        let label = indexNoticeLabel
+        label.isHidden = true
+        label.toolTip = nil
+        guard hasClips, indexNotice == .rebuilding else { return }
+        let full = Self.fullWidth(of: label)
+        let width = min(full, end - Self.leadingInset)
+        if width < full { label.toolTip = label.stringValue }
+        guard width >= Self.shortestStatus else { return }
+        let height = label.intrinsicContentSize.height
+        label.frame = NSRect(x: Self.leadingInset, y: rowFrame.midY - height / 2, width: width, height: height)
+        label.isHidden = false
     }
 
     /// How wide a status or a failure is in full; nil for any other note.
     private var statusWidth: CGFloat? {
         switch note {
-        case .status, .failure: ceil(statusLabel.intrinsicContentSize.width)
+        case .status, .failure: Self.fullWidth(of: statusLabel)
         case .copy, .none: nil
         }
+    }
+
+    /// How wide a label must be to show its whole text: the text's own width, which is the label's intrinsic one, and
+    /// the room the label leaves at either side of it.
+    private static func fullWidth(of label: NSTextField) -> CGFloat {
+        let insets = label.alignmentRectInsets
+        return ceil(label.intrinsicContentSize.width + insets.left + insets.right)
     }
 
     /// The note ends `trailingGap` before the ⋯ button and takes at most `room`. Short of room, "⏎ Copy" first drops
@@ -161,12 +206,12 @@ final class QuickAccessToolbar: NSView {
             copyHint.frame = NSRect(x: end - width, y: row.midY - height / 2, width: width, height: height)
             copyHint.isHidden = false
         case .status, .failure:
-            let natural = statusLabel.intrinsicContentSize
-            let width = min(ceil(natural.width), room)
-            if width < ceil(natural.width) { statusLabel.toolTip = statusLabel.stringValue }
+            let full = Self.fullWidth(of: statusLabel)
+            let width = min(full, room)
+            if width < full { statusLabel.toolTip = statusLabel.stringValue }
             guard width >= Self.shortestStatus else { return }
-            statusLabel.frame = NSRect(x: end - width, y: row.midY - natural.height / 2, width: width,
-                                       height: natural.height)
+            let height = statusLabel.intrinsicContentSize.height
+            statusLabel.frame = NSRect(x: end - width, y: row.midY - height / 2, width: width, height: height)
             statusLabel.isHidden = false
         case .none:
             break

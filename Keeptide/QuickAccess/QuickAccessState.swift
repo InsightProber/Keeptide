@@ -512,7 +512,7 @@ enum QuickAccessStatus {
     }
 
     /// What the toolbar says over rows that are on screen, in place of Return's hint. An index that is rebuilding
-    /// takes no such place: the band says so under the rows.
+    /// takes no such place: the toolbar says so at its left end.
     static func line(selectionLost: Bool, phase: QuickAccessPhase, isComplete: Bool) -> String? {
         if selectionLost { return "The selected item is no longer in the results" }
         if phase == .loading || !isComplete { return "Searching…" }

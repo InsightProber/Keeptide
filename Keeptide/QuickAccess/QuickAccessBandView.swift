@@ -65,7 +65,6 @@ struct QuickAccessBandView: View {
             Spacer(minLength: 0)
         }
         .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics), alignment: .top)
-        .overlay(alignment: .bottom) { rebuildNotice }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
@@ -80,22 +79,6 @@ struct QuickAccessBandView: View {
             HostedView(view: strip)
                 .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * Self.ringRoom)
             if !hasFrames { emptyState }
-        }
-    }
-
-    /// Under the clips while the index rebuilds, so that the toolbar keeps Return's hint; with no clips the empty state
-    /// says it instead. Its line stands 1.5 pt above the band's edge, which sets its letters midway between that edge
-    /// and the ring of a selected card above them, about 2 pt from each.
-    @ViewBuilder
-    private var rebuildNotice: some View {
-        if hasFrames, state.indexNotice == .rebuilding {
-            Text(QuickAccessStatus.rebuilding)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.bottom, 1.5)
-                .allowsHitTesting(false)
-                .accessibilityIdentifier("QuickAccessIndexNotice")
         }
     }
 
