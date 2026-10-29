@@ -15,8 +15,9 @@ as a snippet, or write one directly.
 > The storage foundation provides local persistence, content validation, and
 > consistent reads. Local recording now preserves complete clipboard formats,
 > deduplicates exact copies, and provides a recent-clips list with copy-back.
-> The quick-access panel is a centered strip of clips: the selected clip sits in
-> the middle with older clips to its left. The arrow keys step one clip at a time,
+> The quick-access panel is a centered strip of clips with the newest at the left
+> and older clips to its right; the selection rests on the newest clip and moves
+> to the middle as you step back in time. The arrow keys step one clip at a time,
 > and a trackpad swipe moves one clip per detent with a haptic tick on a Force
 > Touch trackpad. A minimal Settings window chooses 7, 9 or 11 clips in a row.
 > The panel browses recent clips, searches all content through a rebuildable local
