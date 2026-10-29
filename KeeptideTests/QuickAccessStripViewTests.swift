@@ -549,6 +549,99 @@ final class QuickAccessStripViewTests: XCTestCase {
         }
     }
 
+    func testAClipChosenElsewhereStartsTheFingersAfresh() throws {
+        let strip = makeStrip()
+        strip.haptics = RecordingHaptics()
+        let rows = makeRows(20)
+
+        // The fingers push half a clip toward newer from the second clip, and then a key selects the newest. An
+        // event of resting fingers does not carry that push over: the newest clip stays at the dock.
+        strip.show(rows, selection: rows[1].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.scrollWheel(with: try swipe(dx: 15, phase: .began, at: 1.0))
+        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.1))
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock, accuracy: 0.5)
+        XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.2))
+
+        // In the middle as well: half a clip pushed toward older is not played back against the clip a key chose.
+        strip.show(rows, selection: rows[6].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.scrollWheel(with: try swipe(dx: -15, phase: .began, at: 2.0))
+        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre - metrics.step / 2, accuracy: 0.5)
+        strip.show(rows, selection: rows[7].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 2.1))
+        XCTAssertEqual(try midX(of: "Row 7", in: strip), centre, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 2.2))
+    }
+
+    func testARealSelectionIsNeverTakenForTheEmptyDock() throws {
+        let strip = makeStrip()
+        strip.haptics = RecordingHaptics()
+        let rows = makeRows(20)
+        // The panel may show another clip than a step asked for. This one always shows the newest.
+        strip.onCommand = { [unowned strip, metrics = self.metrics] command in
+            guard case .move = command else { return }
+            strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+        }
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // A clip and a half toward newer from the third clip: the step lands on the newest clip, and the half
+        // left over has nowhere to go. The newest clip stays at the dock, not taken for a vanished selection.
+        strip.scrollWheel(with: try swipe(dx: 45, phase: .began, at: 1.0))
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock, accuracy: 0.5)
+        XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+    }
+
+    func testLeavingTheEmptyDockUnderTheFingersSlides() throws {
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        strip.haptics = RecordingHaptics()
+        var selected: [ContentRef] = []
+        strip.onSelect = { selected.append($0) }
+        let rows = makeRows(20)
+        // The panel shows each step in the same turn as the swipe that asked for it.
+        strip.onCommand = { [unowned strip, metrics = self.metrics] command in
+            guard case .move = command else { return }
+            strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+        }
+        // With the selection gone, the newest clip stands a step to the right of the empty dock.
+        strip.show(rows, selection: nil, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let before = try rect(titled: "Row 0", in: strip)
+        let point = NSPoint(x: before.midX, y: before.midY)
+
+        // Time stands still from here, so the slide the step starts stays at its beginning.
+        content.layer?.speed = 0
+        // A clip's worth of swipe selects the newest clip, and the empty slot goes. The film slides across that
+        // step rather than jumping, so the newest clip is still drawn where it stood, under the pointer.
+        strip.scrollWheel(with: try swipe(dx: -30, phase: .began, at: 1.0))
+        CATransaction.flush()
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock, accuracy: 0.5)
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
+        XCTAssertEqual(selected, [rows[0].ref])
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+    }
+
+    func testAWheelTurnedRightMovesOneClipOlder() throws {
+        let strip = makeStrip()
+        var commands: [QuickAccessCommand] = []
+        strip.onCommand = { commands.append($0) }
+        let rows = makeRows(5)
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // A notch to the right shows content further right, which is older; one to the left comes back.
+        strip.scrollWheel(with: try wheel(dx: -1, at: 1.0))
+        XCTAssertEqual(commands, [.move(1)])
+        strip.scrollWheel(with: try wheel(dx: 1, at: 1.1))
+        XCTAssertEqual(commands, [.move(1), .move(-1)])
+    }
+
     func testASlideKeepsTheFramesItPassesUntilItSettles() async throws {
         try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
         let strip = makeStrip()
@@ -783,6 +876,11 @@ final class QuickAccessStripViewTests: XCTestCase {
     /// A notch of an ordinary mouse wheel, which has no phase.
     private func wheel(dy: Int32, at time: TimeInterval) throws -> NSEvent {
         try scrollEvent(dx: 0, dy: dy, isPrecise: false, phase: 0, momentum: 0, at: time)
+    }
+
+    /// A notch of a mouse wheel turned sideways.
+    private func wheel(dx: Int32, at time: TimeInterval) throws -> NSEvent {
+        try scrollEvent(dx: dx, dy: 0, isPrecise: false, phase: 0, momentum: 0, at: time)
     }
 
     private func scrollEvent(dx: Int32, dy: Int32, isPrecise: Bool, phase: Int64, momentum: Int64,

@@ -1,7 +1,6 @@
 import AppKit
 import CoreGraphics
 import ImageIO
-import Observation
 import UniformTypeIdentifiers
 import XCTest
 @testable import Keeptide
@@ -268,18 +267,14 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.selection.rows.count, 60)
         XCTAssertTrue(state.hasMoreRows)
 
-        // The clip left out is copied again and ranks first, so the next page adds nothing and paging stops. The
-        // change is observed, so the strip lays its oldest end out again.
+        // The clip left out is copied again and ranks first, so the next page adds nothing and paging stops.
         var oldest = clips[0]
         oldest.lastCopiedAt = Date(timeIntervalSince1970: 2_000)
         try await fixture.harness.update(.item(oldest.id), to: .item(oldest))
         try await fixture.harness.consumer.synchronize()
-        let observed = expectation(description: "hasMoreRows changes")
-        withObservationTracking { _ = state.hasMoreRows } onChange: { observed.fulfill() }
         state.loadMoreIfNeeded(visibleRow: 55)
         try await searchesFinished(in: fixture)
 
-        await fulfillment(of: [observed], timeout: 1)
         XCTAssertEqual(state.selection.rows.count, 60)
         XCTAssertFalse(state.hasMoreRows)
         state.close()

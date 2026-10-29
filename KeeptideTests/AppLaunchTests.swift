@@ -311,7 +311,7 @@ final class AppLaunchTests: XCTestCase {
         let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" })
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let strip = try await clipStrip(in: window)
         let metrics = try stripMetrics(in: window)
         let left = strip.bounds.midX - metrics.bandWidth / 2
 
@@ -353,7 +353,7 @@ final class AppLaunchTests: XCTestCase {
         let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" })
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let strip = try await clipStrip(in: window)
         let docked = try frame(of: "clip 0", in: strip)
 
         // Near the newest end the selection walks along the film, which stays where it is.
@@ -368,7 +368,7 @@ final class AppLaunchTests: XCTestCase {
         let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" })
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let strip = try await clipStrip(in: window)
 
         // At the newest clip the band's left end is a hard edge; older clips go on beyond its right end, which fades.
         XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
@@ -387,11 +387,41 @@ final class AppLaunchTests: XCTestCase {
         let (pair, _) = try await makePanelWithClips(["older", "newer"])
         let pairWindow = try XCTUnwrap(pair.window)
         _ = try searchEditor(in: pair)
-        let pairStrip = try XCTUnwrap(views(QuickAccessStripView.self, in: pairWindow.contentView).first)
+        let pairStrip = try await clipStrip(in: pairWindow)
         XCTAssertTrue(pairStrip.fades == (false, false), "\(pairStrip.fades)")
         band = try bandFades(in: pairWindow)
         XCTAssertTrue(band == (false, false), "\(band)")
         pair.state.close()
+    }
+
+    func testFadesSwitchAtOnceWhenTheFilmAppearsOrGoes() async throws {
+        let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" }, shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+
+        // The film comes with the panel, so its fades are there at once instead of easing in.
+        var layout = try bandLayout(in: window)
+        XCTAssertTrue((layout.fadesLeading, layout.fadesTrailing) == (false, true))
+        XCTAssertFalse(layout.animatesFades)
+
+        // Along the film a fade eases in.
+        for _ in 0..<6 { editor.doCommand(by: #selector(NSResponder.moveRight(_:))) }
+        layout = try bandLayout(in: window)
+        XCTAssertTrue((layout.fadesLeading, layout.fadesTrailing) == (true, true))
+        XCTAssertTrue(layout.animatesFades)
+
+        // Opened again, the panel starts without clips and the film goes, then comes back at the newest clip. Both
+        // times the fades switch at once, and the clips come back with the fades of the open picture.
+        controller.close()
+        controller.show()
+        layout = try bandLayout(in: window)
+        XCTAssertTrue((layout.fadesLeading, layout.fadesTrailing) == (false, false))
+        XCTAssertFalse(layout.animatesFades)
+        try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.isEmpty == false }
+        layout = try bandLayout(in: window)
+        XCTAssertTrue((layout.fadesLeading, layout.fadesTrailing) == (false, true))
+        XCTAssertFalse(layout.animatesFades)
     }
 
     func testAVanishedSelectionLeavesTheDockEmptyAndRightPicksTheNewest() async throws {
@@ -434,7 +464,8 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheOldestEndStopsTheFilmOnlyOncePagingIsDone() async throws {
-        let (controller, _) = try await makePanelWithClips((0..<61).map { "ab \($0)" })
+        // On screen, so the film slides where it moves.
+        let (controller, _) = try await makePanelWithClips((0..<61).map { "ab \($0)" }, shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
@@ -442,23 +473,98 @@ final class AppLaunchTests: XCTestCase {
         let left = strip.bounds.midX - metrics.bandWidth / 2
         editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
-            controller.state.query == "ab" && controller.state.phase == .results && controller.state.selection.isComplete
+            controller.state.query == "ab" && controller.state.phase == .results
+                && controller.state.selection.isComplete
         }
         XCTAssertEqual(controller.state.selection.rows.count, 60)
 
         // The last row of the first page is not the oldest match: the film keeps it in the middle, and the right
         // end fades while the next page is on its way.
         controller.perform(.move(59))
-        let last = try frame(of: controller.state.selection.rows[59].title, in: strip)
-        XCTAssertEqual(last.midX - left, metrics.bandWidth / 2, accuracy: 0.5)
+        let title = controller.state.selection.rows[59].title
+        XCTAssertEqual(try frame(of: title, in: strip).midX - left, metrics.bandWidth / 2, accuracy: 0.5)
         XCTAssertTrue(strip.fades.trailing)
 
-        // The next page brings the last match. With no more to fetch, the film stops with it at the right dock.
+        // Time stands still from here, so a slide that the next page starts stays at its beginning.
+        strip.wantsLayer = true
+        strip.layer?.speed = 0
+        defer { strip.layer?.speed = 1 }
+        // The next page brings the last match. With no more to fetch, the film comes to rest with it at the right
+        // dock, and slides there: the selected clip is still drawn in the middle, where it was.
         try await SearchTestSupport.waitUntil {
             controller.state.selection.rows.count == 61 && !strip.fades.trailing
         }
         let oldest = try frame(of: controller.state.selection.rows[60].title, in: strip)
         XCTAssertEqual(oldest.maxX - left, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
+        CATransaction.flush()
+        let resting = try frame(of: title, in: strip).midX
+        let drawn = resting + (try filmOffset(in: strip))
+        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertEqual(drawn, resting, accuracy: 0.5, "With Reduce Motion the film goes straight to its place")
+        } else {
+            XCTAssertEqual(drawn - left, metrics.bandWidth / 2, accuracy: 1)
+        }
+    }
+
+    func testANewQueryLeavesTheClipsInPlaceUntilItsResultsCome() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note", "beta note", "gamma note"])
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        let before = try frame(of: "gamma note", in: strip)
+
+        // A key typed into the field starts a new search. Until it brings rows, the three clips on screen are still
+        // all there is and stay centred as a group, instead of docking left and coming back with the results.
+        editor.insertText("n", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertEqual(controller.state.phase, .loading)
+        XCTAssertEqual(try frame(of: "gamma note", in: strip), before)
+        controller.state.close()
+    }
+
+    func testAPageStillBeingScannedIsNotTheLastOne() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips((0..<5).map { "ab \($0)" }, into: harness)
+        try await harness.consumer.synchronize()
+        // A two-letter query is scanned, here three clips at a time, and the scan holds after its first page until
+        // the gate opens.
+        let gate = ScanGate()
+        addTeardownBlock { gate.open() }
+        let search = SearchService(index: harness.index, status: harness.status, scanChunkSize: 3,
+                                   onScanProgress: { _ in gate.pass() })
+        let controller = try makePanel(over: harness, pasteboard: board, search: search)
+        controller.state.open()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 5 }
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let metrics = try stripMetrics(in: window)
+        let left = strip.bounds.midX - metrics.bandWidth / 2
+
+        editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            controller.state.query == "ab" && controller.state.phase == .results
+                && strip.accessibilityChildren()?.count == 3
+        }
+        XCTAssertFalse(controller.state.selection.isComplete)
+        XCTAssertEqual(controller.state.selection.rows.count, 3)
+
+        // The rest of the scan may bring more clips, so the three found so far are not centred as a group: they
+        // rest at the left dock, and the right end fades.
+        let first = try frame(of: controller.state.selection.rows[0].title, in: strip)
+        XCTAssertEqual(first.minX - left, metrics.dockInset, accuracy: 0.5)
+        XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
+
+        // The finished scan is all there is, and five clips fit: they are centred as a group.
+        gate.open()
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.isComplete && strip.accessibilityChildren()?.count == 5
+        }
+        let film = 5 * metrics.step - metrics.gap
+        let newest = try frame(of: controller.state.selection.rows[0].title, in: strip)
+        XCTAssertEqual(newest.minX - left, (metrics.bandWidth - film) / 2, accuracy: 0.5)
+        XCTAssertTrue(strip.fades == (false, false), "\(strip.fades)")
         controller.state.close()
     }
 
@@ -573,7 +679,7 @@ final class AppLaunchTests: XCTestCase {
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let strip = try await clipStrip(in: window)
         var shown: [(menu: NSMenu, point: NSPoint, view: NSView)] = []
         controller.presentActionMenu = { shown.append(($0, $1, $2)) }
 
@@ -612,8 +718,33 @@ final class AppLaunchTests: XCTestCase {
     func testClickingTheOlderClipSelectsIt() async throws {
         let (controller, board) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        let older = try frame(of: "older", in: strip)
+        let point = strip.convert(NSPoint(x: older.midX, y: older.midY), to: nil)
+        let click = { (type: NSEvent.EventType) in
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+        }
+
+        // A click where the older clip is drawn, right of the newer one, selects it and puts the keys in the strip.
+        strip.mouseDown(with: try click(.leftMouseDown))
+        strip.mouseUp(with: try click(.leftMouseUp))
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.last?.ref)
+        XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": older") == true, selectedClipLabel(in: strip) ?? "")
+        XCTAssertTrue(window.firstResponder === strip)
+        // It only selects: nothing is copied.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(board.string(forType: .string))
+        controller.state.close()
+    }
+
+    func testRightClickingTheOlderClipCopiesItOrNothing() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"])
+        let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let strip = try await clipStrip(in: window)
         // The older clip lies to the right of the newer one, which is selected; the click goes where it is drawn.
         let older = try frame(of: "older", in: strip)
         XCTAssertGreaterThan(older.minX, try frame(of: "newer", in: strip).maxX)
@@ -763,11 +894,13 @@ final class AppLaunchTests: XCTestCase {
         return (controller, harness)
     }
 
-    private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard) throws -> PanelController {
+    /// `search` stands in for the harness's own search service when given.
+    private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard,
+                           search: SearchService? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in })
-        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste)
+        let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste)
         return PanelController(state: QuickAccessState(services: { services }), preferences: try makePreferences(.nine))
     }
 
@@ -821,6 +954,14 @@ final class AppLaunchTests: XCTestCase {
         StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame.width)
     }
 
+    /// The strip of the panel's window, once it shows the panel's clips: the panel follows the state a moment after
+    /// the clips arrive.
+    private func clipStrip(in window: NSWindow) async throws -> QuickAccessStripView {
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.isEmpty == false }
+        return strip
+    }
+
     /// Where the frame of the clip with this title is drawn, in the strip's coordinates. Only frames on screen,
     /// the ones VoiceOver reads, are looked at.
     private func frame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
@@ -829,10 +970,21 @@ final class AppLaunchTests: XCTestCase {
         return strip.convert(frame.bounds, from: frame)
     }
 
+    /// What the panel lays the band out by.
+    private func bandLayout(in window: NSWindow) throws -> QuickAccessBandView.Layout {
+        try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.layout
+    }
+
     /// Which ends of the band the panel has it fade.
     private func bandFades(in window: NSWindow) throws -> (leading: Bool, trailing: Bool) {
-        let layout = try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.layout
+        let layout = try bandLayout(in: window)
         return (layout.fadesLeading, layout.fadesTrailing)
+    }
+
+    /// How far the strip's film is drawn from its place while a slide runs: the frames move as one inside it.
+    private func filmOffset(in strip: QuickAccessStripView) throws -> CGFloat {
+        let layer = try XCTUnwrap(strip.subviews.first?.layer)
+        return (layer.presentation()?.position.x ?? layer.position.x) - layer.position.x
     }
 
     private func key(_ code: Int, _ characters: String, modifiers: NSEvent.ModifierFlags = [],
@@ -1106,6 +1258,27 @@ final class AppLaunchTests: XCTestCase {
 @MainActor
 private final class QueryLog {
     var queries: [String] = []
+}
+
+/// Lets a search's first scanned range through and holds every later one, on the search queue, until it opens.
+private final class ScanGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var ranges = 0
+    private var isOpen = false
+
+    func pass() {
+        condition.lock()
+        defer { condition.unlock() }
+        ranges += 1
+        while ranges > 1, !isOpen { condition.wait() }
+    }
+
+    func open() {
+        condition.lock()
+        isOpen = true
+        condition.broadcast()
+        condition.unlock()
+    }
 }
 
 // Exercise key-window notifications without taking focus from another application.

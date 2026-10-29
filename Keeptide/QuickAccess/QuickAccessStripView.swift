@@ -32,6 +32,9 @@ final class QuickAccessStripView: NSView {
     }
     /// Which ends of the band fade out: those the film goes on beyond, where it lies now, under the fingers too.
     private(set) var fades = (leading: false, trailing: false)
+    /// Whether the last change of `fades` eases. Only a change made while the film is on screen before and after it
+    /// does; as the film appears or goes, the fades switch at once.
+    private(set) var animatesFades = false
     /// The selected clip's frame in the strip's coordinates, or nil while nothing is selected.
     var selectedFrame: NSRect? {
         selection.flatMap { frames[$0] }.map { convert($0.frame, from: film) }
@@ -62,6 +65,13 @@ final class QuickAccessStripView: NSView {
     /// any stretch past an end.
     private var pushed: CGFloat = 0
     private var fingersDown = false
+    /// Set while the panel shows a step the scroller asked for, so that `show` can tell it from a change made
+    /// elsewhere.
+    private var showingScrollStep = false
+    /// Where the film rested when last shown, as index 0's left edge within the band; nil without clips.
+    private var restingOrigin: CGFloat?
+    /// Whether the fades were last taken from a film on screen.
+    private var fadesHadFilm = false
     /// Where index 0's frame was when a slide started, within the band. The frames on screen there stay until the
     /// slide settles, so none vanishes on screen.
     private var slideStart: CGFloat?
@@ -96,8 +106,12 @@ final class QuickAccessStripView: NSView {
     func show(_ rows: [QuickAccessRow], selection: ContentRef?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
         let selectionChanged = selection != self.selection
+        let sameMetrics = metrics == self.metrics
         // Where the newly selected clip was drawn, so that the film can slide from there to where it now rests.
-        let start = selectionChanged && metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX } : nil
+        let start = selectionChanged && sameMetrics ? selection.flatMap { frames[$0]?.frame.midX } : nil
+        // Where the film rested, so that with the same selection it can slide from there when its place moves.
+        let previousOrigin = sameMetrics ? restingOrigin : nil
+        let previousIndex = selectedIndex
         self.rows = rows
         self.selection = selection
         self.details = details
@@ -105,25 +119,44 @@ final class QuickAccessStripView: NSView {
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
         let index = selection.flatMap { selected in rows.firstIndex { $0.ref == selected } } ?? -1
-        // The fingers carried the clip selected before; their next event measures from this one.
-        if index != selectedIndex { progress = 0 }
-        selectedIndex = index
-        if selectionChanged {
-            hovered = nil
-            settling?.cancel()
-            // Under the fingers the frames already follow them; off screen or with Reduce Motion they go
-            // straight to their places.
-            slideStart = start.flatMap { start in
-                guard slidesAreShown, !fingersDown, index >= 0 else { return nil }
-                // Where index 0's frame was, going by where the newly selected clip's frame was.
-                return start - (bounds.midX - metrics.bandWidth / 2) - CGFloat(index) * metrics.step
-                    - metrics.frameSize.width / 2
+        if index != previousIndex {
+            // The fingers carried the clip selected before; their next event measures from this one.
+            progress = 0
+            // A clip chosen elsewhere, by a key, a click or a refresh, starts the fingers afresh, so that resting
+            // fingers do not play their old push back against it.
+            if !showingScrollStep {
+                scroller = DetentScroller()
+                push(to: 0, springing: false)
             }
         }
-        placeFrames()
-        // Along a docked film the selected frame stays where it was, so nothing slides.
-        if selectionChanged, slideStart != nil, let start, let end = selection.flatMap({ frames[$0]?.frame.midX }) {
-            settle(after: springBack(from: start - end))
+        selectedIndex = index
+        if selectionChanged { hovered = nil }
+        let rest = restingPlacement
+        restingOrigin = rest?.firstOrigin
+        // How far the film moves: as far as the newly selected clip does, or with the same selection, as far as its
+        // place. It slides there on screen without Reduce Motion. Under the fingers it follows them instead, except
+        // when it leaves the empty dock, whose slot goes at once; the springs add up, so the step stays smooth.
+        var displacement: CGFloat = 0
+        if let rest, slidesAreShown, !fingersDown || (previousIndex < 0 && index >= 0) {
+            if selectionChanged, let start, index >= 0 {
+                let end = frameRect(origin: rest.firstOrigin + CGFloat(index) * metrics.step, metrics).midX
+                displacement = start - end
+            } else if !selectionChanged, let previousOrigin {
+                displacement = previousOrigin - rest.firstOrigin
+            }
+        }
+        if displacement != 0, let rest {
+            settling?.cancel()
+            // Where index 0's frame starts out: the frames on screen there stay until the slide settles.
+            slideStart = rest.firstOrigin + displacement
+            placeFrames()
+            settle(after: springBack(from: displacement))
+        } else {
+            if selectionChanged {
+                settling?.cancel()
+                slideStart = nil
+            }
+            placeFrames()
         }
         updateFades()
         if selectionChanged { announceSelection() }
@@ -171,6 +204,21 @@ final class QuickAccessStripView: NSView {
     /// Where the film rests with the selected clip.
     private var restingPlacement: StripPlacement? { placement(at: CGFloat(selectedIndex)) }
 
+    /// Where the fingers have carried the selection: `progress` of a step past the selected clip. A real selection
+    /// never goes below 0, where the film would take it for a vanished one.
+    private var livePosition: CGFloat {
+        let position = CGFloat(selectedIndex) + progress
+        return selectedIndex < 0 ? position : max(0, position)
+    }
+
+    /// A frame whose left edge is `origin` within the band, on whole pixels.
+    private func frameRect(origin: CGFloat, _ metrics: StripMetrics) -> NSRect {
+        // The band is centred in the strip, in case the strip is the wider of the two.
+        let rect = NSRect(origin: NSPoint(x: bounds.midX - metrics.bandWidth / 2 + origin,
+                                          y: (bounds.height - metrics.frameSize.height) / 2), size: metrics.frameSize)
+        return backingAlignedRect(rect, options: .alignAllEdgesNearest)
+    }
+
     /// The first and the last index whose frames reach into the band while index 0's frame starts anywhere in
     /// `origins`, which are measured from the band's left end. Either index may lie beyond the rows there are.
     private func rowsOnScreen(_ metrics: StripMetrics, origins: ClosedRange<CGFloat>) -> (first: Int, last: Int) {
@@ -202,9 +250,6 @@ final class QuickAccessStripView: NSView {
         var spare = frames.filter { !wanted.contains($0.key) }.map(\.value)
         frames = frames.filter { wanted.contains($0.key) }
         let origins = rest.map { StripLayout.frameOrigins(metrics, count: indices.upperBound, placement: $0) } ?? []
-        // The band is centred in the strip, in case the strip is the wider of the two.
-        let bandLeft = bounds.midX - metrics.bandWidth / 2
-        let y = (bounds.height - metrics.frameSize.height) / 2
         for index in indices {
             let row = rows[index]
             let view = StripFrameView(
@@ -216,8 +261,7 @@ final class QuickAccessStripView: NSView {
             frames[row.ref] = host
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
                       cornerRadius: metrics.cornerRadius, isHovered: row.ref == hovered)
-            let rect = NSRect(origin: NSPoint(x: bandLeft + origins[index], y: y), size: metrics.frameSize)
-            host.frame = backingAlignedRect(rect, options: .alignAllEdgesNearest)
+            host.frame = frameRect(origin: origins[index], metrics)
         }
         spare.forEach { $0.removeFromSuperview() }
         dimSideFrames()
@@ -301,7 +345,7 @@ final class QuickAccessStripView: NSView {
     private func follow(progress: CGFloat, rubberBand: CGFloat, springing: Bool) {
         self.progress = progress
         var offset = -rubberBand
-        if let rest = restingPlacement, let carried = placement(at: CGFloat(selectedIndex) + progress) {
+        if let rest = restingPlacement, let carried = placement(at: livePosition) {
             offset += carried.firstOrigin - rest.firstOrigin
         }
         push(to: offset, springing: springing)
@@ -309,12 +353,15 @@ final class QuickAccessStripView: NSView {
     }
 
     /// Takes the fades from where the film lies now, and tells the panel when they change. Without clips
-    /// nothing goes on beyond either end.
+    /// nothing goes on beyond either end. A change eases only while the film stays on screen.
     private func updateFades() {
-        let live = placement(at: CGFloat(selectedIndex) + progress)
+        let live = placement(at: livePosition)
         let fades = (leading: live?.fadesLeading ?? false, trailing: live?.fadesTrailing ?? false)
+        let withinFilm = fadesHadFilm && live != nil
+        fadesHadFilm = live != nil
         guard fades != self.fades else { return }
         self.fades = fades
+        animatesFades = withinFilm
         onFadesChanged?()
     }
 
@@ -333,7 +380,11 @@ final class QuickAccessStripView: NSView {
             deltaX: -event.scrollingDeltaX, deltaY: event.scrollingDeltaY, isPrecise: event.hasPreciseScrollingDeltas,
             phase: phase, isMomentum: !event.momentumPhase.isEmpty, time: event.timestamp
         ), olderRoom: rows.count - 1 - selectedIndex, newerRoom: max(0, selectedIndex))
-        if output.steps != 0 { onCommand?(.move(output.steps)) }
+        if output.steps != 0 {
+            showingScrollStep = true
+            onCommand?(.move(output.steps))
+            showingScrollStep = false
+        }
         // The scroller has already left out coasting, the mouse wheel and ticks that come too close together.
         if output.ticks == 1, ticksEnabled { haptics.tick() }
         follow(progress: output.progress, rubberBand: output.rubberBand, springing: !fingersDown)

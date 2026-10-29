@@ -16,6 +16,8 @@ struct QuickAccessBandView: View {
         /// Whether each end fades out, as the strip's `fades` say: an end the film goes on beyond does.
         var fadesLeading = false
         var fadesTrailing = false
+        /// Whether a change of the fades eases, as the strip's `animatesFades` says; otherwise it shows at once.
+        var animatesFades = false
     }
 
     struct Actions {
@@ -82,8 +84,8 @@ struct QuickAccessBandView: View {
         }
         .glassEffect(reduceTransparency ? .identity : .regular, in: shape)
         // An end the film goes on beyond fades out, the bar and everything on it alike, so the clips there leave no
-        // edge. At an end of the clips the bar keeps its own rounded edge. A fade comes and goes in a short ease,
-        // or at once with Reduce Motion.
+        // edge. At an end of the clips the bar keeps its own rounded edge. Along the film a fade comes and goes in a
+        // short ease; as the film appears or goes, and with Reduce Motion, it switches at once.
         .mask {
             HStack(spacing: 0) {
                 LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
@@ -92,8 +94,8 @@ struct QuickAccessBandView: View {
                 LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
                     .frame(width: layout.fadesTrailing ? fadeInset : 0)
             }
-            .animation(fadeAnimation, value: layout.fadesLeading)
-            .animation(fadeAnimation, value: layout.fadesTrailing)
+            .animation(layout.animatesFades ? fadeAnimation : nil, value: layout.fadesLeading)
+            .animation(layout.animatesFades ? fadeAnimation : nil, value: layout.fadesTrailing)
         }
         .shadow(color: .black.opacity(0.2), radius: 14, y: 6)
     }

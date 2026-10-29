@@ -25,6 +25,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private var metrics: StripMetrics
     /// Where the band is on screen, for the copy confirmation.
     private var bandFrame = NSRect.zero
+    /// Whether the strip's last row is the oldest there is: not while a search is still scanning, nor while another
+    /// page may follow. While a new query has brought no rows yet, the rows still on screen keep what they had.
+    private var oldestIsLoaded = true
     /// The key last posted again for the search field. Posting copies an event, so the copy is known by when
     /// it was pressed and which key it is; no two presses share a time.
     private var repostedKey: (timestamp: TimeInterval, keyCode: UInt16)?
@@ -163,8 +166,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.filtersVisible = state.filtersVisible
         strip.queryIsEmpty = state.query.isEmpty
         strip.dimsSideFrames = state.isPreviewExpanded
+        if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
         strip.show(state.selection.rows, selection: state.selection.selection, details: state.details,
-                   metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: !state.hasMoreRows)
+                   metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded)
     }
 
     /// Places the panel around the band, and around the preview card above it while the preview is open, and
@@ -182,7 +186,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
         let layout = QuickAccessBandView.Layout(metrics: metrics, filtersVisible: filtersVisible,
                                                 previewSize: preview?.size, fadesLeading: strip.fades.leading,
-                                                fadesTrailing: strip.fades.trailing)
+                                                fadesTrailing: strip.fades.trailing, animatesFades: strip.animatesFades)
         if hosting.rootView.layout != layout { hosting.rootView = bandView(layout) }
         // On whole points, which are whole pixels on every screen; AppKit would cut a window's frame to them anyway.
         let frame = NSIntegralRectWithOptions(StripLayout.panelFrame(band: band, preview: preview), .alignAllEdgesNearest)

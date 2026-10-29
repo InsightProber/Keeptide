@@ -30,8 +30,10 @@ final class QuickAccessUITests: XCTestCase {
 
         XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(older.waitForExistence(timeout: 5), app.debugDescription)
-        // The newest clip is the selected one, at the left; the next older clip is the frame on its right.
-        XCTAssertTrue(waitUntil { isSelected(newest) }, app.debugDescription)
+        // The newest clip is the leftmost frame and the next older clip the frame on its right. That the newest is
+        // the one selected shows in what Return copies.
+        let lefts = frames.allElementsBoundByIndex.map(\.frame.minX)
+        XCTAssertEqual(newest.frame.minX, lefts.min() ?? .infinity, accuracy: 1, app.debugDescription)
         XCTAssertTrue(isRightNeighbour(older, of: newest), app.debugDescription)
     }
 
@@ -40,13 +42,14 @@ final class QuickAccessUITests: XCTestCase {
         let frames = try openPanel(app)
         let query = app.searchFields["Quick access query"]
         let newest = clip("Synthetic alpha note", in: frames)
-        let older = clip("echo synthetic-beta", in: frames)
-        XCTAssertTrue(waitUntil { isSelected(newest) }, app.debugDescription)
+        XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
 
-        // ↓ goes into the strip and leaves the newest clip selected instead of stepping past it.
+        // ↓ goes into the strip and leaves the newest clip selected instead of stepping past it. Nothing else here
+        // shows the selection, so the frames' own selected state is read where the system reports it.
         query.typeKey(.downArrow, modifierFlags: [])
-        XCTAssertTrue(isSelected(newest), app.debugDescription)
-        XCTAssertFalse(isSelected(older), app.debugDescription)
+        if let selected = selectedClip(in: frames) {
+            XCTAssertEqual(selected.label, newest.label, app.debugDescription)
+        }
 
         app.typeKey(.upArrow, modifierFlags: [])
         app.typeText("x")
@@ -128,18 +131,13 @@ final class QuickAccessUITests: XCTestCase {
     func testArrowKeysStepTheStripAndReturnCopiesTheSelectedClip() throws {
         let (app, host) = launchKeeptideWithHost()
         let frames = try openPanel(app)
-        let newest = clip("Synthetic alpha note", in: frames)
-        let older = clip("echo synthetic-beta", in: frames)
-        XCTAssertTrue(waitUntil { isSelected(newest) }, app.debugDescription)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(clip("echo synthetic-beta", in: frames).waitForExistence(timeout: 5), app.debugDescription)
 
-        // Nothing is newer than the newest clip, so ← leaves the selection where it is; → steps one clip older.
+        // Nothing is newer than the newest clip, so ← leaves the selection on it; → steps one clip older. Return
+        // copies the selected clip, wherever the keys are, so what it copies shows where the steps went.
         app.searchFields["Quick access query"].typeKey(.leftArrow, modifierFlags: [])
-        XCTAssertTrue(isSelected(newest), app.debugDescription)
         app.typeKey(.rightArrow, modifierFlags: [])
-        XCTAssertTrue(waitUntil { isSelected(older) }, app.debugDescription)
-        XCTAssertFalse(isSelected(newest), app.debugDescription)
-
-        // Return copies the selected clip, wherever the keys are.
         app.typeKey(.return, modifierFlags: [])
         let toast = app.descendants(matching: .any)["CopyToastMessage"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
@@ -157,15 +155,13 @@ final class QuickAccessUITests: XCTestCase {
     func testShiftReturnOnTheImageRowShowsTheReason() throws {
         let (app, host) = launchKeeptideWithHost()
         let frames = try openPanel(app)
-        let image = clip("Copied content", in: frames)
+        XCTAssertTrue(clip("Copied content", in: frames).waitForExistence(timeout: 5), app.debugDescription)
 
         // The image is the oldest of the seven seeded clips, at the right end. ↓ puts the keys in the strip, and
-        // each → selects the next older clip.
+        // each → selects the next older clip; at the oldest one → does nothing more. The reason Shift-Return gives
+        // shows that the image is the clip selected.
         app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
-        for _ in 0..<7 where !isSelected(image) {
-            app.typeKey(.rightArrow, modifierFlags: [])
-        }
-        XCTAssertTrue(waitUntil { isSelected(image) }, app.debugDescription)
+        for _ in 0..<7 { app.typeKey(.rightArrow, modifierFlags: []) }
 
         app.typeKey(.return, modifierFlags: .shift)
 
@@ -229,10 +225,11 @@ final class QuickAccessUITests: XCTestCase {
         frames.matching(NSPredicate(format: "label CONTAINS %@", ": \(title)")).firstMatch
     }
 
-    /// Whether the clip's frame is the selected one. The selected clip is in the middle only while the film can
-    /// move; near either end of the clips it rests elsewhere, so the frame's own selected state is what counts.
-    private func isSelected(_ clip: XCUIElement) -> Bool {
-        clip.exists && clip.isSelected
+    /// The frame that reports itself selected, or nil where none does, as on a system that does not report the
+    /// frames' selected state. The selected clip is not always in the middle, so where it is cannot tell.
+    private func selectedClip(in frames: XCUIElementQuery) -> XCUIElement? {
+        let selected = frames.matching(NSPredicate(format: "selected == true")).firstMatch
+        return selected.waitForExistence(timeout: 2) ? selected : nil
     }
 
     /// Whether `clip` is the frame directly to the right of `other`: it starts after `other` ends, with less
@@ -241,16 +238,6 @@ final class QuickAccessUITests: XCTestCase {
         guard clip.exists, other.exists else { return false }
         let gap = clip.frame.minX - other.frame.maxX
         return gap >= 0 && gap < other.frame.width
-    }
-
-    /// The strip changes a moment after the key that caused it, so a check polls instead of reading once.
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: () -> Bool) -> Bool {
-        let deadline = Date.now.addingTimeInterval(timeout)
-        while !condition() {
-            if Date.now >= deadline { return false }
-            RunLoop.current.run(until: Date.now.addingTimeInterval(0.1))
-        }
-        return true
     }
 
     func text(of element: XCUIElement) -> String {

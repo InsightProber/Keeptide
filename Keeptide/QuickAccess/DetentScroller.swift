@@ -141,7 +141,7 @@ struct DetentScroller {
     }
 
     /// 1 when a tick is wanted and the last one is far enough back. A tick that comes too soon is
-    /// dropped, not postponed: a late one would no longer coincide with the clip reaching the centre.
+    /// dropped, not postponed: a late one would no longer coincide with the step it marks.
     private mutating func pacedTick(wanted: Bool, at time: TimeInterval) -> Int {
         guard wanted, lastTick.map({ time - $0 >= Self.minimumTickInterval }) ?? true else { return 0 }
         lastTick = time
@@ -149,7 +149,8 @@ struct DetentScroller {
     }
 }
 
-/// Plays the tick as a clip passes the centre.
+/// Plays a tick for each step of the selection, whether the clip comes to the middle or the selection walks
+/// along the dock.
 @MainActor
 protocol HapticPerforming {
     func tick()

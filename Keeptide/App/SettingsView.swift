@@ -27,8 +27,9 @@ struct SettingsView: View {
     }
 }
 
-/// A small, inert picture of the strip: `count` clips in a row, the outer ones fading out and the
-/// selected one in the middle. Its height is fixed, so the window keeps its size as the count changes.
+/// A small, inert picture of the strip as it opens: `count` clips in a row, the newest selected at the left end,
+/// which is hard, and the older ones fading out at the right. Its height is fixed, so the window keeps its size as
+/// the count changes.
 private struct DensityPreview: View {
     let count: Int
 
@@ -38,15 +39,13 @@ private struct DensityPreview: View {
                 RoundedRectangle(cornerRadius: 4)
                     .fill(Color(nsColor: .textBackgroundColor))
                     .overlay {
-                        if index == count / 2 {
+                        if index == 0 {
                             RoundedRectangle(cornerRadius: 4).strokeBorder(Color.accentColor, lineWidth: 2)
                         }
                     }
             }
         }
         .mask(LinearGradient(stops: [
-            .init(color: .clear, location: 0),
-            .init(color: .black, location: StripLayout.fade),
             .init(color: .black, location: 1 - StripLayout.fade),
             .init(color: .clear, location: 1),
         ], startPoint: .leading, endPoint: .trailing))
