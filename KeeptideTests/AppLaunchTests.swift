@@ -2749,6 +2749,17 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(seeds(["--ui-testing", "--capture-test-session", id]))
     }
 
+    func testManualPasteQAStartsOnlyFromItsFlagOutsideTests() {
+        func starts(_ arguments: [String], _ environment: [String: String] = [:]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: environment).shouldStartManualPasteQA
+        }
+        XCTAssertTrue(starts(["--manual-paste-qa"]))
+        XCTAssertFalse(starts([]))
+        XCTAssertFalse(starts(["--manual-paste-qa", "--ui-testing"]))
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        XCTAssertFalse(starts(["--manual-paste-qa"], underXCTest))
+    }
+
     func testXCTestLaunchDoesNotRegisterTheGlobalShortcut() {
         let configuration = LaunchConfiguration(
             arguments: [],

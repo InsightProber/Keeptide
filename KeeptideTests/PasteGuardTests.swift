@@ -180,7 +180,7 @@ final class PasteGuardTests: XCTestCase {
         let (fixture, ref) = try await makeFixture()
         let fake = FakeDirectPasteSystem()
         let paste = fixture.service(system: fake.system,
-                                    directPasteOnlyTo: "io.github.insightprober.Keeptide.SystemTestHost")
+                                    directPasteOnlyTo: CaptureTestConfiguration.systemTestHostBundleIdentifier)
 
         let intoTextEdit = await paste.execute(request(ref, paste.beginSession()))
 
@@ -345,7 +345,7 @@ final class PasteGuardTests: XCTestCase {
         let fixture = try PasteFixture(self)
         let fake = FakeDirectPasteSystem()
         let testSession = fixture.service(system: fake.system,
-                                          directPasteOnlyTo: "io.github.insightprober.Keeptide.SystemTestHost")
+                                          directPasteOnlyTo: CaptureTestConfiguration.systemTestHostBundleIdentifier)
 
         // No target comes before the test session's host rule.
         XCTAssertEqual(testSession.availability(for: testSession.beginSession(target: nil)), .copy(.noTarget))

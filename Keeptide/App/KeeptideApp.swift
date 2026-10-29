@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arguments: processInfo.arguments,
             environment: processInfo.environment
         )
-        let environment = AppEnvironment()
+        // The one place that wires direct paste to the system. A test session pastes only into the system test host.
+        let environment = AppEnvironment(captureSession: CaptureSession(directPaste: .live))
         self.environment = environment
 
         if launchConfiguration.shouldInitializeCaptureSession {
@@ -39,7 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await environment.captureSession.initialize(
                     testSessionID: launchConfiguration.captureTestSessionID,
                     cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
-                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
+                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips,
+                    manualPasteQA: launchConfiguration.shouldStartManualPasteQA
                 )
             }
         }

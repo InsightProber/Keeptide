@@ -90,6 +90,120 @@ final class CaptureSessionTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testTestSessionsPasteOnlyIntoTheSystemTestHost() async throws {
+        let configuration = try makeIsolatedSession()
+        let system = FakeDirectPasteSystem()
+        let session = CaptureSession(directPaste: system.system)
+        await session.initialize(testSessionID: configuration.id)
+        let paste = try XCTUnwrap(session.pasteService)
+
+        // TextEdit would paste from the general clipboard, not from the session's.
+        XCTAssertEqual(paste.availability(for: paste.beginSession()), .copy(.testSessionTarget))
+        system.front = .testHost
+        XCTAssertEqual(paste.availability(for: paste.beginSession()), .paste(.testHost))
+        await session.shutdown()
+    }
+
+    func testLibraryCopiesNeverPasteEvenWithATerminalInFront() async throws {
+        let configuration = try makeIsolatedSession()
+        let system = FakeDirectPasteSystem()
+        system.front = .terminal
+        let session = CaptureSession(directPaste: system.system)
+        await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
+        let ref = try XCTUnwrap(session.recent.first { $0.title == "set -e" }?.history)
+
+        await session.select(ref)
+        await session.copy(ref)
+
+        // The clip is copied as captured: it is not made a command for the terminal, which would hold it for a
+        // review and drop its trailing newline.
+        XCTAssertEqual(session.actionMessage, "Copied")
+        let board = NSPasteboard(name: .init(configuration.pasteboardName))
+        XCTAssertEqual(board.string(forType: .string), "set -e\necho synthetic-gamma\n")
+        XCTAssertEqual(system.sent, [])
+        // The front window is never read for the library.
+        XCTAssertEqual(system.probes, 0)
+        await session.shutdown()
+    }
+
+    func testManualPasteQASeedsAreHarmlessAndCoverTheChecklist() throws {
+        let clips = ManualPasteQASession.clips()
+        XCTAssertEqual(clips.count, 6)
+        let texts = try clips.map { clip in
+            String(decoding: try XCTUnwrap(clip.first { $0.0 == "public.utf8-plain-text" }).1, as: UTF8.self)
+        }
+
+        // Harmless in a terminal: the commands, the clips of ASCII plain text alone, only echo, and no clip's text
+        // has anything else a shell acts on.
+        let commands = texts.indices.filter { clips[$0].count == 1 && texts[$0].allSatisfy(\.isASCII) }
+            .map { texts[$0] }
+        XCTAssertEqual(commands.count, 3)
+        for line in commands.flatMap({ $0.split(whereSeparator: \.isNewline) }) {
+            XCTAssertTrue(line.drop { $0 == "\t" }.hasPrefix("echo "), String(line))
+        }
+        for text in texts {
+            XCTAssertFalse(text.contains { ";|&$`<>()\\".contains($0) }, text)
+        }
+
+        // The checklist. The newest clip, which the panel opens on, is a single line.
+        XCTAssertEqual(texts.last, commands.last)
+        XCTAssertFalse(try XCTUnwrap(commands.last).contains(where: \.isNewline))
+        XCTAssertTrue(commands.contains { $0.hasSuffix("\n") && !$0.dropLast().contains(where: \.isNewline) })
+        XCTAssertTrue(commands.contains { $0.dropLast().contains(where: \.isNewline) && $0.contains("\t") })
+        XCTAssertTrue(texts.contains { text in
+            text.count >= 200 && text.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
+        })
+        XCTAssertTrue(clips.contains { $0.map { $0.0 } == ["public.rtf", "public.utf8-plain-text"] })
+        let link = try XCTUnwrap(clips.first { $0.first?.0 == "public.url" })
+        XCTAssertEqual(link.map { $0.0 }, ["public.url", "public.utf8-plain-text"])
+        XCTAssertEqual(link.first?.1, link.last?.1)
+        XCTAssertEqual(URL(string: String(decoding: link[0].1, as: UTF8.self))?.host(), "example.com")
+    }
+
+    func testManualPasteQASeedsGoIntoALibraryNewestFirst() async throws {
+        let fixture = try PasteFixture(self)
+
+        try await SyntheticClipSeeder.seed(ManualPasteQASession.clips(), into: fixture.controller)
+
+        let recent = try await ContentRepository(controller: fixture.controller).recent(limit: 10)
+            .filter { $0.history != nil }
+        // The panel opens on the newest clip: the single-line command.
+        XCTAssertEqual(recent.first?.title, "echo keeptide-qa-single")
+        XCTAssertEqual(recent.map(\.kind), [.text, .text, .text, .text, .text, .url])
+    }
+
+    func testManualPasteQASessionRemovesItsLibraryAndPreferences() throws {
+        let qa = ManualPasteQASession(id: UUID())
+        let other = ManualPasteQASession(id: UUID())
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: qa.preferencesSuite))
+        let otherDefaults = try XCTUnwrap(UserDefaults(suiteName: other.preferencesSuite))
+        addTeardownBlock {
+            for session in [qa, other] where FileManager.default.fileExists(atPath: session.directory.path) {
+                try FileManager.default.removeItem(at: session.directory)
+            }
+            defaults.removePersistentDomain(forName: qa.preferencesSuite)
+            otherDefaults.removePersistentDomain(forName: other.preferencesSuite)
+        }
+        // Each session's library is a throwaway folder of its own, never the user's.
+        XCTAssertTrue(qa.directory.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+        XCTAssertNotEqual(qa.directory, other.directory)
+        XCTAssertNotEqual(qa.preferencesSuite, other.preferencesSuite)
+        for (session, sessionDefaults) in [(qa, defaults), (other, otherDefaults)] {
+            try FileManager.default.createDirectory(at: session.directory, withIntermediateDirectories: true)
+            let marker = session.directory.appendingPathComponent("marker")
+            XCTAssertTrue(FileManager.default.createFile(atPath: marker.path, contents: Data("qa".utf8)))
+            sessionDefaults.set(true, forKey: "captureEnabled")
+        }
+
+        qa.remove()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: qa.directory.path))
+        XCTAssertTrue(defaults.persistentDomain(forName: qa.preferencesSuite)?.isEmpty ?? true)
+        // Another session's library and preferences stay.
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.directory.appendingPathComponent("marker").path))
+        XCTAssertTrue(otherDefaults.bool(forKey: "captureEnabled"))
+    }
+
     private func makeIsolatedSession() throws -> CaptureTestConfiguration {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))

@@ -98,6 +98,8 @@ extension PasteTarget {
                                    name: "Notes", windowNumber: 21)
     static let terminal = PasteTarget(processIdentifier: 503, bundleIdentifier: "com.apple.Terminal",
                                       name: "Terminal", windowNumber: 31)
+    /// The system test host as the system reports it. Its identifier is spelled out rather than taken from
+    /// `CaptureTestConfiguration.systemTestHostBundleIdentifier`, so that a wrong constant fails the tests.
     static let testHost = PasteTarget(processIdentifier: 504,
                                       bundleIdentifier: "io.github.insightprober.Keeptide.SystemTestHost",
                                       name: "Keeptide System Test Host", windowNumber: 41)
