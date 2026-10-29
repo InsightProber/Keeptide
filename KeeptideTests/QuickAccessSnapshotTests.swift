@@ -38,13 +38,18 @@ final class QuickAccessSnapshotTests: XCTestCase {
         let output = SnapshotFolder(requested: URL(fileURLWithPath: folder, isDirectory: true))
         let names = ApplicationNames()
         let now = Date()
-        let rows: [(name: String, cards: [Card])] = [
-            ("open", try openRow(now: now)), ("search", searchRow(now: now)), ("states", try statesRow(now: now)),
+        let everySize = CardSize.allCases
+        let rows: [(name: String, cards: [Card], sizes: [CardSize], appearances: [Bool])] = [
+            ("open", try openRow(now: now), everySize, [true, false]),
+            ("search", searchRow(now: now), everySize, [true, false]),
+            ("states", try statesRow(now: now), everySize, [true, false]),
+            // Text at its extremes, on the smallest card and the largest, in dark mode.
+            ("extremes", extremesRow(now: now), [.small, .large], [true]),
         ]
 
-        for (name, cards) in rows {
-            for cardSize in CardSize.allCases {
-                for dark in [true, false] {
+        for (name, cards, sizes, appearances) in rows {
+            for cardSize in sizes {
+                for dark in appearances {
                     let file = "cards-\(name)-\(cardSize.rawValue)-\(dark ? "dark" : "light").png"
                     let png = try await render(cards, cardSize: cardSize, dark: dark, now: now, names: names)
                     let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
@@ -104,6 +109,18 @@ final class QuickAccessSnapshotTests: XCTestCase {
         }
         XCTAssertEqual(controller.state.selection.rows.count, 3)
         try await write(window, as: "panel-search", into: output)
+
+        // The same search while the index rebuilds: the notice under the clips, Return's hint still in the toolbar.
+        harness.status.update(.rebuilding)
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.deleteBackward(nil)
+        editor.insertText("e", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let state = controller.state
+            return state.query == "rebase" && state.phase == .results && state.selection.isComplete
+                && state.indexNotice == .rebuilding && state.selection.rows.allSatisfy { state.details[$0.ref] != nil }
+        }
+        try await write(window, as: "panel-rebuilding", into: output)
         print("Panel snapshots written to \(output.directory.path)")
     }
 
@@ -182,6 +199,29 @@ final class QuickAccessSnapshotTests: XCTestCase {
                  detail: ClipDetail(excerpt: long, characterCount: 48_210)),
             Card(row: row(.url, "mailto:someone@example.com", from: App.mail, minutesAgo: 600, now: now),
                  detail: ClipDetail(excerpt: "mailto:someone@example.com", characterCount: 26)),
+        ]
+    }
+
+    /// Text at its extremes: emoji and nothing else, a single character, and eight lines of code.
+    private func extremesRow(now: Date) -> [Card] {
+        let emoji = "🎉🚀✨👍🏽👩‍👩‍👧🌏🍜☕️🎧📦✅🔥"
+        let code = """
+            func greet(_ name: String) -> String {
+                let trimmed = name.trimmingCharacters(in: .whitespaces)
+                guard !trimmed.isEmpty else {
+                    return "Hello, world!"
+                }
+                return "Hello, " + trimmed + "!"
+            }
+            print(greet("Keeptide"))
+            """
+        return [
+            Card(row: row(.text, emoji, from: App.notes, minutesAgo: 1, now: now),
+                 detail: ClipDetail(excerpt: emoji, characterCount: emoji.count), isSelected: true),
+            Card(row: row(.text, "A", from: App.notes, minutesAgo: 4, now: now),
+                 detail: ClipDetail(excerpt: "A", characterCount: 1)),
+            Card(row: row(.text, "func greet(_ name: String) -> String {", from: App.terminal, minutesAgo: 12, now: now),
+                 detail: ClipDetail(excerpt: code, characterCount: code.count)),
         ]
     }
 

@@ -384,17 +384,11 @@ struct StripFrameView: View {
     }
 
     /// Room for text in the middle, inside its padding.
-    private var textPadding: CGFloat { 14 * scale }
-
-    /// How many lines of `style` fit in `height`, at least one. Text is cut at the last line that fits, never set
-    /// smaller.
-    private func lines(in height: CGFloat, style: StripTextStyle) -> Int {
-        max(1, Int((height / style.lineHeight + 0.001).rounded(.down)))
-    }
+    private var textPadding: CGFloat { StripTypography.padding(for: metrics.cardSize) }
 
     /// The text from the top left, as many lines as fill the middle, with the memo title in bold on the first.
     private func textBody(_ text: AttributedString, style: StripTextStyle) -> some View {
-        let room = metrics.contentSize.height - 2 * textPadding - (content.memoTitle == nil ? 0 : style.lineHeight)
+        let lines = StripTypography.bodyLines(style, metrics: metrics, hasMemoTitle: content.memoTitle != nil)
         return VStack(alignment: .leading, spacing: 0) {
             if let title = content.memoTitle {
                 Text(title)
@@ -405,7 +399,7 @@ struct StripFrameView: View {
             Text(marked(text))
                 .font(.system(size: style.size))
                 .lineHeight(.exact(points: style.lineHeight))
-                .lineLimit(lines(in: room, style: style))
+                .lineLimit(lines)
         }
         .foregroundStyle(Palette.text(isDark))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -431,7 +425,7 @@ struct StripFrameView: View {
                 .font(.system(size: style.size, weight: .semibold))
                 .lineHeight(.exact(points: style.lineHeight))
                 .multilineTextAlignment(.center)
-                .lineLimit(min(3, lines(in: room, style: style)))
+                .lineLimit(min(3, StripTypography.lines(in: room, style: style)))
                 .foregroundStyle(Palette.text(isDark))
         }
         .padding(.top, top)
@@ -478,7 +472,7 @@ struct StripFrameView: View {
                 .font(.system(size: style.size, weight: .semibold))
                 .lineHeight(.exact(points: style.lineHeight))
                 .multilineTextAlignment(.center)
-                .lineLimit(min(2, lines(in: room, style: style)))
+                .lineLimit(min(2, StripTypography.lines(in: room, style: style)))
                 .truncationMode(.middle)
                 .foregroundStyle(Palette.text(isDark))
         }
@@ -502,7 +496,7 @@ struct StripFrameView: View {
                 .font(.system(size: style.size, weight: .semibold))
                 .lineHeight(.exact(points: style.lineHeight))
                 .multilineTextAlignment(.center)
-                .lineLimit(min(2, lines(in: room, style: style)))
+                .lineLimit(min(2, StripTypography.lines(in: room, style: style)))
                 .foregroundStyle(Palette.text(isDark))
         }
         .padding(.top, top)

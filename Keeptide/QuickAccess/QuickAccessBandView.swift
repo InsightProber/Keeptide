@@ -11,6 +11,8 @@ struct QuickAccessBandView: View {
         var metrics: StripMetrics
         /// The preview card's size while the preview is open.
         var previewSize: CGSize?
+        /// From the band's top edge up to the card's bottom edge: less than nothing where the card lies over the band.
+        var previewGap = StripLayout.previewGap
         /// How far the band's bottom edge is above the panel's: the room its shadow has there.
         var roomBelow: CGFloat
     }
@@ -40,9 +42,9 @@ struct QuickAccessBandView: View {
     }
 
     var body: some View {
-        VStack(spacing: StripLayout.previewGap) {
+        VStack(spacing: layout.previewGap) {
             if let size = layout.previewSize {
-                // Over the band's shadow, which reaches up toward the card.
+                // Over the band's shadow, which reaches up toward the card, and over the band itself on a low screen.
                 previewCard.frame(width: size.width, height: size.height).zIndex(1)
             }
             band
@@ -63,6 +65,7 @@ struct QuickAccessBandView: View {
             Spacer(minLength: 0)
         }
         .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics), alignment: .top)
+        .overlay(alignment: .bottom) { rebuildNotice }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
@@ -77,6 +80,22 @@ struct QuickAccessBandView: View {
             HostedView(view: strip)
                 .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * Self.ringRoom)
             if !hasFrames { emptyState }
+        }
+    }
+
+    /// Under the clips while the index rebuilds, so that the toolbar keeps Return's hint; with no clips the empty state
+    /// says it instead. Its line stands 1.5 pt above the band's edge, which sets its letters midway between that edge
+    /// and the ring of a selected card above them, about 2 pt from each.
+    @ViewBuilder
+    private var rebuildNotice: some View {
+        if hasFrames, state.indexNotice == .rebuilding {
+            Text(QuickAccessStatus.rebuilding)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.bottom, 1.5)
+                .allowsHitTesting(false)
+                .accessibilityIdentifier("QuickAccessIndexNotice")
         }
     }
 

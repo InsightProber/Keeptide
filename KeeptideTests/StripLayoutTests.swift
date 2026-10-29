@@ -213,6 +213,42 @@ final class StripLayoutTests: XCTestCase {
         XCTAssertEqual(centred.preview.size, StripLayout.previewMaximum)
     }
 
+    func testALowScreenKeepsThePreviewCardAtLeast160High() {
+        // 1024 × 520, as a small laptop at a larger text size leaves under the menu bar and above the Dock: the room
+        // above the band would leave the card 116 high with medium cards, and less than nothing on a lower screen. The
+        // card is never under 160, and it stays on the screen with the band.
+        let low = NSRect(x: 0, y: 0, width: 1024, height: 520)
+        for size in CardSize.allCases {
+            let m = StripLayout.metrics(for: size, visibleWidth: low.width)
+            let band = StripLayout.bandFrame(m, in: low)
+            let (preview, moved) = StripLayout.previewLayout(band: band, in: low)
+            XCTAssertGreaterThanOrEqual(preview.height, 160, "\(size)")
+            XCTAssertEqual(preview.width, StripLayout.previewMaximum.width, "\(size)")
+            XCTAssertTrue(low.contains(preview), "\(size): \(preview)")
+            XCTAssertTrue(low.contains(moved), "\(size): \(moved)")
+            XCTAssertEqual(moved.size, band.size, "\(size)")
+            XCTAssertTrue(low.contains(StripLayout.panelFrame(band: moved, preview: preview, in: low)), "\(size)")
+        }
+
+        // With medium cards the card still fits above the band once the two take the screen's whole height.
+        let m = StripLayout.metrics(for: .medium, visibleWidth: low.width)
+        let (preview, moved) = StripLayout.previewLayout(band: StripLayout.bandFrame(m, in: low), in: low)
+        XCTAssertEqual(preview.minY, moved.maxY + StripLayout.previewGap, accuracy: 0.5)
+
+        // On a screen lower still there is no room for it above the band at all: it is drawn over the band's top edge
+        // rather than be cut down further or leave the screen.
+        let lower = NSRect(x: 0, y: 30, width: 1024, height: 440)
+        for size in CardSize.allCases {
+            let m = StripLayout.metrics(for: size, visibleWidth: lower.width)
+            let (preview, moved) = StripLayout.previewLayout(band: StripLayout.bandFrame(m, in: lower), in: lower)
+            XCTAssertEqual(preview.height, 160, "\(size)")
+            XCTAssertTrue(lower.contains(preview), "\(size): \(preview)")
+            XCTAssertEqual(moved.minY, lower.minY, accuracy: 0.5, "\(size)")
+            XCTAssertLessThan(preview.minY, moved.maxY, "\(size): over the band")
+            XCTAssertTrue(lower.contains(StripLayout.panelFrame(band: moved, preview: preview, in: lower)), "\(size)")
+        }
+    }
+
     /// The first origin exactly, or within `accuracy` where the arithmetic is not exact.
     private func assertPlacement(count: Int, position: CGFloat, loaded: Bool = false, origin: CGFloat,
                                  accuracy: CGFloat = 0, file: StaticString = #filePath, line: UInt = #line) {

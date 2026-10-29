@@ -52,11 +52,13 @@ enum StripLayout {
     static let sideMargin: CGFloat = 32
     /// The room the panel gives the band's shadow above and below it, where the screen's visible area has it.
     static let shadowRoom = (above: CGFloat(40), below: CGFloat(100))
-    /// When the preview card moves the band down, the two keep at least this far from the visible area's top and
-    /// bottom.
+    /// When the preview card moves the band down, the two keep this far from the visible area's top and bottom where
+    /// it is tall enough for them.
     static let screenMargin: CGFloat = 24
     static let previewGap: CGFloat = 16
     static let previewMaximum = CGSize(width: 760, height: 470)
+    /// The preview card is never lower than this, however low the screen.
+    static let previewMinimumHeight: CGFloat = 160
 
     /// The frames are as large on every screen as the card size makes them; a narrow screen shows fewer of them.
     /// The band is as wide as the visible area less the margin at each side.
@@ -114,17 +116,23 @@ enum StripLayout {
 
     /// The card goes above the band, which stays where it is. Where the card has no room above it, the
     /// card and the band are centred vertically as one group, so the band moves down to make room. The card is
-    /// at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and in width.
+    /// at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and in width, but never below
+    /// `previewMinimumHeight`. A group too tall for the room between the screen margins takes the visible area's
+    /// whole height, and one too tall even for that rests on the visible area's bottom with the card at its top, over
+    /// the band's top edge.
     static func previewLayout(band: NSRect, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
         let room = visible.insetBy(dx: sideMargin, dy: screenMargin)
         let size = CGSize(width: min(previewMaximum.width, room.width),
-                          height: min(previewMaximum.height, room.height - band.height - previewGap))
+                          height: max(previewMinimumHeight,
+                                      min(previewMaximum.height, room.height - band.height - previewGap)))
         var movedBand = band
         if band.maxY + previewGap + size.height > room.maxY {
             let groupHeight = size.height + previewGap + band.height
-            movedBand.origin.y = max(room.midY - groupHeight / 2, room.minY)
+            let area = groupHeight <= room.height ? room : visible
+            movedBand.origin.y = max(area.midY - groupHeight / 2, area.minY)
         }
-        let preview = NSRect(x: band.midX - size.width / 2, y: movedBand.maxY + previewGap,
+        let preview = NSRect(x: band.midX - size.width / 2,
+                             y: min(movedBand.maxY + previewGap, visible.maxY - size.height),
                              width: size.width, height: size.height)
         return (preview, movedBand)
     }

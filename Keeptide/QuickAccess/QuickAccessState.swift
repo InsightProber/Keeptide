@@ -511,11 +511,11 @@ enum QuickAccessStatus {
         }
     }
 
-    /// The line above rows that are on screen.
-    static func line(selectionLost: Bool, phase: QuickAccessPhase, isComplete: Bool, notice: IndexNotice?) -> String? {
+    /// What the toolbar says over rows that are on screen, in place of Return's hint. An index that is rebuilding
+    /// takes no such place: the band says so under the rows.
+    static func line(selectionLost: Bool, phase: QuickAccessPhase, isComplete: Bool) -> String? {
         if selectionLost { return "The selected item is no longer in the results" }
         if phase == .loading || !isComplete { return "Searching…" }
-        if notice == .rebuilding { return rebuilding }
         return nil
     }
 }

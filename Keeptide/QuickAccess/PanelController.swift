@@ -219,12 +219,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     /// What the toolbar's right end says. A refused copy's reason answers what was just done, so it comes first;
     /// then a status over clips on screen; then, with a clip selected, what Return does. With no clips the empty
-    /// state says it all.
+    /// state says it all. An index that is rebuilding is told under the clips, and leaves Return's hint in place.
     private var toolbarNote: QuickAccessToolbar.Note {
         if let failure = state.failure { return .failure(failure.message) }
         if !state.selection.rows.isEmpty,
            let line = QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
-                                             isComplete: state.selection.isComplete, notice: state.indexNotice) {
+                                             isComplete: state.selection.isComplete) {
             return .status(line)
         }
         guard state.selection.selection != nil else { return .none }
@@ -233,8 +233,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     /// Places the panel around the band, and around the preview card above it while the preview is open, and
     /// lays the band out to match. The band sits in the middle of the screen's visible area; a card with no room
-    /// above it moves the band down. The panel leaves room around them for the band's shadow, as much as the
-    /// screen has.
+    /// above it moves the band down, and on a screen too low for that it lies over the band's top edge. The panel
+    /// leaves room around them for the band's shadow, as much as the screen has.
     private func layoutPanel() {
         guard let window, let hosting else { return }
         var band = StripLayout.bandFrame(metrics, in: visibleFrame)
@@ -248,13 +248,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let frame = NSIntegralRectWithOptions(StripLayout.panelFrame(band: band, preview: preview, in: visibleFrame),
                                               .alignAllEdgesNearest)
         let roomBelow = (band.minY - frame.minY).rounded()
-        let layout = QuickAccessBandView.Layout(metrics: metrics, previewSize: preview?.size, roomBelow: roomBelow)
+        let previewGap = preview.map { $0.minY - band.maxY } ?? StripLayout.previewGap
+        let layout = QuickAccessBandView.Layout(metrics: metrics, previewSize: preview?.size, previewGap: previewGap,
+                                                roomBelow: roomBelow)
         if hosting.rootView.layout != layout { hosting.rootView = bandView(layout) }
         if window.frame != frame { window.setFrame(frame, display: window.isVisible) }
         let bandInWindow = NSRect(x: StripLayout.sideMargin, y: roomBelow, width: band.width, height: band.height)
         bandFrame = bandInWindow.offsetBy(dx: frame.minX, dy: frame.minY)
         contentFrames = [bandInWindow] + (preview.map { [NSRect(
-            x: bandInWindow.midX - $0.width / 2, y: bandInWindow.maxY + StripLayout.previewGap, width: $0.width,
+            x: bandInWindow.midX - $0.width / 2, y: bandInWindow.maxY + previewGap, width: $0.width,
             height: $0.height
         )] } ?? [])
     }
@@ -353,8 +355,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         update()
     }
 
-    /// A click on the folded search, or ⌘F: the search opens and its field takes the keys. A field that has them
-    /// already keeps its editing as it is: its caret, its Undo and any composition under way.
+    /// A click on the folded search or on the open one, or ⌘F: the search opens and its field takes the keys. A field
+    /// that has them already keeps its editing as it is: its caret, its Undo and any composition under way.
     private func unfoldSearch() {
         state.unfoldSearch()
         update()
@@ -566,6 +568,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             openActions()
             return true
         case "y":
+            // Held down, ⌘Y has acted already: its repeats are taken and do nothing.
+            guard !event.isARepeat else { return true }
             togglePreview()
             return true
         default:

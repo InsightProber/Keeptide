@@ -17,16 +17,17 @@ final class QuickAccessToolbar: NSView {
         case none
     }
 
-    static let rowHeight: CGFloat = 32
     /// The view is this much taller than the row above and below it, for the focus rings drawn around the search
     /// and the filters.
     static let focusRoom: CGFloat = 4
-    static let height = rowHeight + 2 * focusRoom
+    static let height = StripLayout.toolbarHeight + 2 * focusRoom
     /// Between the search and the filters.
     static let searchGap: CGFloat = 12
     /// The right end keeps this far from the row's edge, and its parts this far from each other and from the filters.
     static let trailingInset: CGFloat = 16
     static let trailingGap: CGFloat = 12
+    /// A note moves the search and the filters left, when it needs the room, no nearer than this to the row's edge.
+    static let leadingInset: CGFloat = 16
     /// A status cut shorter than this would say nothing, so it is left out.
     private static let shortestStatus: CGFloat = 24
 
@@ -53,7 +54,7 @@ final class QuickAccessToolbar: NSView {
     var reducesMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
     /// The row within the view.
-    var rowFrame: NSRect { NSRect(x: 0, y: Self.focusRoom, width: bounds.width, height: Self.rowHeight) }
+    var rowFrame: NSRect { NSRect(x: 0, y: Self.focusRoom, width: bounds.width, height: StripLayout.toolbarHeight) }
 
     init(field: QuickAccessSearchField) {
         search = QuickAccessSearchControl(field: field)
@@ -99,33 +100,52 @@ final class QuickAccessToolbar: NSView {
         layer.add(animation, forKey: "fold \(keyPath)")
     }
 
-    /// The search and the filters are centred together; the right end is laid out from the edge in.
+    /// The search and the filters are centred together; the right end is laid out from the edge in. A status or a
+    /// failure that the centred pair leaves too little room moves them left, as far as `leadingInset` from the row's
+    /// edge, before it is cut short.
     override func layout() {
         super.layout()
         let row = rowFrame
         let searchWidth = search.isExpanded ? QuickAccessSearchControl.openWidth : QuickAccessSearchControl.foldedWidth
         let filtersSize = filters.intrinsicContentSize
-        let left = ((bounds.width - searchWidth - Self.searchGap - filtersSize.width) / 2).rounded()
-        let searchFrame = NSRect(x: left, y: row.minY, width: searchWidth, height: row.height)
-        let filtersFrame = NSRect(x: searchFrame.maxX + Self.searchGap, y: row.midY - filtersSize.height / 2,
-                                  width: filtersSize.width, height: filtersSize.height)
+        let groupWidth = searchWidth + Self.searchGap + filtersSize.width
         let side = QuickAccessMoreButton.side
         let moreFrame = NSRect(x: bounds.width - Self.trailingInset - side, y: row.midY - side / 2, width: side,
                                height: side)
+        let end = moreFrame.minX - Self.trailingGap
+        var left = ((bounds.width - groupWidth) / 2).rounded()
+        if let wanted = statusWidth {
+            let short = wanted - (end - Self.trailingGap - (left + groupWidth))
+            left -= max(0, min(short, left - Self.leadingInset))
+        }
+        let searchFrame = NSRect(x: left, y: row.minY, width: searchWidth, height: row.height)
+        let filtersFrame = NSRect(x: searchFrame.maxX + Self.searchGap, y: row.midY - filtersSize.height / 2,
+                                  width: filtersSize.width, height: filtersSize.height)
+        let fieldMoves = search.frame.origin != searchFrame.origin
         search.frame = searchFrame
         focusHalo.frame = searchFrame.insetBy(dx: -QuickAccessFocusHalo.width, dy: -QuickAccessFocusHalo.width)
         filters.frame = filtersFrame
         moreButton.frame = moreFrame
-        let end = moreFrame.minX - Self.trailingGap
+        // The field has moved, as it does when a note moves it aside, so an input method's candidates move with it.
+        if fieldMoves { (search.field.currentEditor() as? NSTextView)?.inputContext?.invalidateCharacterCoordinates() }
         layoutNote(endingAt: end, room: end - (filtersFrame.maxX + Self.trailingGap))
     }
 
+    /// How wide a status or a failure is in full; nil for any other note.
+    private var statusWidth: CGFloat? {
+        switch note {
+        case .status, .failure: ceil(statusLabel.intrinsicContentSize.width)
+        case .copy, .none: nil
+        }
+    }
+
     /// The note ends `trailingGap` before the ⋯ button and takes at most `room`. Short of room, "⏎ Copy" first drops
-    /// its word, then goes; a status is cut short with an ellipsis.
+    /// its word, then goes; a status is cut short with an ellipsis, its whole text in its help tag.
     private func layoutNote(endingAt end: CGFloat, room: CGFloat) {
         let row = rowFrame
         copyHint.isHidden = true
         statusLabel.isHidden = true
+        statusLabel.toolTip = nil
         switch note {
         case .copy(let enabled):
             copyHint.isEnabled = enabled
@@ -143,6 +163,7 @@ final class QuickAccessToolbar: NSView {
         case .status, .failure:
             let natural = statusLabel.intrinsicContentSize
             let width = min(ceil(natural.width), room)
+            if width < ceil(natural.width) { statusLabel.toolTip = statusLabel.stringValue }
             guard width >= Self.shortestStatus else { return }
             statusLabel.frame = NSRect(x: end - width, y: row.midY - natural.height / 2, width: width,
                                        height: natural.height)
@@ -188,6 +209,8 @@ final class QuickAccessSearchControl: NSView {
     /// The circle as a button: a click unfolds the search. It is there only while the search is folded.
     let foldButton = QuickAccessFoldButton()
     let clearButton = QuickAccessClearButton()
+    /// A click on the folded circle, or on the open pill outside its field and clear button: the search opens, if it
+    /// is folded, and its field takes the keys.
     var onUnfold: (() -> Void)?
     var onClear: (() -> Void)?
 
@@ -262,6 +285,13 @@ final class QuickAccessSearchControl: NSView {
         clearButton.isHidden = !(isExpanded && hasText)
         foldButton.isHidden = isExpanded
         foldButton.frame = bounds
+    }
+
+    /// Open, a click on the pill outside the field and the clear button, on its magnifier as well, gives the field the
+    /// keys, as one on the field would.
+    override func mouseDown(with event: NSEvent) {
+        guard isExpanded else { return super.mouseDown(with: event) }
+        onUnfold?()
     }
 
     @objc private func unfold() { onUnfold?() }
@@ -421,6 +451,13 @@ final class QuickAccessFilterRow: NSView {
     @objc private func choose(_ sender: NSButton) {
         cursor = sender.tag
         onChoose?(sender.tag)
+    }
+
+    /// Only the choices take clicks. A click in the gap between two is no choice's, and leaves the keys where they
+    /// are rather than bring them here.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let view = super.hitTest(point)
+        return view === self ? nil : view
     }
 
     override var acceptsFirstResponder: Bool { true }

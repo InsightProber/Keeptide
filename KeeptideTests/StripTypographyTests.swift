@@ -49,6 +49,25 @@ final class StripTypographyTests: XCTestCase {
         }
     }
 
+    func testTheLinesATextShowsFillTheMiddleWithoutRunningPastIt() {
+        // Every body style, from the shortest text's to the longest's, on every card size, with a memo title's line
+        // above or without: the lines the card shows fit inside the middle's padding, and one more would not.
+        for cardSize in CardSize.allCases {
+            let metrics = StripLayout.metrics(for: cardSize, visibleWidth: 1440)
+            let room = metrics.contentSize.height - 2 * StripTypography.padding(for: cardSize)
+            for length in [1, 25, 61, 141, 5_000] {
+                let style = StripTypography.bodyStyle(for: String(repeating: "a", count: length), cardSize: cardSize)
+                for hasMemoTitle in [false, true] {
+                    let lines = StripTypography.bodyLines(style, metrics: metrics, hasMemoTitle: hasMemoTitle)
+                    let used = CGFloat(lines + (hasMemoTitle ? 1 : 0)) * style.lineHeight
+                    let label = "\(cardSize), \(length) characters, memo title \(hasMemoTitle): \(lines) lines"
+                    XCTAssertLessThanOrEqual(used, room + 0.05, label)
+                    XCTAssertGreaterThan(used + style.lineHeight, room, label)
+                }
+            }
+        }
+    }
+
     func testInfoLineCopy() {
         let en = Locale(identifier: "en_US")
         XCTAssertEqual(ClipInfoFormatter.characters(1, locale: en), "1 character")

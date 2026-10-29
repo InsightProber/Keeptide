@@ -87,16 +87,60 @@ final class QuickAccessToolbarTests: XCTestCase {
         }
         XCTAssertEqual(seen, ["word", "keycap", "none"])
 
-        // A status is cut short with an ellipsis rather than run into the filters.
+        // A status too long even once the search and the filters have moved as far left as they go is cut short with
+        // an ellipsis rather than run into the filters, and its whole text is in its help tag.
         let toolbar = makeToolbar(width: 900)
         toolbar.note = .status("The selected item is no longer in the results")
         toolbar.setSearchExpanded(true)
         toolbar.layoutSubtreeIfNeeded()
         let status = toolbar.statusLabel
         XCTAssertFalse(status.isHidden)
+        XCTAssertEqual(toolbar.search.frame.minX, 16)
         XCTAssertGreaterThanOrEqual(status.frame.minX, toolbar.filters.frame.maxX + 12)
         XCTAssertLessThan(status.frame.width, status.intrinsicContentSize.width)
         XCTAssertEqual(status.lineBreakMode, .byTruncatingTail)
+        XCTAssertEqual(status.toolTip, "The selected item is no longer in the results")
+    }
+
+    func testALongNoteMovesTheSearchAsideBeforeItIsCut() throws {
+        // On 1024 and 1280 pt screens the band is 960 and 1216 wide. Centred, the open search and the filters leave the
+        // right end 107 and 235 pt, too little for a failure that needs 262; they move left, no nearer than 16 to the
+        // row's left end, and the failure reads in full.
+        let failure = "This item changed or is no longer available."
+        for width in [960, 1216] as [CGFloat] {
+            let toolbar = makeToolbar(width: width)
+            toolbar.setSearchExpanded(true)
+            toolbar.note = .failure(failure)
+            toolbar.layoutSubtreeIfNeeded()
+            let status = toolbar.statusLabel
+            let search = toolbar.search.frame
+            let filters = toolbar.filters.frame
+            XCTAssertFalse(status.isHidden, "\(width)")
+            XCTAssertEqual(status.stringValue, failure)
+            XCTAssertGreaterThanOrEqual(status.frame.width, status.intrinsicContentSize.width, "\(width): read in full")
+            XCTAssertGreaterThanOrEqual(status.frame.minX, filters.maxX + 12, "\(width): clear of the filters")
+            XCTAssertEqual(status.frame.maxX, toolbar.moreButton.frame.minX - 12, "\(width)")
+            XCTAssertNil(status.toolTip, "\(width): nothing is cut, so there is no help tag")
+            XCTAssertGreaterThanOrEqual(search.minX, 16, "\(width)")
+            XCTAssertLessThan((search.minX + filters.maxX) / 2, toolbar.bounds.midX, "\(width): moved left")
+            // They move as one, keeping their sizes and the gap between them.
+            XCTAssertEqual(search.width, 300, "\(width)")
+            XCTAssertEqual(filters.minX - search.maxX, 12, "\(width)")
+
+            // With Return's hint in its place again they are centred again.
+            toolbar.note = .copy(enabled: true)
+            toolbar.layoutSubtreeIfNeeded()
+            let centre = (toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2
+            XCTAssertEqual(centre, toolbar.bounds.midX, accuracy: 0.5, "\(width)")
+        }
+
+        // A short status needs no room it does not have: the two stay centred.
+        let toolbar = makeToolbar(width: 960)
+        toolbar.setSearchExpanded(true)
+        toolbar.note = .status("Searching…")
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(toolbar.statusLabel.frame.width, toolbar.statusLabel.intrinsicContentSize.width)
     }
 
     func testTheSearchFoldsInAFifthOfASecondOrAtOnceWithReduceMotion() throws {

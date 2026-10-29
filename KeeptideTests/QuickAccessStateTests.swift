@@ -558,15 +558,12 @@ final class QuickAccessStateTests: XCTestCase {
     }
 
     func testStatusLineAboveRows() {
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: true, phase: .results, isComplete: false, notice: .rebuilding),
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: true, phase: .results, isComplete: false),
                        "The selected item is no longer in the results")
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: false, notice: nil),
-                       "Searching…")
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .loading, isComplete: true, notice: nil),
-                       "Searching…")
-        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true, notice: .rebuilding),
-                       "Index is rebuilding — results may be incomplete")
-        XCTAssertNil(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true, notice: nil))
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: false), "Searching…")
+        XCTAssertEqual(QuickAccessStatus.line(selectionLost: false, phase: .loading, isComplete: true), "Searching…")
+        // With nothing else to say, the toolbar shows Return's hint; a rebuilding index is told under the rows.
+        XCTAssertNil(QuickAccessStatus.line(selectionLost: false, phase: .results, isComplete: true))
     }
 
     func testDetailsLoadForRequestedRowsOnly() async throws {

@@ -125,6 +125,57 @@ final class HeaderTintTests: XCTestCase {
         XCTAssertNil(HeaderTint.cachedTint(forIconOf: nil))
     }
 
+    func testEveryOneColourIconGetsBandTextThatReads() throws {
+        // A sweep of one-colour 32 px icons round the wheel: every 10 degrees of hue, at three saturations and four
+        // lightnesses, pale and grey ones among them. Whatever band each gives, its title reads at 4.5:1 or better, and
+        // its text is never white where white would read at less than that.
+        var cases = 0
+        for degrees in stride(from: 0.0, to: 360, by: 10) {
+            for saturation in [0.3, 0.6, 1.0] {
+                for lightness in [0.3, 0.5, 0.7, 0.9] {
+                    let fill = colour(hue: degrees, saturation: saturation, lightness: lightness)
+                    let tint = HeaderTint.tint(of: try solidIcon(fill, side: 32))
+                    let band = tint.background
+                    let label = "hue \(degrees), saturation \(saturation), lightness \(lightness)"
+                    XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(tint.text, band), 4.5, label)
+                    if !tint.usesDarkText {
+                        XCTAssertEqual(tint.text, white, label)
+                        XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(white, band), 4.5, label)
+                    }
+                    cases += 1
+                }
+            }
+        }
+        XCTAssertEqual(cases, 432)
+    }
+
+    /// The sRGB colour at a hue in degrees and a saturation and lightness from 0 to 1.
+    private func colour(hue degrees: Double, saturation: Double, lightness: Double) -> (Double, Double, Double) {
+        let chroma = (1 - abs(2 * lightness - 1)) * saturation
+        let second = chroma * (1 - abs((degrees / 60).truncatingRemainder(dividingBy: 2) - 1))
+        let (r, g, b): (Double, Double, Double) = switch degrees {
+        case ..<60: (chroma, second, 0)
+        case ..<120: (second, chroma, 0)
+        case ..<180: (0, chroma, second)
+        case ..<240: (0, second, chroma)
+        case ..<300: (second, 0, chroma)
+        default: (chroma, 0, second)
+        }
+        let base = lightness - chroma / 2
+        return (r + base, g + base, b + base)
+    }
+
+    /// A `side` × `side` icon of one opaque colour.
+    private func solidIcon(_ fill: (Double, Double, Double), side: Int) throws -> CGImage {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+            space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(srgbRed: fill.0, green: fill.1, blue: fill.2, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        return try XCTUnwrap(context.makeImage())
+    }
+
     /// Hue in degrees, from 0 up to 360.
     private func hue(of colour: HeaderTint.RGB) -> Double {
         let (r, g, b) = (colour.red, colour.green, colour.blue)

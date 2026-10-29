@@ -42,4 +42,22 @@ enum StripTypography {
         let size = max(12, style.size * scale(for: cardSize))
         return StripTextStyle(size: size, lineHeight: style.lineHeight * size / style.size)
     }
+
+    /// The room around a card's text, and around a picture shown whole: 14 pt on a medium card, scaled.
+    static func padding(for cardSize: CardSize) -> CGFloat {
+        14 * scale(for: cardSize)
+    }
+
+    /// How many lines of `style` fit in `height`, at least one. Text is cut at the last line that fits, never set
+    /// smaller.
+    static func lines(in height: CGFloat, style: StripTextStyle) -> Int {
+        max(1, Int((height / style.lineHeight + 0.001).rounded(.down)))
+    }
+
+    /// How many lines of a text body set in `style` a card shows: as many as its middle holds inside the padding,
+    /// below the memo title's line when it has one.
+    static func bodyLines(_ style: StripTextStyle, metrics: StripMetrics, hasMemoTitle: Bool) -> Int {
+        let room = metrics.contentSize.height - 2 * padding(for: metrics.cardSize) - (hasMemoTitle ? style.lineHeight : 0)
+        return lines(in: room, style: style)
+    }
 }
