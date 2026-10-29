@@ -2,12 +2,19 @@ import CoreGraphics
 import Foundation
 import Observation
 
+/// Where quick access gets its search pages: the search service, or a stand-in in tests.
+protocol QuickAccessSearch: Sendable {
+    func search(_ request: SearchRequest) -> AsyncThrowingStream<SearchPage, Error>
+}
+
+extension SearchService: QuickAccessSearch {}
+
 /// The store-backed services quick access reads and acts through; nil while the
 /// library is not open.
 @MainActor
 struct QuickAccessServices {
     let repository: ContentRepository
-    let search: SearchService?
+    let search: (any QuickAccessSearch)?
     let paste: PasteService
     /// What the strip frames and the image preview show comes from here; without it they show only what a
     /// row already knows.
@@ -73,9 +80,14 @@ final class QuickAccessState {
     private(set) var details: [ContentRef: ClipDetail] = [:]
     /// Whether the search was unfolded by hand or by typing, and has not been folded since.
     private(set) var isSearchUnfolded = false
+    /// The app window this session would paste into, recorded as the panel opened. nil without a session.
+    private(set) var pasteTarget: PasteTarget?
     /// What the checks allowed for the session's target when the session started: a paste, or why not. nil without
     /// a library.
     private(set) var directPaste: DirectPasteAvailability?
+    /// Whether Enable Direct Paste… asked for access in this run of Keeptide. The system shows a grant to Keeptide
+    /// only once it reopens, so every later showing says so. Closing the panel keeps it.
+    private(set) var hasRequestedDirectPasteAccess = false
     /// The command the selected clip's last action is waiting on. Nothing has been written or sent for it.
     private(set) var commandReview: CommandReview?
     /// Called once an action has written the clipboard, whether it pasted, copied or copied instead.
@@ -129,13 +141,11 @@ final class QuickAccessState {
     /// A search has another page to fetch, so the last row listed is not the last there is.
     var hasMoreRows: Bool { !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count }
 
-    /// The app window this session would paste into, recorded as the panel opened.
-    var pasteTarget: PasteTarget? { session?.target }
-
     /// What the panel offers for the selected row.
     var actions: QuickAccessActions {
         QuickAccessActions.make(target: pasteTarget, availability: directPaste,
-                                kind: selection.rows.first { $0.ref == selection.selection }?.kind)
+                                kind: selection.rows.first { $0.ref == selection.selection }?.kind,
+                                accessRequested: hasRequestedDirectPasteAccess)
     }
 
     /// The delivery Return and ⇧Return ask for. It is a paste only when the session started able to paste, so a
@@ -166,6 +176,7 @@ final class QuickAccessState {
         details = [:]
         session?.end()
         session = nil
+        pasteTarget = nil
         directPaste = nil
         isPreviewExpanded = false
         preview = nil
@@ -289,9 +300,11 @@ final class QuickAccessState {
     /// Acts on what was selected when the key was pressed, never a row selected later: writes the clipboard and, for
     /// a paste whose checks pass, sends ⌘V once the panel hides. A command that needs a review writes nothing; it
     /// opens the review instead. `confirmation` is the review's, once the user confirms it.
-    func act(on target: CopyTarget, mode: PasteMode, delivery: PasteDelivery,
+    func act(on target: CopyTarget, mode: PasteMode, delivery requested: PasteDelivery,
              confirmation: CommandConfirmation? = nil) async {
         guard let session, copying !== session, let paste = services()?.paste else { return }
+        // A showing that opened offering Copy only copies, whatever is asked for (decision 2).
+        let delivery = preferredDelivery == .paste ? requested : .copy
         copying = session
         defer { if copying === session { copying = nil } }
         failure = nil
@@ -327,10 +340,12 @@ final class QuickAccessState {
         dropCommandReview()
     }
 
-    /// Enable Direct Paste…: asks for access, and opens Accessibility settings when the system no longer asks. What
-    /// the panel offers stays as it was when it opened.
+    /// Enable Direct Paste…: asks for access, and opens Accessibility settings when the system no longer asks. The
+    /// request is remembered for the rest of this run. What the panel offers to do stays as it was when it opened.
     func requestDirectPasteAccess() {
-        services()?.paste.requestDirectPasteAccess()
+        guard let paste = services()?.paste else { return }
+        paste.requestDirectPasteAccess()
+        hasRequestedDirectPasteAccess = true
     }
 
     /// Copies what was selected when the key was pressed, never a row selected later.
@@ -379,14 +394,16 @@ final class QuickAccessState {
     /// later session keeps the previous session's target, or has none. Each session's checks run once, here, and
     /// never ask for access.
     private func startSession(recordingTarget: Bool) {
-        let previousTarget = session?.target
+        let previousTarget = pasteTarget
         session?.end()
         if let paste = services()?.paste {
             let session = recordingTarget ? paste.beginSession() : paste.beginSession(target: previousTarget)
             self.session = session
+            pasteTarget = session.target
             directPaste = paste.availability(for: session)
         } else {
             session = nil
+            pasteTarget = nil
             directPaste = nil
         }
         reload()
@@ -425,13 +442,11 @@ final class QuickAccessState {
         // A refresh that fails keeps the clips already listed.
         if summaries == nil, isRefresh { return }
         let rows = (summaries ?? []).compactMap { Self.row(from: $0) }
-        selection.apply(rows, generation: generation, isComplete: true)
-        dropDetailsOfUnlistedRows()
+        applyRows(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
-        followSelection()
     }
 
-    private func loadSearch(_ search: SearchService?, _ request: SearchRequest) async {
+    private func loadSearch(_ search: (any QuickAccessSearch)?, _ request: SearchRequest) async {
         let generation = request.generation
         guard let search else {
             if isCurrent(generation) { showSearchUnavailable(generation) }
@@ -440,13 +455,11 @@ final class QuickAccessState {
         do {
             for try await page in search.search(request) {
                 guard isCurrent(generation) else { return }
-                selection.apply(page.results.map { Self.row(from: $0) }, generation: generation,
-                                isComplete: page.isComplete, keepsChosenRow: true)
-                dropDetailsOfUnlistedRows()
+                applyRows(page.results.map { Self.row(from: $0) }, generation: generation,
+                          isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
                 phase = !page.results.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
-                followSelection()
             }
         } catch {
             guard isCurrent(generation) else { return }
@@ -455,10 +468,19 @@ final class QuickAccessState {
     }
 
     private func showSearchUnavailable(_ generation: UInt64) {
-        selection.apply([], generation: generation, isComplete: true)
-        dropDetailsOfUnlistedRows()
+        applyRows([], generation: generation, isComplete: true)
         indexNotice = .searchUnavailable
         phase = .noResults
+    }
+
+    /// Lists a page of rows. Every page goes through here, so that what the panel shows for a row stays with the
+    /// selection whatever the page did to it: details of clips no longer listed go, and so does a review or a preview
+    /// of a row that is no longer selected.
+    private func applyRows(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool,
+                           keepsChosenRow: Bool = false) {
+        selection.apply(rows, generation: generation, isComplete: isComplete, keepsChosenRow: keepsChosenRow)
+        dropDetailsOfUnlistedRows()
+        followSelection()
     }
 
     /// A clip that left the list takes its detail, and any read of it, along.

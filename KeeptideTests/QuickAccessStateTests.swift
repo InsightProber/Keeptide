@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import ImageIO
+import Observation
 import UniformTypeIdentifiers
 import XCTest
 @testable import Keeptide
@@ -994,6 +995,34 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(fixture.board.string(forType: .string), "set -e\necho synthetic-gamma")
     }
 
+    func testAConfirmedCopyReviewNeverPastes() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        fake.secureInput = true
+        try await pressReturn(state)
+        XCTAssertEqual(state.commandReview?.confirmation.delivery, .copy)
+        let before = fixture.board.changeCount
+
+        // Secure input goes off before the copy is confirmed: a paste could be sent now, but none was confirmed.
+        fake.secureInput = false
+        await state.confirmCommand()
+
+        let renewal = try XCTUnwrap(state.commandReview)
+        XCTAssertTrue(renewal.isRenewal)
+        XCTAssertEqual(QuickAccessActions.confirmTitle(for: renewal), "Confirm Paste into Terminal")
+        XCTAssertEqual(events.reviewChanges, 2)
+        XCTAssertEqual(events.completions, [])
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.dismissals, 0)
+        XCTAssertEqual(fixture.board.changeCount, before)
+    }
+
     func testMovingOrLosingTheSelectionDropsTheReview() async throws {
         let gate = CopyGate()
         let fake = FakeDirectPasteSystem()
@@ -1102,6 +1131,108 @@ final class QuickAccessStateTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(100))
         let uses = try await LocalUsageStore(controller: fixture.harness.controller).summaries(for: [target.ref])
         XCTAssertEqual(uses.first?.useCount ?? 0, 0)
+    }
+
+    func testASearchThatFailsAfterItsPagesDropsTheReview() async throws {
+        let gate = CopyGate()
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let services = QuickAccessServices(
+            repository: fixture.services.repository,
+            search: SearchFailingAfterItsPages(pages: fixture.harness.service, failure: gate),
+            paste: fixture.services.paste, preview: fixture.services.preview)
+        let state = QuickAccessState(services: { services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        state.setQuery("gamma")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        try await pressReturn(state)
+        XCTAssertNotNil(state.commandReview)
+        let before = fixture.board.changeCount
+
+        // The search has handed over its pages, and then it fails.
+        try await SearchTestSupport.waitUntil { await gate.entries == 1 }
+        await gate.open()
+        try await SearchTestSupport.waitUntil { state.indexNotice == .searchUnavailable }
+
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 2)
+        await state.confirmCommand()
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.completions, [])
+    }
+
+    func testAfterAskingForAccessTheNextShowingSaysToReopenKeeptide() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.permitted = false
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("copy me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.directPaste, .copy(.notPermitted))
+        XCTAssertNil(state.actions.hint)
+
+        // Access is granted in System Settings, which this run of Keeptide cannot see yet.
+        state.requestDirectPasteAccess()
+        state.close()
+        state.open()
+        try await settled(state)
+
+        XCTAssertEqual(fake.accessRequests, 1)
+        XCTAssertEqual(state.directPaste, .copy(.notPermitted))
+        XCTAssertEqual(state.actions.hint, "Reopen Keeptide to finish turning on direct paste")
+        XCTAssertTrue(state.actions.offersEnableDirectPaste)
+    }
+
+    func testAShowingThatOpenedAsCopyOnlyCopiesWhateverItIsAsked() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.permitted = false
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("copy me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.preferredDelivery, .copy)
+
+        // Access arrives, and a caller asks for a paste the toolbar never offered.
+        fake.permitted = true
+        let target = try XCTUnwrap(state.copyTarget)
+        await state.act(on: target, mode: .original, delivery: .paste)
+
+        XCTAssertEqual(events.completions, [.copied])
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.dismissals, 0)
+        XCTAssertEqual(fixture.board.string(forType: .string), "copy me")
+    }
+
+    func testAViewOfOnlyThePasteTargetFollowsIt() async throws {
+        let fake = FakeDirectPasteSystem()
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("paste me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let changes = CallCounter()
+
+        withObservationTracking { _ = state.pasteTarget } onChange: {
+            MainActor.assumeIsolated { changes.count += 1 }
+        }
+        state.open()
+        XCTAssertEqual(changes.count, 1, "Opening records the target")
+        XCTAssertEqual(state.pasteTarget, .textEdit)
+        try await settled(state)
+
+        withObservationTracking { _ = state.pasteTarget } onChange: {
+            MainActor.assumeIsolated { changes.count += 1 }
+        }
+        state.close()
+        XCTAssertEqual(changes.count, 2, "Closing gives the target up")
+        XCTAssertNil(state.pasteTarget)
     }
 
     /// The quick-access seed's multi-line command.
@@ -1242,6 +1373,28 @@ private final class ScanCount: @unchecked Sendable {
     }
 }
 
+
+/// The fixture's search, except that each search, once it has handed over its pages, waits at `failure` and then
+/// fails, as a search may after it has shown pages.
+private struct SearchFailingAfterItsPages: QuickAccessSearch {
+    let pages: SearchService
+    let failure: CopyGate
+
+    func search(_ request: SearchRequest) -> AsyncThrowingStream<SearchPage, Error> {
+        AsyncThrowingStream { continuation in
+            let search = Task {
+                do {
+                    for try await page in pages.search(request) { continuation.yield(page) }
+                    await failure.enter()
+                    continuation.finish(throwing: SearchIndexError.closed)
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in search.cancel() }
+        }
+    }
+}
 
 /// Holds reads at their content read until the test opens it, and counts how many arrived.
 private actor CopyGate {

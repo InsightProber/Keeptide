@@ -5,7 +5,11 @@ import XCTest
 @MainActor
 final class QuickAccessActionsTests: XCTestCase {
     private static let kinds: [ContentKind?] = [.text, .url, .image, .file, .other, nil]
-    private static let copyAsIs = (title: "Copy As-Is (Keeps Trailing Newline)", mode: PasteMode.asIs)
+    /// In a terminal's session, the one item that copies a clip whole: Return keeps its text out or makes it a
+    /// command.
+    private static let copyAsIs = (title: "Copy As-Is", mode: PasteMode.asIs)
+    /// The same for a command, whose trailing line break it keeps.
+    private static let copyCommandAsIs = (title: "Copy As-Is (Keeps Trailing Newline)", mode: PasteMode.asIs)
 
     func testPasteTitlesNameTheTargetApp() {
         // Outside a terminal, every kind pastes the same way.
@@ -23,27 +27,31 @@ final class QuickAccessActionsTests: XCTestCase {
         // as captured.
         for kind in [ContentKind.text, .url] {
             assertActions(.make(target: .terminal, availability: .paste(.terminal), kind: kind),
-                          primary: "Paste Command", plainText: nil, copyOnly: Self.copyAsIs, "\(kind)")
+                          primary: "Paste Command", plainText: nil, copyOnly: Self.copyCommandAsIs, "\(kind)")
         }
     }
 
     func testTerminalWithoutPermissionCopiesCommandsAndOffersEnable() {
         for kind in [ContentKind.text, .url] {
             assertActions(.make(target: .terminal, availability: .copy(.notPermitted), kind: kind),
-                          primary: "Copy Command", plainText: nil, copyOnly: Self.copyAsIs, enable: true, "\(kind)")
+                          primary: "Copy Command", plainText: nil, copyOnly: Self.copyCommandAsIs, enable: true,
+                          "\(kind)")
         }
-        // A terminal's image, file or other clip is copied like any other clip's.
+        // A terminal's image, file or other clip is copied like any other clip's, and Copy As-Is still copies it
+        // whole.
         for kind in [ContentKind.image, .file, .other] {
             assertActions(.make(target: .terminal, availability: .copy(.notPermitted), kind: kind),
-                          primary: "Copy", plainText: "Copy as Plain Text", copyOnly: nil, enable: true, "\(kind)")
+                          primary: "Copy", plainText: "Copy as Plain Text", copyOnly: Self.copyAsIs, enable: true,
+                          "\(kind)")
         }
     }
 
     func testTerminalImagesPasteNormally() {
-        // Copy is As-Is: in a terminal's session the original formats keep only images and file references.
+        // Return keeps only images and file references here, and plain text is a command, so only Copy As-Is copies
+        // the clip whole.
         for kind in [ContentKind.image, .file, .other] {
             assertActions(.make(target: .terminal, availability: .paste(.terminal), kind: kind),
-                          primary: "Paste into Terminal", plainText: "Paste as Plain Text", copyOnly: ("Copy", .asIs),
+                          primary: "Paste into Terminal", plainText: "Paste as Plain Text", copyOnly: Self.copyAsIs,
                           "\(kind)")
         }
     }
@@ -55,11 +63,13 @@ final class QuickAccessActionsTests: XCTestCase {
                               primary: "Copy", plainText: "Copy as Plain Text", copyOnly: nil,
                               "\(String(describing: kind)), \(String(describing: availability))")
             }
-            // A target is no use without a library to check it with.
+            // A target is no use without a library to check it with, or with checks that found no target.
             for target in [PasteTarget.textEdit, .terminal] {
-                assertActions(.make(target: target, availability: nil, kind: kind),
-                              primary: "Copy", plainText: "Copy as Plain Text", copyOnly: nil,
-                              "\(target.name), \(String(describing: kind))")
+                for availability in [nil, DirectPasteAvailability.copy(.noTarget)] {
+                    assertActions(.make(target: target, availability: availability, kind: kind),
+                                  primary: "Copy", plainText: "Copy as Plain Text", copyOnly: nil,
+                                  "\(target.name), \(String(describing: kind)), \(String(describing: availability))")
+                }
             }
         }
     }
@@ -78,13 +88,33 @@ final class QuickAccessActionsTests: XCTestCase {
                           primary: "Copy", plainText: "Copy as Plain Text", copyOnly: nil,
                           enable: reason == .notPermitted, hint: hint, "\(reason)")
             assertActions(.make(target: .terminal, availability: .copy(reason), kind: .image),
-                          primary: "Copy", plainText: "Copy as Plain Text", copyOnly: nil,
+                          primary: "Copy", plainText: "Copy as Plain Text", copyOnly: Self.copyAsIs,
                           enable: reason == .notPermitted, hint: hint, "terminal image, \(reason)")
             // A terminal's command gives the same reasons.
             assertActions(.make(target: .terminal, availability: .copy(reason), kind: .text),
-                          primary: "Copy Command", plainText: nil, copyOnly: Self.copyAsIs,
+                          primary: "Copy Command", plainText: nil, copyOnly: Self.copyCommandAsIs,
                           enable: reason == .notPermitted, hint: hint, "terminal text, \(reason)")
         }
+    }
+
+    func testAfterAskingForAccessTheHintSaysToReopenKeeptide() {
+        // Access granted in System Settings reaches Keeptide only once it reopens, so the panel says so.
+        for (target, kind) in [(PasteTarget.textEdit, ContentKind.text), (.terminal, .image), (.terminal, .text)] {
+            let asked = QuickAccessActions.make(target: target, availability: .copy(.notPermitted), kind: kind,
+                                                accessRequested: true)
+            XCTAssertEqual(asked.hint, "Reopen Keeptide to finish turning on direct paste", "\(target.name), \(kind)")
+            XCTAssertTrue(asked.offersEnableDirectPaste, "\(target.name), \(kind)")
+            let notAsked = QuickAccessActions.make(target: target, availability: .copy(.notPermitted), kind: kind,
+                                                   accessRequested: false)
+            XCTAssertNil(notAsked.hint, "\(target.name), \(kind)")
+        }
+        // Asking changes nothing for the other reasons.
+        XCTAssertEqual(QuickAccessActions.make(target: .textEdit, availability: .copy(.secureInput), kind: .text,
+                                               accessRequested: true).hint, "Secure input is on")
+        XCTAssertNil(QuickAccessActions.make(target: .textEdit, availability: .copy(.targetChanged), kind: .text,
+                                             accessRequested: true).hint)
+        XCTAssertNil(QuickAccessActions.make(target: .textEdit, availability: .paste(.textEdit), kind: .text,
+                                             accessRequested: true).hint)
     }
 
     func testConfirmTitlesFollowTheReviewDelivery() {

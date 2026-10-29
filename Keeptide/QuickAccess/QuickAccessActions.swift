@@ -10,7 +10,8 @@ struct QuickAccessActions: Equatable {
     var primaryTitle: String
     /// nil in command mode.
     var plainTextTitle: String?
-    /// "Copy" beside a paste, or "Copy As-Is (Keeps Trailing Newline)" in command mode; nil when not offered.
+    /// "Copy" beside a paste. In a terminal's session it is "Copy As-Is" whether or not the panel pastes, and "Copy
+    /// As-Is (Keeps Trailing Newline)" in command mode. nil when not offered.
     var copyOnlyTitle: String?
     /// How the copy-only item copies.
     var copyOnlyMode: PasteMode
@@ -19,34 +20,40 @@ struct QuickAccessActions: Equatable {
     var hint: String?
 
     /// `availability` is what the session's checks found as the panel opened, nil without a library; `kind` is the
-    /// selected row's, nil with nothing selected.
-    static func make(target: PasteTarget?, availability: DirectPasteAvailability?,
-                     kind: ContentKind?) -> QuickAccessActions {
+    /// selected row's, nil with nothing selected. `accessRequested` says whether direct paste access was asked for
+    /// in this run of Keeptide.
+    static func make(target: PasteTarget?, availability: DirectPasteAvailability?, kind: ContentKind?,
+                     accessRequested: Bool = false) -> QuickAccessActions {
         var actions = QuickAccessActions(primaryTitle: "Copy", plainTextTitle: "Copy as Plain Text", copyOnlyTitle: nil,
                                          copyOnlyMode: .original, offersEnableDirectPaste: false, hint: nil)
-        // With no target, or no library to check it, the panel copies as it did before direct paste. The checks find
-        // `.noTarget` only for a session without a target.
-        guard let target, let availability else { return actions }
+        // With no target, or no library to check it, the panel copies as it did before direct paste.
+        guard let target, let availability, availability != .copy(.noTarget) else { return actions }
         let fallback: DirectPasteFallback?
         switch availability {
         case .paste: fallback = nil
         case .copy(let reason): fallback = reason
         }
         actions.offersEnableDirectPaste = fallback == .notPermitted
-        actions.hint = fallback.flatMap(hint(for:))
+        actions.hint = fallback.flatMap { hint(for: $0, accessRequested: accessRequested) }
         if target.isTerminal, kind == .text || kind == .url {
             // Only Copy As-Is keeps the clip as captured, trailing line break included.
             actions.primaryTitle = fallback == nil ? "Paste Command" : "Copy Command"
             actions.plainTextTitle = nil
             actions.copyOnlyTitle = "Copy As-Is (Keeps Trailing Newline)"
             actions.copyOnlyMode = .asIs
-        } else if fallback == nil {
+            return actions
+        }
+        if fallback == nil {
             actions.primaryTitle = "Paste into \(target.name)"
             actions.plainTextTitle = "Paste as Plain Text"
+        }
+        if target.isTerminal {
+            // In a terminal's session the original formats keep only images and file references, and plain text is a
+            // command, so only Copy As-Is copies the clip whole, whether the panel pastes or copies.
+            actions.copyOnlyTitle = "Copy As-Is"
+            actions.copyOnlyMode = .asIs
+        } else if fallback == nil {
             actions.copyOnlyTitle = "Copy"
-            // In a terminal's session the original formats keep only images and file references, so Copy keeps the
-            // clip as captured.
-            actions.copyOnlyMode = target.isTerminal ? .asIs : .original
         }
         return actions
     }
@@ -59,14 +66,16 @@ struct QuickAccessActions: Equatable {
         }
     }
 
-    /// The reasons the user can act on. Without permission the menu offers Enable Direct Paste… instead, and a
-    /// changed window or no target needs nothing from them.
-    private static func hint(for fallback: DirectPasteFallback) -> String? {
+    /// The reasons the user can act on. Without permission the menu offers Enable Direct Paste… instead, until access
+    /// was asked for: the system lets Keeptide see it granted only once Keeptide reopens. A changed window or no
+    /// target needs nothing from the user.
+    private static func hint(for fallback: DirectPasteFallback, accessRequested: Bool) -> String? {
         switch fallback {
         case .secureInput: "Secure input is on"
         case .cannotSendKeystroke: "⌘V isn't on this keyboard layout"
         case .testSessionTarget: "Test sessions paste only into the system test host"
-        case .notPermitted, .targetChanged, .noTarget: nil
+        case .notPermitted: accessRequested ? "Reopen Keeptide to finish turning on direct paste" : nil
+        case .targetChanged, .noTarget: nil
         }
     }
 }
