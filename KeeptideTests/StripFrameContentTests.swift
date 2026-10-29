@@ -14,7 +14,7 @@ final class StripFrameContentTests: XCTestCase {
     func testFrameContentBeforeDetailsIsTitleAndSymbol() {
         let apple = makeRow(kind: .url, title: "Apple docs", savedAsMemo: true, isPartiallyIndexed: true, isTextUnavailable: true)
 
-        let content = StripFrameContent.make(row: apple, detail: nil, density: .nine)
+        let content = StripFrameContent.make(row: apple, detail: nil, cardSize: .medium)
 
         XCTAssertEqual(content.body, .placeholder(symbol: "link", title: "Apple docs"))
         XCTAssertNil(content.info)
@@ -30,7 +30,7 @@ final class StripFrameContentTests: XCTestCase {
             (.file, "doc", "File"), (.other, "square.dashed", "Clip"),
         ]
         for (kind, symbol, word) in kinds {
-            let untitled = StripFrameContent.make(row: makeRow(kind: kind, title: ""), detail: nil, density: .seven)
+            let untitled = StripFrameContent.make(row: makeRow(kind: kind, title: ""), detail: nil, cardSize: .large)
             XCTAssertEqual(untitled.body, .placeholder(symbol: symbol, title: "Clipboard Item"), "\(kind)")
             XCTAssertEqual(kind.accessibilityName, word)
         }
@@ -38,26 +38,26 @@ final class StripFrameContentTests: XCTestCase {
 
     func testTextFramesUseTheExcerptAndSizeByLength() {
         let color = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "#E2462A", characterCount: 7),
-                                           density: .seven)
+                                           cardSize: .large)
 
         XCTAssertEqual(color.body, .text(AttributedString("#E2462A"), size: 22))
         XCTAssertEqual(color.info, "7 characters")
         XCTAssertNil(color.memoTitle)
         XCTAssertEqual(color.extraItems, 0)
 
-        // The table is read for the density, and longer text is set smaller.
+        // The table is read for the card size, and longer text is set smaller.
         let denser = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "#E2462A", characterCount: 7),
-                                            density: .nine)
+                                            cardSize: .medium)
         XCTAssertEqual(denser.body, .text(AttributedString("#E2462A"), size: 19))
         let paragraph = String(repeating: "word ", count: 40)
         let long = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: paragraph, characterCount: 300),
-                                          density: .seven)
+                                          cardSize: .large)
         XCTAssertEqual(long.body, .text(AttributedString(paragraph), size: 13))
         XCTAssertEqual(long.info, "300 characters")
 
         // A text that is only blank has nothing to show, but its length is still told.
         let blank = StripFrameContent.make(row: makeRow(title: ""), detail: ClipDetail(excerpt: "", characterCount: 3),
-                                           density: .seven)
+                                           cardSize: .large)
         XCTAssertEqual(blank.body, .placeholder(symbol: "doc.text", title: "Clipboard Item"))
         XCTAssertEqual(blank.info, "3 characters")
     }
@@ -67,7 +67,7 @@ final class StripFrameContentTests: XCTestCase {
         let snippet = SearchSnippet(text: "…😀 quick brown fox", highlights: [4..<9])
         let detail = ClipDetail(excerpt: "The excerpt belongs to recent clips", characterCount: 35)
 
-        let content = StripFrameContent.make(row: makeRow(snippet: snippet), detail: detail, density: .nine)
+        let content = StripFrameContent.make(row: makeRow(snippet: snippet), detail: detail, cardSize: .medium)
 
         guard case .text(let text, let size) = content.body else { return XCTFail("Expected a text body") }
         XCTAssertEqual(String(text.characters), "…😀 quick brown fox")
@@ -82,7 +82,8 @@ final class StripFrameContentTests: XCTestCase {
         // Only text frames show a snippet: a link is shown as it is for a recent clip.
         let link = makeRow(kind: .url, snippet: SearchSnippet(text: "…developer", highlights: [1..<10]))
         let linkContent = StripFrameContent.make(
-            row: link, detail: ClipDetail(excerpt: "https://developer.apple.com/", characterCount: 28), density: .nine)
+            row: link, detail: ClipDetail(excerpt: "https://developer.apple.com/", characterCount: 28),
+            cardSize: .medium)
         XCTAssertEqual(linkContent.body, .link(host: "developer.apple.com", rest: ""))
     }
 
@@ -91,7 +92,7 @@ final class StripFrameContentTests: XCTestCase {
         let snippet = SearchSnippet(text: "…😀 quick brown fox", highlights: [4..<9])
         let row = makeRow(snippet: snippet, isPartiallyIndexed: true)
 
-        let before = StripFrameContent.make(row: row, detail: nil, density: .nine)
+        let before = StripFrameContent.make(row: row, detail: nil, cardSize: .medium)
 
         // The snippet came with the search result, so it is shown at once and only the caption waits.
         guard case .text(let text, let size) = before.body else { return XCTFail("Expected a text body") }
@@ -107,7 +108,8 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertEqual(before.markers, [.partiallyIndexed])
 
         // The details add the caption and change nothing else.
-        let after = StripFrameContent.make(row: row, detail: ClipDetail(excerpt: "x", characterCount: 35), density: .nine)
+        let after = StripFrameContent.make(row: row, detail: ClipDetail(excerpt: "x", characterCount: 35),
+                                           cardSize: .medium)
         XCTAssertEqual(after.body, before.body)
         XCTAssertEqual(after.info, "35 characters")
 
@@ -115,7 +117,7 @@ final class StripFrameContentTests: XCTestCase {
         let memo = StripFrameContent.make(
             row: makeRow(title: "Release checklist", snippet: SearchSnippet(text: "…notarize and ship", highlights: []),
                          savedAsMemo: true),
-            detail: nil, density: .seven)
+            detail: nil, cardSize: .large)
         XCTAssertEqual(memo.memoTitle, "Release checklist")
         XCTAssertEqual(memo.body, .text(AttributedString("…notarize and ship"), size: 14))
 
@@ -123,10 +125,10 @@ final class StripFrameContentTests: XCTestCase {
         let others: [(kind: ContentKind, symbol: String)] = [(.url, "link"), (.image, "photo"), (.file, "doc"), (.other, "square.dashed")]
         for (kind, symbol) in others {
             let content = StripFrameContent.make(row: makeRow(kind: kind, title: "Other", snippet: snippet), detail: nil,
-                                                 density: .nine)
+                                                 cardSize: .medium)
             XCTAssertEqual(content.body, .placeholder(symbol: symbol, title: "Other"), "\(kind)")
         }
-        let recent = StripFrameContent.make(row: makeRow(title: "Recent"), detail: nil, density: .nine)
+        let recent = StripFrameContent.make(row: makeRow(title: "Recent"), detail: nil, cardSize: .medium)
         XCTAssertEqual(recent.body, .placeholder(symbol: "doc.text", title: "Recent"))
     }
 
@@ -136,57 +138,58 @@ final class StripFrameContentTests: XCTestCase {
         // The body does not begin with the title. 17 characters set the title at 17 pt, so the body is
         // set at the next size down, 14 pt, instead of the 17 pt its own length would give.
         let apart = StripFrameContent.make(
-            row: memo, detail: ClipDetail(excerpt: "Tag, notarize, ship", characterCount: 19), density: .seven)
+            row: memo, detail: ClipDetail(excerpt: "Tag, notarize, ship", characterCount: 19), cardSize: .large)
         XCTAssertEqual(apart.memoTitle, "Release checklist")
         XCTAssertEqual(apart.body, .text(AttributedString("Tag, notarize, ship"), size: 14))
         // A body that is smaller than the cap anyway is left alone.
         let longBody = String(repeating: "word ", count: 40)
         let small = StripFrameContent.make(
-            row: memo, detail: ClipDetail(excerpt: longBody, characterCount: 200), density: .seven)
+            row: memo, detail: ClipDetail(excerpt: longBody, characterCount: 200), cardSize: .large)
         XCTAssertEqual(small.memoTitle, "Release checklist")
         XCTAssertEqual(small.body, .text(AttributedString(longBody), size: 13))
         // A short title is set at 22 pt, so the cap is 17 pt.
         let short = StripFrameContent.make(
             row: makeRow(title: "Notes", savedAsMemo: true),
-            detail: ClipDetail(excerpt: "Ship it", characterCount: 7), density: .seven)
+            detail: ClipDetail(excerpt: "Ship it", characterCount: 7), cardSize: .large)
         XCTAssertEqual(short.memoTitle, "Notes")
         XCTAssertEqual(short.body, .text(AttributedString("Ship it"), size: 17))
 
         // The body begins with the title: it would only repeat the first line. Sizes follow the length.
         let repeated = StripFrameContent.make(
             row: memo, detail: ClipDetail(excerpt: "Release checklist\n1. Tag the build", characterCount: 34),
-            density: .seven)
+            cardSize: .large)
         XCTAssertNil(repeated.memoTitle)
         XCTAssertEqual(repeated.body, .text(AttributedString("Release checklist\n1. Tag the build"), size: 17))
 
         // A clip that is not a saved memo has no memo title, whatever its title is.
         let plain = StripFrameContent.make(
             row: makeRow(title: "Release checklist"),
-            detail: ClipDetail(excerpt: "Tag, notarize, ship", characterCount: 19), density: .seven)
+            detail: ClipDetail(excerpt: "Tag, notarize, ship", characterCount: 19), cardSize: .large)
         XCTAssertNil(plain.memoTitle)
         // A memo without a title has nothing to show.
         let untitled = StripFrameContent.make(
             row: makeRow(title: "", savedAsMemo: true),
-            detail: ClipDetail(excerpt: "Tag", characterCount: 3), density: .seven)
+            detail: ClipDetail(excerpt: "Tag", characterCount: 3), cardSize: .large)
         XCTAssertNil(untitled.memoTitle)
 
         // A search snippet can start in the middle of the body, so it is compared as it is shown.
         let searched = StripFrameContent.make(
             row: makeRow(title: "Release checklist", snippet: SearchSnippet(text: "…notarize and ship", highlights: []),
                          savedAsMemo: true),
-            detail: ClipDetail(excerpt: "Release checklist\nTag, notarize and ship", characterCount: 40), density: .seven)
+            detail: ClipDetail(excerpt: "Release checklist\nTag, notarize and ship", characterCount: 40),
+            cardSize: .large)
         XCTAssertEqual(searched.memoTitle, "Release checklist")
 
         // A link has a body too: its address.
         let address = "https://developer.apple.com/documentation"
         let link = StripFrameContent.make(
             row: makeRow(kind: .url, title: "Apple docs", savedAsMemo: true),
-            detail: ClipDetail(excerpt: address, characterCount: 41), density: .nine)
+            detail: ClipDetail(excerpt: address, characterCount: 41), cardSize: .medium)
         XCTAssertEqual(link.memoTitle, "Apple docs")
         XCTAssertEqual(link.body, .link(host: "developer.apple.com", rest: "/documentation"))
         let addressTitled = StripFrameContent.make(
             row: makeRow(kind: .url, title: address, savedAsMemo: true),
-            detail: ClipDetail(excerpt: address, characterCount: 41), density: .nine)
+            detail: ClipDetail(excerpt: address, characterCount: 41), cardSize: .medium)
         XCTAssertNil(addressTitled.memoTitle)
     }
 
@@ -194,7 +197,7 @@ final class StripFrameContentTests: XCTestCase {
         let address = "https://developer.apple.com/documentation/appkit/nspanel"
 
         let content = StripFrameContent.make(
-            row: makeRow(kind: .url), detail: ClipDetail(excerpt: address, characterCount: 56), density: .nine)
+            row: makeRow(kind: .url), detail: ClipDetail(excerpt: address, characterCount: 56), cardSize: .medium)
 
         XCTAssertEqual(content.body, .link(host: "developer.apple.com", rest: "/documentation/appkit/nspanel"))
         XCTAssertEqual(content.info, "56 characters")
@@ -204,7 +207,7 @@ final class StripFrameContentTests: XCTestCase {
         let detailed = StripFrameContent.make(
             row: makeRow(kind: .url),
             detail: ClipDetail(excerpt: "https://example.com:8443/search?q=swift%20ui&page=2#top", characterCount: 55),
-            density: .nine)
+            cardSize: .medium)
         XCTAssertEqual(detailed.body, .link(host: "example.com", rest: ":8443/search?q=swift ui&page=2#top"))
         XCTAssertEqual(detailed.info, "55 characters")
         // A Chinese address reads as Chinese, whether it was copied escaped or not.
@@ -212,31 +215,34 @@ final class StripFrameContentTests: XCTestCase {
                         "https://zh.wikipedia.org/wiki/%E4%B8%AD%E6%96%87?q=%E6%B5%8B%E8%AF%95"] {
             let chinese = StripFrameContent.make(
                 row: makeRow(kind: .url), detail: ClipDetail(excerpt: address, characterCount: address.count),
-                density: .nine)
+                cardSize: .medium)
             XCTAssertEqual(chinese.body, .link(host: "zh.wikipedia.org", rest: "/wiki/中文?q=测试"), address)
             XCTAssertEqual(chinese.info, "\(address.count) characters", address)
         }
         // An escape that does not decode leaves the rest as written.
         let undecodable = StripFrameContent.make(
             row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://example.com/a%FFb?q=1", characterCount: 29),
-            density: .nine)
+            cardSize: .medium)
         XCTAssertEqual(undecodable.body, .link(host: "example.com", rest: "/a%FFb?q=1"))
         // A host alone has no rest, and neither has a host with only the root path.
         let bare = StripFrameContent.make(
-            row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://example.com", characterCount: 19), density: .nine)
+            row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://example.com", characterCount: 19),
+            cardSize: .medium)
         XCTAssertEqual(bare.body, .link(host: "example.com", rest: ""))
         let root = StripFrameContent.make(
-            row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://apple.com/", characterCount: 18), density: .nine)
+            row: makeRow(kind: .url), detail: ClipDetail(excerpt: "https://apple.com/", characterCount: 18),
+            cardSize: .medium)
         XCTAssertEqual(root.body, .link(host: "apple.com", rest: ""))
 
         // A link that does not split into a host and the rest is set as text.
         let mail = StripFrameContent.make(
             row: makeRow(kind: .url), detail: ClipDetail(excerpt: "mailto:someone@example.com", characterCount: 26),
-            density: .nine)
+            cardSize: .medium)
         XCTAssertEqual(mail.body, .text(AttributedString("mailto:someone@example.com"), size: 15))
         XCTAssertEqual(mail.info, "26 characters")
         // A link whose address could not be read has nothing to split.
-        let unread = StripFrameContent.make(row: makeRow(kind: .url, title: "Apple docs"), detail: ClipDetail(), density: .nine)
+        let unread = StripFrameContent.make(row: makeRow(kind: .url, title: "Apple docs"), detail: ClipDetail(),
+                                            cardSize: .medium)
         XCTAssertEqual(unread.body, .placeholder(symbol: "link", title: "Apple docs"))
         XCTAssertNil(unread.info)
     }
@@ -245,7 +251,7 @@ final class StripFrameContentTests: XCTestCase {
         let thumbnail = try makeImage(width: 8, height: 6)
         let photo = ClipDetail(pixelSize: CGSize(width: 4032, height: 3024), thumbnail: thumbnail, fillsFrame: true)
 
-        let filled = StripFrameContent.make(row: makeRow(kind: .image), detail: photo, density: .nine)
+        let filled = StripFrameContent.make(row: makeRow(kind: .image), detail: photo, cardSize: .medium)
 
         XCTAssertEqual(filled.body, .image(thumbnail, fills: true))
         XCTAssertEqual(filled.info, "4032 × 3024")
@@ -255,7 +261,7 @@ final class StripFrameContentTests: XCTestCase {
         // which for a hairline of a picture is a very different shape.
         let hairline = ClipDetail(pixelSize: CGSize(width: 10, height: 4000), thumbnail: try makeImage(width: 9, height: 218),
                                   fillsFrame: false)
-        let whole = StripFrameContent.make(row: makeRow(kind: .image), detail: hairline, density: .nine)
+        let whole = StripFrameContent.make(row: makeRow(kind: .image), detail: hairline, cardSize: .medium)
         guard case .image(_, let fills) = whole.body else { return XCTFail("Expected an image body") }
         XCTAssertFalse(fills)
         XCTAssertEqual(whole.imageAspectRatio, 10.0 / 4000.0)
@@ -264,70 +270,76 @@ final class StripFrameContentTests: XCTestCase {
         // Without a thumbnail the frame shows the placeholder and still tells the size.
         let undrawn = StripFrameContent.make(
             row: makeRow(kind: .image, title: "Screenshot"), detail: ClipDetail(pixelSize: CGSize(width: 4032, height: 3024)),
-            density: .nine)
+            cardSize: .medium)
         XCTAssertEqual(undrawn.body, .placeholder(symbol: "photo", title: "Screenshot"))
         XCTAssertEqual(undrawn.info, "4032 × 3024")
 
         // Files: the first name sets the icon's type, and two items are two files.
         let pair = StripFrameContent.make(
-            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["a.pdf", "b.txt"], itemCount: 2), density: .nine)
+            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["a.pdf", "b.txt"], itemCount: 2),
+            cardSize: .medium)
         XCTAssertEqual(pair.body, .file(name: "a.pdf", typeIdentifier: UTType.pdf.identifier))
         XCTAssertEqual(pair.info, "2 files")
         XCTAssertEqual(pair.extraItems, 1)
         let single = StripFrameContent.make(
-            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["Quarterly report.pdf"]), density: .nine)
+            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["Quarterly report.pdf"]), cardSize: .medium)
         XCTAssertEqual(single.info, "PDF")
         XCTAssertEqual(single.extraItems, 0)
         // A file whose name could not be read still counts as a file.
         let partial = StripFrameContent.make(
-            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["a.pdf"], itemCount: 3), density: .nine)
+            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["a.pdf"], itemCount: 3), cardSize: .medium)
         XCTAssertEqual(partial.body, .file(name: "a.pdf", typeIdentifier: UTType.pdf.identifier))
         XCTAssertEqual(partial.info, "3 files")
         XCTAssertEqual(partial.extraItems, 2)
         // With no name at all the frame shows the generic file icon and the title; one unread file is a "File".
         let unnamed = StripFrameContent.make(
-            row: makeRow(kind: .file, title: "Contract"), detail: ClipDetail(fileNames: [], itemCount: 1), density: .nine)
+            row: makeRow(kind: .file, title: "Contract"), detail: ClipDetail(fileNames: [], itemCount: 1),
+            cardSize: .medium)
         XCTAssertEqual(unnamed.body, .file(name: "Contract", typeIdentifier: nil))
         XCTAssertEqual(unnamed.info, "File")
         let noExtension = StripFrameContent.make(
-            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["README"]), density: .nine)
+            row: makeRow(kind: .file), detail: ClipDetail(fileNames: ["README"]), cardSize: .medium)
         XCTAssertEqual(noExtension.body, .file(name: "README", typeIdentifier: nil))
         XCTAssertEqual(noExtension.info, "File")
 
         // Several items that are not files are counted as items.
-        let other = StripFrameContent.make(row: makeRow(kind: .other), detail: ClipDetail(itemCount: 2), density: .nine)
+        let other = StripFrameContent.make(row: makeRow(kind: .other), detail: ClipDetail(itemCount: 2),
+                                           cardSize: .medium)
         XCTAssertEqual(other.info, "2 items")
         XCTAssertEqual(other.extraItems, 1)
         let texts = StripFrameContent.make(
-            row: makeRow(), detail: ClipDetail(excerpt: "First", characterCount: 5, itemCount: 3), density: .nine)
+            row: makeRow(), detail: ClipDetail(excerpt: "First", characterCount: 5, itemCount: 3), cardSize: .medium)
         XCTAssertEqual(texts.body, .text(AttributedString("First"), size: 19))
         XCTAssertEqual(texts.info, "3 items")
         XCTAssertEqual(texts.extraItems, 2)
         // One item of an unknown kind has nothing to tell.
-        XCTAssertNil(StripFrameContent.make(row: makeRow(kind: .other), detail: ClipDetail(), density: .nine).info)
+        XCTAssertNil(StripFrameContent.make(row: makeRow(kind: .other), detail: ClipDetail(), cardSize: .medium).info)
     }
 
     func testMarkersAndTextUnavailable() {
-        let plain = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "Plain", characterCount: 5), density: .nine)
+        let plain = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "Plain", characterCount: 5),
+                                           cardSize: .medium)
         XCTAssertEqual(plain.markers, [])
         XCTAssertFalse(plain.isTextUnavailable)
 
         let memo = StripFrameContent.make(row: makeRow(savedAsMemo: true), detail: ClipDetail(excerpt: "Memo", characterCount: 4),
-                                          density: .nine)
+                                          cardSize: .medium)
         XCTAssertEqual(memo.markers, [.savedAsMemo])
 
         let partial = StripFrameContent.make(row: makeRow(isPartiallyIndexed: true),
-                                             detail: ClipDetail(excerpt: "Partial", characterCount: 7), density: .nine)
+                                             detail: ClipDetail(excerpt: "Partial", characterCount: 7),
+                                             cardSize: .medium)
         XCTAssertEqual(partial.markers, [.partiallyIndexed])
 
         let both = StripFrameContent.make(row: makeRow(savedAsMemo: true, isPartiallyIndexed: true),
-                                          detail: ClipDetail(excerpt: "Both", characterCount: 4), density: .nine)
+                                          detail: ClipDetail(excerpt: "Both", characterCount: 4), cardSize: .medium)
         XCTAssertEqual(both.markers, [.savedAsMemo, .partiallyIndexed])
 
         // The flag is copied from the row, with the details or without them.
         let unavailable = makeRow(isTextUnavailable: true)
-        XCTAssertTrue(StripFrameContent.make(row: unavailable, detail: nil, density: .nine).isTextUnavailable)
-        XCTAssertTrue(StripFrameContent.make(row: unavailable, detail: ClipDetail(), density: .nine).isTextUnavailable)
+        XCTAssertTrue(StripFrameContent.make(row: unavailable, detail: nil, cardSize: .medium).isTextUnavailable)
+        XCTAssertTrue(
+            StripFrameContent.make(row: unavailable, detail: ClipDetail(), cardSize: .medium).isTextUnavailable)
     }
 }
 

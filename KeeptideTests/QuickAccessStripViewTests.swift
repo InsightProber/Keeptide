@@ -6,9 +6,12 @@ import XCTest
 
 @MainActor
 final class QuickAccessStripViewTests: XCTestCase {
-    /// Nine clips in a row on a band at its full width: frames 164 pt wide, 176 pt apart, docked 24 pt in from
-    /// the band's ends.
-    private var metrics: StripMetrics { StripLayout.metrics(for: .nine, visibleWidth: 1440) }
+    /// A band 1360 pt wide with frames 164 pt wide and 176 pt apart, docked 24 pt in from its ends: the geometry the
+    /// numbers below were worked out for. It is no card size's own.
+    private var metrics: StripMetrics {
+        StripMetrics(cardSize: .medium, bandWidth: 1360, frameSize: CGSize(width: 164, height: 109), gap: 12,
+                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40)
+    }
     private var centre: CGFloat { metrics.bandWidth / 2 }
     /// The middle of the frame resting at the left dock.
     private var dock: CGFloat { metrics.dockInset + metrics.frameSize.width / 2 }
@@ -31,15 +34,15 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(try midX(of: "Row 6", in: strip), centre + metrics.step, accuracy: 0.5)
         XCTAssertEqual(try midX(of: "Row 9", in: strip), centre + 4 * metrics.step, accuracy: 0.5)
 
-        // A narrow screen steps down a density, and the frames are drawn for the density in effect.
-        let narrow = StripLayout.metrics(for: .nine, visibleWidth: 1100)
-        XCTAssertEqual(narrow.density, .seven)
-        let small = makeStrip(narrow)
-        small.show(rows, selection: rows[5].ref, details: [:], metrics: narrow, applicationNames: ApplicationNames())
-        XCTAssertFalse(drawings(in: small).isEmpty)
-        XCTAssertTrue(drawings(in: small).allSatisfy { $0.rootView.density == .seven })
-        XCTAssertEqual(try midX(of: "Row 5", in: small), narrow.bandWidth / 2, accuracy: 0.5)
-        XCTAssertEqual(try rect(titled: "Row 5", in: small).size, narrow.frameSize)
+        // A narrow screen keeps the card size, and the frames are drawn for it.
+        let narrow = StripLayout.metrics(for: .large, visibleWidth: 1024)
+        let narrowStrip = makeStrip(narrow)
+        narrowStrip.show(rows, selection: rows[5].ref, details: [:], metrics: narrow,
+                         applicationNames: ApplicationNames())
+        XCTAssertFalse(drawings(in: narrowStrip).isEmpty)
+        XCTAssertTrue(drawings(in: narrowStrip).allSatisfy { $0.rootView.cardSize == .large })
+        XCTAssertEqual(try midX(of: "Row 5", in: narrowStrip), narrow.bandWidth / 2, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 5", in: narrowStrip).size, narrow.frameSize)
     }
 
     func testTheFilmRestsAtItsEndsAndTheSelectionWalksAlongIt() throws {
@@ -124,8 +127,8 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         strip.show(rows, selection: rows[100].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        // Nine in a row are on screen, and one more on each side keeps a step from showing a gap.
-        XCTAssertLessThanOrEqual(drawings(in: strip).count, StripDensity.nine.rawValue + 2)
+        // Nine frames reach into the band, and one more on each side keeps a step from showing a gap.
+        XCTAssertLessThanOrEqual(drawings(in: strip).count, 11)
         XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((95...105).map { "Row \($0)" }))
         // Details are asked for only the rows with a frame, the selected clip's first. The last row on
         // screen is the one that decides when to load more.

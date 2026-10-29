@@ -42,7 +42,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         self.state = state
         self.preferences = preferences
         visibleFrame = Self.workingScreen()?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        metrics = StripLayout.metrics(for: preferences.density, visibleWidth: visibleFrame.width)
+        metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleFrame.width)
         let panel = QuickAccessPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
         super.init(window: panel)
@@ -82,7 +82,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             state.open()
             // Settle the screen before this panel takes keyboard focus, and take the settings as they are now.
             visibleFrame = Self.workingScreen()?.visibleFrame ?? visibleFrame
-            metrics = StripLayout.metrics(for: preferences.density, visibleWidth: visibleFrame.width)
+            metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
             update()
             isSessionOpen = true

@@ -7,19 +7,19 @@ struct SettingsView: View {
     var body: some View {
         Form {
             Section {
-                Picker("Clips in a row", selection: $preferences.density) {
-                    Text("7 · Larger previews").tag(StripDensity.seven)
-                    Text("9 · Balanced").tag(StripDensity.nine)
-                    Text("11 · More at a glance").tag(StripDensity.eleven)
+                Picker("Card size", selection: $preferences.cardSize) {
+                    ForEach(CardSize.allCases, id: \.self) { size in
+                        Text(size.title).tag(size)
+                    }
                 }
                 .pickerStyle(.radioGroup)
-                DensityPreview(count: preferences.density.rawValue)
+                StripPreview()
                 Toggle("Tick on the trackpad as each clip passes", isOn: $preferences.trackpadTicks)
                     .controlSize(.mini)
             } header: {
                 Text("Quick Access")
             } footer: {
-                Text("Fewer clips in a row give each one a larger preview. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
+                Text("Larger cards show more of each clip. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
             }
         }
         .formStyle(.grouped)
@@ -27,31 +27,48 @@ struct SettingsView: View {
     }
 }
 
-/// A small, inert picture of the strip as it opens: `count` clips in a row, the newest selected at the left end,
-/// which is hard, and the older ones fading out at the right. Its height is fixed, so the window keeps its size as
-/// the count changes.
-private struct DensityPreview: View {
-    let count: Int
+extension CardSize {
+    /// The name the Settings window gives the size.
+    var title: String {
+        switch self {
+        case .small: "Small"
+        case .medium: "Medium"
+        case .large: "Large"
+        }
+    }
+}
+
+/// A small, inert picture of the strip as it opens: the newest card selected at the band's left end, which is hard,
+/// the next one beside it, and a third cut off by the right edge. It is the same for every card size.
+private struct StripPreview: View {
+    private static let card = CGSize(width: 52, height: 57)
+    private static let gap: CGFloat = 8
+    /// How far in from the band's edges the first card rests.
+    private static let inset: CGFloat = 10
+    /// The band shows two cards and half of a third.
+    private static let band = CGSize(width: inset + 2 * (card.width + gap) + card.width / 2,
+                                     height: card.height + 2 * inset)
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<count, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 4)
+        HStack(spacing: Self.gap) {
+            ForEach(0..<3, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color(nsColor: .textBackgroundColor))
+                    .frame(width: Self.card.width, height: Self.card.height)
                     .overlay {
                         if index == 0 {
-                            RoundedRectangle(cornerRadius: 4).strokeBorder(Color.accentColor, lineWidth: 2)
+                            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                .strokeBorder(Color.accentColor, lineWidth: 2)
+                                .padding(-4)
                         }
                     }
             }
         }
-        .mask(LinearGradient(stops: [
-            .init(color: .black, location: 1 - StripLayout.fade),
-            .init(color: .clear, location: 1),
-        ], startPoint: .leading, endPoint: .trailing))
-        .padding(8)
-        .frame(height: 44)
+        .padding(.leading, Self.inset)
+        .frame(width: Self.band.width, height: Self.band.height, alignment: .leading)
         .background(.quaternary, in: .rect(cornerRadius: 12))
+        .clipShape(.rect(cornerRadius: 12))
+        .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
     }
 }

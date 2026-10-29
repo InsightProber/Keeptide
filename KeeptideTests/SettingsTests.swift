@@ -4,32 +4,65 @@ import XCTest
 
 @MainActor
 final class SettingsTests: XCTestCase {
-    func testDefaultsAreNineAndTicksOn() throws {
+    func testDefaultsAreMediumAndTicksOn() throws {
         let preferences = QuickAccessPreferences(defaults: try makeDefaults())
 
-        XCTAssertEqual(preferences.density, .nine)
+        XCTAssertEqual(preferences.cardSize, .medium)
         XCTAssertTrue(preferences.trackpadTicks)
     }
 
-    func testInvalidStoredDensityReadsAsNine() throws {
-        let defaults = try makeDefaults()
-        defaults.set(8, forKey: QuickAccessPreferences.densityKey)
+    func testStoredClipsInARowBecomeACardSize() throws {
+        // Where no card size is stored, the old clips-in-a-row choice stands in for it: 7 gave the largest
+        // previews and 11 the smallest; any other value, and none, give the default.
+        let cases: [(stored: Int?, size: CardSize)] = [
+            (7, .large), (9, .medium), (11, .small), (5, .medium), (nil, .medium),
+        ]
+        for (stored, size) in cases {
+            let defaults = try makeDefaults()
+            if let stored { defaults.set(stored, forKey: "quickAccessClipsPerRow") }
 
-        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).density, .nine)
+            XCTAssertEqual(QuickAccessPreferences(defaults: defaults).cardSize, size, "\(String(describing: stored))")
+            // The old key stays where it is; reading it changes nothing.
+            XCTAssertEqual(defaults.object(forKey: "quickAccessClipsPerRow") as? Int, stored)
+            XCTAssertNil(defaults.object(forKey: "quickAccess.cardSize"))
+        }
+
+        // A stored card size wins over the old key, and is taken as it is: one that is not a card size reads as
+        // the default instead of looking at the old key.
+        let defaults = try makeDefaults()
+        defaults.set(7, forKey: "quickAccessClipsPerRow")
+        defaults.set("small", forKey: "quickAccess.cardSize")
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).cardSize, .small)
+        defaults.set("huge", forKey: "quickAccess.cardSize")
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).cardSize, .medium)
+    }
+
+    func testSettingsOffersThreeCardSizes() throws {
+        // The radio group lists the sizes in this order, by these names; Medium is the one chosen to begin with.
+        XCTAssertEqual(CardSize.allCases.map(\.title), ["Small", "Medium", "Large"])
+        let defaults = try makeDefaults()
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        XCTAssertEqual(preferences.cardSize, .medium)
+
+        // Choosing Large stores it as "large", and the next launch reads it back.
+        preferences.cardSize = .large
+
+        XCTAssertEqual(defaults.object(forKey: "quickAccess.cardSize") as? String, "large")
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).cardSize, .large)
     }
 
     func testChangesPersistImmediately() throws {
         let defaults = try makeDefaults()
         let preferences = QuickAccessPreferences(defaults: defaults)
 
-        preferences.density = .eleven
+        preferences.cardSize = .small
         preferences.trackpadTicks = false
 
         // The stored names and types are what an update must keep reading.
-        XCTAssertEqual(defaults.object(forKey: "quickAccessClipsPerRow") as? Int, 11)
+        XCTAssertEqual(defaults.object(forKey: "quickAccess.cardSize") as? String, "small")
         XCTAssertEqual(defaults.object(forKey: "quickAccessTrackpadTicks") as? Bool, false)
         let reopened = QuickAccessPreferences(defaults: defaults)
-        XCTAssertEqual(reopened.density, .eleven)
+        XCTAssertEqual(reopened.cardSize, .small)
         XCTAssertFalse(reopened.trackpadTicks)
     }
 

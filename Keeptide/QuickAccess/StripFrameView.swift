@@ -35,7 +35,7 @@ struct StripFrameContent: Equatable {
 
     /// `detail` is nil until the details have arrived, and when they could not be read. A text search
     /// result already has its snippet, so it shows it without them and only its caption waits.
-    static func make(row: QuickAccessRow, detail: ClipDetail?, density: StripDensity) -> StripFrameContent {
+    static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize) -> StripFrameContent {
         var content = StripFrameContent(
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
             extraItems: 0, markers: [], isTextUnavailable: row.isTextUnavailable
@@ -43,7 +43,7 @@ struct StripFrameContent: Equatable {
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
         guard let detail else {
-            content.showSnippet(of: row, density: density)
+            content.showSnippet(of: row, cardSize: cardSize)
             return content
         }
 
@@ -51,8 +51,8 @@ struct StripFrameContent: Equatable {
         content.info = info(for: row.kind, detail: detail)
         switch row.kind {
         case .text:
-            if !content.showSnippet(of: row, density: density), let excerpt = detail.excerpt, !excerpt.isEmpty {
-                content.setText(AttributedString(excerpt), plain: excerpt, for: row, density: density)
+            if !content.showSnippet(of: row, cardSize: cardSize), let excerpt = detail.excerpt, !excerpt.isEmpty {
+                content.setText(AttributedString(excerpt), plain: excerpt, for: row, cardSize: cardSize)
             }
         case .url:
             guard let address = detail.excerpt, !address.isEmpty else { break }
@@ -60,7 +60,7 @@ struct StripFrameContent: Equatable {
                 content.body = .link(host: host, rest: rest)
                 content.memoTitle = memoTitle(of: row, over: address)
             } else {
-                content.setText(AttributedString(address), plain: address, for: row, density: density)
+                content.setText(AttributedString(address), plain: address, for: row, cardSize: cardSize)
             }
         case .image:
             if let thumbnail = detail.thumbnail {
@@ -102,19 +102,21 @@ struct StripFrameContent: Equatable {
     /// Shows the snippet a text search result brings along, with its hits in bold. Only a text frame
     /// does that; the other kinds look as they do for a recent clip. Returns whether there was one.
     @discardableResult
-    private mutating func showSnippet(of row: QuickAccessRow, density: StripDensity) -> Bool {
+    private mutating func showSnippet(of row: QuickAccessRow, cardSize: CardSize) -> Bool {
         guard row.kind == .text, let snippet = row.snippet, !snippet.text.isEmpty else { return false }
-        setText(QuickAccessRowContent.highlighted(snippet), plain: snippet.text, for: row, density: density)
+        setText(QuickAccessRowContent.highlighted(snippet), plain: snippet.text, for: row, cardSize: cardSize)
         return true
     }
 
     /// Sets a text body at the size its length gives. Under a memo title it goes no larger than the
     /// size after the title's, so that the title stands out.
-    private mutating func setText(_ text: AttributedString, plain: String, for row: QuickAccessRow, density: StripDensity) {
-        var size = StripTypography.bodySize(for: plain, density: density)
+    private mutating func setText(_ text: AttributedString, plain: String, for row: QuickAccessRow,
+                                  cardSize: CardSize) {
+        var size = StripTypography.bodySize(for: plain, cardSize: cardSize)
         if let title = Self.memoTitle(of: row, over: plain) {
             memoTitle = title
-            size = min(size, Self.nextSize(after: StripTypography.bodySize(for: title, density: density), density: density))
+            size = min(size, Self.nextSize(after: StripTypography.bodySize(for: title, cardSize: cardSize),
+                                           cardSize: cardSize))
         }
         body = .text(text, size: size)
     }
@@ -125,8 +127,8 @@ struct StripFrameContent: Equatable {
     }
 
     /// The next size down the table, or the same size at its end.
-    private static func nextSize(after size: CGFloat, density: StripDensity) -> CGFloat {
-        let tiers = StripTypography.type(for: density).tiers
+    private static func nextSize(after size: CGFloat, cardSize: CardSize) -> CGFloat {
+        let tiers = StripTypography.type(for: cardSize).tiers
         guard let index = tiers.firstIndex(of: size) else { return size }
         return tiers[min(index + 1, tiers.count - 1)]
     }
@@ -165,7 +167,8 @@ extension ContentKind {
 struct StripFrameView: View {
     let content: StripFrameContent
     let applicationIcon: NSImage
-    let density: StripDensity
+    let cardSize: CardSize
+    let cornerRadius: CGFloat
     let isSelected: Bool
 
     @Environment(\.colorSchemeContrast) private var contrast
@@ -176,7 +179,7 @@ struct StripFrameView: View {
     /// 6:1 even over a white picture, where 4.5:1 is the least that is asked.
     private static let scrim = Color.black.opacity(0.62)
 
-    private var type: StripType { StripTypography.type(for: density) }
+    private var type: StripType { StripTypography.type(for: cardSize) }
 
     var body: some View {
         GeometryReader { proxy in
@@ -185,8 +188,7 @@ struct StripFrameView: View {
     }
 
     private func card(in size: CGSize) -> some View {
-        let radius = cornerRadius(forWidth: size.width)
-        return ZStack {
+        ZStack {
             Color(nsColor: .textBackgroundColor)
             if case .image(let image, true) = content.body {
                 filledImage(image, in: size)
@@ -195,14 +197,14 @@ struct StripFrameView: View {
             }
         }
         .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay {
             if let width = Self.paperStroke(reduceTransparency: reduceTransparency) {
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(Color(nsColor: .separatorColor), lineWidth: width)
             }
         }
-        .overlay { selectionRing(radius: radius) }
+        .overlay { selectionRing(radius: cornerRadius) }
     }
 
     /// The width of the hairline along a frame's edge, if it has one. With Reduce Transparency the band is
@@ -210,12 +212,6 @@ struct StripFrameView: View {
     /// ends; otherwise the glass behind it does that.
     nonisolated static func paperStroke(reduceTransparency: Bool) -> CGFloat? {
         reduceTransparency ? 1 : nil
-    }
-
-    /// 12 pt at the full size, smaller with the frame but never under 8 pt, as `StripLayout` sets it.
-    private func cornerRadius(forWidth width: CGFloat) -> CGFloat {
-        let full = StripLayout.metrics(for: density, visibleWidth: StripLayout.maximumBandWidth + 2 * StripLayout.sideMargin)
-        return max(8, 12 * min(1, width / full.frameSize.width))
     }
 
     // MARK: Layouts
@@ -351,10 +347,10 @@ struct StripFrameView: View {
     }
 
     private func fileBody(name: String, typeIdentifier: String?) -> some View {
-        let side: CGFloat = switch density {
-        case .seven: 40
-        case .nine: 32
-        case .eleven: 28
+        let side: CGFloat = switch cardSize {
+        case .small: 28
+        case .medium: 32
+        case .large: 40
         }
         let icon = NSWorkspace.shared.icon(for: typeIdentifier.flatMap { UTType($0) } ?? .data)
         return HStack(spacing: 8) {
@@ -392,7 +388,7 @@ struct StripFrameView: View {
     // MARK: Memo title and line fitting
 
     private var memoTitleSize: CGFloat? {
-        content.memoTitle.map { StripTypography.bodySize(for: $0, density: density) }
+        content.memoTitle.map { StripTypography.bodySize(for: $0, cardSize: cardSize) }
     }
 
     /// Room the memo title takes above the body, with the gap under it.

@@ -1,34 +1,25 @@
 import AppKit
 
-/// Clips in a row, counting the half-hidden ones in the faded ends. Stored as the raw value.
-enum StripDensity: Int, CaseIterable {
-    case seven = 7, nine = 9, eleven = 11
-
-    /// The next sparser level, which a narrow screen falls back to.
-    var stepDown: StripDensity? {
-        switch self {
-        case .eleven: .nine
-        case .nine: .seven
-        case .seven: nil
-        }
-    }
-
-    /// Stored values are not trusted: anything but 7, 9 or 11 gives the default.
-    static func from(_ raw: Int) -> StripDensity {
-        StripDensity(rawValue: raw) ?? .nine
-    }
+/// How large the strip's cards are, as the Settings window offers it. Stored as the raw value.
+enum CardSize: String, CaseIterable, Sendable {
+    case small, medium, large
 }
 
-/// Frame sizes for one screen width. `scale` is the band width relative to its reference width.
+/// Frame sizes for one card size and screen width.
 struct StripMetrics: Equatable {
-    let density: StripDensity
+    let cardSize: CardSize
     let bandWidth: CGFloat
-    let scale: CGFloat
     let frameSize: CGSize
     let gap: CGFloat
     let cornerRadius: CGFloat
     /// How far in from the band's ends the film rests when it stops there.
     let dockInset: CGFloat
+    /// The colour band across the top of a frame.
+    let headerHeight: CGFloat
+    /// The line along a frame's bottom edge.
+    let footerHeight: CGFloat
+    /// Side of the source app's icon in the colour band.
+    let iconSize: CGFloat
 
     /// Distance between the left edges of neighbouring frames.
     var step: CGFloat { frameSize.width + gap }
@@ -48,33 +39,27 @@ struct StripPlacement: Equatable {
 /// Geometry of the quick access strip. The band is the glass bar holding the search row, the
 /// frames and the caption; the panel is the window around it. All values are in points.
 enum StripLayout {
-    static let maximumBandWidth: CGFloat = 1360
     /// The share of the band's width that fades out at each end.
     static let fade: CGFloat = 0.14
     static let searchHeight: CGFloat = 70
     static let captionHeight: CGFloat = 60
     static let filterHeight: CGFloat = 44
     static let cornerRadius: CGFloat = 30
-    /// Panel room beside the band for the key-cap hint and the shadow.
-    static let sideMargin: CGFloat = 40
+    /// The band stands this far in from each side of the screen's visible area. The panel, which reaches the edge,
+    /// has that room beside the band for the key-cap hint and the shadow.
+    static let sideMargin: CGFloat = 32
     /// Panel room above and below the band for the shadow.
     static let shadowMargin: CGFloat = 24
     static let previewGap: CGFloat = 16
     static let previewMaximum = CGSize(width: 760, height: 470)
 
-    /// Frames shrink with the band, rounded to whole points, as does the dock inset (24 pt at full size);
-    /// their corners are 12 pt at full size and never below 8. Below 80% the frames would be too small
-    /// for the 12 pt text floor, so that screen drops one density; the stored choice is untouched.
-    static func metrics(for density: StripDensity, visibleWidth: CGFloat) -> StripMetrics {
-        let bandWidth = min(visibleWidth - 2 * sideMargin, maximumBandWidth)
-        let scale = bandWidth / maximumBandWidth
-        let effective = scale < 0.8 ? (density.stepDown ?? density) : density
-        let reference = referenceSizes(for: effective)
+    /// The frames are as large on every screen as the card size makes them; a narrow screen shows fewer of them.
+    /// The band is as wide as the visible area less the margin at each side.
+    static func metrics(for size: CardSize, visibleWidth: CGFloat) -> StripMetrics {
+        let card = cardDimensions(for: size)
         return StripMetrics(
-            density: effective, bandWidth: bandWidth, scale: scale,
-            frameSize: CGSize(width: (reference.width * scale).rounded(), height: (reference.height * scale).rounded()),
-            gap: (reference.gap * scale).rounded(), cornerRadius: max(8, 12 * scale),
-            dockInset: (24 * scale).rounded()
+            cardSize: size, bandWidth: visibleWidth - 2 * sideMargin, frameSize: card.frame, gap: 14,
+            cornerRadius: 14, dockInset: 20, headerHeight: card.header, footerHeight: card.footer, iconSize: card.icon
         )
     }
 
@@ -157,12 +142,14 @@ enum StripLayout {
         return content.insetBy(dx: -sideMargin, dy: -shadowMargin)
     }
 
-    /// Frame width, gap and height at the reference band width.
-    private static func referenceSizes(for density: StripDensity) -> (width: CGFloat, gap: CGFloat, height: CGFloat) {
-        switch density {
-        case .seven: (200, 14, 133)
-        case .nine: (164, 12, 109)
-        case .eleven: (136, 10, 91)
+    /// A frame's size, the heights of its colour band and its footer, and the side of the app icon in the band.
+    private static func cardDimensions(
+        for size: CardSize
+    ) -> (frame: CGSize, header: CGFloat, footer: CGFloat, icon: CGFloat) {
+        switch size {
+        case .small: (CGSize(width: 200, height: 220), 52, 28, 36)
+        case .medium: (CGSize(width: 228, height: 250), 56, 30, 40)
+        case .large: (CGSize(width: 260, height: 286), 60, 32, 44)
         }
     }
 }

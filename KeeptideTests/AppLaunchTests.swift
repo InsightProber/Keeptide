@@ -52,12 +52,12 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testWindowGeometrySurvivesHostingLayout() throws {
-        let panel = PanelController(preferences: try makePreferences(.nine))
+        let panel = PanelController(preferences: try makePreferences(.medium))
         let library = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         settleLayout()
         let window = try XCTUnwrap(panel.window)
         let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
-        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine))
+        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
         XCTAssertEqual(library.window?.contentView?.frame.size, NSSize(width: 1120, height: 740))
         XCTAssertEqual(library.window?.contentMinSize, NSSize(width: 840, height: 560))
         XCTAssertEqual(library.window?.title, "Keeptide Library")
@@ -269,7 +269,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testPanelIsBorderlessTransparentAndFramesTheBand() throws {
-        let controller = PanelController(preferences: try makePreferences(.nine))
+        let controller = PanelController(preferences: try makePreferences(.medium))
         let panel = try XCTUnwrap(controller.window as? NSPanel)
         // No frame, no background and no window shadow: the band draws its own shadow and fades out at its ends.
         XCTAssertEqual(panel.styleMask, [.borderless, .nonactivatingPanel])
@@ -291,7 +291,7 @@ final class AppLaunchTests: XCTestCase {
         panel.contentView?.layoutSubtreeIfNeeded()
         settleLayout()
         let screen = try XCTUnwrap(panel.screen ?? NSScreen.main)
-        let metrics = StripLayout.metrics(for: .nine, visibleWidth: screen.visibleFrame.width)
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: screen.visibleFrame.width)
         let bandHeight = StripLayout.bandHeight(metrics, filtersVisible: false)
         XCTAssertEqual(panel.frame.width, metrics.bandWidth + 2 * StripLayout.sideMargin, accuracy: 1)
         XCTAssertEqual(panel.frame.height, bandHeight + 2 * StripLayout.shadowMargin, accuracy: 1)
@@ -525,17 +525,17 @@ final class AppLaunchTests: XCTestCase {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
-        try await insertClips((0..<5).map { "ab \($0)" }, into: harness)
+        try await insertClips((0..<3).map { "ab \($0)" }, into: harness)
         try await harness.consumer.synchronize()
-        // A two-letter query is scanned, here three clips at a time, and the scan holds after its first page until
+        // A two-letter query is scanned, here two clips at a time, and the scan holds after its first page until
         // the gate opens.
         let gate = ScanGate()
         addTeardownBlock { gate.open() }
-        let search = SearchService(index: harness.index, status: harness.status, scanChunkSize: 3,
+        let search = SearchService(index: harness.index, status: harness.status, scanChunkSize: 2,
                                    onScanProgress: { _ in gate.pass() })
         let controller = try makePanel(over: harness, pasteboard: board, search: search)
         controller.state.open()
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 5 }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 3 }
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
@@ -545,23 +545,23 @@ final class AppLaunchTests: XCTestCase {
         editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
             controller.state.query == "ab" && controller.state.phase == .results
-                && strip.accessibilityChildren()?.count == 3
+                && strip.accessibilityChildren()?.count == 2
         }
         XCTAssertFalse(controller.state.selection.isComplete)
-        XCTAssertEqual(controller.state.selection.rows.count, 3)
+        XCTAssertEqual(controller.state.selection.rows.count, 2)
 
-        // The rest of the scan may bring more clips, so the three found so far are not centred as a group: they
-        // rest at the left dock, and the right end fades.
+        // The rest of the scan may bring more clips, so the two found so far are not centred as a group: they rest
+        // at the left dock, and the right end fades.
         let first = try frame(of: controller.state.selection.rows[0].title, in: strip)
         XCTAssertEqual(first.minX - left, metrics.dockInset, accuracy: 0.5)
         XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
 
-        // The finished scan is all there is, and five clips fit: they are centred as a group.
+        // The finished scan is all there is, and three clips fit: they are centred as a group.
         gate.open()
         try await SearchTestSupport.waitUntil {
-            controller.state.selection.isComplete && strip.accessibilityChildren()?.count == 5
+            controller.state.selection.isComplete && strip.accessibilityChildren()?.count == 3
         }
-        let film = 5 * metrics.step - metrics.gap
+        let film = 3 * metrics.step - metrics.gap
         let newest = try frame(of: controller.state.selection.rows[0].title, in: strip)
         XCTAssertEqual(newest.minX - left, (metrics.bandWidth - film) / 2, accuracy: 0.5)
         XCTAssertTrue(strip.fades == (false, false), "\(strip.fades)")
@@ -650,7 +650,7 @@ final class AppLaunchTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
         let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
-        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine))
+        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
         controller.perform(.focusResults)
         let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
 
@@ -660,7 +660,7 @@ final class AppLaunchTests: XCTestCase {
         settleLayout()
 
         // The panel grows to hold the card above the band, and the band moves down if the card has no room there.
-        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine, withPreview: true))
+        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium, withPreview: true))
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
         XCTAssertEqual(text.string, "newer")
         XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
@@ -670,7 +670,7 @@ final class AppLaunchTests: XCTestCase {
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(controller.state.isPreviewExpanded)
-        assertFrame(window.frame, places: panelFrame(on: screen, density: .nine))
+        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
         XCTAssertTrue(window.firstResponder === strip)
         controller.state.close()
     }
@@ -901,24 +901,25 @@ final class AppLaunchTests: XCTestCase {
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in })
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste)
-        return PanelController(state: QuickAccessState(services: { services }), preferences: try makePreferences(.nine))
+        return PanelController(state: QuickAccessState(services: { services }),
+                               preferences: try makePreferences(.medium))
     }
 
-    /// Settings of the panel's own, so its density does not depend on this machine's.
-    private func makePreferences(_ density: StripDensity) throws -> QuickAccessPreferences {
+    /// Settings of the panel's own, so its card size does not depend on this machine's.
+    private func makePreferences(_ cardSize: CardSize) throws -> QuickAccessPreferences {
         let suiteName = "AppLaunchTests.quickAccess.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let preferences = QuickAccessPreferences(defaults: defaults)
-        preferences.density = density
+        preferences.cardSize = cardSize
         return preferences
     }
 
     /// Where `StripLayout` puts the panel on `screen`: around the band alone, or around the band and the
     /// preview card above it.
-    private func panelFrame(on screen: NSScreen, density: StripDensity, withPreview: Bool = false) -> NSRect {
+    private func panelFrame(on screen: NSScreen, cardSize: CardSize, withPreview: Bool = false) -> NSRect {
         let visible = screen.visibleFrame
-        let metrics = StripLayout.metrics(for: density, visibleWidth: visible.width)
+        let metrics = StripLayout.metrics(for: cardSize, visibleWidth: visible.width)
         let band = StripLayout.bandFrame(metrics, filtersVisible: false, in: visible)
         guard withPreview else { return StripLayout.panelFrame(band: band, preview: nil) }
         let placed = StripLayout.previewLayout(band: band, filtersVisible: false, in: visible)
@@ -949,9 +950,11 @@ final class AppLaunchTests: XCTestCase {
         (strip.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
     }
 
-    /// The frame sizes the panel takes for the screen it opens on: nine in a row, or fewer on a narrow screen.
+    /// The frame sizes the panel takes for the screen it opens on: medium cards in a band as wide as the screen's
+    /// visible area less its margins.
     private func stripMetrics(in window: NSWindow) throws -> StripMetrics {
-        StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame.width)
+        StripLayout.metrics(for: .medium,
+                            visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame.width)
     }
 
     /// The strip of the panel's window, once it shows the panel's clips: the panel follows the state a moment after
@@ -1023,7 +1026,7 @@ final class AppLaunchTests: XCTestCase {
 
     /// Where the ← hint goes, in window coordinates: in the room left of the band, level with the clips.
     private func keyHintArea(in window: NSWindow) throws -> NSRect {
-        let metrics = StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
             .visibleFrame.width)
         let middle = StripLayout.shadowMargin + StripLayout.captionHeight + metrics.frameSize.height / 2
         return NSRect(x: 0, y: middle - 16, width: StripLayout.sideMargin, height: 32)

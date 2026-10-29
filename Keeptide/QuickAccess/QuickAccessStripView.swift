@@ -243,14 +243,14 @@ final class QuickAccessStripView: NSView {
         for index in indices {
             let row = rows[index]
             let view = StripFrameView(
-                content: StripFrameContent.make(row: row, detail: details[row.ref], density: metrics.density),
-                applicationIcon: applicationNames.icon(for: row.sourceApp), density: metrics.density,
-                isSelected: row.ref == selection
+                content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize),
+                applicationIcon: applicationNames.icon(for: row.sourceApp), cardSize: metrics.cardSize,
+                cornerRadius: metrics.cornerRadius, isSelected: row.ref == selection
             )
             let host = frames[row.ref] ?? spare.popLast() ?? addFrame(view)
             frames[row.ref] = host
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
-                      cornerRadius: metrics.cornerRadius, isHovered: row.ref == hovered)
+                      isHovered: row.ref == hovered)
             host.frame = frameRect(origin: origins[index], metrics)
         }
         spare.forEach { $0.removeFromSuperview() }
@@ -540,16 +540,15 @@ private final class StripFrameHost: NSView {
         }
     }
 
-    func show(_ view: StripFrameView, for row: QuickAccessRow, applicationName: String?, cornerRadius: CGFloat,
-              isHovered: Bool) {
+    func show(_ view: StripFrameView, for row: QuickAccessRow, applicationName: String?, isHovered: Bool) {
         self.row = row
         self.applicationName = applicationName
-        wash.layer?.cornerRadius = cornerRadius
+        wash.layer?.cornerRadius = view.cornerRadius
         self.isHovered = isHovered
         // A new root view redraws the frame, so an unchanged one is kept.
         let shown = drawing.rootView
-        if view.content != shown.content || view.isSelected != shown.isSelected || view.density != shown.density
-            || view.applicationIcon !== shown.applicationIcon {
+        if view.content != shown.content || view.isSelected != shown.isSelected || view.cardSize != shown.cardSize
+            || view.cornerRadius != shown.cornerRadius || view.applicationIcon !== shown.applicationIcon {
             drawing.rootView = view
         }
     }
