@@ -6,9 +6,12 @@ import XCTest
 
 @MainActor
 final class QuickAccessStripViewTests: XCTestCase {
-    /// Nine clips in a row on a band at its full width: frames 164 pt wide, 176 pt apart.
+    /// Nine clips in a row on a band at its full width: frames 164 pt wide, 176 pt apart, docked 24 pt in from
+    /// the band's ends.
     private var metrics: StripMetrics { StripLayout.metrics(for: .nine, visibleWidth: 1440) }
     private var centre: CGFloat { metrics.bandWidth / 2 }
+    /// The middle of the frame resting at the left dock.
+    private var dock: CGFloat { metrics.dockInset + metrics.frameSize.width / 2 }
 
     func testSelectedFrameIsCentredInTheBand() throws {
         let strip = makeStrip()
@@ -23,10 +26,10 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(frame.midX, centre, accuracy: 0.5)
         XCTAssertEqual(frame.midY, strip.bounds.midY, accuracy: 0.5)
         XCTAssertEqual(frame.size, metrics.frameSize)
-        // Older clips to the left and newer ones to the right, a frame and a gap apart.
-        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre - metrics.step, accuracy: 0.5)
-        XCTAssertEqual(try midX(of: "Row 4", in: strip), centre + metrics.step, accuracy: 0.5)
-        XCTAssertEqual(try midX(of: "Row 9", in: strip), centre - 4 * metrics.step, accuracy: 0.5)
+        // Newer clips to the left and older ones to the right, a frame and a gap apart.
+        XCTAssertEqual(try midX(of: "Row 4", in: strip), centre - metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre + metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 9", in: strip), centre + 4 * metrics.step, accuracy: 0.5)
 
         // A narrow screen steps down a density, and the frames are drawn for the density in effect.
         let narrow = StripLayout.metrics(for: .nine, visibleWidth: 1100)
@@ -39,9 +42,62 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(try rect(titled: "Row 5", in: small).size, narrow.frameSize)
     }
 
-    func testLostSelectionLeavesTheCentreEmpty() throws {
+    func testTheFilmRestsAtItsEndsAndTheSelectionWalksAlongIt() throws {
         let strip = makeStrip()
-        let rows = makeRows(6)
+        let rows = makeRows(20)
+
+        // The newest clip rests at the left dock with the older ones to its right. Short of the middle the ring
+        // walks along the film, which stays where it is.
+        for index in 0...3 {
+            strip.show(rows, selection: rows[index].ref, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+            XCTAssertEqual(selectedTitle(in: strip), "Row \(index)")
+            XCTAssertEqual(try midX(of: "Row 0", in: strip), dock, accuracy: 0.5)
+            XCTAssertEqual(try midX(of: "Row \(index)", in: strip), dock + CGFloat(index) * metrics.step, accuracy: 0.5)
+        }
+        // One step more would take the ring past the middle, so the film moves instead.
+        strip.show(rows, selection: rows[4].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(try midX(of: "Row 4", in: strip), centre, accuracy: 0.5)
+
+        // The oldest clip rests at the right dock once it is known to be the oldest.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(try rect(titled: "Row 19", in: strip).maxX, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
+        // While more may follow, the film keeps the last clip there is in the middle.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        XCTAssertEqual(try midX(of: "Row 19", in: strip), centre, accuracy: 0.5)
+    }
+
+    func testTheEndsTheFilmGoesOnBeyondFade() {
+        let strip = makeStrip()
+        var heard = 0
+        strip.onFadesChanged = { heard += 1 }
+        let rows = makeRows(20)
+
+        // At the newest clip only the older end fades, and the panel hears of each change.
+        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
+        XCTAssertEqual(heard, 1)
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(heard, 1, "A step along the docked film changes no fade")
+        strip.show(rows, selection: rows[10].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.fades == (true, true), "\(strip.fades)")
+        XCTAssertEqual(heard, 2)
+        // The oldest end fades until the oldest clip is loaded.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        XCTAssertTrue(strip.fades == (true, true), "\(strip.fades)")
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.fades == (true, false), "\(strip.fades)")
+        // Without clips nothing goes on beyond either end.
+        strip.show([], selection: nil, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.fades == (false, false), "\(strip.fades)")
+        XCTAssertEqual(heard, 4)
+    }
+
+    func testLostSelectionLeavesTheDockEmpty() throws {
+        let strip = makeStrip()
+        let rows = makeRows(20)
         strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
         // The selected clip disappears, and the state selects nothing in its place.
@@ -49,17 +105,18 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.show(remaining, selection: nil, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
         let frames = drawings(in: strip)
-        XCTAssertEqual(frames.count, 5)
+        XCTAssertFalse(frames.isEmpty)
         XCTAssertFalse(frames.contains { $0.rootView.isSelected })
-        XCTAssertTrue(frames.allSatisfy { rect(of: $0, in: strip).maxX < centre }, "Nothing covers the middle")
-        // Every frame sits to the left of the empty middle, the newest next to it.
-        XCTAssertEqual(try midX(of: "Row 0", in: strip), centre - metrics.step, accuracy: 0.5)
-        XCTAssertEqual(try midX(of: "Row 1", in: strip), centre - 2 * metrics.step, accuracy: 0.5)
-        XCTAssertEqual(try midX(of: "Row 3", in: strip), centre - 3 * metrics.step, accuracy: 0.5)
+        XCTAssertTrue(frames.allSatisfy { rect(of: $0, in: strip).minX > dock + metrics.frameSize.width / 2 },
+                      "Nothing covers the dock")
+        // Every frame stands to the right of the empty dock, the newest next to it.
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock + metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 1", in: strip), dock + 2 * metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 3", in: strip), dock + 3 * metrics.step, accuracy: 0.5)
         XCTAssertEqual(strip.accessibilitySelectedChildren()?.count ?? 0, 0)
     }
 
-    func testOnlyFramesNearTheCentreExist() throws {
+    func testOnlyFramesOnScreenAndASpareAtEachEndExist() throws {
         let strip = makeStrip()
         let rows = makeRows(200)
         var reports: [(refs: [ContentRef], lastOnScreen: Int)] = []
@@ -67,14 +124,14 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         strip.show(rows, selection: rows[100].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        // Nine in a row are on screen, and two more on each side keep a step from showing a gap.
-        XCTAssertLessThanOrEqual(drawings(in: strip).count, StripDensity.nine.rawValue + 4)
-        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((94...106).map { "Row \($0)" }))
+        // Nine in a row are on screen, and one more on each side keeps a step from showing a gap.
+        XCTAssertLessThanOrEqual(drawings(in: strip).count, StripDensity.nine.rawValue + 2)
+        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((95...105).map { "Row \($0)" }))
         // Details are asked for only the rows with a frame, the selected clip's first. The last row on
         // screen is the one that decides when to load more.
         let report = try XCTUnwrap(reports.last)
-        XCTAssertEqual(Set(report.refs), Set(rows[94...106].map(\.ref)))
-        XCTAssertEqual(report.refs.count, 13)
+        XCTAssertEqual(Set(report.refs), Set(rows[95...105].map(\.ref)))
+        XCTAssertEqual(report.refs.count, 11)
         XCTAssertEqual(report.refs.first, rows[100].ref)
         XCTAssertEqual(report.lastOnScreen, 104)
 
@@ -82,16 +139,16 @@ final class QuickAccessStripViewTests: XCTestCase {
         let before = Set(drawings(in: strip).map(ObjectIdentifier.init))
         strip.show(rows, selection: rows[101].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(Set(drawings(in: strip).map(ObjectIdentifier.init)), before)
-        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((95...107).map { "Row \($0)" }))
+        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((96...106).map { "Row \($0)" }))
 
-        // At the newest end there are frames on the older side only.
+        // At the newest end the film rests at the dock, with frames on the older side only.
         strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((0...6).map { "Row \($0)" }))
-        XCTAssertEqual(Set(try XCTUnwrap(reports.last).refs), Set(rows[0...6].map(\.ref)))
-        XCTAssertEqual(reports.last?.lastOnScreen, 4)
+        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((0...8).map { "Row \($0)" }))
+        XCTAssertEqual(Set(try XCTUnwrap(reports.last).refs), Set(rows[0...8].map(\.ref)))
+        XCTAssertEqual(reports.last?.lastOnScreen, 7)
 
         strip.show(rows, selection: rows[199].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((193...199).map { "Row \($0)" }))
+        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((191...199).map { "Row \($0)" }))
         XCTAssertEqual(reports.last?.lastOnScreen, 199)
 
         // Shown again unchanged, the rows are asked for again while their details are missing, as when
@@ -100,7 +157,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.show(rows, selection: rows[199].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(reports.count, asked + 1)
         // Once every framed row has its details, an unchanged strip asks for nothing more.
-        let details = Dictionary(uniqueKeysWithValues: rows[193...199].map { ($0.ref, ClipDetail()) })
+        let details = Dictionary(uniqueKeysWithValues: rows[191...199].map { ($0.ref, ClipDetail()) })
         for _ in 1...2 {
             strip.show(rows, selection: rows[199].ref, details: details, metrics: metrics,
                        applicationNames: ApplicationNames())
@@ -111,25 +168,37 @@ final class QuickAccessStripViewTests: XCTestCase {
     func testLoadingMoreKeepsTheSelectedFrameCentred() throws {
         let strip = makeStrip()
         let page = makeRows(60)
-        strip.show(page, selection: page[57].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        // Another page may follow this one, so near its end the film keeps the selected clip in the middle and
+        // the right end fades.
+        strip.show(page, selection: page[57].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
         let before = try rect(titled: "Row 57", in: strip)
         let neighbour = try rect(titled: "Row 59", in: strip)
+        XCTAssertEqual(before.midX, centre, accuracy: 0.5)
+        XCTAssertTrue(strip.fades.trailing)
 
-        strip.show(page + makeRows(60, from: 60), selection: page[57].ref, details: [:], metrics: metrics,
-                   applicationNames: ApplicationNames())
+        let pages = page + makeRows(60, from: 60)
+        strip.show(pages, selection: page[57].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
 
         XCTAssertEqual(try rect(titled: "Row 57", in: strip), before)
-        XCTAssertEqual(before.midX, centre, accuracy: 0.5)
         XCTAssertEqual(drawings(in: strip).first { $0.rootView.isSelected }.flatMap(title(of:)), "Row 57")
         XCTAssertEqual(try rect(titled: "Row 59", in: strip), neighbour)
         // The rows that arrived take their places on the older side, as if they had always been there.
-        XCTAssertEqual(try midX(of: "Row 60", in: strip), centre - 3 * metrics.step, accuracy: 0.5)
-        XCTAssertEqual(try midX(of: "Row 63", in: strip), centre - 6 * metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 60", in: strip), centre + 3 * metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 62", in: strip), centre + 5 * metrics.step, accuracy: 0.5)
+
+        // Once no more can follow, the last clip is the oldest, and the film stops with it at the right dock.
+        strip.show(pages, selection: pages[118].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        XCTAssertEqual(try rect(titled: "Row 119", in: strip).maxX, metrics.bandWidth - metrics.dockInset,
+                       accuracy: 0.5)
+        XCTAssertFalse(strip.fades.trailing)
     }
 
     func testClickAsksTheStateAndMovesOnlyWhenItAgrees() throws {
         let strip = makeStrip()
-        let rows = makeRows(8)
+        let rows = makeRows(20)
         var asked: [ContentRef] = []
         strip.onSelect = { asked.append($0) }
         strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
@@ -147,17 +216,17 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         XCTAssertEqual(asked, [rows[4].ref])
         XCTAssertTrue(strip.window?.firstResponder === strip)
-        // Until the state agrees, the ring stays where the state put it, in the middle.
+        // Until the state agrees, the ring stays where the state put it, on the third clip from the dock.
         XCTAssertEqual(selectedTitle(in: strip), "Row 2")
-        XCTAssertEqual(try midX(of: "Row 2", in: strip), centre, accuracy: 0.5)
-        XCTAssertEqual(try midX(of: "Row 4", in: strip), centre - 2 * metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 2", in: strip), dock + 2 * metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 4", in: strip), dock + 4 * metrics.step, accuracy: 0.5)
 
         // The state refused and shows its own selection again: nothing moves.
         strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(selectedTitle(in: strip), "Row 2")
-        XCTAssertEqual(try midX(of: "Row 2", in: strip), centre, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 2", in: strip), dock + 2 * metrics.step, accuracy: 0.5)
 
-        // The state agreed: the clicked clip comes to the middle with the ring.
+        // The state agreed: the clicked clip lies past the middle, so the film brings it there with the ring.
         strip.show(rows, selection: rows[4].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(selectedTitle(in: strip), "Row 4")
         XCTAssertEqual(try midX(of: "Row 4", in: strip), centre, accuracy: 0.5)
@@ -170,12 +239,12 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     func testDoubleClickNeverExecutes() throws {
         let strip = makeStrip()
-        let rows = makeRows(4)
+        let rows = makeRows(20)
         var asked: [ContentRef] = []
         var commands: [QuickAccessCommand] = []
         strip.onSelect = { asked.append($0) }
         strip.onCommand = { commands.append($0) }
-        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.show(rows, selection: rows[6].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
         let click = { (point: NSPoint, count: Int) in
             strip.mouseDown(with: try self.mouse(.leftMouseDown, at: point, clickCount: count, in: strip))
@@ -184,13 +253,13 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         // A double click on a neighbour. The panel takes the first click and brings that clip to the middle,
         // so the next older frame now lies under the pointer; the second click is one more on the same clip.
-        let target = try rect(titled: "Row 1", in: strip)
+        let target = try rect(titled: "Row 7", in: strip)
         let point = NSPoint(x: target.midX, y: target.midY)
         try click(point, 1)
-        strip.show(rows, selection: rows[1].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        XCTAssertEqual(try midX(of: "Row 2", in: strip), point.x, accuracy: 0.5)
+        strip.show(rows, selection: rows[7].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(try midX(of: "Row 8", in: strip), point.x, accuracy: 0.5)
         try click(point, 2)
-        XCTAssertEqual(asked, [rows[1].ref, rows[1].ref])
+        XCTAssertEqual(asked, [rows[7].ref, rows[7].ref])
 
         // A double click on the clip in the middle is no different.
         let middle = NSPoint(x: centre, y: target.midY)
@@ -199,7 +268,7 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         XCTAssertFalse(commands.contains(.primary))
         XCTAssertEqual(commands, [])
-        XCTAssertEqual(asked, Array(repeating: rows[1].ref, count: 4))
+        XCTAssertEqual(asked, Array(repeating: rows[7].ref, count: 4))
     }
 
     func testScrollMovesTicksAndRespectsTheSwitch() throws {
@@ -211,23 +280,24 @@ final class QuickAccessStripViewTests: XCTestCase {
         let rows = makeRows(10)
         strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        // A swipe toward older clips: a clip for every 30 pt, with a tick as each reaches the middle.
-        strip.scrollWheel(with: try swipe(dx: 20, phase: .began, at: 1.0))
+        // A swipe toward older clips, the fingers moving left: a clip for every 30 pt, with a tick as each is
+        // selected.
+        strip.scrollWheel(with: try swipe(dx: -20, phase: .began, at: 1.0))
         XCTAssertEqual(commands, [])
         XCTAssertEqual(haptics.ticks, 0)
-        strip.scrollWheel(with: try swipe(dx: 20, phase: .changed, at: 1.1))
+        strip.scrollWheel(with: try swipe(dx: -20, phase: .changed, at: 1.1))
         XCTAssertEqual(commands, [.move(1)])
         XCTAssertEqual(haptics.ticks, 1)
         // The panel shows the move it accepted; a fast push passes two clips with one tick.
         strip.show(rows, selection: rows[1].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        strip.scrollWheel(with: try swipe(dx: 60, phase: .changed, at: 1.2))
+        strip.scrollWheel(with: try swipe(dx: -60, phase: .changed, at: 1.2))
         XCTAssertEqual(commands, [.move(1), .move(2)])
         XCTAssertEqual(haptics.ticks, 2)
         strip.show(rows, selection: rows[3].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.3))
 
         // Coasting after the fingers lift moves nothing and plays nothing.
-        strip.scrollWheel(with: try coast(dx: 90, at: 1.4))
+        strip.scrollWheel(with: try coast(dx: -90, at: 1.4))
         XCTAssertEqual(commands, [.move(1), .move(2)])
         XCTAssertEqual(haptics.ticks, 2)
         // A mouse wheel turned down moves one clip older a notch; its own click is the feedback.
@@ -235,10 +305,10 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(commands, [.move(1), .move(2), .move(1)])
         XCTAssertEqual(haptics.ticks, 2)
 
-        // With the switch off a swipe moves the same, without a tick.
+        // With the switch off a swipe moves the same, without a tick: the fingers moving right go newer.
         strip.ticksEnabled = false
         strip.show(rows, selection: rows[4].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        strip.scrollWheel(with: try swipe(dx: -40, phase: .began, at: 2.0))
+        strip.scrollWheel(with: try swipe(dx: 40, phase: .began, at: 2.0))
         XCTAssertEqual(commands.last, .move(-1))
         XCTAssertEqual(haptics.ticks, 2)
     }
@@ -252,11 +322,12 @@ final class QuickAccessStripViewTests: XCTestCase {
         let rows = makeRows(5)
         strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
-        strip.show(rows, selection: rows[3].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}", isARepeat: true))
-        strip.show(rows, selection: rows[4].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        // Right is older and left newer.
         strip.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
+        strip.show(rows, selection: rows[3].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
+        strip.show(rows, selection: rows[4].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
 
         XCTAssertEqual(commands, [.move(1), .move(1), .move(-1)])
         XCTAssertEqual(haptics.ticks, 0)
@@ -283,9 +354,9 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         // The arrows keep stepping while held.
         commands = []
-        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
-        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}", isARepeat: true))
-        strip.keyDown(with: try key(kVK_LeftArrow, "\u{F702}", isARepeat: true))
+        strip.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
+        strip.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
+        strip.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
         XCTAssertEqual(commands, [.move(1), .move(1), .move(1)])
 
         // The filter row drops them the same way, and its cursor keeps moving while an arrow is held.
@@ -347,10 +418,10 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(strip.accessibilityRole(), .list)
         XCTAssertEqual(strip.accessibilityLabel(), "Clips")
         XCTAssertEqual(strip.accessibilityIdentifier(), "QuickAccessStrip")
-        // One element per frame, left to right: the oldest first and the selected newest last.
+        // One element per frame, left to right as on screen: the selected newest first and the oldest last.
         let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
         guard children.count == 3 else { return XCTFail("Expected an element per frame, got \(children.count)") }
-        let (link, memo, selected) = (children[0], children[1], children[2])
+        let (selected, memo, link) = (children[0], children[1], children[2])
         let time = { (row: QuickAccessRow) in QuickAccessRowContent.detail(for: row, applicationName: nil) }
 
         XCTAssertEqual(selected.accessibilityLabel(), "Text, from \(app), \(time(rows[0])): Quarterly numbers draft")
@@ -370,7 +441,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         let many = makeRows(20)
         strip.show(many, selection: many[10].ref, details: [:], metrics: metrics, applicationNames: names)
         XCTAssertEqual(strip.accessibilityChildren()?.count, 9)
-        XCTAssertEqual(drawings(in: strip).count, 13)
+        XCTAssertEqual(drawings(in: strip).count, 11)
     }
 
     // MARK: Beyond the named cases
@@ -380,47 +451,102 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.haptics = RecordingHaptics()
         var commands: [QuickAccessCommand] = []
         strip.onCommand = { commands.append($0) }
-        let rows = makeRows(3)
-        strip.show(rows, selection: rows[1].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let rows = makeRows(20)
+        strip.show(rows, selection: rows[6].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        // Fingers a third of the way to the next older clip carry the frames a third of a step.
-        strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1.0))
-        XCTAssertEqual(try midX(of: "Row 1", in: strip), centre + metrics.step / 3, accuracy: 0.5)
+        // Fingers moving left a third of the way to the next older clip carry the film a third of a step left.
+        strip.scrollWheel(with: try swipe(dx: -10, phase: .began, at: 1.0))
+        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre - metrics.step / 3, accuracy: 0.5)
         // Lifting them settles back on the selected clip.
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
-        XCTAssertEqual(try midX(of: "Row 1", in: strip), centre, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre, accuracy: 0.5)
         // So does a panel that stops being key under the fingers, since their lift never reaches it, and the
         // swipe it cut short is forgotten: fingers touching down again later move nothing.
-        strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1.2))
+        strip.scrollWheel(with: try swipe(dx: -10, phase: .began, at: 1.2))
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: strip.window)
-        XCTAssertEqual(try midX(of: "Row 1", in: strip), centre, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre, accuracy: 0.5)
         strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.3))
-        XCTAssertEqual(try midX(of: "Row 1", in: strip), centre, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 6", in: strip), centre, accuracy: 0.5)
 
-        // At the oldest clip a push stretches the end, 0.3 pt for every point pushed.
-        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        strip.scrollWheel(with: try swipe(dx: 40, phase: .began, at: 2.0))
-        XCTAssertEqual(try midX(of: "Row 2", in: strip), centre + 12, accuracy: 0.5)
+        // Near the newest end the fingers carry the selection along a docked film, which stays where it is.
+        strip.show(rows, selection: rows[1].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.scrollWheel(with: try swipe(dx: -10, phase: .began, at: 1.5))
+        XCTAssertEqual(try midX(of: "Row 1", in: strip), dock + metrics.step, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.6))
+
+        // At the oldest clip, resting at the right dock, a push stretches the end, 0.3 pt for every point pushed,
+        // and pulls the film left.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let oldest = metrics.bandWidth - metrics.dockInset - metrics.frameSize.width / 2
+        XCTAssertEqual(try midX(of: "Row 19", in: strip), oldest, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: -40, phase: .began, at: 2.0))
+        XCTAssertEqual(try midX(of: "Row 19", in: strip), oldest - 12, accuracy: 0.5)
         // Fingers resting change nothing, so the stretch holds instead of snapping back mid-gesture.
         strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 2.05))
-        XCTAssertEqual(try midX(of: "Row 2", in: strip), centre + 12, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 19", in: strip), oldest - 12, accuracy: 0.5)
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 2.1))
-        XCTAssertEqual(try midX(of: "Row 2", in: strip), centre, accuracy: 0.5)
+        XCTAssertEqual(try midX(of: "Row 19", in: strip), oldest, accuracy: 0.5)
         // At the newest clip the stretch goes the other way.
         strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        strip.scrollWheel(with: try swipe(dx: -40, phase: .began, at: 2.5))
-        XCTAssertEqual(try midX(of: "Row 0", in: strip), centre - 12, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 40, phase: .began, at: 2.5))
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock + 12, accuracy: 0.5)
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 2.6))
         XCTAssertEqual(commands, [])
 
-        // With the selection gone nothing is newer than the empty middle, and every clip is older.
+        // With the selection gone nothing is newer than the empty dock, and every clip is older. Fingers short of
+        // the newest clip leave the film where it is.
         strip.show(rows, selection: nil, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        strip.scrollWheel(with: try swipe(dx: -40, phase: .began, at: 3.0))
-        XCTAssertEqual(try midX(of: "Row 0", in: strip), centre - metrics.step - 12, accuracy: 0.5)
-        XCTAssertEqual(commands, [])
+        strip.scrollWheel(with: try swipe(dx: 40, phase: .began, at: 3.0))
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock + metrics.step + 12, accuracy: 0.5)
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 3.1))
-        strip.scrollWheel(with: try swipe(dx: 100, phase: .began, at: 4.0))
+        strip.scrollWheel(with: try swipe(dx: -10, phase: .began, at: 3.5))
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock + metrics.step, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 3.6))
+        XCTAssertEqual(commands, [])
+        strip.scrollWheel(with: try swipe(dx: -100, phase: .began, at: 4.0))
         XCTAssertEqual(commands, [.move(3)])
+    }
+
+    func testASwipeFromTheDockIntoTheMiddleNeverJumps() throws {
+        let strip = makeStrip()
+        strip.haptics = RecordingHaptics()
+        let rows = makeRows(20)
+        var selected = 0
+        // The panel shows each step in the same turn as the swipe that asked for it.
+        strip.onCommand = { [unowned strip, metrics = self.metrics] command in
+            guard case .move(let offset) = command else { return }
+            selected += offset
+            strip.show(rows, selection: rows[selected].ref, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+        }
+        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // Fingers moving left a sixth of a clip at a time, from the newest clip to the eighth. After each event,
+        // where index 0's frame lies, going by the selected one, and whether the left end fades.
+        var origins: [CGFloat] = []
+        var fadesLeading: [Bool] = []
+        for event in 1...42 {
+            strip.scrollWheel(with: try swipe(dx: -5, phase: event == 1 ? .began : .changed, at: 1 + Double(event) / 20))
+            origins.append(try rect(titled: "Row \(selected)", in: strip).minX - CGFloat(selected) * metrics.step)
+            fadesLeading.append(strip.fades.leading)
+        }
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 4))
+
+        XCTAssertEqual(selected, 7)
+        // The film rests at the dock until the selection reaches the middle, then follows the fingers: it only ever
+        // moves left, and never further in one event than the fingers carried the selection, a sixth of a step.
+        XCTAssertEqual(origins.first ?? 0, metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(origins.last ?? 0, centre - metrics.frameSize.width / 2 - 7 * metrics.step, accuracy: 0.5)
+        for (before, after) in zip(origins, origins.dropFirst()) {
+            XCTAssertLessThanOrEqual(after, before + 0.5)
+            XCTAssertLessThanOrEqual(before - after, metrics.step / 6 + 1)
+        }
+        // The left end fades exactly while the film lies left of its dock, under the fingers as well as at rest.
+        XCTAssertEqual(fadesLeading.first, false)
+        XCTAssertEqual(fadesLeading.last, true)
+        for (origin, fades) in zip(origins, fadesLeading) {
+            XCTAssertEqual(fades, origin < metrics.dockInset - 0.5, "film at \(origin)")
+        }
     }
 
     func testASlideKeepsTheFramesItPassesUntilItSettles() async throws {
@@ -439,17 +565,17 @@ final class QuickAccessStripViewTests: XCTestCase {
 
         XCTAssertEqual(try midX(of: "Row 24", in: strip), centre, accuracy: 0.5)
         // The frames it passes on the newer side stay while they slide out past the end.
-        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((14...30).map { "Row \($0)" }))
-        // Only the rows framed around the new middle are asked for their details.
-        XCTAssertEqual(Set(try XCTUnwrap(reports.last)), Set(rows[18...30].map(\.ref)))
-        // Once the slide has settled only the frames near the middle are left.
-        let settled = Set((18...30).map { "Row \($0)" })
+        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((15...29).map { "Row \($0)" }))
+        // Only the rows framed where the film now rests are asked for their details.
+        XCTAssertEqual(Set(try XCTUnwrap(reports.last)), Set(rows[19...29].map(\.ref)))
+        // Once the slide has settled only the frames on screen and the spares are left.
+        let settled = Set((19...29).map { "Row \($0)" })
         try await waitUntil { Set(self.drawings(in: strip).compactMap(self.title(of:))) == settled }
 
         // Under the fingers the frames follow them instead of sliding, so nothing is kept.
-        strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1.0))
+        strip.scrollWheel(with: try swipe(dx: -10, phase: .began, at: 1.0))
         strip.show(rows, selection: rows[25].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((19...31).map { "Row \($0)" }))
+        XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((20...30).map { "Row \($0)" }))
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
     }
 
@@ -536,7 +662,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(asked, [rows[2].ref])
     }
 
-    func testPreviewDimsTheFramesBesideTheCentre() throws {
+    func testPreviewDimsTheFramesBesideTheSelectedOne() throws {
         let strip = makeStrip()
         let rows = makeRows(5)
         strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
@@ -545,7 +671,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         // While the preview is open the clips beside the selected one step back to half strength.
         strip.dimsSideFrames = true
         XCTAssertEqual(opacities(in: strip), ["Row 0": 0.5, "Row 1": 0.5, "Row 2": 1, "Row 3": 0.5, "Row 4": 0.5])
-        // The clip that moves to the middle comes forward, and the one that leaves it steps back.
+        // The clip selected next comes forward, and the one selected before steps back.
         strip.show(rows, selection: rows[3].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(opacities(in: strip), ["Row 0": 0.5, "Row 1": 0.5, "Row 2": 0.5, "Row 3": 1, "Row 4": 0.5])
 

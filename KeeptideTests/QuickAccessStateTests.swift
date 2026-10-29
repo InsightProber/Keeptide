@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import ImageIO
+import Observation
 import UniformTypeIdentifiers
 import XCTest
 @testable import Keeptide
@@ -245,6 +246,42 @@ final class QuickAccessStateTests: XCTestCase {
 
         XCTAssertEqual(scans.count, searched + 1, "Once a page adds nothing, the same page is not asked for again")
         XCTAssertEqual(state.selection.rows.count, 60)
+        state.close()
+    }
+
+    func testHasMoreRowsOnlyWhileASearchHasAnotherPage() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for offset in 0..<61 { clips.append(try await insert("ab \(offset)", at: Double(offset), into: fixture)) }
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        // Recent clips come in one read, so none follow.
+        XCTAssertEqual(state.selection.rows.count, 61)
+        XCTAssertFalse(state.hasMoreRows)
+
+        // A search that matched more than its first page has another page to fetch.
+        state.setQuery("ab")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        XCTAssertEqual(state.selection.rows.count, 60)
+        XCTAssertTrue(state.hasMoreRows)
+
+        // The clip left out is copied again and ranks first, so the next page adds nothing and paging stops. The
+        // change is observed, so the strip lays its oldest end out again.
+        var oldest = clips[0]
+        oldest.lastCopiedAt = Date(timeIntervalSince1970: 2_000)
+        try await fixture.harness.update(.item(oldest.id), to: .item(oldest))
+        try await fixture.harness.consumer.synchronize()
+        let observed = expectation(description: "hasMoreRows changes")
+        withObservationTracking { _ = state.hasMoreRows } onChange: { observed.fulfill() }
+        state.loadMoreIfNeeded(visibleRow: 55)
+        try await searchesFinished(in: fixture)
+
+        await fulfillment(of: [observed], timeout: 1)
+        XCTAssertEqual(state.selection.rows.count, 60)
+        XCTAssertFalse(state.hasMoreRows)
         state.close()
     }
 

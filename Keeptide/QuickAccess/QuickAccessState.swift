@@ -82,13 +82,13 @@ final class QuickAccessState {
     @ObservationIgnored private var isOpen = false
     /// The session a copy is running for; a reopened panel's session can copy at once.
     @ObservationIgnored private var copying: PasteSession?
-    @ObservationIgnored private var totalMatches = 0
+    private var totalMatches = 0
     @ObservationIgnored private var previewedRef: ContentRef?
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
     /// Set once a page of the current generation added no rows; the generation asks for no more pages.
-    @ObservationIgnored private var pagingStopped = false
+    private var pagingStopped = false
     @ObservationIgnored private var previewing: Task<Void, Never>?
     /// One read per clip whose detail is wanted, running or finished. A load that has finished stays listed
     /// while its clip is still requested, so a clip that cannot be read is not read again on every request.
@@ -108,6 +108,9 @@ final class QuickAccessState {
     var showsRecentClips: Bool { ParsedQuery(query).isEmpty && kinds.isEmpty }
 
     var hasFiltersOrQuery: Bool { !query.isEmpty || !kinds.isEmpty }
+
+    /// A search has another page to fetch, so the last row listed is not the last there is.
+    var hasMoreRows: Bool { !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count }
 
     /// The filter row shows while there is a query or a filter, and when it was brought up by hand.
     var filtersVisible: Bool { hasFiltersOrQuery || filtersRevealed }
@@ -270,8 +273,7 @@ final class QuickAccessState {
     }
 
     func loadMoreIfNeeded(visibleRow index: Int) {
-        guard !showsRecentClips, loadingMore == nil, !pagingStopped, phase == .results,
-              index >= selection.rows.count - 10, totalMatches > selection.rows.count,
+        guard hasMoreRows, loadingMore == nil, phase == .results, index >= selection.rows.count - 10,
               let search = services()?.search, let generation = currentGeneration else { return }
         let request = SearchRequest(query: query, kinds: kinds, generation: generation,
                                     offset: selection.rows.count, limit: Self.pageSize)

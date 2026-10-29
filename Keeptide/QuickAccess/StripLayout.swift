@@ -38,9 +38,10 @@ struct StripMetrics: Equatable {
 struct StripPlacement: Equatable {
     /// The left edge of index 0's frame within the band.
     let firstOrigin: CGFloat
-    /// Content goes on beyond the band's left end, which then fades out.
+    /// The film goes on to the left of its dock position, so the band's left end fades out.
     let fadesLeading: Bool
-    /// Content goes on beyond the band's right end, which then fades out.
+    /// The film goes on to the right of its dock position, or more clips may follow, so the band's right end
+    /// fades out.
     let fadesTrailing: Bool
 }
 
@@ -92,13 +93,6 @@ enum StripLayout {
                       width: m.bandWidth, height: height)
     }
 
-    /// The left edge of each frame within the band. Index 0 is the newest (or best match) and
-    /// sits rightmost; `centredIndex` lands in the middle of the band. Index -1 stands for a
-    /// selection that vanished: the middle stays empty and every frame sits to its left.
-    static func frameOrigins(_ m: StripMetrics, count: Int, centredIndex: Int) -> [CGFloat] {
-        (0..<count).map { m.bandWidth / 2 + CGFloat(centredIndex - $0) * m.step - m.frameSize.width / 2 }
-    }
-
     /// Where the film lies when the clip at `position` is selected; `position` is fractional while the fingers
     /// follow. Index 0 is the newest (or best match) and sits at the left, older clips to its right. The film
     /// moves to keep the selection in the middle of the band, but stops with its first frame `dockInset` from
@@ -107,25 +101,26 @@ enum StripLayout {
     /// when the film goes on beyond its dock, and the right end also fades while more clips may follow. A
     /// loaded film that fits between the docks is centred as a group. A negative `position` (-1) stands for a
     /// selection that vanished: the film lies as if a selected empty slot came before index 0, and index 0
-    /// sits one step to the right of that slot.
+    /// sits one step to the right of that slot. Going from a negative position to 0, the slot goes and the film
+    /// steps left at once; that step is deliberate, since the slot belongs to no clip.
     static func placement(_ m: StripMetrics, count: Int, position: CGFloat, oldestIsLoaded: Bool) -> StripPlacement {
         let vanished = position < 0
         let slots = CGFloat(vanished ? count + 1 : count)
         let selected = vanished ? 0 : position
         let filmWidth = slots * m.step - m.gap
-        let origin: CGFloat
+        let slotOrigin: CGFloat
         if oldestIsLoaded && filmWidth <= m.bandWidth - 2 * m.dockInset {
-            origin = (m.bandWidth - filmWidth) / 2
+            slotOrigin = (m.bandWidth - filmWidth) / 2
         } else {
             let centred = m.bandWidth / 2 - m.frameSize.width / 2 - selected * m.step
             let lowest = oldestIsLoaded ? m.bandWidth - m.dockInset - filmWidth : -.infinity
-            origin = min(m.dockInset, max(lowest, centred))
+            slotOrigin = min(m.dockInset, max(lowest, centred))
         }
         // Under half a point of overhang is not content that goes on, so it does not fade.
         return StripPlacement(
-            firstOrigin: vanished ? origin + m.step : origin,
-            fadesLeading: origin < m.dockInset - 0.5,
-            fadesTrailing: !oldestIsLoaded || origin + filmWidth > m.bandWidth - m.dockInset + 0.5
+            firstOrigin: vanished ? slotOrigin + m.step : slotOrigin,
+            fadesLeading: slotOrigin < m.dockInset - 0.5,
+            fadesTrailing: !oldestIsLoaded || slotOrigin + filmWidth > m.bandWidth - m.dockInset + 0.5
         )
     }
 

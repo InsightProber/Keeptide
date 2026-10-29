@@ -19,18 +19,18 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     }
 
     func testArrowsStepTheStripFromAnEmptySearchField() {
-        // Left is older, right is newer: the strip puts the newest clip at the right.
+        // Right is older, left is newer: the strip puts the newest clip at the left.
         for filtersVisible in [false, true] {
-            XCTAssertEqual(command(.left, in: .searchField, filtersVisible: filtersVisible), .move(1))
-            XCTAssertEqual(command(.right, in: .searchField, filtersVisible: filtersVisible), .move(-1))
+            XCTAssertEqual(command(.right, in: .searchField, filtersVisible: filtersVisible), .move(1))
+            XCTAssertEqual(command(.left, in: .searchField, filtersVisible: filtersVisible), .move(-1))
         }
         // An input that says nothing about the query counts as an empty one.
-        XCTAssertEqual(QuickAccessKeyRouter.command(for: QuickAccessKeyInput(key: .left, focus: .searchField)),
+        XCTAssertEqual(QuickAccessKeyRouter.command(for: QuickAccessKeyInput(key: .right, focus: .searchField)),
                        .move(1))
         // From the strip itself the same steps apply, whatever the query holds.
         for queryIsEmpty in [true, false] {
-            XCTAssertEqual(command(.left, in: .results, queryIsEmpty: queryIsEmpty), .move(1))
-            XCTAssertEqual(command(.right, in: .results, queryIsEmpty: queryIsEmpty), .move(-1))
+            XCTAssertEqual(command(.right, in: .results, queryIsEmpty: queryIsEmpty), .move(1))
+            XCTAssertEqual(command(.left, in: .results, queryIsEmpty: queryIsEmpty), .move(-1))
         }
         // The expanded preview keeps the arrows for its own text.
         for key in [QuickAccessKey.up, .down, .left, .right] {

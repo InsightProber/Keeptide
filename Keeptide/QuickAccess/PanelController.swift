@@ -133,6 +133,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.onCommand = { [weak self] in self?.perform($0) }
         strip.onVisibleRefsChanged = { [weak self] in self?.loadFramedRows($0, lastOnScreen: $1) }
         strip.onContextMenu = { [weak self] in self?.actionMenu(for: $0) }
+        // The band fades the ends the strip's film goes on beyond.
+        strip.onFadesChanged = { [weak self] in self?.layoutPanel() }
         state.onCopied = { [weak self] in self?.confirmCopy() }
         state.onPreviewCollapsed = { [weak self] in self?.previewCollapsed() }
     }
@@ -162,7 +164,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.queryIsEmpty = state.query.isEmpty
         strip.dimsSideFrames = state.isPreviewExpanded
         strip.show(state.selection.rows, selection: state.selection.selection, details: state.details,
-                   metrics: metrics, applicationNames: applicationNames)
+                   metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: !state.hasMoreRows)
     }
 
     /// Places the panel around the band, and around the preview card above it while the preview is open, and
@@ -179,7 +181,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             preview = placed.preview
         }
         let layout = QuickAccessBandView.Layout(metrics: metrics, filtersVisible: filtersVisible,
-                                                previewSize: preview?.size)
+                                                previewSize: preview?.size, fadesLeading: strip.fades.leading,
+                                                fadesTrailing: strip.fades.trailing)
         if hosting.rootView.layout != layout { hosting.rootView = bandView(layout) }
         // On whole points, which are whole pixels on every screen; AppKit would cut a window's frame to them anyway.
         let frame = NSIntegralRectWithOptions(StripLayout.panelFrame(band: band, preview: preview), .alignAllEdgesNearest)
@@ -399,17 +402,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Actions menu
 
-    /// ⌘K: the centred clip's actions, beside it.
+    /// ⌘K: the selected clip's actions, beside it; with nothing selected, beside the middle of the strip.
     func openActions() {
         let size = metrics.frameSize
         let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,
                             width: size.width, height: size.height)
-        presentActionMenu(actionMenu(for: state.selection.selection), ActionMenu.anchor(beside: centre, in: strip),
-                          strip)
+        presentActionMenu(actionMenu(for: state.selection.selection),
+                          ActionMenu.anchor(beside: strip.selectedFrame ?? centre, in: strip), strip)
     }
 
-    /// The actions for one clip: the centred one for ⌘K, the one under the pointer for a right-click. A clip
-    /// other than the centred one is selected before its action runs, so the action is for the clip clicked;
+    /// The actions for one clip: the selected one for ⌘K, the one under the pointer for a right-click. A clip
+    /// other than the selected one is selected before its action runs, so the action is for the clip clicked;
     /// one that left the list while the menu was open gets no action at all, never another clip's.
     private func actionMenu(for ref: ContentRef?) -> NSMenu {
         let row = ref.flatMap { ref in state.selection.rows.first { $0.ref == ref } }

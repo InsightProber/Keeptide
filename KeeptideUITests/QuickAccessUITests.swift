@@ -6,7 +6,7 @@ import XCTest
 ///
 /// The seeded clips, newest first: "Synthetic alpha note", "echo synthetic-beta" (stored with a trailing
 /// newline), a shell snippet, a Chinese note, a link, rich text and, oldest, an image. The strip opens on
-/// the newest, which is selected and in the middle, with the older clips on its left.
+/// the newest, which is selected and leftmost, with the older clips on its right.
 @MainActor
 final class QuickAccessUITests: XCTestCase {
     private var sessionID: UUID?
@@ -25,30 +25,28 @@ final class QuickAccessUITests: XCTestCase {
     func testRecentClipsAppearNewestFirst() throws {
         let app = launchKeeptide()
         let frames = try openPanel(app)
-        let strip = stripElement(in: app)
         let newest = clip("Synthetic alpha note", in: frames)
         let older = clip("echo synthetic-beta", in: frames)
 
         XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(older.waitForExistence(timeout: 5), app.debugDescription)
-        // The newest clip is the selected one, in the middle; the next older clip is the frame on its left.
-        XCTAssertTrue(waitUntil { isCentred(newest, in: strip) }, app.debugDescription)
-        XCTAssertTrue(isLeftNeighbour(older, of: newest), app.debugDescription)
+        // The newest clip is the selected one, at the left; the next older clip is the frame on its right.
+        XCTAssertTrue(waitUntil { isSelected(newest) }, app.debugDescription)
+        XCTAssertTrue(isRightNeighbour(older, of: newest), app.debugDescription)
     }
 
     func testDownDoesNotSkipTheFirstRowAndUpReturnsToSearch() throws {
         let app = launchKeeptide()
         let frames = try openPanel(app)
-        let strip = stripElement(in: app)
         let query = app.searchFields["Quick access query"]
         let newest = clip("Synthetic alpha note", in: frames)
         let older = clip("echo synthetic-beta", in: frames)
-        XCTAssertTrue(waitUntil { isCentred(newest, in: strip) }, app.debugDescription)
+        XCTAssertTrue(waitUntil { isSelected(newest) }, app.debugDescription)
 
         // ↓ goes into the strip and leaves the newest clip selected instead of stepping past it.
         query.typeKey(.downArrow, modifierFlags: [])
-        XCTAssertTrue(isCentred(newest, in: strip), app.debugDescription)
-        XCTAssertFalse(isCentred(older, in: strip), app.debugDescription)
+        XCTAssertTrue(isSelected(newest), app.debugDescription)
+        XCTAssertFalse(isSelected(older), app.debugDescription)
 
         app.typeKey(.upArrow, modifierFlags: [])
         app.typeText("x")
@@ -127,22 +125,21 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertEqual(received.value as? String, "Synthetic alpha note")
     }
 
-    func testArrowKeysStepTheStripAndReturnCopiesTheCentredClip() throws {
+    func testArrowKeysStepTheStripAndReturnCopiesTheSelectedClip() throws {
         let (app, host) = launchKeeptideWithHost()
         let frames = try openPanel(app)
-        let strip = stripElement(in: app)
         let newest = clip("Synthetic alpha note", in: frames)
         let older = clip("echo synthetic-beta", in: frames)
-        XCTAssertTrue(waitUntil { isCentred(newest, in: strip) }, app.debugDescription)
+        XCTAssertTrue(waitUntil { isSelected(newest) }, app.debugDescription)
 
-        // Nothing is newer than the newest clip, so → leaves the strip where it is; ← steps one clip older.
-        app.searchFields["Quick access query"].typeKey(.rightArrow, modifierFlags: [])
-        XCTAssertTrue(isCentred(newest, in: strip), app.debugDescription)
-        app.typeKey(.leftArrow, modifierFlags: [])
-        XCTAssertTrue(waitUntil { isCentred(older, in: strip) }, app.debugDescription)
-        XCTAssertFalse(isCentred(newest, in: strip), app.debugDescription)
+        // Nothing is newer than the newest clip, so ← leaves the selection where it is; → steps one clip older.
+        app.searchFields["Quick access query"].typeKey(.leftArrow, modifierFlags: [])
+        XCTAssertTrue(isSelected(newest), app.debugDescription)
+        app.typeKey(.rightArrow, modifierFlags: [])
+        XCTAssertTrue(waitUntil { isSelected(older) }, app.debugDescription)
+        XCTAssertFalse(isSelected(newest), app.debugDescription)
 
-        // Return copies the clip in the middle, wherever the keys are.
+        // Return copies the selected clip, wherever the keys are.
         app.typeKey(.return, modifierFlags: [])
         let toast = app.descendants(matching: .any)["CopyToastMessage"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
@@ -160,16 +157,15 @@ final class QuickAccessUITests: XCTestCase {
     func testShiftReturnOnTheImageRowShowsTheReason() throws {
         let (app, host) = launchKeeptideWithHost()
         let frames = try openPanel(app)
-        let strip = stripElement(in: app)
         let image = clip("Copied content", in: frames)
 
-        // The image is the oldest of the seven seeded clips and starts off screen. ↓ puts the keys in the
-        // strip, and each ← brings the next older clip to the middle.
+        // The image is the oldest of the seven seeded clips, at the right end. ↓ puts the keys in the strip, and
+        // each → selects the next older clip.
         app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
-        for _ in 0..<7 where !isCentred(image, in: strip) {
-            app.typeKey(.leftArrow, modifierFlags: [])
+        for _ in 0..<7 where !isSelected(image) {
+            app.typeKey(.rightArrow, modifierFlags: [])
         }
-        XCTAssertTrue(waitUntil { isCentred(image, in: strip) }, app.debugDescription)
+        XCTAssertTrue(waitUntil { isSelected(image) }, app.debugDescription)
 
         app.typeKey(.return, modifierFlags: .shift)
 
@@ -233,16 +229,17 @@ final class QuickAccessUITests: XCTestCase {
         frames.matching(NSPredicate(format: "label CONTAINS %@", ": \(title)")).firstMatch
     }
 
-    /// Whether the clip's frame is in the middle of the strip, where the selected clip always is.
-    private func isCentred(_ clip: XCUIElement, in strip: XCUIElement) -> Bool {
-        clip.exists && abs(clip.frame.midX - strip.frame.midX) <= 4
+    /// Whether the clip's frame is the selected one. The selected clip is in the middle only while the film can
+    /// move; near either end of the clips it rests elsewhere, so the frame's own selected state is what counts.
+    private func isSelected(_ clip: XCUIElement) -> Bool {
+        clip.exists && clip.isSelected
     }
 
-    /// Whether `clip` is the frame directly to the left of `other`: it ends before `other` starts, with less
+    /// Whether `clip` is the frame directly to the right of `other`: it starts after `other` ends, with less
     /// than a frame's width between them, since a gap that wide would hold another clip.
-    private func isLeftNeighbour(_ clip: XCUIElement, of other: XCUIElement) -> Bool {
+    private func isRightNeighbour(_ clip: XCUIElement, of other: XCUIElement) -> Bool {
         guard clip.exists, other.exists else { return false }
-        let gap = other.frame.minX - clip.frame.maxX
+        let gap = clip.frame.minX - other.frame.maxX
         return gap >= 0 && gap < other.frame.width
     }
 

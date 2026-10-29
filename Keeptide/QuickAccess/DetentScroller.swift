@@ -7,8 +7,8 @@ enum DetentPhase {
     case began, changed, ended, cancelled, none
 }
 
-/// One scroll event. The system has already applied the user's natural scrolling setting, so a
-/// positive `deltaX` always means the content moved right and an older clip came toward the centre.
+/// One scroll event. The system has already applied the user's natural scrolling setting, and the caller
+/// gives `deltaX` the sign that makes a positive value bring an older clip in, whichever side those lie on.
 struct DetentInput: Equatable {
     var deltaX: CGFloat
     var deltaY: CGFloat

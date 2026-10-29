@@ -3,8 +3,9 @@ import Carbon.HIToolbox
 import SwiftUI
 
 /// The strip of clips in the quick access panel. AppKit lays the frames out and owns focus, keys,
-/// scrolling, clicks and what VoiceOver reads; SwiftUI draws each frame. The selected clip sits in the
-/// middle, older clips to its left and newer ones to its right.
+/// scrolling, clicks and what VoiceOver reads; SwiftUI draws each frame. The newest clip is at the left
+/// and older clips run to its right. The film of frames keeps the selected clip in the middle of the band,
+/// but near either end of the clips it stops at the band's end and the selection walks along it instead.
 ///
 /// The strip shows the selection it is given and nothing else. A click, a key or a swipe only asks for
 /// a change through `onSelect` or `onCommand`; the frames move when `show` brings the new selection.
@@ -17,6 +18,8 @@ final class QuickAccessStripView: NSView {
     /// when to load more. Called when either changes, and again while a framed row has no details.
     var onVisibleRefsChanged: (([ContentRef], Int) -> Void)?
     var onContextMenu: ((ContentRef) -> NSMenu?)?
+    /// Called when `fades` changes.
+    var onFadesChanged: (() -> Void)?
     var haptics: any HapticPerforming = SystemHaptics()
     /// Whether the trackpad ticks as each clip passes. The strip moves the same either way.
     var ticksEnabled = true
@@ -27,17 +30,25 @@ final class QuickAccessStripView: NSView {
     var dimsSideFrames = false {
         didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
     }
+    /// Which ends of the band fade out: those the film goes on beyond, where it lies now, under the fingers too.
+    private(set) var fades = (leading: false, trailing: false)
+    /// The selected clip's frame in the strip's coordinates, or nil while nothing is selected.
+    var selectedFrame: NSRect? {
+        selection.flatMap { frames[$0] }.map { convert($0.frame, from: film) }
+    }
 
-    /// Frames kept beyond each end of the visible ones, so a step or a push never shows a gap.
-    private static let spareFrames = 2
+    /// Frames kept beyond each end of the ones on screen, so a step or a push never shows a gap.
+    private static let spareFrames = 1
     /// A step takes about this long and ends with a slight bounce.
     private static let slideDuration: CFTimeInterval = 0.2
     private static let slideBounce: CGFloat = 0.15
 
     private var rows: [QuickAccessRow] = []
     private var selection: ContentRef?
-    /// The row in the middle: the selected one, or -1 when the selection vanished and the middle is empty.
-    private var centredIndex = -1
+    /// The selected row, or -1 when the selection vanished and its place at the dock stays empty.
+    private var selectedIndex = -1
+    /// Whether the last row is the oldest there is. Until it is, the film does not stop at its right end.
+    private var oldestIsLoaded = true
     private var details: [ContentRef: ClipDetail] = [:]
     private var metrics: StripMetrics?
     private var applicationNames: ApplicationNames?
@@ -45,11 +56,15 @@ final class QuickAccessStripView: NSView {
     private let film = NSView()
     private var frames: [ContentRef: StripFrameHost] = [:]
     private var scroller = DetentScroller()
-    /// How far the fingers have pushed the frames off their places: part of a step, or a stretch past an end.
+    /// How far past the selected clip the fingers have carried the selection, as a share of a step.
+    private var progress: CGFloat = 0
+    /// How far the fingers have pushed the film off its place: as far as the selection they carry moves it, and
+    /// any stretch past an end.
     private var pushed: CGFloat = 0
     private var fingersDown = false
-    /// The middle a slide started from. Its frames stay until the slide settles, so none vanishes on screen.
-    private var slideStart: Int?
+    /// Where index 0's frame was when a slide started, within the band. The frames on screen there stay until the
+    /// slide settles, so none vanishes on screen.
+    private var slideStart: CGFloat?
     private var settling: Task<Void, Never>?
     /// Springs get names so that `ref(at:)` can tell one is running, since a layer does not list nameless
     /// animations. Each name is new: a spring added under a running one's name would replace it.
@@ -77,31 +92,40 @@ final class QuickAccessStripView: NSView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    /// `oldestIsLoaded` is false while more rows may follow the last one, so the film does not stop there.
     func show(_ rows: [QuickAccessRow], selection: ContentRef?, details: [ContentRef: ClipDetail],
-              metrics: StripMetrics, applicationNames: ApplicationNames) {
+              metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
         let selectionChanged = selection != self.selection
-        // Where the newly selected clip was drawn, so that it can slide from there to the middle.
+        // Where the newly selected clip was drawn, so that the film can slide from there to where it now rests.
         let start = selectionChanged && metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX } : nil
         self.rows = rows
         self.selection = selection
         self.details = details
         self.metrics = metrics
+        self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
-        centredIndex = selection.flatMap { selected in rows.firstIndex { $0.ref == selected } } ?? -1
+        let index = selection.flatMap { selected in rows.firstIndex { $0.ref == selected } } ?? -1
+        // The fingers carried the clip selected before; their next event measures from this one.
+        if index != selectedIndex { progress = 0 }
+        selectedIndex = index
         if selectionChanged {
             hovered = nil
             settling?.cancel()
             // Under the fingers the frames already follow them; off screen or with Reduce Motion they go
             // straight to their places.
             slideStart = start.flatMap { start in
-                guard slidesAreShown, !fingersDown else { return nil }
-                return centredIndex + Int(((start - bounds.midX) / metrics.step).rounded())
+                guard slidesAreShown, !fingersDown, index >= 0 else { return nil }
+                // Where index 0's frame was, going by where the newly selected clip's frame was.
+                return start - (bounds.midX - metrics.bandWidth / 2) - CGFloat(index) * metrics.step
+                    - metrics.frameSize.width / 2
             }
         }
         placeFrames()
+        // Along a docked film the selected frame stays where it was, so nothing slides.
         if selectionChanged, slideStart != nil, let start, let end = selection.flatMap({ frames[$0]?.frame.midX }) {
             settle(after: springBack(from: start - end))
         }
+        updateFades()
         if selectionChanged { announceSelection() }
         reportFramedRows()
     }
@@ -132,29 +156,52 @@ final class QuickAccessStripView: NSView {
     @objc private func windowDidResignKey(_ notification: Notification) {
         fingersDown = false
         scroller = DetentScroller()
-        push(to: 0, springing: false)
+        follow(progress: 0, rubberBand: 0, springing: false)
     }
 
     // MARK: Frames
 
-    /// The rows that get a frame for middles from `first` to `last`: those on screen and the spare ones.
-    private func framedRows(middles first: Int, _ last: Int) -> Range<Int> {
-        guard let metrics else { return 0..<0 }
-        let reach = metrics.density.rawValue / 2 + Self.spareFrames
-        let lower = max(0, first - reach), upper = min(rows.count, last + reach + 1)
+    /// Where the film lies with the selection at `position`, which is fractional while the fingers carry it. Nil
+    /// while there are no clips: there is no film to place then.
+    private func placement(at position: CGFloat) -> StripPlacement? {
+        guard let metrics, !rows.isEmpty else { return nil }
+        return StripLayout.placement(metrics, count: rows.count, position: position, oldestIsLoaded: oldestIsLoaded)
+    }
+
+    /// Where the film rests with the selected clip.
+    private var restingPlacement: StripPlacement? { placement(at: CGFloat(selectedIndex)) }
+
+    /// The first and the last index whose frames reach into the band while index 0's frame starts anywhere in
+    /// `origins`, which are measured from the band's left end. Either index may lie beyond the rows there are.
+    private func rowsOnScreen(_ metrics: StripMetrics, origins: ClosedRange<CGFloat>) -> (first: Int, last: Int) {
+        // A frame is on screen while its right edge is past the band's left end and its left edge short of the right.
+        (Int(((-origins.upperBound - metrics.frameSize.width) / metrics.step).rounded(.down)) + 1,
+         Int(((metrics.bandWidth - origins.lowerBound) / metrics.step).rounded(.up)) - 1)
+    }
+
+    /// The rows that get a frame while index 0's frame starts anywhere in `origins`: those on screen, and a spare
+    /// beyond each end.
+    private func framedRows(_ metrics: StripMetrics, origins: ClosedRange<CGFloat>) -> Range<Int> {
+        let onScreen = rowsOnScreen(metrics, origins: origins)
+        let lower = max(0, onScreen.first - Self.spareFrames)
+        let upper = min(rows.count, onScreen.last + 1 + Self.spareFrames)
         return lower < upper ? lower..<upper : 0..<0
     }
 
-    /// Puts a frame on every row near the middle, and near where a settling slide started. A frame whose
-    /// row moves away draws the next row that arrives, so moving along the strip creates no views.
+    /// Puts a frame on every row on screen, and on those on screen where a settling slide started, and on a spare
+    /// beyond each end. A frame whose row moves away draws the next row that arrives, so moving along the strip
+    /// creates no views.
     private func placeFrames() {
         guard let metrics, let applicationNames else { return }
-        let start = slideStart ?? centredIndex
-        let indices = framedRows(middles: min(start, centredIndex), max(start, centredIndex))
+        let rest = restingPlacement
+        let indices = rest.map { rest in
+            let start = slideStart ?? rest.firstOrigin
+            return framedRows(metrics, origins: min(start, rest.firstOrigin)...max(start, rest.firstOrigin))
+        } ?? 0..<0
         let wanted = Set(rows[indices].map(\.ref))
         var spare = frames.filter { !wanted.contains($0.key) }.map(\.value)
         frames = frames.filter { wanted.contains($0.key) }
-        let origins = StripLayout.frameOrigins(metrics, count: indices.upperBound, centredIndex: centredIndex)
+        let origins = rest.map { StripLayout.frameOrigins(metrics, count: indices.upperBound, placement: $0) } ?? []
         // The band is centred in the strip, in case the strip is the wider of the two.
         let bandLeft = bounds.midX - metrics.bandWidth / 2
         let y = (bounds.height - metrics.frameSize.height) / 2
@@ -190,10 +237,11 @@ final class QuickAccessStripView: NSView {
     /// strip reaches, so it loads more rows before the strip runs out.
     private func reportFramedRows() {
         guard let metrics else { return }
-        let framed = framedRows(middles: centredIndex, centredIndex)
-        // The selected clip first and then outward, so the details nearest the middle are read first.
-        let refs = framed.sorted { (abs($0 - centredIndex), $0) < (abs($1 - centredIndex), $1) }.map { rows[$0].ref }
-        let lastOnScreen = min(rows.count - 1, centredIndex + metrics.density.rawValue / 2)
+        let rest = restingPlacement.map { $0.firstOrigin...$0.firstOrigin }
+        let framed = rest.map { framedRows(metrics, origins: $0) } ?? 0..<0
+        // The selected clip first and then outward, so the details nearest it are read first.
+        let refs = framed.sorted { (abs($0 - selectedIndex), $0) < (abs($1 - selectedIndex), $1) }.map { rows[$0].ref }
+        let lastOnScreen = rest.map { min(rows.count - 1, rowsOnScreen(metrics, origins: $0).last) } ?? -1
         if let reported, reported.refs == refs, reported.lastOnScreen == lastOnScreen,
            refs.allSatisfy({ details[$0] != nil }) { return }
         reported = (refs, lastOnScreen)
@@ -246,24 +294,49 @@ final class QuickAccessStripView: NSView {
         if springing, slidesAreShown { springBack(from: previous - offset) }
     }
 
+    /// The fingers have carried the selection `progress` of a step past the selected clip and stretched an end by
+    /// `rubberBand`, positive past the oldest clip. The film moves as far as its place moves with the selection,
+    /// which is not at all while the selection walks along a docked film, and the stretch pulls it the way the
+    /// fingers go. The fades follow where it lies.
+    private func follow(progress: CGFloat, rubberBand: CGFloat, springing: Bool) {
+        self.progress = progress
+        var offset = -rubberBand
+        if let rest = restingPlacement, let carried = placement(at: CGFloat(selectedIndex) + progress) {
+            offset += carried.firstOrigin - rest.firstOrigin
+        }
+        push(to: offset, springing: springing)
+        updateFades()
+    }
+
+    /// Takes the fades from where the film lies now, and tells the panel when they change. Without clips
+    /// nothing goes on beyond either end.
+    private func updateFades() {
+        let live = placement(at: CGFloat(selectedIndex) + progress)
+        let fades = (leading: live?.fadesLeading ?? false, trailing: live?.fadesTrailing ?? false)
+        guard fades != self.fades else { return }
+        self.fades = fades
+        onFadesChanged?()
+    }
+
     // MARK: Scrolling
 
     override func scrollWheel(with event: NSEvent) {
-        guard let metrics else { return super.scrollWheel(with: event) }
+        guard metrics != nil else { return super.scrollWheel(with: event) }
         let phase = Self.detentPhase(event.phase)
         switch phase {
         case .began, .changed: fingersDown = true
         case .ended, .cancelled: fingersDown = false
         case .none: break
         }
+        // The scroller counts toward older clips, which lie to the right: content moving left brings them in.
         let output = scroller.handle(DetentInput(
-            deltaX: event.scrollingDeltaX, deltaY: event.scrollingDeltaY, isPrecise: event.hasPreciseScrollingDeltas,
+            deltaX: -event.scrollingDeltaX, deltaY: event.scrollingDeltaY, isPrecise: event.hasPreciseScrollingDeltas,
             phase: phase, isMomentum: !event.momentumPhase.isEmpty, time: event.timestamp
-        ), olderRoom: rows.count - 1 - centredIndex, newerRoom: max(0, centredIndex))
+        ), olderRoom: rows.count - 1 - selectedIndex, newerRoom: max(0, selectedIndex))
         if output.steps != 0 { onCommand?(.move(output.steps)) }
         // The scroller has already left out coasting, the mouse wheel and ticks that come too close together.
         if output.ticks == 1, ticksEnabled { haptics.tick() }
-        push(to: output.progress * metrics.step + output.rubberBand, springing: !fingersDown)
+        follow(progress: output.progress, rubberBand: output.rubberBand, springing: !fingersDown)
     }
 
     /// The phase of a trackpad gesture. Fingers touching down or resting without moving, and events of a
@@ -287,7 +360,7 @@ final class QuickAccessStripView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         // A double click is a click: it never copies, and its second click goes to the clip the first one
-        // chose, even after that clip has slid to the middle and another frame lies under the pointer.
+        // chose, even after the film has slid and another frame lies under the pointer.
         if event.clickCount <= 1 { clickedRef = ref(at: event) }
         guard let ref = clickedRef else { return super.mouseDown(with: event) }
         onSelect?(ref)
@@ -365,7 +438,8 @@ final class QuickAccessStripView: NSView {
     // MARK: Accessibility
 
     override func accessibilityChildren() -> [Any]? {
-        // The spare frames beyond the ends of the band are not on screen, so they are not read.
+        // The spare frames beyond the ends of the band are not on screen, so they are not read. Left to right is
+        // newest first, the order of the rows.
         guard let metrics else { return [] }
         let band = NSRect(x: bounds.midX - metrics.bandWidth / 2, y: bounds.minY, width: metrics.bandWidth,
                           height: bounds.height)

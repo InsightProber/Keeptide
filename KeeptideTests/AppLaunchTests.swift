@@ -135,7 +135,7 @@ final class AppLaunchTests: XCTestCase {
         let filters = try XCTUnwrap(views(QuickAccessFilterRow.self, in: window.contentView).first)
         let up = try key(kVK_UpArrow, "\u{F700}"), down = try key(kVK_DownArrow, "\u{F701}")
 
-        // Without the filter row Down goes straight to the strip, and the clip in the middle stays selected.
+        // Without the filter row Down goes straight to the strip, and the newest clip stays selected.
         editor.doCommand(by: #selector(NSResponder.moveDown(_:)))
         XCTAssertTrue(window.firstResponder === strip)
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref,
@@ -307,27 +307,158 @@ final class AppLaunchTests: XCTestCase {
                        StripLayout.shadowMargin + bandHeight - StripLayout.searchHeight / 2, accuracy: 1)
     }
 
-    func testEmptyQueryArrowsStepTheStripAndKeepFocusInTheField() async throws {
+    func testOpenStripDocksTheNewestClipAtTheLeftEnd() async throws {
+        let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" })
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let metrics = try stripMetrics(in: window)
+        let left = strip.bounds.midX - metrics.bandWidth / 2
+
+        // The newest clip is selected and rests the dock inset in from the band's left end, with the older clips
+        // running to its right.
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
+        XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 0") == true, selectedClipLabel(in: strip) ?? "")
+        let newest = try frame(of: "clip 0", in: strip)
+        XCTAssertEqual(newest.minX - left, metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX - newest.minX, metrics.step, accuracy: 1)
+        controller.state.close()
+    }
+
+    func testRightStepsToTheOlderClipAndLeftComesBack() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
         let rows = controller.state.selection.rows
 
-        // An empty field has no caret to move: Left steps the strip to the older clip, which is in the middle at
+        // An empty field has no caret to move: Right steps the strip to the older clip, which is selected at
         // once, and the keys stay with the field.
-        editor.doCommand(by: #selector(NSResponder.moveLeft(_:)))
+        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
         XCTAssertEqual(controller.state.selection.selection, rows[1].ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": older") == true, selectedClipLabel(in: strip) ?? "")
         XCTAssertTrue(isEditing(field, in: window))
 
-        // Right steps back to the newest clip, and at that end it does nothing.
-        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        // Left steps back to the newest clip, and at that end it does nothing.
+        editor.doCommand(by: #selector(NSResponder.moveLeft(_:)))
         XCTAssertEqual(controller.state.selection.selection, rows[0].ref)
-        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        editor.doCommand(by: #selector(NSResponder.moveLeft(_:)))
         XCTAssertEqual(controller.state.selection.selection, rows[0].ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": newer") == true, selectedClipLabel(in: strip) ?? "")
         XCTAssertTrue(isEditing(field, in: window))
+        controller.state.close()
+    }
+
+    func testStepsInTheDockMoveTheSelectionNotTheFrames() async throws {
+        let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" })
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let docked = try frame(of: "clip 0", in: strip)
+
+        // Near the newest end the selection walks along the film, which stays where it is.
+        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows[1].ref)
+        XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 1") == true, selectedClipLabel(in: strip) ?? "")
+        XCTAssertEqual(try frame(of: "clip 0", in: strip), docked)
+        controller.state.close()
+    }
+
+    func testFadesFollowTheFilmEnds() async throws {
+        let (controller, _) = try await makePanelWithClips((0..<12).reversed().map { "clip \($0)" })
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+
+        // At the newest clip the band's left end is a hard edge; older clips go on beyond its right end, which fades.
+        XCTAssertTrue(strip.fades == (false, true), "\(strip.fades)")
+        var band = try bandFades(in: window)
+        XCTAssertTrue(band == (false, true), "\(band)")
+
+        // Six clips older the film has left both docks, and both ends fade.
+        for _ in 0..<6 { editor.doCommand(by: #selector(NSResponder.moveRight(_:))) }
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows[6].ref)
+        XCTAssertTrue(strip.fades == (true, true), "\(strip.fades)")
+        band = try bandFades(in: window)
+        XCTAssertTrue(band == (true, true), "\(band)")
+        controller.state.close()
+
+        // Two clips fit between the docks with room to spare, so neither end fades.
+        let (pair, _) = try await makePanelWithClips(["older", "newer"])
+        let pairWindow = try XCTUnwrap(pair.window)
+        _ = try searchEditor(in: pair)
+        let pairStrip = try XCTUnwrap(views(QuickAccessStripView.self, in: pairWindow.contentView).first)
+        XCTAssertTrue(pairStrip.fades == (false, false), "\(pairStrip.fades)")
+        band = try bandFades(in: pairWindow)
+        XCTAssertTrue(band == (false, false), "\(band)")
+        pair.state.close()
+    }
+
+    func testAVanishedSelectionLeavesTheDockEmptyAndRightPicksTheNewest() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let items = try await insertClips((0..<12).reversed().map { "clip \($0)" }, into: harness)
+        let controller = try makePanel(over: harness, pasteboard: board)
+        controller.state.open()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 12 }
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let metrics = try stripMetrics(in: window)
+        let dock = NSRect(x: strip.bounds.midX - metrics.bandWidth / 2 + metrics.dockInset, y: strip.bounds.minY,
+                          width: metrics.frameSize.width, height: strip.bounds.height)
+
+        // The newest clip, selected at the dock, leaves the list.
+        var newest = try XCTUnwrap(items.last)
+        newest.historyDeletedAt = Date()
+        try await harness.update(.item(newest.id), to: .item(newest))
+        controller.state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.selectionLost && strip.accessibilitySelectedChildren()?.isEmpty != false
+        }
+
+        // Its place at the dock stays empty, without a ring, and the clips left start one step to its right.
+        let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        XCTAssertFalse(frames.isEmpty)
+        XCTAssertFalse(frames.contains { strip.convert($0.bounds, from: $0).intersects(dock) })
+        XCTAssertFalse(frames.contains { $0.isAccessibilitySelected() })
+        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX - dock.minX, metrics.step, accuracy: 0.5)
+
+        // Right selects the newest clip left, which comes to the dock.
+        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
+        XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 1") == true, selectedClipLabel(in: strip) ?? "")
+        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX, dock.minX, accuracy: 0.5)
+        controller.state.close()
+    }
+
+    func testTheOldestEndStopsTheFilmOnlyOncePagingIsDone() async throws {
+        let (controller, _) = try await makePanelWithClips((0..<61).map { "ab \($0)" })
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let metrics = try stripMetrics(in: window)
+        let left = strip.bounds.midX - metrics.bandWidth / 2
+        editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            controller.state.query == "ab" && controller.state.phase == .results && controller.state.selection.isComplete
+        }
+        XCTAssertEqual(controller.state.selection.rows.count, 60)
+
+        // The last row of the first page is not the oldest match: the film keeps it in the middle, and the right
+        // end fades while the next page is on its way.
+        controller.perform(.move(59))
+        let last = try frame(of: controller.state.selection.rows[59].title, in: strip)
+        XCTAssertEqual(last.midX - left, metrics.bandWidth / 2, accuracy: 0.5)
+        XCTAssertTrue(strip.fades.trailing)
+
+        // The next page brings the last match. With no more to fetch, the film stops with it at the right dock.
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == 61 && !strip.fades.trailing
+        }
+        let oldest = try frame(of: controller.state.selection.rows[60].title, in: strip)
+        XCTAssertEqual(oldest.maxX - left, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -446,18 +577,18 @@ final class AppLaunchTests: XCTestCase {
         var shown: [(menu: NSMenu, point: NSPoint, view: NSView)] = []
         controller.presentActionMenu = { shown.append(($0, $1, $2)) }
 
-        // ⌘K opens the centred clip's actions beside it, level with its top edge.
+        // ⌘K opens the selected clip's actions beside it, level with its top edge.
         XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "k", modifiers: .command)))
         let commandK = try XCTUnwrap(shown.first)
-        let size = StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
-            .visibleFrame.width).frameSize
+        let selected = try frame(of: "newer", in: strip)
         XCTAssertTrue(commandK.view === strip)
-        XCTAssertGreaterThanOrEqual(commandK.point.x, strip.bounds.midX + size.width / 2)
-        XCTAssertEqual(commandK.point.y, strip.bounds.midY + size.height / 2, accuracy: 1)
+        XCTAssertEqual(commandK.point.x, selected.maxX, accuracy: try stripMetrics(in: window).gap)
+        XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
+        XCTAssertEqual(commandK.point.y, selected.maxY, accuracy: 1)
         XCTAssertEqual(commandK.menu.items.map(\.title), ["Copy", "Copy as Plain Text", "", "Show Preview"])
-        // A right-click on the centred clip gives the same menu.
+        // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
-            with: .rightMouseDown, location: strip.convert(NSPoint(x: strip.bounds.midX, y: strip.bounds.midY), to: nil),
+            with: .rightMouseDown, location: strip.convert(NSPoint(x: selected.midX, y: selected.midY), to: nil),
             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
             clickCount: 1, pressure: 1
         ))))
@@ -465,7 +596,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(context.items.map(\.isEnabled), commandK.menu.items.map(\.isEnabled))
         XCTAssertEqual(context.items.map(\.keyEquivalent), commandK.menu.items.map(\.keyEquivalent))
 
-        // The caption's Copy button copies the centred clip, as Return does. SwiftUI draws it with an AppKit
+        // The caption's Copy button copies the selected clip, as Return does. SwiftUI draws it with an AppKit
         // button, the only one in the caption row.
         let caption = NSRect(x: 0, y: StripLayout.shadowMargin, width: window.frame.width,
                              height: StripLayout.captionHeight)
@@ -478,22 +609,22 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(board.string(forType: .string), "newer")
     }
 
-    func testContextMenuCopiesItsOwnClipOrNothing() async throws {
+    func testClickingTheOlderClipSelectsIt() async throws {
         let (controller, board) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
-        let metrics = StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main)
-            .visibleFrame.width)
-        // The older clip lies one step left of the newer one in the middle.
-        let older = NSPoint(x: strip.bounds.midX - metrics.step, y: strip.bounds.midY)
+        // The older clip lies to the right of the newer one, which is selected; the click goes where it is drawn.
+        let older = try frame(of: "older", in: strip)
+        XCTAssertGreaterThan(older.minX, try frame(of: "newer", in: strip).maxX)
         let rightClick = try XCTUnwrap(NSEvent.mouseEvent(
-            with: .rightMouseDown, location: strip.convert(older, to: nil), modifierFlags: [], timestamp: 0,
-            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1
+            with: .rightMouseDown, location: strip.convert(NSPoint(x: older.midX, y: older.midY), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1
         ))
 
-        // The clip leaves the results while its menu is open: Copy then copies nothing, least of all the clip in
-        // the middle.
+        // The clip leaves the results while its menu is open: Copy then copies nothing, least of all the selected
+        // clip.
         let stale = try XCTUnwrap(strip.menu(for: rightClick))
         editor.insertText("newer", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
@@ -503,7 +634,7 @@ final class AppLaunchTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertNil(board.string(forType: .string))
 
-        // Back among the recent clips, the menu copies the clip it was opened on and moves it to the middle.
+        // Back among the recent clips, the menu selects the clip it was opened on and copies it.
         try XCTUnwrap(controller.window?.firstResponder as? NSTextView)
             .doCommand(by: #selector(NSResponder.cancelOperation(_:)))
         try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.count == 2 }
@@ -595,12 +726,7 @@ final class AppLaunchTests: XCTestCase {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
-        for (offset, title) in titles.enumerated() {
-            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(title.utf8))]])
-            let item = ItemValue(title: title, captureID: capture.id, historyEligible: true,
-                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + Double(offset)), copyCount: 1)
-            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
-        }
+        try await insertClips(titles, into: harness)
         try await harness.consumer.synchronize()
         let controller = try makePanel(over: harness, pasteboard: board)
         if shown {
@@ -611,6 +737,20 @@ final class AppLaunchTests: XCTestCase {
         }
         try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == titles.count }
         return (controller, board)
+    }
+
+    /// Stores one text clip per title, each copied a second after the one before, so the last is the newest.
+    @discardableResult
+    private func insertClips(_ titles: [String], into harness: SearchHarness) async throws -> [ItemValue] {
+        var items: [ItemValue] = []
+        for (offset, title) in titles.enumerated() {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(title.utf8))]])
+            let item = ItemValue(title: title, captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + Double(offset)), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+            items.append(item)
+        }
+        return items
     }
 
     /// A panel over a real temporary store with nothing in it yet.
@@ -674,6 +814,25 @@ final class AppLaunchTests: XCTestCase {
     /// What VoiceOver reads for the selected clip.
     private func selectedClipLabel(in strip: QuickAccessStripView) -> String? {
         (strip.accessibilitySelectedChildren()?.first as? NSView)?.accessibilityLabel()
+    }
+
+    /// The frame sizes the panel takes for the screen it opens on: nine in a row, or fewer on a narrow screen.
+    private func stripMetrics(in window: NSWindow) throws -> StripMetrics {
+        StripLayout.metrics(for: .nine, visibleWidth: try XCTUnwrap(window.screen ?? NSScreen.main).visibleFrame.width)
+    }
+
+    /// Where the frame of the clip with this title is drawn, in the strip's coordinates. Only frames on screen,
+    /// the ones VoiceOver reads, are looked at.
+    private func frame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
+        let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
+        return strip.convert(frame.bounds, from: frame)
+    }
+
+    /// Which ends of the band the panel has it fade.
+    private func bandFades(in window: NSWindow) throws -> (leading: Bool, trailing: Bool) {
+        let layout = try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.layout
+        return (layout.fadesLeading, layout.fadesTrailing)
     }
 
     private func key(_ code: Int, _ characters: String, modifiers: NSEvent.ModifierFlags = [],

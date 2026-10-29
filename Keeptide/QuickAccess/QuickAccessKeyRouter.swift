@@ -50,9 +50,9 @@ enum QuickAccessKeyRouter {
         switch (input.key, input.focus) {
         // Search field. An empty one has no caret to move, so ← and → step the strip; with text they edit it.
         case (.left, .searchField):
-            return input.queryIsEmpty ? .move(1) : .passThrough
-        case (.right, .searchField):
             return input.queryIsEmpty ? .move(-1) : .passThrough
+        case (.right, .searchField):
+            return input.queryIsEmpty ? .move(1) : .passThrough
         case (.down, .searchField):
             guard input.isSingleLine else { return .passThrough }
             return input.filtersVisible ? .focusFilters : .focusResults
@@ -69,11 +69,11 @@ enum QuickAccessKeyRouter {
             return .focusSearchField
         case (.down, .filters):
             return .focusResults
-        // Strip: newest at the right, so ← is one clip older.
+        // Strip: newest at the left, so → is one clip older.
         case (.left, .results):
-            return .move(1)
-        case (.right, .results):
             return .move(-1)
+        case (.right, .results):
+            return .move(1)
         case (.up, .results):
             return input.filtersVisible ? .focusFilters : .focusSearchField
         case (.space, .results):

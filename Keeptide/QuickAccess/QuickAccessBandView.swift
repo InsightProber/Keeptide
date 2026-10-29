@@ -1,10 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// The quick access band: a glass bar whose ends fade away, holding from the top the search row, the filter
-/// row while it shows, the strip of clips and the caption for the clip in the middle. Faint ← and → hints sit
-/// beside it, and the preview card above it while the preview is open. The panel owns the AppKit views placed
-/// in it, keeps them up to date and lays the band out; the band reads the rest from the state.
+/// The quick access band: a glass bar whose ends fade away where more clips lie beyond them, holding from the
+/// top the search row, the filter row while it shows, the strip of clips and the caption for the selected clip.
+/// Faint ← and → hints sit beside it, and the preview card above it while the preview is open. The panel owns
+/// the AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the
+/// state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
     struct Layout: Equatable {
@@ -12,6 +13,9 @@ struct QuickAccessBandView: View {
         var filtersVisible: Bool
         /// The preview card's size while the preview is open.
         var previewSize: CGSize?
+        /// Whether each end fades out, as the strip's `fades` say: an end the film goes on beyond does.
+        var fadesLeading = false
+        var fadesTrailing = false
     }
 
     struct Actions {
@@ -30,6 +34,7 @@ struct QuickAccessBandView: View {
     let actions: Actions
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The selected clip's ring is drawn outside its frame, so the strip reaches this far into the rows above
     /// and below it.
@@ -37,10 +42,11 @@ struct QuickAccessBandView: View {
 
     private var metrics: StripMetrics { layout.metrics }
     private var bandHeight: CGFloat { StripLayout.bandHeight(metrics, filtersVisible: layout.filtersVisible) }
-    /// Text and controls keep clear of the faded ends.
+    /// Text and controls keep clear of the ends, faded or not.
     private var fadeInset: CGFloat { metrics.bandWidth * StripLayout.fade }
+    private var fadeAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.2) }
     private var hasFrames: Bool { !state.selection.rows.isEmpty }
-    private var centredRow: QuickAccessRow? {
+    private var selectedRow: QuickAccessRow? {
         state.selection.selection.flatMap { selected in state.selection.rows.first { $0.ref == selected } }
     }
 
@@ -75,12 +81,19 @@ struct QuickAccessBandView: View {
             if reduceTransparency { shape.fill(Color(nsColor: .windowBackgroundColor)) }
         }
         .glassEffect(reduceTransparency ? .identity : .regular, in: shape)
-        // Both ends fade out, the bar and everything on it alike, so the clips beyond them leave no edge.
+        // An end the film goes on beyond fades out, the bar and everything on it alike, so the clips there leave no
+        // edge. At an end of the clips the bar keeps its own rounded edge. A fade comes and goes in a short ease,
+        // or at once with Reduce Motion.
         .mask {
-            LinearGradient(stops: [
-                .init(color: .clear, location: 0), .init(color: .black, location: StripLayout.fade),
-                .init(color: .black, location: 1 - StripLayout.fade), .init(color: .clear, location: 1),
-            ], startPoint: .leading, endPoint: .trailing)
+            HStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: layout.fadesLeading ? fadeInset : 0)
+                Color.black
+                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                    .frame(width: layout.fadesTrailing ? fadeInset : 0)
+            }
+            .animation(fadeAnimation, value: layout.fadesLeading)
+            .animation(fadeAnimation, value: layout.fadesTrailing)
         }
         .shadow(color: .black.opacity(0.2), radius: 14, y: 6)
     }
@@ -143,7 +156,7 @@ struct QuickAccessBandView: View {
 
     // MARK: Caption
 
-    /// What the centred clip is and a way to copy it with the pointer. A refused copy's reason, or else a
+    /// What the selected clip is and a way to copy it with the pointer. A refused copy's reason, or else a
     /// status, takes the place of the clip's source; the reason answers what was just done, so it comes first.
     private var captionRow: some View {
         HStack(spacing: 14) {
@@ -161,7 +174,7 @@ struct QuickAccessBandView: View {
             Text(failure.message).foregroundStyle(Color(nsColor: .systemRed)).accessibilityIdentifier("QuickAccessFailure")
         } else if let status = statusLine {
             Text(status).foregroundStyle(.secondary).accessibilityIdentifier("QuickAccessStatus")
-        } else if let row = centredRow {
+        } else if let row = selectedRow {
             HStack(spacing: 6) {
                 Image(nsImage: applicationNames.icon(for: row.sourceApp))
                     .resizable()
@@ -216,7 +229,7 @@ struct QuickAccessBandView: View {
     /// An opaque card over the band, with the selected clip in full.
     private var previewCard: some View {
         QuickAccessPreviewView(preview: state.preview,
-                               applicationName: centredRow?.sourceApp.flatMap(applicationNames.name(for:)),
+                               applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
                                onCommand: actions.previewCommand)
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             .shadow(color: .black.opacity(0.22), radius: 16, y: 6)

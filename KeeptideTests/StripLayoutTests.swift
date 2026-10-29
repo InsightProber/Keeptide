@@ -24,15 +24,6 @@ final class StripLayoutTests: XCTestCase {
 
     func testInvalidStoredDensityFallsBackToNine() { XCTAssertEqual(StripDensity.from(8), .nine) }
 
-    func testSelectedFrameIsCentredAndNewerFramesSitRight() {
-        let m = StripLayout.metrics(for: .nine, visibleWidth: 1600)
-        let xs = StripLayout.frameOrigins(m, count: 5, centredIndex: 2)
-        XCTAssertEqual(xs[2] + m.frameSize.width / 2, m.bandWidth / 2, accuracy: 0.5)
-        XCTAssertEqual(xs[1] - xs[2], m.step, accuracy: 0.5)                                   // index 1 is newer, so it sits right
-        let lost = StripLayout.frameOrigins(m, count: 3, centredIndex: -1)
-        XCTAssertEqual(lost[0] + m.frameSize.width / 2, m.bandWidth / 2 - m.step, accuracy: 0.5)
-    }
-
     func testOpenDocksTheNewestAtTheLeftEnd() {
         // More clips may follow the 50, so only the right end fades.
         assertPlacement(count: 50, position: 0, origin: 24, fades: (false, true))
@@ -51,7 +42,19 @@ final class StripLayoutTests: XCTestCase {
         // A fractional position is a selection under the fingers, between two clips. Short of the middle, which
         // it reaches at about 3.26, the film rests; past it the film follows.
         assertPlacement(count: 50, position: 3.2, origin: 24, fades: (false, true))
+        assertPlacement(count: 50, position: 3.3, origin: 17.2, accuracy: 0.001, fades: (true, true))
         assertPlacement(count: 50, position: 3.5, origin: -18, fades: (true, true))
+    }
+
+    func testUnderHalfAPointOfOverhangDoesNotFade() {
+        // The left end fades once the film is more than half a point past its dock at 24.
+        assertPlacement(count: 50, position: 3.263, origin: 23.712, accuracy: 0.001, fades: (false, true))
+        assertPlacement(count: 50, position: 3.266, origin: 23.184, accuracy: 0.001, fades: (true, true))
+        // So does the right end of a loaded film, past its dock at 1336.
+        assertPlacement(count: 50, position: 45.737, loaded: true, origin: -7451.712, accuracy: 0.001,
+                        fades: (true, false))
+        assertPlacement(count: 50, position: 45.73, loaded: true, origin: -7450.48, accuracy: 0.001,
+                        fades: (true, true))
     }
 
     func testTheOldestEndDocksOnlyWhenLoaded() {
@@ -74,6 +77,8 @@ final class StripLayoutTests: XCTestCase {
         // Seven (1220) still fit between the docks (1312). Eight (1396) do not, so the film docks at the left end.
         assertPlacement(count: 7, position: 0, loaded: true, origin: 70, fades: (false, false))
         assertPlacement(count: 8, position: 0, loaded: true, origin: 24, fades: (false, true))
+        // A single clip sits in the middle.
+        assertPlacement(count: 1, position: 0, loaded: true, origin: 598, fades: (false, false))
         // Clips that more may follow are not centred.
         assertPlacement(count: 3, position: 0, origin: 24, fades: (false, true))
     }
@@ -83,6 +88,10 @@ final class StripLayoutTests: XCTestCase {
         assertPlacement(count: 50, position: -1, origin: 200, fades: (false, true))
         // A short loaded film is centred with the slot in it: four frames are 692 wide, so index 0 is at 334 + 176.
         assertPlacement(count: 3, position: -1, loaded: true, origin: 510, fades: (false, false))
+        // Six clips and the slot (1220) still fit between the docks; seven and the slot (1396) do not, so the
+        // slot docks at the left end and the right end fades.
+        assertPlacement(count: 6, position: -1, loaded: true, origin: 246, fades: (false, false))
+        assertPlacement(count: 7, position: -1, loaded: true, origin: 200, fades: (false, true))
         // Fingers between the slot and index 0 do not move the film.
         assertPlacement(count: 50, position: -0.5, origin: 200, fades: (false, true))
     }
@@ -157,11 +166,13 @@ final class StripLayoutTests: XCTestCase {
         XCTAssertEqual(filtered.preview, centred.preview)
     }
 
+    /// The fades exactly, and the first origin exactly or within `accuracy` where the arithmetic is not exact.
     private func assertPlacement(count: Int, position: CGFloat, loaded: Bool = false, origin: CGFloat,
-                                 fades: (leading: Bool, trailing: Bool), file: StaticString = #filePath,
-                                 line: UInt = #line) {
+                                 accuracy: CGFloat = 0, fades: (leading: Bool, trailing: Bool),
+                                 file: StaticString = #filePath, line: UInt = #line) {
         let placement = StripLayout.placement(metrics, count: count, position: position, oldestIsLoaded: loaded)
-        XCTAssertEqual(placement, StripPlacement(firstOrigin: origin, fadesLeading: fades.leading,
-                                                 fadesTrailing: fades.trailing), file: file, line: line)
+        XCTAssertEqual(placement.firstOrigin, origin, accuracy: accuracy, "origin", file: file, line: line)
+        XCTAssertEqual(placement.fadesLeading, fades.leading, "leading fade", file: file, line: line)
+        XCTAssertEqual(placement.fadesTrailing, fades.trailing, "trailing fade", file: file, line: line)
     }
 }
