@@ -204,6 +204,8 @@ final class CaptureSession {
                                                        session: session)) {
         case .copied, .copiedInstead, .dispatched:
             actionMessage = "Copied"
+        case .needsConfirmation:
+            break // A library copy has no target, so it never makes a command to review.
         case .refused(.stale):
             break // A newer selection or copy owns the message.
         case .refused:

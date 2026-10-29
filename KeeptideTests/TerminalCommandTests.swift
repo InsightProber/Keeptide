@@ -145,6 +145,46 @@ final class TerminalCommandTests: XCTestCase {
         // A ZWJ inside a script's conjunct is not an emoji ZWJ.
         XCTAssertEqual(TerminalCommand(plainText: "\u{915}\u{94D}\u{200D}\u{937}").visibleText,
                        "\u{915}\u{94D}⟨U+200D⟩\u{937}")
+        // A command that needs no review still shows its tabs, in ASCII and in any other text.
+        XCTAssertEqual(TerminalCommand(plainText: "printf 'a\tb'\n").visibleText, "printf 'a⇥\tb'")
+        XCTAssertEqual(TerminalCommand(plainText: "\techo\t中文").visibleText, "⇥\techo⇥\t中文")
+    }
+
+    func testInvisibleCharactersNeedConfirmationAndShowTheirCodePoint() {
+        // Every default-ignorable character is invisible, whatever its category, so it can hide in a word or a
+        // file name: variation selectors, Hangul fillers, the combining grapheme joiner, Mongolian free variation
+        // selectors and Khmer inherent vowels.
+        let invisible = [("\u{FE0F}", "⟨U+FE0F⟩"), ("\u{FE0E}", "⟨U+FE0E⟩"), ("\u{FE00}", "⟨U+FE00⟩"),
+                         ("\u{E0100}", "⟨U+E0100⟩"), ("\u{3164}", "⟨U+3164⟩"), ("\u{FFA0}", "⟨U+FFA0⟩"),
+                         ("\u{34F}", "⟨U+034F⟩"), ("\u{180B}", "⟨U+180B⟩"), ("\u{17B4}", "⟨U+17B4⟩")]
+        for (scalar, token) in invisible {
+            let command = TerminalCommand(plainText: "echo a" + scalar + "b\n")
+            XCTAssertTrue(command.needsConfirmation, token)
+            XCTAssertEqual(command.lineCount, 1, token)
+            XCTAssertEqual(command.visibleText, "echo a" + token + "b", token)
+            XCTAssertEqual(Array(command.text.unicodeScalars), Array(("echo a" + scalar + "b").unicodeScalars), token)
+        }
+    }
+
+    func testEmojiStayWholeButStillNeedConfirmation() {
+        // A ZWJ that joins two emoji, and U+FE0E or U+FE0F in an emoji, are left as they are so that the emoji
+        // stays whole. They are still invisible, so the command needs a review.
+        for emoji in ["\u{1F469}\u{200D}\u{1F4BB}", "\u{2764}\u{FE0F}", "\u{1F600}\u{FE0E}", "1\u{FE0F}\u{20E3}"] {
+            let command = TerminalCommand(plainText: "echo " + emoji + "\n")
+            XCTAssertTrue(command.needsConfirmation, emoji.debugDescription)
+            XCTAssertEqual(Array(command.visibleText.unicodeScalars), Array(("echo " + emoji).unicodeScalars),
+                           emoji.debugDescription)
+        }
+        // A skin-tone modifier attaches to whatever comes before it, so a ZWJ before one joins nothing and shows.
+        XCTAssertEqual(TerminalCommand(plainText: "a\u{200D}\u{1F3FB}").visibleText, "a⟨U+200D⟩\u{1F3FB}")
+        XCTAssertEqual(TerminalCommand(plainText: "\u{1F469}\u{200D}\u{1F3FB}").visibleText,
+                       "\u{1F469}⟨U+200D⟩\u{1F3FB}")
+        // Any other variation selector shows, even in an emoji.
+        XCTAssertEqual(TerminalCommand(plainText: "\u{2764}\u{FE00}").visibleText, "\u{2764}⟨U+FE00⟩")
+        // A digit is an emoji only in a keycap, so a selector after a digit in a word shows.
+        XCTAssertEqual(TerminalCommand(plainText: "cd build1\u{FE0F}").visibleText, "cd build1⟨U+FE0F⟩")
+        // An emoji with nothing invisible in it needs no review.
+        XCTAssertFalse(TerminalCommand(plainText: "echo \u{1F600}\u{1F44B}\u{1F3FB}\n").needsConfirmation)
     }
 
     func testPrepareCommandWritesOnlyTheCommandText() throws {

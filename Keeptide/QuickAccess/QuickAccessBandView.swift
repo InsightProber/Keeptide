@@ -280,6 +280,7 @@ extension PasteRefusal {
         case .contentUnavailable: "This item changed or is no longer available."
         case .noPlainText: "This item has no plain text."
         case .writeFailed: "Couldn't write to the clipboard."
+        case .commandTooLong: "This command is too long to review. Use Copy As-Is."
         }
     }
 }

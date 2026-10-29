@@ -265,6 +265,7 @@ final class QuickAccessState {
         guard isOpen, self.session === session else { return }
         switch outcome {
         case .copied, .copiedInstead, .dispatched: onCopied?()
+        case .needsConfirmation: break
         case .refused(let refusal): if selection.selection == target.ref { failure = refusal }
         }
     }

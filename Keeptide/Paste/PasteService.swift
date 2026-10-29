@@ -3,6 +3,23 @@ import Foundation
 
 enum PasteMode: Equatable, Sendable {
     case original, plainText
+    /// The menu's Copy As-Is: the clip as captured, never a command and never a paste.
+    case asIs
+}
+
+/// What a request writes.
+enum PasteFormat: Equatable, Sendable {
+    case original, plainText
+    /// The clip's plain text without one trailing line break, reviewed first when it needs it: `TerminalCommand`.
+    case command
+
+    /// Text and links for a terminal are a command in either mode, so no request can paste one another way. Copy
+    /// As-Is keeps the clip as captured.
+    static func resolve(mode: PasteMode, target: PasteTarget?, kind: ContentKind) -> PasteFormat {
+        if mode == .asIs { return .original }
+        if target?.isTerminal == true, kind == .text || kind == .url { return .command }
+        return mode == .plainText ? .plainText : .original
+    }
 }
 
 enum PasteRefusal: Error, Equatable, Sendable {
@@ -12,6 +29,8 @@ enum PasteRefusal: Error, Equatable, Sendable {
     case contentUnavailable
     case noPlainText
     case writeFailed
+    /// A command longer than the confirmation card shows whole. Copy As-Is still copies it.
+    case commandTooLong
 }
 
 enum PasteDelivery: Equatable, Sendable {
@@ -34,6 +53,9 @@ enum PasteOutcome: Equatable, Sendable {
     case dispatched(PasteTarget)
     /// A paste was asked for and a check failed, so the clip was only copied.
     case copiedInstead(DirectPasteFallback)
+    /// The command needs a review first. Nothing was written or sent; confirming sends the request again with the
+    /// review's confirmation.
+    case needsConfirmation(CommandReview)
     case refused(PasteRefusal)
 }
 
@@ -49,6 +71,9 @@ final class PasteSession {
     let sessionGeneration: UInt64
     private(set) var queryGeneration: UInt64 = 0
     private(set) var isOpen = true
+    /// The one command confirmation this session accepts. Each review replaces it, and the write it lets through
+    /// uses it up.
+    fileprivate var pendingConfirmation: CommandConfirmation?
 
     fileprivate init(target: PasteTarget?) {
         self.target = target
@@ -81,15 +106,22 @@ struct PasteRequest {
     var delivery: PasteDelivery = .copy
     /// Hides the panel for a paste. Called once, after the clipboard is written and before the last check.
     var dismiss: (@MainActor () -> Void)? = nil
+    /// The confirmation from the review of this command, once the user confirms it.
+    var confirmation: CommandConfirmation? = nil
 }
 
 /// The one path from a selected row to the clipboard. It re-reads the content,
 /// re-checks the request after every suspension, and records one use receipt
 /// per successful action. A paste also needs every target check to pass, both
 /// before the clipboard is written and after the panel hides; otherwise the clip
-/// is only copied.
+/// is only copied. Text for a terminal is a command, and a command that needs a
+/// review is written only once the user confirms it.
 @MainActor
 final class PasteService {
+    /// The longest command, in UTF-8 bytes. The confirmation card shows a command's whole text, so a longer one is
+    /// refused rather than reviewed in part. Copy As-Is is not a command and has no limit.
+    private static let maximumCommandByteCount = 262_144
+
     private let pasteboard: NSPasteboard
     private let read: @Sendable (ContentRef) async throws -> ResolvedContent
     private let recordUse: @Sendable (UseReceipt) async throws -> Void
@@ -162,12 +194,19 @@ final class PasteService {
         guard session.accepts(generation) else { return .refused(.stale) }
 
         let mode = request.mode
-        let prepared: PreparedPasteboardContent
+        let target = session.target
+        let prepared: (content: PreparedPasteboardContent, command: TerminalCommand?)
         do {
             prepared = try await Task.detached(priority: .userInitiated) {
-                switch mode {
-                case .original: try PasteboardWriter.prepare(content)
-                case .plainText: try PasteboardWriter.preparePlainText(content)
+                // The kind comes from the content read, never from the row the panel shows.
+                let representations = content.representations
+                let hasLocalReference = representations.contains { $0.storage == .localReference }
+                let kind = ContentKind.classify(typeIdentifiers: representations.map(\.typeIdentifier),
+                                                hasLocalReference: hasLocalReference)
+                switch PasteFormat.resolve(mode: mode, target: target, kind: kind) {
+                case .original: return (try PasteboardWriter.prepare(content), nil)
+                case .plainText: return (try PasteboardWriter.preparePlainText(content), nil)
+                case .command: return try PasteboardWriter.prepareCommand(content)
                 }
             }.value
         } catch {
@@ -175,16 +214,23 @@ final class PasteService {
             return .refused(error as? PasteboardWriterError == .noPlainText ? .noPlainText : .contentUnavailable)
         }
         guard session.accepts(generation) else { return .refused(.stale) }
-        return deliver(prepared, for: request)
+        if let command = prepared.command, command.text.utf8.count > Self.maximumCommandByteCount {
+            return .refused(.commandTooLong)
+        }
+        return deliver(prepared.content, command: prepared.command, of: content.ref, for: request)
     }
 
     /// Writes the clip and, for a paste whose checks all pass before the write and again after the panel hides,
-    /// posts one ⌘V. It is synchronous so that the compiler rejects any suspension here: nothing else on the main
-    /// actor runs between the checks, the write, hiding the panel and the keystroke.
-    private func deliver(_ prepared: PreparedPasteboardContent, for request: PasteRequest) -> PasteOutcome {
+    /// posts one ⌘V. A command that needs a review is written only with the session's pending confirmation for
+    /// exactly this content, mode and delivery. It is synchronous so that the compiler rejects any suspension here:
+    /// nothing else on the main actor runs between the checks, the confirmation, the write, hiding the panel and
+    /// the keystroke.
+    private func deliver(_ prepared: PreparedPasteboardContent, command: TerminalCommand?, of ref: ContentRef,
+                         for request: PasteRequest) -> PasteOutcome {
         let session = request.session
         let check: DirectPasteAvailability?
-        switch request.delivery {
+        // Copy As-Is only ever copies, whatever delivery was asked for.
+        switch request.mode == .asIs ? .copy : request.delivery {
         case .copy:
             check = nil
         case .paste where request.dismiss == nil:
@@ -193,6 +239,23 @@ final class PasteService {
             check = .copy(.cannotSendKeystroke)
         case .paste:
             check = availability(for: session)
+        }
+        if let command, command.needsConfirmation {
+            // The delivery is part of what was confirmed, so a command confirmed for a copy is never pasted.
+            let delivery: PasteDelivery = if case .paste? = check { .paste } else { .copy }
+            if let presented = request.confirmation, presented == session.pendingConfirmation,
+               presented.sessionGeneration == session.sessionGeneration, presented.ref == ref,
+               presented.mode == request.mode, presented.delivery == delivery {
+                session.pendingConfirmation = nil
+            } else {
+                // Nothing is written, hidden, sent or counted until the user confirms this review.
+                let confirmation = CommandConfirmation(id: UUID(), sessionGeneration: session.sessionGeneration,
+                                                       ref: ref, mode: request.mode, delivery: delivery)
+                session.pendingConfirmation = confirmation
+                return .needsConfirmation(CommandReview(confirmation: confirmation, command: command,
+                                                        targetName: session.target?.name,
+                                                        isRenewal: request.confirmation != nil))
+            }
         }
         let token: OwnWriteToken
         do {

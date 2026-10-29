@@ -32,11 +32,12 @@ final class PasteFixture {
     /// A service that writes to this fixture's board and stores receipts in its store. `read` replaces the
     /// store read.
     func service(system: DirectPasteSystem, directPasteOnlyTo: String? = nil,
-                 read: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil) -> PasteService {
+                 read: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
+                 didWrite: @escaping @MainActor (OwnWriteToken) -> Void = { _ in }) -> PasteService {
         let repository = ContentRepository(controller: controller)
         let usage = LocalUsageStore(controller: controller)
         return PasteService(pasteboard: board, read: read ?? { try await repository.read($0) },
-                            recordUse: { try await usage.record($0) }, didWrite: { _ in },
+                            recordUse: { try await usage.record($0) }, didWrite: didWrite,
                             system: system, directPasteOnlyTo: directPasteOnlyTo)
     }
 
