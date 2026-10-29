@@ -78,6 +78,10 @@ final class NativeShellUITests: XCTestCase {
     }
 
     func testGlobalHotKeySessionsReturnFocusAndDoNotResurrect() throws {
+        // Each key is typed through the host, which stays active while Keeptide's panel takes the keys. XCUITest then
+        // waits about ten seconds per key for the host to handle an event it never gets, so this test runs for some
+        // fourteen minutes on CI: more than the five minutes `verify.sh` allows each test.
+        executionTimeAllowance = 1200
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--synthetic-hotkey"]
