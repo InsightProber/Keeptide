@@ -3,11 +3,12 @@
 The table below describes the planned first release. Development builds currently
 include local recording, explicit start/pause controls, ignored applications,
 exact capture deduplication, a recent-clips list, original-format and plain-text
-copying, and a quick-access panel. The panel shows clips in a centered strip, 7, 9
-or 11 in a row as set in a minimal Settings window, and steps through them with
-the arrow keys or a trackpad swipe, one clip per detent with a haptic tick on a
-Force Touch trackpad. It searches all content with a local full-text index,
-filters by type, and previews text and images. Other capabilities, including
+copying, and a quick-access panel. The panel shows clips as a row of large cards
+in a wide band, in small, medium or large sizes as set in a minimal Settings
+window, and steps through them with the arrow keys or a trackpad swipe, one clip
+per detent with a haptic tick on a Force Touch trackpad. It searches all content
+with a local full-text index from a search that folds into an icon until you
+type, filters by type, and previews text and images. Other capabilities, including
 direct paste into other apps, remain planned. There is no application release yet.
 
 ## First release
