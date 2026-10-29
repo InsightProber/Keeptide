@@ -705,7 +705,12 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.1))
         CATransaction.flush()
         XCTAssertEqual(try drawnMidX(of: "Row 0", in: strip), stretched, accuracy: 0.5)
+        // As they lift, the film's own place is its resting one at once, and the stretch springs back from where it is
+        // drawn: still there while time stands still.
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.2))
+        CATransaction.flush()
+        XCTAssertEqual(try XCTUnwrap(strip.subviews.first).frame.minX, 0, accuracy: 0.5)
+        XCTAssertEqual(try drawnMidX(of: "Row 0", in: strip), stretched, accuracy: 0.5)
     }
 
     func testAClipArrivingUnderTheFingersSlides() throws {
@@ -854,8 +859,9 @@ final class QuickAccessStripViewTests: XCTestCase {
         CATransaction.flush()
         // By the places the frames are sliding to, another clip already lies under the pointer.
         XCTAssertEqual(try midX(of: "Row 23", in: strip), point.x, accuracy: 0.5)
-        // The selected clip's frame, which ⌘K opens its actions beside, is where it is drawn too.
-        XCTAssertEqual(try XCTUnwrap(strip.selectedFrame).midX, try drawnMidX(of: "Row 24", in: strip), accuracy: 0.5)
+        // ⌘K opens its actions beside the selected clip where it comes to rest, not where it is drawn: the menu does
+        // not follow the film, so it would cover the clip once the slide settles.
+        XCTAssertEqual(try XCTUnwrap(strip.selectionAnchorFrame).midX, try midX(of: "Row 24", in: strip), accuracy: 0.5)
 
         strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
         _ = strip.menu(for: try mouse(.rightMouseDown, at: point, in: strip))
@@ -872,42 +878,52 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testStackedSlidesKeepTheSweepFramed() throws {
-        let strip = makeStrip()
-        let content = try XCTUnwrap(strip.superview)
-        content.wantsLayer = true
-        // Frames slide only where they can be seen.
-        strip.window?.orderFront(nil)
         let rows = makeRows(40)
-        strip.show(rows, selection: rows[20].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
-
-        // Time stands still from here, so no slide has got anywhere when the next one starts: three steps toward older
-        // clips 30 ms apart, as from an arrow key repeating faster than the springs settle.
-        content.layer?.speed = 0
-        for index in 21...23 {
-            strip.show(rows, selection: rows[index].ref, details: [:], metrics: metrics,
+        // Selects each clip in turn after the first, 30 ms apart, in a strip on screen whose time stands still once the
+        // first is shown. No slide has got anywhere when the next one starts, as when steps come faster than the
+        // springs move, such as from a flicked wheel; the 30 ms waits do not move them on. Every clip drawn in the band
+        // must have its frame. Returns how far the springs, added up, draw the film from its place.
+        func select(_ first: Int, then others: [Int]) throws -> CGFloat {
+            let strip = makeStrip()
+            let content = try XCTUnwrap(strip.superview)
+            content.wantsLayer = true
+            strip.window?.orderFront(nil)
+            strip.show(rows, selection: rows[first].ref, details: [:], metrics: metrics,
                        applicationNames: ApplicationNames())
-            CATransaction.flush()
-            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+            content.layer?.speed = 0
+            for index in others {
+                strip.show(rows, selection: rows[index].ref, details: [:], metrics: metrics,
+                           applicationNames: ApplicationNames())
+                CATransaction.flush()
+                RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+            }
+            let film = try XCTUnwrap(strip.subviews.first?.layer)
+            let offset = try XCTUnwrap(film.presentation()).position.x - film.position.x
+            let framed = Set(drawings(in: strip).compactMap(title(of:)))
+            let last = try XCTUnwrap(others.last)
+            let selected = try rect(titled: "Row \(last)", in: strip)
+            let band = strip.bounds.insetBy(dx: (strip.bounds.width - metrics.bandWidth) / 2, dy: 0)
+            for index in rows.indices {
+                let drawn = selected.offsetBy(dx: CGFloat(index - last) * metrics.step + offset, dy: 0)
+                guard drawn.intersects(band) else { continue }
+                XCTAssertTrue(framed.contains("Row \(index)"), "Row \(index) is drawn in the band without a frame")
+            }
+            return offset
         }
 
-        // The springs add up: the film is still drawn where it was before the first step, three steps from its place.
-        let film = try XCTUnwrap(strip.subviews.first?.layer)
-        let offset = try XCTUnwrap(film.presentation()).position.x - film.position.x
-        XCTAssertEqual(offset, 3 * metrics.step, accuracy: 0.5)
-        // Every clip drawn in the band there has its frame.
-        let framed = Set(drawings(in: strip).compactMap(title(of:)))
-        let selected = try rect(titled: "Row 23", in: strip)
-        let band = strip.bounds.insetBy(dx: (strip.bounds.width - metrics.bandWidth) / 2, dy: 0)
-        for index in rows.indices {
-            let drawn = selected.offsetBy(dx: CGFloat(index - 23) * metrics.step + offset, dy: 0)
-            guard drawn.intersects(band) else { continue }
-            XCTAssertTrue(framed.contains("Row \(index)"), "Row \(index) is drawn in the band without a frame")
-        }
+        // Three steps toward older clips in the middle of the film: the film is still drawn where it was before the
+        // first, three steps from its place.
+        XCTAssertEqual(try select(20, then: [21, 22, 23]), 3 * metrics.step, accuracy: 0.5)
+        // Three steps toward newer clips into the dock. The last walks the selection along the docked film and moves
+        // nothing itself, while the springs before it still draw the film where it was at the sixth clip.
+        let sixth = centre - metrics.frameSize.width / 2 - 5 * metrics.step
+        XCTAssertEqual(try select(5, then: [4, 3, 2]), sixth - metrics.dockInset, accuracy: 0.5)
     }
 
     func testReduceMotionStopsEverySlide() throws {
         let strip = makeStrip()
         strip.reducesMotion = { true }
+        strip.haptics = RecordingHaptics()
         // On screen, where the frames would otherwise slide.
         strip.window?.orderFront(nil)
         let film = try XCTUnwrap(strip.subviews.first?.layer)
@@ -923,6 +939,16 @@ final class QuickAccessStripViewTests: XCTestCase {
         // So does the film when the last clip turns out to be the oldest and it comes to rest at the right dock.
         strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(film.animationKeys() ?? [], [], "A clamp")
+        XCTAssertEqual(try rect(titled: "Row 19", in: strip).maxX, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
+        // And under the fingers. While another page may follow the last clip, they stretch its end; the page brings
+        // nothing, so the film comes to rest at the right dock beneath them, and they lift. Neither the change of rest
+        // nor the stretch going back slides.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        strip.scrollWheel(with: try swipe(dx: -40, phase: .began, at: 1.0))
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+        XCTAssertEqual(film.animationKeys() ?? [], [], "Under the fingers")
         XCTAssertEqual(try rect(titled: "Row 19", in: strip).maxX, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
         // And a selected clip at the dock whose place moves along the film as a newer clip arrives before it.
         strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())

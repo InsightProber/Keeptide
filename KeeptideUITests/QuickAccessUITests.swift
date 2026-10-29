@@ -74,19 +74,15 @@ final class QuickAccessUITests: XCTestCase {
         let frames = try openPanel(app)
         XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
 
-        // ↓ puts the keys in the strip and leaves the newest clip selected rather than stepping past it. What Return
-        // copies from there shows which clip that is, whether or not the system reports the frames' selected state.
+        // ↓ never steps past the newest clip. Return copies the selected clip, so what it copies shows which clip ↓
+        // left selected, whether or not the system reports the frames' selected state.
         app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
         app.typeKey(.return, modifierFlags: [])
         let toast = app.descendants(matching: .any)["CopyToastMessage"]
         XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
 
-        host.activate()
-        host.buttons["Inspect Synthetic Pasteboard"].click()
-        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
-        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription)
-        XCTAssertEqual(received.value as? String, "Synthetic alpha note")
+        XCTAssertEqual(copiedText(host: host), "Synthetic alpha note")
     }
 
     func testTypingSearchesAllContent() throws {
@@ -162,11 +158,7 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertEqual(text(of: toast), "Copied — press ⌘V to paste")
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
 
-        host.activate()
-        host.buttons["Inspect Synthetic Pasteboard"].click()
-        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
-        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription)
-        XCTAssertEqual(received.value as? String, "Synthetic alpha note")
+        XCTAssertEqual(copiedText(host: host), "Synthetic alpha note")
     }
 
     func testArrowKeysStepTheStripAndReturnCopiesTheSelectedClip() throws {
@@ -184,13 +176,8 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
         XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
 
-        host.activate()
-        host.buttons["Inspect Synthetic Pasteboard"].click()
-        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
-        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription)
         // The seeded clip ends with a newline.
-        let copied = (received.value as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        XCTAssertEqual(copied, "echo synthetic-beta")
+        XCTAssertEqual(copiedText(host: host)?.trimmingCharacters(in: .whitespacesAndNewlines), "echo synthetic-beta")
     }
 
     func testShiftReturnOnTheImageRowShowsTheReason() throws {
@@ -279,6 +266,15 @@ final class QuickAccessUITests: XCTestCase {
         guard clip.exists, other.exists else { return false }
         let gap = clip.frame.minX - other.frame.maxX
         return gap >= 0 && gap < other.frame.width
+    }
+
+    /// The text the session's pasteboard received, as the test host shows it when asked to inspect it.
+    private func copiedText(host: XCUIApplication, file: StaticString = #filePath, line: UInt = #line) -> String? {
+        host.activate()
+        host.buttons["Inspect Synthetic Pasteboard"].click()
+        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
+        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription, file: file, line: line)
+        return received.value as? String
     }
 
     func text(of element: XCUIElement) -> String {

@@ -30,12 +30,13 @@ final class QuickAccessStripView: NSView {
     var dimsSideFrames = false {
         didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
     }
-    /// Where the selected clip's frame is drawn in the strip's coordinates at this moment, mid-slide included. With
-    /// the selection vanished it is the empty slot at the dock, a step before the newest clip; nil without clips.
-    var selectedFrame: NSRect? {
+    /// Where ⌘K's menu is anchored, in the strip's coordinates: the selected clip's frame where it rests, even in
+    /// mid-slide, since the menu does not follow the film. With the selection vanished it is the empty slot just before
+    /// the newest clip; nil without clips.
+    var selectionAnchorFrame: NSRect? {
         guard let metrics, let rest = restingPlacement else { return nil }
         let origin = rest.firstOrigin + CGFloat(selectedIndex) * metrics.step
-        return convert(frameRect(origin: origin, metrics), from: film).offsetBy(dx: drawnOffset, dy: 0)
+        return convert(frameRect(origin: origin, metrics), from: film)
     }
 
     /// Frames kept beyond each end of the ones on screen, so a step or a push never shows a gap.
@@ -147,9 +148,15 @@ final class QuickAccessStripView: NSView {
             placeFrames()
             settle(after: springBack(from: displacement))
         } else {
+            // A new selection that moves nothing, such as a step along a docked film, keeps the frames for the springs
+            // still running, and the settle already on its way lets them go.
             if selectionChanged {
-                settling?.cancel()
-                slideStart = nil
+                if running == 0 {
+                    settling?.cancel()
+                    slideStart = nil
+                } else if let rest {
+                    slideStart = rest.firstOrigin + running
+                }
             }
             placeFrames()
         }
@@ -296,7 +303,9 @@ final class QuickAccessStripView: NSView {
         window?.isVisible == true && !reducesMotion()
     }
 
-    /// How far the springs still running draw the film from its place at this moment.
+    /// How far the springs still running draw the film from its place. The presentation layer shows the film as of
+    /// the start of the current transaction, so a spring added earlier in the same transaction is missing, and a move
+    /// of the film's place made in it is included.
     private var drawnOffset: CGFloat {
         guard let layer = film.layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() else {
             return 0

@@ -489,14 +489,14 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
     }
 
-    /// ⌘K: the selected clip's actions, beside it where it is drawn; with the selection vanished, beside its empty
-    /// slot at the dock; with no clips, beside the middle of the strip.
+    /// ⌘K: the selected clip's actions, beside it where it rests; with the selection vanished, beside the empty slot
+    /// just before the newest clip; with no clips, beside the middle of the strip.
     func openActions() {
         let size = metrics.frameSize
         let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,
                             width: size.width, height: size.height)
         presentActionMenu(actionMenu(for: state.selection.selection),
-                          ActionMenu.anchor(beside: strip.selectedFrame ?? centre, in: strip), strip)
+                          ActionMenu.anchor(beside: strip.selectionAnchorFrame ?? centre, in: strip), strip)
     }
 
     /// The actions for one clip: the selected one for ⌘K, the one under the pointer for a right-click. A clip
