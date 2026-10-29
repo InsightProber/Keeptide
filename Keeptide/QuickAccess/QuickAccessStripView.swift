@@ -21,7 +21,7 @@ final class QuickAccessStripView: NSView {
     /// Called when `fades` changes.
     var onFadesChanged: (() -> Void)?
     var haptics: any HapticPerforming = SystemHaptics()
-    /// Whether the trackpad ticks as each clip passes. The strip moves the same either way.
+    /// Whether the trackpad ticks for each step of the selection. The strip moves the same either way.
     var ticksEnabled = true
     /// What a key means here depends on the rest of the panel, which keeps these current.
     var filtersVisible = false
@@ -68,8 +68,6 @@ final class QuickAccessStripView: NSView {
     /// Set while the panel shows a step the scroller asked for, so that `show` can tell it from a change made
     /// elsewhere.
     private var showingScrollStep = false
-    /// Where the film rested when last shown, as index 0's left edge within the band; nil without clips.
-    private var restingOrigin: CGFloat?
     /// Whether the fades were last taken from a film on screen.
     private var fadesHadFilm = false
     /// Where index 0's frame was when a slide started, within the band. The frames on screen there stay until the
@@ -106,11 +104,9 @@ final class QuickAccessStripView: NSView {
     func show(_ rows: [QuickAccessRow], selection: ContentRef?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
         let selectionChanged = selection != self.selection
-        let sameMetrics = metrics == self.metrics
-        // Where the newly selected clip was drawn, so that the film can slide from there to where it now rests.
-        let start = selectionChanged && sameMetrics ? selection.flatMap { frames[$0]?.frame.midX } : nil
-        // Where the film rested, so that with the same selection it can slide from there when its place moves.
-        let previousOrigin = sameMetrics ? restingOrigin : nil
+        // Where the selected clip was drawn, so that the film can slide from there to where it now rests: a newly
+        // selected clip, or the same one when rows before it come or go or its place moves.
+        let start = metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX } : nil
         let previousIndex = selectedIndex
         self.rows = rows
         self.selection = selection
@@ -132,18 +128,12 @@ final class QuickAccessStripView: NSView {
         selectedIndex = index
         if selectionChanged { hovered = nil }
         let rest = restingPlacement
-        restingOrigin = rest?.firstOrigin
-        // How far the film moves: as far as the newly selected clip does, or with the same selection, as far as its
-        // place. It slides there on screen without Reduce Motion. Under the fingers it follows them instead, except
-        // when it leaves the empty dock, whose slot goes at once; the springs add up, so the step stays smooth.
+        // The film moves as far as the selected clip does. It slides there on screen without Reduce Motion. Under
+        // the fingers it follows them instead, except when it leaves the empty dock, whose slot goes at once; the
+        // springs add up, so the step stays smooth.
         var displacement: CGFloat = 0
-        if let rest, slidesAreShown, !fingersDown || (previousIndex < 0 && index >= 0) {
-            if selectionChanged, let start, index >= 0 {
-                let end = frameRect(origin: rest.firstOrigin + CGFloat(index) * metrics.step, metrics).midX
-                displacement = start - end
-            } else if !selectionChanged, let previousOrigin {
-                displacement = previousOrigin - rest.firstOrigin
-            }
+        if let rest, let start, index >= 0, slidesAreShown, !fingersDown || previousIndex < 0 {
+            displacement = start - frameRect(origin: rest.firstOrigin + CGFloat(index) * metrics.step, metrics).midX
         }
         if displacement != 0, let rest {
             settling?.cancel()

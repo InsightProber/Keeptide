@@ -628,6 +628,49 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
     }
 
+    func testAClipArrivingBeforeACentredSelectionMovesNothing() throws {
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        let rows = makeRows(20)
+        strip.show(rows, selection: rows[8].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // Time stands still from here, so a slide would stay at its beginning.
+        content.layer?.speed = 0
+        // A new clip arrives before all the others, and the selected one becomes the tenth. Every clip on screen
+        // keeps its place, so nothing slides: the selected clip rests and is drawn in the middle.
+        strip.show([makeRow(title: "Row new")] + rows, selection: rows[8].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        CATransaction.flush()
+        XCTAssertEqual(try midX(of: "Row 8", in: strip), centre, accuracy: 0.5)
+        XCTAssertEqual(try drawnMidX(of: "Row 8", in: strip), centre, accuracy: 0.5)
+    }
+
+    func testAClipArrivingBeforeADockedSelectionSlidesItAlong() throws {
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        let rows = makeRows(20)
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let before = try midX(of: "Row 2", in: strip)
+
+        // Time stands still from here, so the slide stays at its beginning.
+        content.layer?.speed = 0
+        // A new clip arrives at the dock, and along the docked film the selected clip's place moves a step right.
+        // It slides there from where it was rather than jumping: it is still drawn where it stood.
+        strip.show([makeRow(title: "Row new")] + rows, selection: rows[2].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        CATransaction.flush()
+        XCTAssertEqual(try midX(of: "Row 2", in: strip), before + metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try drawnMidX(of: "Row 2", in: strip), before, accuracy: 0.5)
+    }
+
     func testAWheelTurnedRightMovesOneClipOlder() throws {
         let strip = makeStrip()
         var commands: [QuickAccessCommand] = []
@@ -823,6 +866,13 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     private func midX(of title: String, in strip: NSView) throws -> CGFloat {
         try rect(titled: title, in: strip).midX
+    }
+
+    /// Where the frame with this title is drawn at this moment, a running slide included: the frames move as one in
+    /// the strip's film.
+    private func drawnMidX(of title: String, in strip: NSView) throws -> CGFloat {
+        let film = try XCTUnwrap(strip.subviews.first?.layer)
+        return try midX(of: title, in: strip) + (film.presentation()?.position.x ?? film.position.x) - film.position.x
     }
 
     private func selectedTitle(in strip: NSView) -> String? {

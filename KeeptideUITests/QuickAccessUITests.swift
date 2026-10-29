@@ -49,6 +49,8 @@ final class QuickAccessUITests: XCTestCase {
         query.typeKey(.downArrow, modifierFlags: [])
         if let selected = selectedClip(in: frames) {
             XCTAssertEqual(selected.label, newest.label, app.debugDescription)
+        } else {
+            XCTContext.runActivity(named: "AXSelected not reported; selection check skipped") { _ in }
         }
 
         app.typeKey(.upArrow, modifierFlags: [])

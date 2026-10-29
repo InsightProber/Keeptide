@@ -25,8 +25,9 @@ struct DetentOutput: Equatable {
     var steps: Int
     /// Haptic ticks to play, 0 or 1.
     var ticks: Int
-    /// The push toward the next clip as a share of one clip, from -1 to 1. The strip follows the
-    /// fingers by this much; it is 0 once they lift and for a mouse wheel.
+    /// The push toward the next clip as a share of one clip, from -1 to 1. It carries the selection
+    /// that far, which moves the strip's film only where it is not resting at a dock; it is 0 once the
+    /// fingers lift and for a mouse wheel.
     var progress: CGFloat
     /// The stretch past an end in points, positive past the oldest clip and capped at
     /// `DetentScroller.maximumRubberBand`. It is 0 once the fingers lift and for a mouse wheel.
