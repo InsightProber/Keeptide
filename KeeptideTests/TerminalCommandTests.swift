@@ -81,13 +81,30 @@ final class TerminalCommandTests: XCTestCase {
             XCTAssertTrue(command.needsConfirmation, input.debugDescription)
             XCTAssertEqual(command.lineCount, lineBreaks.contains(value) ? 2 : 1, input.debugDescription)
         }
-        // Printable ASCII, CJK, emoji and combining sequences are not controls.
+        // Printable ASCII, CJK, emoji, flags and combining sequences are neither controls nor format characters.
         let printable = String((UInt8(0x20)...0x7E).map { Character(Unicode.Scalar($0)) })
-        for input in [printable, "echo 你好 \u{1F600} e\u{301} \u{1F1E8}\u{1F1F3} \u{1F468}\u{200D}\u{1F469}"] {
+        for input in [printable, "echo 你好 \u{1F600} e\u{301} \u{1F1E8}\u{1F1F3}"] {
             let command = TerminalCommand(plainText: input + "\n")
             XCTAssertFalse(command.needsConfirmation, input.debugDescription)
             XCTAssertEqual(command.lineCount, 1, input.debugDescription)
         }
+        // Format characters (category Cf) are invisible, so a command can look harmless and run something else.
+        // Each one needs a review, like a control character: bidirectional overrides, embeddings and isolates,
+        // direction marks, zero-width characters, a BOM in the middle of the text, a soft hyphen and a tag character.
+        let formats = ["\u{202A}", "\u{202B}", "\u{202C}", "\u{202D}", "\u{202E}", "\u{2066}", "\u{2067}",
+                       "\u{2068}", "\u{2069}", "\u{200E}", "\u{200F}", "\u{200B}", "\u{200C}", "\u{200D}",
+                       "\u{2060}", "\u{FEFF}", "\u{AD}", "\u{E0041}"]
+        for format in formats {
+            let middle = "echo a" + format + "b"
+            for input in [middle, format + "ls", "ls" + format + "\n"] {
+                let command = TerminalCommand(plainText: input)
+                XCTAssertTrue(command.needsConfirmation, input.debugDescription)
+                XCTAssertEqual(command.lineCount, 1, input.debugDescription)
+            }
+            XCTAssertEqual(Array(TerminalCommand(plainText: middle).text.utf8), Array(middle.utf8))
+        }
+        // That includes a ZWJ inside an emoji sequence: a terminal command rarely holds emoji.
+        XCTAssertTrue(TerminalCommand(plainText: "\u{1F468}\u{200D}\u{1F469}").needsConfirmation)
     }
 
     func testVisibleTextShowsBreaksTabsAndControls() {
@@ -104,6 +121,30 @@ final class TerminalCommandTests: XCTestCase {
         XCTAssertEqual(TerminalCommand(plainText: "\u{80}\u{9F}").visibleText, "⟨U+0080⟩⟨U+009F⟩")
         // Text with nothing to show is unchanged, and the one trailing break never gets a symbol.
         XCTAssertEqual(TerminalCommand(plainText: "echo 你好 e\u{301}\n").visibleText, "echo 你好 e\u{301}")
+        // Format characters are invisible, so each shows its code point: upper-case hex, at least four digits.
+        let tokens = [("\u{202E}", "⟨U+202E⟩"), ("\u{200B}", "⟨U+200B⟩"), ("\u{200C}", "⟨U+200C⟩"),
+                      ("\u{FEFF}", "⟨U+FEFF⟩"), ("\u{AD}", "⟨U+00AD⟩"), ("\u{E0041}", "⟨U+E0041⟩")]
+        for (format, token) in tokens {
+            XCTAssertEqual(TerminalCommand(plainText: "a" + format + "b").visibleText, "a" + token + "b", token)
+        }
+        // A ZWJ that joins emoji is part of the emoji, so it stays and the emoji stays whole. It is still a
+        // format character, so the command needs a review.
+        let family = TerminalCommand(plainText: "家庭\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\n")
+        XCTAssertEqual(family.text.count, 3, "two ideographs and one emoji Character")
+        XCTAssertTrue(family.needsConfirmation)
+        XCTAssertEqual(Array(family.visibleText.unicodeScalars), Array(family.text.unicodeScalars))
+        let nurse = TerminalCommand(plainText: "\u{1F469}\u{1F3FD}\u{200D}\u{2695}\u{FE0F}")
+        XCTAssertEqual(Array(nurse.visibleText.unicodeScalars), Array(nurse.text.unicodeScalars))
+        // Every other format character is shown, even where it sits in a Character with an emoji: a ZWJ after a
+        // digit or a letter, a ZWJ with no emoji after it, a ZWNJ, and a prepended mark that joins the emoji.
+        XCTAssertEqual(TerminalCommand(plainText: "1\u{200D}2").visibleText, "1⟨U+200D⟩2")
+        XCTAssertEqual(TerminalCommand(plainText: "a\u{200D}b\u{1F468}\u{200D}").visibleText,
+                       "a⟨U+200D⟩b\u{1F468}⟨U+200D⟩")
+        XCTAssertEqual(TerminalCommand(plainText: "\u{1F600}\u{200C}").visibleText, "\u{1F600}⟨U+200C⟩")
+        XCTAssertEqual(TerminalCommand(plainText: "\u{600}\u{1F600}").visibleText, "⟨U+0600⟩\u{1F600}")
+        // A ZWJ inside a script's conjunct is not an emoji ZWJ.
+        XCTAssertEqual(TerminalCommand(plainText: "\u{915}\u{94D}\u{200D}\u{937}").visibleText,
+                       "\u{915}\u{94D}⟨U+200D⟩\u{937}")
     }
 
     func testPrepareCommandWritesOnlyTheCommandText() throws {
@@ -134,6 +175,16 @@ final class TerminalCommandTests: XCTestCase {
         XCTAssertEqual(board.pasteboardItems?.count, 1)
         XCTAssertEqual(board.pasteboardItems?.first?.data(forType: .init("public.utf8-plain-text")),
                        Data("a\tb\nc\u{1B}d".utf8))
+
+        // The decoder drops a leading BOM only. A U+FEFF in the middle of the text reaches the command as a
+        // format character, so it is kept and the command needs a review.
+        let (preparedBOM, bomCommand) = try PasteboardWriter.prepareCommand(
+            content([[("public.utf8-plain-text", Data("echo \u{FEFF}x\n".utf8))]]))
+        _ = try PasteboardWriter(pasteboard: board).write(preparedBOM)
+        XCTAssertEqual(Array(bomCommand.text.utf8), Array("echo \u{FEFF}x".utf8))
+        XCTAssertTrue(bomCommand.needsConfirmation)
+        XCTAssertEqual(board.pasteboardItems?.first?.data(forType: .init("public.utf8-plain-text")),
+                       Data("echo \u{FEFF}x".utf8))
 
         // Several items become one command, and the line between them needs a review.
         let joined = try PasteboardWriter.prepareCommand(content([
