@@ -324,9 +324,12 @@ final class AppLaunchTests: XCTestCase {
     func testTheBandOpensWithTheSearchFolded() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
-        window.contentView?.layoutSubtreeIfNeeded()
-        settleLayout()
-        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let toolbar = try await laidOutToolbar(in: window)
+        // The toolbar follows the clips a moment after they arrive: Return's hint shows once one is selected.
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.visibleKeycaps(in: window).map(\.symbol) == ["⏎"]
+        }
         let field = toolbar.search.field
 
         // The search shows as its round icon, a button for the pointer. Its field is in it and has the keys, so the
@@ -522,7 +525,8 @@ final class AppLaunchTests: XCTestCase {
         let (_, editor) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
 
-        // With a clip to copy, the toolbar's right end says what Return does.
+        // With a clip to copy, the toolbar's right end says what Return does, once the toolbar has followed the clips.
+        try await SearchTestSupport.waitUntil { toolbar.note == .copy(enabled: true) }
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.note, .copy(enabled: true))
         XCTAssertFalse(toolbar.copyHint.isHidden)
@@ -572,8 +576,7 @@ final class AppLaunchTests: XCTestCase {
     func testTheMoreMenuOffersLibraryAndSettings() async throws {
         let controller = PanelController(preferences: try makePreferences(.medium))
         let window = try XCTUnwrap(controller.window)
-        window.contentView?.layoutSubtreeIfNeeded()
-        settleLayout()
+        let toolbar = try await laidOutToolbar(in: window)
         var opened: [String] = []
         controller.onOpenLibrary = { opened.append("library") }
         controller.onOpenSettings = { opened.append("settings") }
@@ -581,7 +584,6 @@ final class AppLaunchTests: XCTestCase {
         controller.presentMoreMenu = { shown.append(($0, $1, $2)) }
 
         // The ⋯ at the toolbar's right end, 16 in from the band's edge, opens a menu below itself.
-        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
         let more = toolbar.moreButton
         XCTAssertEqual(more.accessibilityLabel(), "More")
         XCTAssertEqual(more.frame.size, NSSize(width: 28, height: 28))
@@ -751,9 +753,7 @@ final class AppLaunchTests: XCTestCase {
     func testEachMoreMenuItemClosesThePanelAndRunsItsCommand() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
-        window.contentView?.layoutSubtreeIfNeeded()
-        settleLayout()
-        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let toolbar = try await laidOutToolbar(in: window)
         var ran: [String] = []
         controller.onOpenLibrary = { [unowned controller] in ran.append("library, panel open: \(controller.isSessionOpen)") }
         controller.onOpenSettings = { [unowned controller] in ran.append("settings, panel open: \(controller.isSessionOpen)") }
@@ -1305,18 +1305,24 @@ final class AppLaunchTests: XCTestCase {
         let (controller, harness) = try await makeEmptyPanel()
         let window = try XCTUnwrap(controller.window)
         try await SearchTestSupport.waitUntil { controller.state.phase == .noContent }
-        window.contentView?.layoutSubtreeIfNeeded()
-        settleLayout()
 
         // Where the clips would be, the band says how they get there; there are no frames and no key hints.
-        // SwiftUI's own accessibility is not built without an assistive app, so the copy is checked as drawn.
+        // SwiftUI's own accessibility is not built without an assistive app, so the copy is checked as drawn, which the
+        // band does a moment after the library turns out to be empty.
         XCTAssertEqual(QuickAccessStatus.empty(phase: controller.state.phase, notice: controller.state.indexNotice).text,
                        "No clips yet. Copy something and it shows up here.")
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        var copyArea: (strip: QuickAccessStripView, middle: NSRect)?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            guard let strip = self.views(QuickAccessStripView.self, in: window.contentView).first else { return false }
+            let middle = strip.convert(NSRect(x: strip.bounds.midX - 40, y: strip.bounds.midY - 10, width: 80,
+                                              height: 20), to: nil)
+            copyArea = (strip, middle)
+            return try self.contrast(in: window, at: middle) > 0.3
+        }
+        let (strip, middle) = try XCTUnwrap(copyArea)
         XCTAssertEqual(strip.accessibilityChildren()?.count ?? 0, 0)
         XCTAssertTrue(views(NSHostingView<StripFrameView>.self, in: strip).isEmpty)
-        let middle = strip.convert(NSRect(x: strip.bounds.midX - 40, y: strip.bounds.midY - 10, width: 80, height: 20),
-                                   to: nil)
         XCTAssertGreaterThan(try contrast(in: window, at: middle), 0.3, "The copy is drawn where the clips would be")
         XCTAssertLessThan(try contrast(in: window, at: middle.offsetBy(dx: -0.3 * strip.bounds.width, dy: 0)), 0.05,
                           "and nothing else is")
@@ -1332,9 +1338,11 @@ final class AppLaunchTests: XCTestCase {
                              lastCopiedAt: Date(timeIntervalSince1970: 1_000), copyCount: 1)
         try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
         controller.state.recentClipsChanged()
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 1 }
-        window.contentView?.layoutSubtreeIfNeeded()
-        settleLayout()
+        // The strip follows the state a moment after the clip arrives.
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.selection.rows.count == 1 && strip.accessibilityChildren()?.count == 1
+        }
         XCTAssertEqual(strip.accessibilityChildren()?.count, 1)
         controller.perform(.move(1))
         window.contentView?.layoutSubtreeIfNeeded()
@@ -1479,6 +1487,17 @@ final class AppLaunchTests: XCTestCase {
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
         try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.isEmpty == false }
         return strip
+    }
+
+    /// The band's toolbar, once the band has laid it out, with its ⋯ button in place at the right end.
+    private func laidOutToolbar(in window: NSWindow) async throws -> QuickAccessToolbar {
+        var toolbar: QuickAccessToolbar?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            toolbar = self.views(QuickAccessToolbar.self, in: window.contentView).first
+            return toolbar.map { $0.bounds.width > 0 && $0.moreButton.frame.width > 0 } ?? false
+        }
+        return try XCTUnwrap(toolbar)
     }
 
     /// Where the frame of the clip with this title is drawn, in the strip's coordinates. Only frames on screen,
