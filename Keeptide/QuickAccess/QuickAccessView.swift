@@ -32,10 +32,13 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         placeholderAttributedString = NSAttributedString(string: "Search", attributes: [
             .font: NSFont.systemFont(ofSize: 15), .foregroundColor: ToolbarPalette.placeholder,
         ])
-        // The field's own magnifier and cancel button stay, for what they do, and are never drawn.
+        // The field's own magnifier and cancel button stay, for what they do, and are neither drawn nor read: the
+        // search control has its own.
         if let cell = cell as? NSSearchFieldCell {
-            cell.searchButtonCell?.isTransparent = true
-            cell.cancelButtonCell?.isTransparent = true
+            for button in [cell.searchButtonCell, cell.cancelButtonCell].compactMap({ $0 }) {
+                button.isTransparent = true
+                button.setAccessibilityElement(false)
+            }
         }
         delegate = self
         setAccessibilityLabel("Quick access query")
@@ -51,6 +54,12 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     override func rectForSearchButton(whenCentered isCentered: Bool) -> NSRect { .zero }
 
     override func rectForCancelButton(whenCentered isCentered: Bool) -> NSRect { .zero }
+
+    /// Folded, the field lies undrawn under the search's icon, which takes the pointer with the arrow.
+    override func resetCursorRects() {
+        guard alphaValue > 0 else { return }
+        super.resetCursorRects()
+    }
 
     func controlTextDidChange(_ notification: Notification) {
         guard let editor = currentEditor() as? NSTextView else { return }
@@ -159,6 +168,22 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
 final class QuickAccessFieldEditor: NSTextView {
     private(set) var currentEventBeganWithMarkedText = false
 
+    /// The field being edited, which is the editor's delegate.
+    private var field: QuickAccessSearchField? { (delegate as AnyObject?) as? QuickAccessSearchField }
+
+    /// An input method's first key gives marked text before any change is reported; it opens a folded search at
+    /// once, so that the composition shows from its start.
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        if hasMarkedText() { field?.onType?() }
+    }
+
+    /// Under the folded search's icon the editor takes no text cursor either.
+    override func resetCursorRects() {
+        guard field?.alphaValue != 0 else { return }
+        super.resetCursorRects()
+    }
+
     override func keyDown(with event: NSEvent) {
         currentEventBeganWithMarkedText = hasMarkedText()
         defer { currentEventBeganWithMarkedText = false }
@@ -166,9 +191,7 @@ final class QuickAccessFieldEditor: NSTextView {
         // A held Return or Escape has acted already; a composition's keys are the input method's even then.
         if event.isARepeat, !currentEventBeganWithMarkedText,
            [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Escape].contains(keyCode) { return }
-        // The field being edited is the editor's delegate.
-        if keyCode == kVK_Space, let field = (delegate as AnyObject?) as? QuickAccessSearchField,
-           field.handleSpace(in: self, isRepeat: event.isARepeat) { return }
+        if keyCode == kVK_Space, let field, field.handleSpace(in: self, isRepeat: event.isARepeat) { return }
         super.keyDown(with: event)
     }
 }

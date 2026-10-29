@@ -35,8 +35,10 @@ final class QuickAccessUITests: XCTestCase {
         let search = app.buttons["Search clips"]
         XCTAssertTrue(search.exists, app.debugDescription)
         XCTAssertFalse(app.buttons["Clear search"].exists)
+        let filters = app.descendants(matching: .any)["QuickAccessFilters"]
+        XCTAssertTrue(filters.exists, app.debugDescription)
         for title in ["All", "Text", "Links", "Images", "Files"] {
-            XCTAssertTrue(app.descendants(matching: .any)[title].exists, "\(title)\n\(app.debugDescription)")
+            XCTAssertTrue(filters.descendants(matching: .any)[title].exists, "\(title)\n\(app.debugDescription)")
         }
         XCTAssertLessThan(search.frame.maxY, newest.frame.minY, app.debugDescription)
         // The newest clip is the leftmost frame and the next older clip the frame on its right. That the newest is
@@ -118,7 +120,8 @@ final class QuickAccessUITests: XCTestCase {
         let query = app.searchFields["Quick access query"]
 
         query.typeText("zzzz-no-match")
-        let status = app.descendants(matching: .any)["QuickAccessStatus"]
+        // In the card area, where the clips would be; the toolbar's status is another element.
+        let status = app.descendants(matching: .any)["QuickAccessEmptyState"]
         let noResults = NSPredicate(format: "label == %@ OR value == %@", "No results", "No results")
         expectation(for: noResults, evaluatedWith: status)
         waitForExpectations(timeout: 8)

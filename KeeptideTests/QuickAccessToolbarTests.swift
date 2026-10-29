@@ -167,6 +167,88 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(filters.chips.map(\.intrinsicContentSize.width), widths)
     }
 
+    func testAFailureReadsAtFourAndAHalfToOneOnEitherBand() throws {
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.note = .failure("This item has no plain text.")
+        // The band's solid colour in each appearance, which is what the material comes down to behind 13 pt text.
+        let bands: [(NSAppearance.Name, (Double, Double, Double))] = [
+            (.darkAqua, (0x1E / 255, 0x1E / 255, 0x20 / 255)), (.aqua, (0xF6 / 255, 0xF6 / 255, 0xF8 / 255)),
+        ]
+        for (name, band) in bands {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            var text: NSColor?
+            appearance.performAsCurrentDrawingAppearance {
+                text = toolbar.statusLabel.textColor?.usingColorSpace(.sRGB)
+            }
+            let colour = try XCTUnwrap(text, name.rawValue)
+            XCTAssertEqual(colour.alphaComponent, 1, name.rawValue)
+            let ratio = contrastRatio((Double(colour.redComponent), Double(colour.greenComponent),
+                                       Double(colour.blueComponent)), band)
+            XCTAssertGreaterThanOrEqual(ratio, 4.5, "\(name.rawValue): \(ratio)")
+            // It is still a red.
+            XCTAssertGreaterThan(colour.redComponent, colour.greenComponent + 0.4, name.rawValue)
+        }
+    }
+
+    func testTheFoldedIconShowsTheArrowNotTheTextCursor() throws {
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.layoutSubtreeIfNeeded()
+        // The icon, above the field that lies under it, takes the cursor updates for the pointer over it, so the
+        // pointer there is its arrow and not the field's text cursor.
+        let icon = toolbar.search.foldButton
+        XCTAssertTrue(icon.trackingAreas.contains { $0.options.contains(.cursorUpdate) && $0.options.contains(.inVisibleRect) })
+        let middle = toolbar.convert(NSPoint(x: icon.bounds.midX, y: icon.bounds.midY), from: icon)
+        XCTAssertTrue(toolbar.hitTest(middle) === icon, "The pointer over the folded search is over the icon")
+    }
+
+    func testTheFieldsOwnButtonsAreNotRead() throws {
+        // The field's own magnifier and cancel button are never drawn; VoiceOver must not find them either. The
+        // search control's clear button is the one that is read.
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.setSearchExpanded(true)
+        toolbar.search.hasText = true
+        let field = toolbar.search.field
+        toolbar.layoutSubtreeIfNeeded()
+        // Read as VoiceOver finds it: being edited, with a query.
+        let window = try XCTUnwrap(toolbar.window)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        editor.insertText("beta", replacementRange: NSRange(location: NSNotFound, length: 0))
+        // The field's cell is what VoiceOver reads as the text field; nothing below it is a button.
+        let below = accessibilityElements(below: field)
+        XCTAssertTrue(below.contains { attribute("AXRole", of: $0) as? String == NSAccessibility.Role.textField.rawValue })
+        let buttons = below.filter { attribute("AXRole", of: $0) as? String == NSAccessibility.Role.button.rawValue }
+        XCTAssertEqual(buttons.count, 0, buttons.map { "\(type(of: $0))" }.joined(separator: ", "))
+        XCTAssertEqual(toolbar.search.clearButton.accessibilityLabel(), "Clear search")
+    }
+
+    /// Every element below `element` that an assistive app finds: the children it is given, less those AppKit
+    /// ignores, as the accessibility server leaves them out. Some of AppKit's elements, such as a search field's button
+    /// cells, answer only the older attribute queries, so those are what is asked.
+    private func accessibilityElements(below element: NSObject) -> [NSObject] {
+        let children = NSAccessibility.unignoredChildren(from: attribute("AXChildren", of: element) as? [Any] ?? [])
+            .compactMap { $0 as? NSObject }
+        return children.flatMap { [$0] + accessibilityElements(below: $0) }
+    }
+
+    private func attribute(_ name: String, of element: NSObject) -> Any? {
+        let selector = NSSelectorFromString("accessibilityAttributeValue:")
+        guard element.responds(to: selector) else { return nil }
+        return element.perform(selector, with: name)?.takeUnretainedValue()
+    }
+
+    /// The WCAG 2 contrast ratio of two opaque sRGB colours.
+    private func contrastRatio(_ first: (Double, Double, Double), _ second: (Double, Double, Double)) -> Double {
+        func luminance(_ colour: (Double, Double, Double)) -> Double {
+            func linear(_ value: Double) -> Double {
+                value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+            }
+            return 0.2126 * linear(colour.0) + 0.7152 * linear(colour.1) + 0.0722 * linear(colour.2)
+        }
+        let (a, b) = (luminance(first), luminance(second))
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
+
     /// A toolbar `width` wide, as the band holds it, in a window that is never shown.
     private func makeToolbar(width: CGFloat) -> QuickAccessToolbar {
         let toolbar = QuickAccessToolbar(field: QuickAccessSearchField())

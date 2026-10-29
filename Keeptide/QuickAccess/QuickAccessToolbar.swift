@@ -45,6 +45,10 @@ final class QuickAccessToolbar: NSView {
     var showsSearchFocus = false {
         didSet { updateHalo() }
     }
+    /// Whether the folded search is ringed too while its field has the keys, as when they came to it by the keyboard.
+    var ringsFoldedSearch = false {
+        didSet { updateHalo() }
+    }
     /// The search folds and unfolds in a fifth of a second, or at once with Reduce Motion.
     var reducesMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
@@ -149,7 +153,7 @@ final class QuickAccessToolbar: NSView {
     }
 
     private func updateHalo() {
-        focusHalo.isHidden = !(search.isExpanded && showsSearchFocus)
+        focusHalo.isHidden = !(showsSearchFocus && (search.isExpanded || ringsFoldedSearch))
     }
 
     private func showNote() {
@@ -160,7 +164,7 @@ final class QuickAccessToolbar: NSView {
             statusLabel.setAccessibilityIdentifier("QuickAccessStatus")
         case .failure(let text):
             statusLabel.stringValue = text
-            statusLabel.textColor = .systemRed
+            statusLabel.textColor = ToolbarPalette.failure
             statusLabel.setAccessibilityIdentifier("QuickAccessFailure")
         case .copy, .none:
             break
@@ -182,7 +186,7 @@ final class QuickAccessSearchControl: NSView {
     let field: QuickAccessSearchField
     let magnifier = NSImageView()
     /// The circle as a button: a click unfolds the search. It is there only while the search is folded.
-    let foldButton = NSButton(title: "", target: nil, action: nil)
+    let foldButton = QuickAccessFoldButton()
     let clearButton = QuickAccessClearButton()
     var onUnfold: (() -> Void)?
     var onClear: (() -> Void)?
@@ -192,6 +196,10 @@ final class QuickAccessSearchControl: NSView {
             guard isExpanded != oldValue else { return }
             needsLayout = true
             needsDisplay = true
+            // The field under the icon, and its editor while it is edited, take the text cursor only while it is open.
+            for view in [field, field.currentEditor(), foldButton].compactMap({ $0 }) {
+                window?.invalidateCursorRects(for: view)
+            }
         }
     }
     /// Whether there is a query to clear.
@@ -211,8 +219,6 @@ final class QuickAccessSearchControl: NSView {
         magnifier.imageScaling = .scaleProportionallyUpOrDown
         magnifier.contentTintColor = ToolbarPalette.glyph
         magnifier.setAccessibilityElement(false)
-        foldButton.isBordered = false
-        foldButton.refusesFirstResponder = true
         foldButton.target = self
         foldButton.action = #selector(unfold)
         foldButton.setAccessibilityLabel("Search clips")
@@ -263,7 +269,30 @@ final class QuickAccessSearchControl: NSView {
     @objc private func clear() { onClear?() }
 }
 
-/// A 3 pt ring in the accent colour, at 45 percent, around the open search while it has the keys.
+/// The folded search's icon as a button. Over it the pointer is the arrow, not the text cursor of the field beneath.
+@MainActor
+final class QuickAccessFoldButton: NSButton {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        title = ""
+        isBordered = false
+        refusesFirstResponder = true
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.cursorUpdate, .activeAlways, .inVisibleRect],
+                                       owner: self))
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .arrow)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.arrow.set()
+    }
+}
+
+/// A 3 pt ring in the accent colour, at 45 percent, around the search while its field has the keys.
 @MainActor
 final class QuickAccessFocusHalo: NSView {
     static let width: CGFloat = 3
@@ -611,16 +640,27 @@ enum ToolbarPalette {
     static let placeholder = colour(dark: (235, 235, 245, 0.5), light: (60, 60, 67, 0.5))
     static let clearFill = colour(dark: (235, 235, 245, 0.35), light: (60, 60, 67, 0.35))
     static let clearCross = colour(dark: (0x1C, 0x1C, 0x1E, 1), light: (255, 255, 255, 1))
+    /// Why a copy failed: the system's red in dark mode, and in light mode a deeper red, which reads at 4.5:1 on the
+    /// light band as the system's red does not.
+    static let failure = NSColor(name: nil) { appearance in
+        isDark(appearance) ? .systemRed : NSColor(srgbRed: 0xD7 / 255, green: 0, blue: 0x15 / 255, alpha: 1)
+    }
 
     private typealias Components = (red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat)
 
+    private static let appearances: [NSAppearance.Name] = [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua,
+                                                            .accessibilityHighContrastAqua]
+
+    private static func isDark(_ appearance: NSAppearance) -> Bool {
+        let match = appearance.bestMatch(from: appearances)
+        return match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+    }
+
     private static func colour(dark: Components, light: Components) -> NSColor {
         NSColor(name: nil) { appearance in
-            let match = appearance.bestMatch(from: [.darkAqua, .aqua, .accessibilityHighContrastDarkAqua,
-                                                    .accessibilityHighContrastAqua])
-            let isDark = match == .darkAqua || match == .accessibilityHighContrastDarkAqua
+            let match = appearance.bestMatch(from: appearances)
             let increased = match == .accessibilityHighContrastDarkAqua || match == .accessibilityHighContrastAqua
-            let components = isDark ? dark : light
+            let components = isDark(appearance) ? dark : light
             return NSColor(srgbRed: components.red / 255, green: components.green / 255, blue: components.blue / 255,
                            alpha: increased ? min(1, components.alpha * 1.5) : components.alpha)
         }

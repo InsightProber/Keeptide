@@ -75,25 +75,30 @@ final class SettingsTests: XCTestCase {
         defer { window.close() }
         window.contentView = hosting
         hosting.layoutSubtreeIfNeeded()
-        settleLayout()
         // SwiftUI builds what VoiceOver reads only once an assistive client asks the app for anything; asking the
-        // app's own accessibility element for its role is enough.
+        // app's own accessibility element for its role is enough. A host that may not use accessibility at all
+        // cannot run this test.
         var applicationRole: CFTypeRef?
-        _ = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()), kAXRoleAttribute as CFString,
-                                          &applicationRole)
-        settleLayout()
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        func radioButtons() -> [NSObject] {
+            accessibilityElements(in: hosting).first { role(of: $0) == .radioGroup }
+                .map { accessibilityElements(in: $0).filter { role(of: $0) == .radioButton } } ?? []
+        }
+        func chosen() -> [Int?] {
+            radioButtons().map { ($0.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }
+        }
+        let built = waitUntil { radioButtons().count == 3 }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
 
-        let group = try XCTUnwrap(accessibilityElements(in: hosting).first { role(of: $0) == .radioGroup })
-        let buttons = accessibilityElements(in: group).filter { role(of: $0) == .radioButton }
-        XCTAssertEqual(buttons.map { label(of: $0) }, ["Small", "Medium", "Large"])
-        XCTAssertEqual(buttons.map { ($0.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }, [0, 1, 0],
-                       "Medium is the one chosen")
+        XCTAssertEqual(radioButtons().map { label(of: $0) }, ["Small", "Medium", "Large"])
+        XCTAssertEqual(chosen(), [0, 1, 0], "Medium is the one chosen")
 
         // The group follows the preference: once Large is chosen, Large reads as the chosen one.
         preferences.cardSize = .large
-        settleLayout()
-        let chosen = accessibilityElements(in: group).filter { role(of: $0) == .radioButton }
-        XCTAssertEqual(chosen.map { ($0.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }, [0, 0, 1])
+        XCTAssertTrue(waitUntil { chosen() == [0, 0, 1] }, "\(chosen())")
     }
 
     func testChangesPersistImmediately() throws {
@@ -214,6 +219,16 @@ final class SettingsTests: XCTestCase {
 
     private func settleLayout() {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+    }
+
+    /// Runs the main run loop in short turns until `condition` holds or five seconds have passed, and says which.
+    private func waitUntil(_ condition: () -> Bool) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while !condition() {
+            guard Date() < deadline else { return false }
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        }
+        return true
     }
 
     /// Every element below `element` that VoiceOver could reach, depth first. SwiftUI's elements do not declare the

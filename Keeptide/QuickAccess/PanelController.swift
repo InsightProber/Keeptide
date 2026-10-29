@@ -37,6 +37,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The key last posted again for the search field. Posting copies an event, so the copy is known by when
     /// it was pressed and which key it is; no two presses share a time.
     private var repostedKey: (timestamp: TimeInterval, keyCode: UInt16)?
+    /// Whether the keys came to the search field with Tab, ⇧Tab or ↑, so that its circle is ringed even while it is
+    /// folded. Keys the field has from the start, as the panel opens, leave the circle as it is.
+    private var searchReachedByKeyboard = false
     /// Shows the actions menu. Tests replace it, since a real menu waits for a choice.
     var presentActionMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
@@ -118,6 +121,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     override func close() {
         guard isSessionOpen else { return }
         isSessionOpen = false
+        searchReachedByKeyboard = false
         state.close()
         window?.makeFirstResponder(nil)
         window?.orderOut(nil)
@@ -190,7 +194,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// their keys mean.
     private func update() {
         layoutPanel()
+        let wasExpanded = toolbar.search.isExpanded
         toolbar.setSearchExpanded(state.isSearchExpanded)
+        if toolbar.search.isExpanded != wasExpanded {
+            // The field has moved and changed size, so an input method's candidates move with it.
+            (searchField.currentEditor() as? NSTextView)?.inputContext?.invalidateCharacterCoordinates()
+        }
         toolbar.search.hasText = !state.query.isEmpty
         toolbar.note = toolbarNote
         filterRow.queryIsEmpty = state.query.isEmpty
@@ -271,6 +280,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             guard !state.selection.rows.isEmpty else { return }
             window?.makeFirstResponder(strip)
         case .focusSearchField:
+            searchReachedByKeyboard = true
             focusSearchField()
         case .cycleFocus(let forward):
             cycleFocus(forward: forward)
@@ -318,6 +328,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         switch QuickAccessKeyRouter.focus(after: currentFocus, forward: forward,
                                           hasClips: !state.selection.rows.isEmpty) {
         case .searchField:
+            searchReachedByKeyboard = true
             focusSearchField()
         case .filters:
             window?.makeFirstResponder(filterRow)
@@ -336,11 +347,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         update()
     }
 
-    /// A click on the folded search, or ⌘F: the search opens and its field takes the keys.
+    /// A click on the folded search, or ⌘F: the search opens and its field takes the keys. A field that has them
+    /// already keeps its editing as it is: its caret, its Undo and any composition under way.
     private func unfoldSearch() {
         state.unfoldSearch()
         update()
-        focusSearchField()
+        if currentFocus != .searchField { focusSearchField() }
     }
 
     /// Something was typed into the field, perhaps while it was folded: the search opens to show it.
@@ -352,7 +364,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     /// The clear button empties the field, as deleting its text would, and leaves the search open with the keys.
     private func clearSearchText() {
-        focusSearchField()
+        if currentFocus != .searchField { focusSearchField() }
         guard let editor = searchField.currentEditor() as? NSTextView else { return }
         // Through the editor, so the change is reported as typing is and Undo brings the query back.
         editor.selectAll(nil)
@@ -387,9 +399,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return .preview
     }
 
-    /// The open search is ringed while its field has the keys.
+    /// The open search is ringed while its field has the keys, and the folded one when they came by the keyboard. A
+    /// moment with no view holding the keys, as they pass from one view to another, leaves the ring as it is.
     private func focusChanged() {
-        toolbar.showsSearchFocus = currentFocus == .searchField
+        let focus = currentFocus
+        if let focus, focus != .searchField { searchReachedByKeyboard = false }
+        toolbar.showsSearchFocus = focus == .searchField
+        toolbar.ringsFoldedSearch = searchReachedByKeyboard
     }
 
     /// Restores focus now and again once SwiftUI has applied the new layout. Focus that was in the preview goes
@@ -451,12 +467,18 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Menus
 
-    /// The ⋯ menu, below its button.
+    /// The ⋯ menu, below its button. Each item closes the panel, then opens what it names.
     @objc private func showMoreMenu() {
         let menu = NSMenu(title: "More")
         menu.autoenablesItems = false
-        menu.addItem(ClosureMenuItem("Open Library") { [weak self] in self?.onOpenLibrary?() })
-        menu.addItem(ClosureMenuItem("Settings…") { [weak self] in self?.onOpenSettings?() })
+        menu.addItem(ClosureMenuItem("Open Library") { [weak self] in
+            self?.close()
+            self?.onOpenLibrary?()
+        })
+        menu.addItem(ClosureMenuItem("Settings…") { [weak self] in
+            self?.close()
+            self?.onOpenSettings?()
+        })
         let button = toolbar.moreButton
         presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
     }

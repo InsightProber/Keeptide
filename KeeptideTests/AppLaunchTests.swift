@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Carbon
 import SwiftUI
 import XCTest
@@ -6,6 +7,9 @@ import XCTest
 
 @MainActor
 final class AppLaunchTests: XCTestCase {
+    /// A panel a test set up in a task of its own, for the test to look at once the task is done.
+    private var panelUnderTest: PanelController?
+
     func testCaptureMenuDoesNotEnableRecordingBeforeItsStoreIsReady() throws {
         var toggled = false
         let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
@@ -635,6 +639,202 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.isSessionOpen)
     }
 
+    func testClicksAroundTheOpenPreviewKeepTheCardAndCloseInTheGap() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        controller.perform(.togglePreview)
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let band = try bandRect(in: window)
+        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let card = text.convert(text.bounds, to: nil)
+        XCTAssertGreaterThan(card.minY, band.maxY)
+        let click = { (point: NSPoint) in
+            try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: 1, pressure: 1))
+        }
+
+        // The preview card is the panel's own: a click on it keeps the panel and the card open.
+        window.sendEvent(try click(NSPoint(x: card.midX, y: card.midY)))
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+
+        // The 16 pt between the card and the band holds only the band's shadow: a click there closes the panel.
+        window.sendEvent(try click(NSPoint(x: band.midX, y: band.maxY + StripLayout.previewGap / 2)))
+        XCTAssertFalse(controller.isSessionOpen)
+    }
+
+    func testCommandFKeepsTheEditingSession() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        editor.insertText("beta", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "beta" }
+        editor.setSelectedRange(NSRange(location: 2, length: 0))
+
+        // ⌘F in a search that is already being edited leaves the editing as it is: the caret stays where it was.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertTrue(field.currentEditor() === editor)
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 2, length: 0))
+
+        // And a composition in progress goes on.
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertEqual(editor.markedRange(), NSRange(location: 2, length: 2))
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 4, length: 0))
+        XCTAssertTrue(isEditing(field, in: window))
+    }
+
+    func testAnInputMethodsFirstKeyUnfoldsTheSearch() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha", "beta"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        XCTAssertFalse(controller.state.isSearchExpanded)
+
+        // The first key of a composition, as an input method gives it: marked text, before any change is reported.
+        editor.setMarkedText("b", selectedRange: NSRange(location: 1, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+
+        // The search opens to show it, and the composition goes on in the field.
+        XCTAssertTrue(controller.state.isSearchExpanded)
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(toolbar.search.frame.width, 300)
+        XCTAssertEqual(field.alphaValue, 1)
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertEqual(editor.markedRange(), NSRange(location: 0, length: 1))
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertEqual(controller.state.query, "", "Nothing is searched for until the composition is committed")
+    }
+
+    func testTheClearButtonEmptiesTheQueryAndUndoBringsItBack() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let undo = try XCTUnwrap(editor.undoManager)
+        let groupsByEvent = undo.groupsByEvent
+        defer { undo.groupsByEvent = groupsByEvent }
+        undo.groupsByEvent = false
+        undo.beginUndoGrouping()
+        editor.insertText("beta", replacementRange: NSRange(location: NSNotFound, length: 0))
+        undo.endUndoGrouping()
+        editor.breakUndoCoalescing()
+        try await SearchTestSupport.waitUntil { controller.state.query == "beta" }
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(toolbar.search.clearButton.isHidden)
+
+        // The clear button empties the query; the search stays open with the keys in its field.
+        undo.beginUndoGrouping()
+        toolbar.search.clearButton.performClick(nil)
+        if undo.groupingLevel > 0 { undo.endUndoGrouping() }
+        XCTAssertEqual(field.stringValue, "")
+        XCTAssertEqual(controller.state.query, "")
+        XCTAssertTrue(controller.state.isSearchExpanded)
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertTrue(field.currentEditor() === editor)
+
+        // Undo brings the query back.
+        XCTAssertTrue(undo.canUndo)
+        undo.undo()
+        XCTAssertEqual(field.stringValue, "beta")
+        XCTAssertEqual(controller.state.query, "beta")
+    }
+
+    func testEachMoreMenuItemClosesThePanelAndRunsItsCommand() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var ran: [String] = []
+        controller.onOpenLibrary = { [unowned controller] in ran.append("library, panel open: \(controller.isSessionOpen)") }
+        controller.onOpenSettings = { [unowned controller] in ran.append("settings, panel open: \(controller.isSessionOpen)") }
+        var menus: [NSMenu] = []
+        controller.presentMoreMenu = { menu, _, _ in menus.append(menu) }
+
+        // Open Library closes the panel, then opens the Library.
+        toolbar.moreButton.performClick(nil)
+        try XCTUnwrap(menus.last).performActionForItem(at: 0)
+        XCTAssertFalse(controller.isSessionOpen)
+        XCTAssertEqual(ran, ["library, panel open: false"])
+
+        // Settings… does the same for Settings.
+        controller.show()
+        toolbar.moreButton.performClick(nil)
+        try XCTUnwrap(menus.last).performActionForItem(at: 1)
+        XCTAssertFalse(controller.isSessionOpen)
+        XCTAssertEqual(ran, ["library, panel open: false", "settings, panel open: false"])
+    }
+
+    func testTabIntoTheFoldedSearchRingsItsCircle() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        toolbar.layoutSubtreeIfNeeded()
+        // As the panel opens, the keys are in the folded field and the circle has no ring.
+        XCTAssertTrue(toolbar.focusHalo.isHidden)
+
+        // Tab round from the strip to the search: the folded circle is ringed, and stays folded.
+        controller.perform(.focusResults)
+        let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
+        strip.keyDown(with: try key(kVK_Tab, "\t"))
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertFalse(controller.state.isSearchExpanded)
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(toolbar.search.frame.width, 32)
+        XCTAssertFalse(toolbar.focusHalo.isHidden)
+        XCTAssertEqual(toolbar.focusHalo.frame, toolbar.search.frame.insetBy(dx: -3, dy: -3))
+
+        // The ring goes with the keys, and comes back with Shift-Tab from the filters.
+        try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertTab(_:)))
+        let filters = try XCTUnwrap(window.firstResponder as? QuickAccessFilterRow)
+        XCTAssertTrue(toolbar.focusHalo.isHidden)
+        filters.keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertFalse(toolbar.focusHalo.isHidden)
+        XCTAssertFalse(controller.state.isSearchExpanded)
+    }
+
+    func testTheEmptyStateAndTheToolbarStatusHaveTheirOwnIdentifiers() throws {
+        // The panel is set up and searched in a task, and the test waits for it. What follows asks accessibility for
+        // SwiftUI's elements, which turns the run loop over; it must not run inside a test's own task.
+        let searched = expectation(description: "A search that finds nothing")
+        Task { @MainActor in
+            defer { searched.fulfill() }
+            let (controller, _) = try await self.makePanelWithClips(["alpha", "beta"])
+            let (_, editor) = try self.searchEditor(in: controller)
+            editor.insertText("zzzz-no-match", replacementRange: NSRange(location: NSNotFound, length: 0))
+            try await SearchTestSupport.waitUntil { controller.state.phase == .noResults }
+            self.panelUnderTest = controller
+        }
+        wait(for: [searched], timeout: 20)
+        let controller = try XCTUnwrap(panelUnderTest)
+        defer { controller.state.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+
+        // "No results" in the card area is the empty state's, not the toolbar status's: a test that looks for one can
+        // never find the other.
+        let elements = try swiftUIAccessibilityElements(in: content) { elements in
+            elements.contains { self.text(of: $0)?.contains("No results") == true }
+        }
+        let noResults = try XCTUnwrap(elements.first { self.text(of: $0)?.contains("No results") == true })
+        XCTAssertEqual(accessibility(noResults, "accessibilityIdentifier") as? String, "QuickAccessEmptyState")
+        XCTAssertFalse(elements.contains { (accessibility($0, "accessibilityIdentifier") as? String) == "QuickAccessStatus" },
+                       "Only the toolbar's status is QuickAccessStatus, and it shows nothing here")
+    }
+
     func testOpenStripDocksTheNewestClipAtTheLeftEnd() async throws {
         let (controller, _) = try await makePanelWithClips((0..<40).reversed().map { "clip \($0)" })
         let window = try XCTUnwrap(controller.window)
@@ -1233,6 +1433,47 @@ final class AppLaunchTests: XCTestCase {
         let layout = try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.layout
         return NSRect(x: StripLayout.sideMargin, y: layout.roomBelow, width: layout.metrics.bandWidth,
                       height: StripLayout.bandHeight(layout.metrics))
+    }
+
+    /// Every element below `view` that VoiceOver could reach, SwiftUI's included, once `ready` finds what it needs.
+    /// SwiftUI builds its elements only once an assistive client asks the app for anything, so the app's own
+    /// accessibility element is asked for its role first. Where the test host may not use accessibility at all, the
+    /// test is skipped.
+    private func swiftUIAccessibilityElements(in view: NSView,
+                                              until ready: ([NSObject]) -> Bool) throws -> [NSObject] {
+        var role: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()), kAXRoleAttribute as CFString,
+                                                   &role)
+        let deadline = Date(timeIntervalSinceNow: 5)
+        var elements = accessibilityElements(below: view)
+        while !ready(elements), Date() < deadline {
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+            elements = accessibilityElements(below: view)
+        }
+        if !ready(elements), status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        return elements
+    }
+
+    /// The elements below `element`, depth first.
+    private func accessibilityElements(below element: NSObject) -> [NSObject] {
+        let children = (accessibility(element, "accessibilityChildren") as? [Any] ?? []).compactMap { $0 as? NSObject }
+        return children.flatMap { [$0] + accessibilityElements(below: $0) }
+    }
+
+    /// An accessibility attribute of an element, asked for by its getter's name. SwiftUI's elements do not declare
+    /// the accessibility protocol to Swift, and some of AppKit's answer only some of its getters.
+    private func accessibility(_ element: NSObject, _ getter: String) -> Any? {
+        let selector = NSSelectorFromString(getter)
+        guard element.responds(to: selector) else { return nil }
+        return element.perform(selector)?.takeUnretainedValue()
+    }
+
+    /// What an accessibility element says: its label, or its value where it has no label.
+    private func text(of element: NSObject) -> String? {
+        if let label = accessibility(element, "accessibilityLabel") as? String, !label.isEmpty { return label }
+        return accessibility(element, "accessibilityValue") as? String
     }
 
     /// The key caps the panel shows, left to right.

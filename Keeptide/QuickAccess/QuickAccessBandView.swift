@@ -94,7 +94,8 @@ struct QuickAccessBandView: View {
             .accessibilityIdentifier("QuickAccessEmptyState")
         } else {
             VStack(spacing: 6) {
-                Text(message.text).font(.system(size: 15)).accessibilityIdentifier("QuickAccessStatus")
+                // The toolbar's status is QuickAccessStatus; this is the card area's own.
+                Text(message.text).font(.system(size: 15)).accessibilityIdentifier("QuickAccessEmptyState")
                 if let detail = message.detail { Text(detail).font(.system(size: 13)).foregroundStyle(.secondary) }
             }
             .multilineTextAlignment(.center)
@@ -172,8 +173,9 @@ final class QuickAccessBandBackdrop: NSView {
                       height: max(0, bounds.height - reach.top - reach.bottom))
     }
 
-    /// The band's outline in `rect`, with continuous corners as the content's clip has them.
-    static func outline(in rect: NSRect) -> CGPath {
+    /// The band's outline in `rect`, with continuous corners as the content's clip has them. It only builds a path,
+    /// so it may be called from any thread.
+    nonisolated static func outline(in rect: NSRect) -> CGPath {
         RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous).path(in: rect).cgPath
     }
 
@@ -184,9 +186,10 @@ final class QuickAccessBandBackdrop: NSView {
         surface.frame = band
         if band.size != maskedSize {
             maskedSize = band.size
-            material.maskImage = NSImage(size: band.size, flipped: false) { rect in
+            // AppKit may draw the mask away from the main thread, so its handler touches nothing of the view's.
+            material.maskImage = NSImage(size: band.size, flipped: false) { @Sendable rect in
                 NSColor.black.setFill()
-                NSBezierPath(cgPath: Self.outline(in: rect)).fill()
+                NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: rect)).fill()
                 return true
             }
             needsDisplay = true
