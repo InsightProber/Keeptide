@@ -115,6 +115,13 @@ final class PasteboardWriter {
     /// preferring text over a link, joined by line breaks and written as the only
     /// representation in UTF-8.
     nonisolated static func preparePlainText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        try utf8PlainText(plainText(content), of: content)
+    }
+
+    /// The text `preparePlainText` writes, under the same rules and errors: each item's first cleanly
+    /// decodable text, preferring text over a link, joined by line breaks. Throws `.noPlainText` when no
+    /// item has any.
+    nonisolated static func plainText(_ content: ResolvedContent) throws -> String {
         guard content.isActionable else { throw PasteboardWriterError.nonActionableContent }
         let items = Dictionary(grouping: content.representations, by: \.itemIndex)
         var texts: [String] = []
@@ -139,10 +146,26 @@ final class PasteboardWriter {
                 break
             }
         }
-        guard let snapshotID = content.representations.first?.snapshotID, !texts.isEmpty else {
+        guard !texts.isEmpty else { throw PasteboardWriterError.noPlainText }
+        return texts.joined(separator: "\n")
+    }
+
+    /// One `public.utf8-plain-text` representation holding `command.text`; the clip's other formats are not
+    /// written. Throws `.noPlainText` when there is no text, or nothing is left after removing the line break.
+    nonisolated static func prepareCommand(_ content: ResolvedContent) throws
+        -> (PreparedPasteboardContent, TerminalCommand) {
+        let command = try TerminalCommand(plainText: plainText(content))
+        guard !command.text.isEmpty else { throw PasteboardWriterError.noPlainText }
+        return (try utf8PlainText(command.text, of: content), command)
+    }
+
+    /// The one representation that `preparePlainText` and `prepareCommand` write.
+    private nonisolated static func utf8PlainText(_ text: String, of content: ResolvedContent) throws
+        -> PreparedPasteboardContent {
+        guard let snapshotID = content.representations.first?.snapshotID else {
             throw PasteboardWriterError.noPlainText
         }
-        let utf8 = Data(texts.joined(separator: "\n").utf8)
+        let utf8 = Data(text.utf8)
         return PreparedPasteboardContent(representations: [RepresentationValue(
             snapshotID: snapshotID, itemIndex: 0, representationIndex: 0,
             typeIdentifier: "public.utf8-plain-text", storage: .portable,

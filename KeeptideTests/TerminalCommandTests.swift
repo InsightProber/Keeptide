@@ -1,0 +1,182 @@
+import AppKit
+import XCTest
+@testable import Keeptide
+
+@MainActor
+final class TerminalCommandTests: XCTestCase {
+    func testOnlyOneTrailingLineBreakIsRemoved() {
+        // CRLF is one Character, so it goes whole.
+        for input in ["ls\n", "ls\r\n", "ls"] {
+            let command = TerminalCommand(plainText: input)
+            XCTAssertEqual(command.text, "ls", input.debugDescription)
+            XCTAssertFalse(command.needsConfirmation, input.debugDescription)
+            XCTAssertEqual(command.lineCount, 1, input.debugDescription)
+        }
+        // A second break is not removed, and it is a line break the user has to review.
+        for (input, left) in [("ls\n\n", "ls\n"), ("ls\r\n\r\n", "ls\r\n"), ("ls\n\r\n", "ls\n")] {
+            let command = TerminalCommand(plainText: input)
+            XCTAssertEqual(command.text, left, input.debugDescription)
+            XCTAssertTrue(command.needsConfirmation, input.debugDescription)
+            XCTAssertEqual(command.lineCount, 2, input.debugDescription)
+        }
+        // Only "\n" and "\r\n" count as the trailing break. A lone CR is what Return sends, so it stays,
+        // and so do LF CR and the Unicode separators.
+        for input in ["ls\r", "ls\n\r", "ls\u{2028}", "ls\u{2029}", "ls\u{85}"] {
+            let command = TerminalCommand(plainText: input)
+            XCTAssertEqual(Array(command.text.utf8), Array(input.utf8), input.debugDescription)
+            XCTAssertTrue(command.needsConfirmation, input.debugDescription)
+            XCTAssertGreaterThan(command.lineCount, 1, input.debugDescription)
+        }
+        // A command that is nothing but its line break is empty, and an empty one stays empty.
+        for input in ["\n", "\r\n", ""] {
+            let command = TerminalCommand(plainText: input)
+            XCTAssertEqual(command.text, "", input.debugDescription)
+            XCTAssertFalse(command.needsConfirmation, input.debugDescription)
+            XCTAssertEqual(command.lineCount, 1, input.debugDescription)
+        }
+        // Nothing else is rewritten, byte for byte: spaces, quotes, paths, tabs, composed and decomposed text.
+        let untouched = ["  ls -la  ", "cd '/Users/Synthetic/My Folder' && ls \"$HOME\"",
+                         "\techo\t中文  ", "e\u{301}cho \u{E9}"]
+        for input in untouched {
+            for suffix in ["", "\n"] {
+                let command = TerminalCommand(plainText: input + suffix)
+                XCTAssertEqual(Array(command.text.utf8), Array(input.utf8), input.debugDescription)
+            }
+        }
+    }
+
+    func testInnerLineBreaksNeedConfirmation() {
+        let script = TerminalCommand(plainText: "set -e\necho synthetic-gamma\n")
+        XCTAssertEqual(script.text, "set -e\necho synthetic-gamma")
+        XCTAssertTrue(script.needsConfirmation)
+        XCTAssertEqual(script.lineCount, 2)
+        // Every Character.isNewline counts as one break: a lone CR, VT, FF, NEL and the Unicode separators.
+        // CRLF is one Character, so it is one break.
+        for lineBreak in ["\n", "\r", "\r\n", "\u{0B}", "\u{0C}", "\u{85}", "\u{2028}", "\u{2029}"] {
+            let command = TerminalCommand(plainText: "a\(lineBreak)b")
+            XCTAssertTrue(command.needsConfirmation, lineBreak.debugDescription)
+            XCTAssertEqual(command.lineCount, 2, lineBreak.debugDescription)
+        }
+        XCTAssertTrue(TerminalCommand(plainText: "a\rb").needsConfirmation)
+        XCTAssertTrue(TerminalCommand(plainText: "a\u{2028}b").needsConfirmation)
+        XCTAssertEqual(TerminalCommand(plainText: "a\nb\r\nc\rd\u{2028}e\n").lineCount, 5)
+    }
+
+    func testControlCharactersAndOtherBreaksNeedConfirmation() {
+        // U+000F runs the current line in bash and zsh, and ESC [ 201 ~ ends a bracketed paste early.
+        for input in ["echo hi\u{0F}", "echo \u{1B}[201~"] {
+            let command = TerminalCommand(plainText: input)
+            XCTAssertTrue(command.needsConfirmation, input.debugDescription)
+            XCTAssertEqual(command.lineCount, 1, input.debugDescription)
+            XCTAssertEqual(command.text, input)
+        }
+        let tab = TerminalCommand(plainText: "printf 'a\tb'")
+        XCTAssertFalse(tab.needsConfirmation)
+        XCTAssertEqual(tab.lineCount, 1)
+        // Every other C0 and C1 control character needs it. Only the line breaks among them add a line.
+        let lineBreaks: Set<UInt8> = [0x0A, 0x0B, 0x0C, 0x0D, 0x85]
+        for value in Array(UInt8(0x00)...0x1F) + Array(UInt8(0x7F)...0x9F) where value != 0x09 {
+            let input = "a" + String(Unicode.Scalar(value)) + "b"
+            let command = TerminalCommand(plainText: input)
+            XCTAssertTrue(command.needsConfirmation, input.debugDescription)
+            XCTAssertEqual(command.lineCount, lineBreaks.contains(value) ? 2 : 1, input.debugDescription)
+        }
+        // Printable ASCII, CJK, emoji and combining sequences are not controls.
+        let printable = String((UInt8(0x20)...0x7E).map { Character(Unicode.Scalar($0)) })
+        for input in [printable, "echo 你好 \u{1F600} e\u{301} \u{1F1E8}\u{1F1F3} \u{1F468}\u{200D}\u{1F469}"] {
+            let command = TerminalCommand(plainText: input + "\n")
+            XCTAssertFalse(command.needsConfirmation, input.debugDescription)
+            XCTAssertEqual(command.lineCount, 1, input.debugDescription)
+        }
+    }
+
+    func testVisibleTextShowsBreaksTabsAndControls() {
+        let command = TerminalCommand(plainText: "a\tb\nc\u{1B}\u{7F}\u{85}d\n")
+        XCTAssertEqual(command.visibleText, "a⇥\tb↵\nc␛␡↵\u{85}d")
+        // The display never changes what is written.
+        XCTAssertEqual(command.text, "a\tb\nc\u{1B}\u{7F}\u{85}d")
+        // A break is one symbol before itself, whatever its length: CRLF, a lone CR and U+2028 included.
+        XCTAssertEqual(TerminalCommand(plainText: "a\r\nb\rc\u{2028}d").visibleText, "a↵\r\nb↵\rc↵\u{2028}d")
+        // The other U+0000-U+001F characters become the control picture U+2400 plus their value.
+        XCTAssertEqual(TerminalCommand(plainText: "\u{00}\u{01}\u{0F}\u{1F}").visibleText,
+                       "\u{2400}\u{2401}\u{240F}\u{241F}")
+        // The other control characters show their code point.
+        XCTAssertEqual(TerminalCommand(plainText: "\u{80}\u{9F}").visibleText, "⟨U+0080⟩⟨U+009F⟩")
+        // Text with nothing to show is unchanged, and the one trailing break never gets a symbol.
+        XCTAssertEqual(TerminalCommand(plainText: "echo 你好 e\u{301}\n").visibleText, "echo 你好 e\u{301}")
+    }
+
+    func testPrepareCommandWritesOnlyTheCommandText() throws {
+        let board = makeBoard()
+        let rtf = Data("{\\rtf1\\ansi echo x}".utf8)
+        let rich = try content([[("public.rtf", rtf), ("public.utf8-plain-text", Data("echo x\n".utf8))]])
+
+        let (prepared, command) = try PasteboardWriter.prepareCommand(rich)
+        let token = try PasteboardWriter(pasteboard: board).write(prepared)
+
+        XCTAssertEqual(command, TerminalCommand(plainText: "echo x\n"))
+        XCTAssertEqual(command.text, "echo x")
+        XCTAssertFalse(command.needsConfirmation)
+        XCTAssertEqual(board.pasteboardItems?.count, 1)
+        let item = try XCTUnwrap(board.pasteboardItems?.first)
+        XCTAssertEqual(item.types.map(\.rawValue).filter { $0 != OwnWriteToken.typeIdentifier },
+                       ["public.utf8-plain-text"])
+        XCTAssertEqual(item.data(forType: .init("public.utf8-plain-text")), Data("echo x".utf8))
+        XCTAssertTrue(token.matches(pasteboard: board))
+
+        // The board gets the text itself. The visible symbols are for the confirmation card only.
+        let raw = "a\tb\nc\u{1B}d\r\n"
+        let (preparedRaw, rawCommand) = try PasteboardWriter.prepareCommand(
+            content([[("public.utf8-plain-text", Data(raw.utf8))]]))
+        _ = try PasteboardWriter(pasteboard: board).write(preparedRaw)
+        XCTAssertTrue(rawCommand.needsConfirmation)
+        XCTAssertEqual(rawCommand.lineCount, 2)
+        XCTAssertEqual(board.pasteboardItems?.count, 1)
+        XCTAssertEqual(board.pasteboardItems?.first?.data(forType: .init("public.utf8-plain-text")),
+                       Data("a\tb\nc\u{1B}d".utf8))
+
+        // Several items become one command, and the line between them needs a review.
+        let joined = try PasteboardWriter.prepareCommand(content([
+            [("public.utf8-plain-text", Data("first\n".utf8))],
+            [("public.utf8-plain-text", Data("second\n".utf8))],
+        ])).1
+        XCTAssertEqual(joined.text, "first\n\nsecond")
+        XCTAssertTrue(joined.needsConfirmation)
+        XCTAssertEqual(joined.lineCount, 3)
+
+        // Without text, or with nothing left after the line break, there is no command.
+        assertRefused(try content([[("public.utf8-plain-text", Data("\n".utf8))]]), .noPlainText)
+        assertRefused(try content([[("public.utf8-plain-text", Data("\r\n".utf8))]]), .noPlainText)
+        assertRefused(try content([[("public.png", Data([0x89, 0x50, 0x4E, 0x47]))]]), .noPlainText)
+        // The rest of preparePlainText's rules and errors apply.
+        let tampered = rich.representations.map { value -> RepresentationValue in
+            var value = value
+            if value.typeIdentifier == "public.utf8-plain-text" { value.digest = Data(repeating: 0, count: 32) }
+            return value
+        }
+        assertRefused(ResolvedContent(ref: rich.ref, integrity: .complete, representations: tampered),
+                      .invalidRepresentationBytes(itemIndex: 0, representationIndex: 1))
+        assertRefused(ResolvedContent(ref: rich.ref, integrity: .corrupt, representations: rich.representations),
+                      .nonActionableContent)
+    }
+
+    private func assertRefused(_ content: ResolvedContent, _ expected: PasteboardWriterError,
+                               file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertThrowsError(try PasteboardWriter.prepareCommand(content), file: file, line: line) { error in
+            XCTAssertEqual(error as? PasteboardWriterError, expected, file: file, line: line)
+        }
+    }
+
+    private func content(_ items: [[(String, Data)]]) throws -> ResolvedContent {
+        let capture = try ContentStoreFixtures.capture(items)
+        let item = ContentStoreFixtures.item(capture)
+        return ResolvedContent(ref: ContentStoreFixtures.ref(item, capture), integrity: .complete,
+                               representations: capture.representations)
+    }
+
+    private func makeBoard() -> NSPasteboard {
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        return board
+    }
+}
