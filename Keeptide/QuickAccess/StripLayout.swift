@@ -29,31 +29,32 @@ struct StripMetrics: Equatable {
     }
 }
 
-/// Where the film of frames lies in the band, and which ends of the band have more content beyond them.
+/// Where the film of frames lies in the band.
 struct StripPlacement: Equatable {
     /// The left edge of index 0's frame within the band.
     let firstOrigin: CGFloat
-    /// The film goes on to the left of its dock position, so the band's left end fades out.
-    let fadesLeading: Bool
-    /// The film goes on to the right of its dock position, or more clips may follow, so the band's right end
-    /// fades out.
-    let fadesTrailing: Bool
 }
 
-/// Geometry of the quick access strip. The band is the glass bar holding the search row, the
-/// frames and the caption; the panel is the window around it. All values are in points.
+/// Geometry of the quick access strip. The band is the bar holding the toolbar and the frames; the panel is the
+/// window around it. All values are in points.
 enum StripLayout {
-    /// The share of the band's width that fades out at each end.
-    static let fade: CGFloat = 0.14
-    static let searchHeight: CGFloat = 70
-    static let captionHeight: CGFloat = 60
-    static let filterHeight: CGFloat = 44
-    static let cornerRadius: CGFloat = 30
-    /// The band stands this far in from each side of the screen's visible area. The panel, which reaches the edge,
-    /// has that room beside the band for the key-cap hint and the shadow.
+    /// From the band's top edge to its toolbar, and the toolbar's height.
+    static let toolbarTop: CGFloat = 16
+    static let toolbarHeight: CGFloat = 32
+    /// From the toolbar's bottom edge to the cards, and from the cards to the band's bottom edge.
+    static let toolbarGap: CGFloat = 20
+    static let bottomPadding: CGFloat = 22
+    /// How far below the band's top edge the cards' top edges are.
+    static let cardTop = toolbarTop + toolbarHeight + toolbarGap
+    static let cornerRadius: CGFloat = 36
+    /// The band stands this far in from each side of the screen's visible area. The panel reaches the edge, so its
+    /// shadow has that room beside the band.
     static let sideMargin: CGFloat = 32
-    /// Panel room above and below the band for the shadow.
-    static let shadowMargin: CGFloat = 24
+    /// The room the panel gives the band's shadow above and below it, where the screen's visible area has it.
+    static let shadowRoom = (above: CGFloat(40), below: CGFloat(100))
+    /// When the preview card moves the band down, the two keep at least this far from the visible area's top and
+    /// bottom.
+    static let screenMargin: CGFloat = 24
     static let previewGap: CGFloat = 16
     static let previewMaximum = CGSize(width: 760, height: 470)
 
@@ -68,28 +69,25 @@ enum StripLayout {
         )
     }
 
-    static func bandHeight(_ m: StripMetrics, filtersVisible: Bool) -> CGFloat {
-        searchHeight + m.frameSize.height + captionHeight + (filtersVisible ? filterHeight : 0)
+    /// The toolbar, the cards and the room around them: 340 with medium cards.
+    static func bandHeight(_ m: StripMetrics) -> CGFloat {
+        cardTop + m.frameSize.height + bottomPadding
     }
 
-    /// The band. Its top edge is where it is when the band without the filter row is centred in the screen's
-    /// visible area, so the filter row moves only the strip and the caption below the search row, never the
-    /// search field under the caret. On a screen too short for that, the band moves up just enough for the
-    /// panel to stay inside the visible area.
-    static func bandFrame(_ m: StripMetrics, filtersVisible: Bool, in visible: NSRect) -> NSRect {
-        let height = bandHeight(m, filtersVisible: filtersVisible)
-        let top = visible.midY + bandHeight(m, filtersVisible: false) / 2
-        return NSRect(x: visible.midX - m.bandWidth / 2, y: max(top - height, visible.minY + shadowMargin),
-                      width: m.bandWidth, height: height)
+    /// The band, centred in the screen's visible area. Its height is the same whatever the panel shows, so its top
+    /// edge, and the search in it, stay where they are.
+    static func bandFrame(_ m: StripMetrics, in visible: NSRect) -> NSRect {
+        let height = bandHeight(m)
+        return NSRect(x: visible.midX - m.bandWidth / 2, y: visible.midY - height / 2, width: m.bandWidth,
+                      height: height)
     }
 
     /// Where the film lies when the clip at `position` is selected; `position` is fractional while the fingers
     /// follow. Index 0 is the newest (or best match) and sits at the left, older clips to its right. The film
     /// moves to keep the selection in the middle of the band, but stops with its first frame `dockInset` from
     /// the band's left end, so the selection then walks along the film instead. The right end stops the same
-    /// way once `oldestIsLoaded`; before that more clips may follow, so the film goes on moving. An end fades
-    /// when the film goes on beyond its dock, and the right end also fades while more clips may follow. A
-    /// loaded film that fits between the docks is centred as a group. A negative `position` (-1) stands for a
+    /// way once `oldestIsLoaded`; before that more clips may follow, so the film goes on moving. A loaded film
+    /// that fits between the docks is centred as a group. A negative `position` (-1) stands for a
     /// selection that vanished: the film lies as if a selected empty slot came before index 0, and index 0
     /// sits one step to the right of that slot. Going from a negative position to 0, the slot goes and the film
     /// steps left at once; that step is deliberate, since the slot belongs to no clip.
@@ -106,12 +104,7 @@ enum StripLayout {
             let lowest = oldestIsLoaded ? m.bandWidth - m.dockInset - filmWidth : -.infinity
             slotOrigin = min(m.dockInset, max(lowest, centred))
         }
-        // Under half a point of overhang is not content that goes on, so it does not fade.
-        return StripPlacement(
-            firstOrigin: vanished ? slotOrigin + m.step : slotOrigin,
-            fadesLeading: slotOrigin < m.dockInset - 0.5,
-            fadesTrailing: !oldestIsLoaded || slotOrigin + filmWidth > m.bandWidth - m.dockInset + 0.5
-        )
+        return StripPlacement(firstOrigin: vanished ? slotOrigin + m.step : slotOrigin)
     }
 
     /// The left edge of each frame within the band, one step apart from index 0 at `placement.firstOrigin` on.
@@ -120,31 +113,30 @@ enum StripLayout {
     }
 
     /// The card goes above the band, which stays where it is. Where the card has no room above it, the
-    /// card and the band are centred vertically as one group, so the band moves down to make room; the
-    /// group is centred as if without the filter row, which then again moves only what is below the search
-    /// row. The card is at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and
-    /// in width.
-    static func previewLayout(band: NSRect, filtersVisible: Bool,
-                              in visible: NSRect) -> (preview: NSRect, band: NSRect) {
-        let room = visible.insetBy(dx: sideMargin, dy: shadowMargin)
+    /// card and the band are centred vertically as one group, so the band moves down to make room. The card is
+    /// at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and in width.
+    static func previewLayout(band: NSRect, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
+        let room = visible.insetBy(dx: sideMargin, dy: screenMargin)
         let size = CGSize(width: min(previewMaximum.width, room.width),
                           height: min(previewMaximum.height, room.height - band.height - previewGap))
         var movedBand = band
         if band.maxY + previewGap + size.height > room.maxY {
-            let filterRow = filtersVisible ? filterHeight : 0
-            let groupHeight = size.height + previewGap + band.height - filterRow
-            let top = room.midY - groupHeight / 2 + band.height - filterRow
-            movedBand.origin.y = max(top - band.height, room.minY)
+            let groupHeight = size.height + previewGap + band.height
+            movedBand.origin.y = max(room.midY - groupHeight / 2, room.minY)
         }
         let preview = NSRect(x: band.midX - size.width / 2, y: movedBand.maxY + previewGap,
                              width: size.width, height: size.height)
         return (preview, movedBand)
     }
 
-    /// The window around the band, and around the preview card when it is open.
-    static func panelFrame(band: NSRect, preview: NSRect?) -> NSRect {
+    /// The window around the band, and around the preview card when it is open: `sideMargin` beside them, and
+    /// above and below as much of `shadowRoom` as the visible area has, so the window never leaves it.
+    static func panelFrame(band: NSRect, preview: NSRect?, in visible: NSRect) -> NSRect {
         let content = preview.map { band.union($0) } ?? band
-        return content.insetBy(dx: -sideMargin, dy: -shadowMargin)
+        let above = max(0, min(shadowRoom.above, visible.maxY - content.maxY))
+        let below = max(0, min(shadowRoom.below, content.minY - visible.minY))
+        return NSRect(x: content.minX - sideMargin, y: content.minY - below, width: content.width + 2 * sideMargin,
+                      height: content.height + above + below)
     }
 
     /// A frame's size, the heights of its colour band and its footer, the side of the app icon in the band, and the

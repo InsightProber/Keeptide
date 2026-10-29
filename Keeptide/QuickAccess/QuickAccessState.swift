@@ -30,10 +30,10 @@ enum PreviewContent: Equatable {
 }
 
 extension ContentKind {
-    /// The kinds quick access filters by, in the filter row's order.
+    /// The kinds quick access filters by, in the toolbar's order.
     static let filters: [ContentKind] = [.text, .url, .image, .file]
 
-    /// The kind's name in the filter row.
+    /// The kind's name in the toolbar.
     var filterTitle: String {
         switch self {
         case .text: "Text"
@@ -71,8 +71,8 @@ final class QuickAccessState {
     private(set) var failure: PasteRefusal?
     /// What strip frames show of a clip beyond its title. Only clips still in the list keep one.
     private(set) var details: [ContentRef: ClipDetail] = [:]
-    /// Whether the filter row was brought up by hand, as opposed to by a query or a filter.
-    private(set) var filtersRevealed = false
+    /// Whether the search was unfolded by hand or by typing, and has not been folded since.
+    private(set) var isSearchUnfolded = false
     @ObservationIgnored var onCopied: (@MainActor () -> Void)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
@@ -109,17 +109,18 @@ final class QuickAccessState {
 
     var hasFiltersOrQuery: Bool { !query.isEmpty || !kinds.isEmpty }
 
+    /// The search shows as its field rather than its icon while there is a query, and once it was unfolded until it
+    /// is folded again.
+    var isSearchExpanded: Bool { !query.isEmpty || isSearchUnfolded }
+
     /// A search has another page to fetch, so the last row listed is not the last there is.
     var hasMoreRows: Bool { !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count }
-
-    /// The filter row shows while there is a query or a filter, and when it was brought up by hand.
-    var filtersVisible: Bool { hasFiltersOrQuery || filtersRevealed }
 
     func open() {
         isOpen = true
         query = ""
         kinds = []
-        filtersRevealed = false
+        isSearchUnfolded = false
         isPreviewExpanded = false
         selection = SelectionCoordinator()
         dropDetailsOfUnlistedRows()
@@ -166,17 +167,18 @@ final class QuickAccessState {
         reload()
     }
 
-    func revealFilters() {
-        filtersRevealed = true
+    func unfoldSearch() {
+        isSearchUnfolded = true
     }
 
-    func toggleFiltersRevealed() {
-        filtersRevealed.toggle()
+    /// Folding an empty search changes nothing in the list.
+    func foldSearch() {
+        isSearchUnfolded = false
     }
 
+    /// Clears the query and the filters and folds the search, as Escape does.
     func clearQueryAndFilters() {
-        // A filter row brought up by hand is a layer of its own; hiding it does not reload the list.
-        filtersRevealed = false
+        isSearchUnfolded = false
         guard hasFiltersOrQuery else { return }
         query = ""
         kinds = []

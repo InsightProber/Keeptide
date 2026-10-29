@@ -6,7 +6,8 @@ import XCTest
 ///
 /// The seeded clips, newest first: "Synthetic alpha note", "echo synthetic-beta" (stored with a trailing
 /// newline), a shell snippet, a Chinese note, a link, rich text and, oldest, an image. The strip opens on
-/// the newest, which is selected and leftmost, with the older clips on its right.
+/// the newest, which is selected and leftmost, with the older clips on its right. Above the clips, the band's
+/// toolbar holds the search, folded to its icon until it is wanted, and the filters.
 @MainActor
 final class QuickAccessUITests: XCTestCase {
     private var sessionID: UUID?
@@ -30,6 +31,14 @@ final class QuickAccessUITests: XCTestCase {
 
         XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(older.waitForExistence(timeout: 5), app.debugDescription)
+        // The search opens folded to its icon, with the filters beside it, all above the clips.
+        let search = app.buttons["Search clips"]
+        XCTAssertTrue(search.exists, app.debugDescription)
+        XCTAssertFalse(app.buttons["Clear search"].exists)
+        for title in ["All", "Text", "Links", "Images", "Files"] {
+            XCTAssertTrue(app.descendants(matching: .any)[title].exists, "\(title)\n\(app.debugDescription)")
+        }
+        XCTAssertLessThan(search.frame.maxY, newest.frame.minY, app.debugDescription)
         // The newest clip is the leftmost frame and the next older clip the frame on its right. That the newest is
         // the one selected shows in what Return copies.
         let lefts = frames.allElementsBoundByIndex.map(\.frame.minX)
@@ -66,9 +75,12 @@ final class QuickAccessUITests: XCTestCase {
 
         app.searchFields["Quick access query"].typeText("beta")
 
-        // Only what matches stays in the strip: the other recent clip leaves and the match remains.
+        // Only what matches stays in the strip: the other recent clip leaves and the match remains. Typing opened the
+        // search, which can now be cleared with the pointer.
         XCTAssertTrue(unrelated.waitForNonExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(clip("echo synthetic-beta", in: frames).exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["Clear search"].exists, app.debugDescription)
+        XCTAssertFalse(app.buttons["Search clips"].exists, app.debugDescription)
     }
 
     func testSpaceOpensPreviewAndEscapeClosesOneLayerAtATime() throws {
@@ -86,11 +98,15 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(preview.waitForNonExistence(timeout: 5))
         XCTAssertTrue(panel.exists)
 
-        query.click()
+        // The search is folded to its icon; a click on it opens the search with the keys in its field.
+        app.buttons["Search clips"].click()
+        XCTAssertTrue(app.buttons["Search clips"].waitForNonExistence(timeout: 5), app.debugDescription)
         query.typeText("x")
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(query.value as? String, "")
         XCTAssertTrue(panel.exists)
+        // Clearing the query folded the search again.
+        XCTAssertTrue(app.buttons["Search clips"].exists, app.debugDescription)
 
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))

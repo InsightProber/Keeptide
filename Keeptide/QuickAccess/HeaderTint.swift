@@ -36,8 +36,8 @@ struct HeaderTint: Equatable, Sendable {
         return Self.blend(text, over: background, opacity: opacity)
     }
 
-    /// The band of a card whose app's colour is not known: a clip without a source app, or one whose app's tint is
-    /// still being worked out. #3A3A3C in dark mode and #8E8E93 in light mode, each with the text that reads on it.
+    /// The band of a card whose clip has no source app, so no icon to take a colour from: #3A3A3C in dark mode and
+    /// #8E8E93 in light mode, each with the text that reads on it.
     static func neutral(dark: Bool) -> HeaderTint {
         banded(dark ? RGB(hex: 0x3A3A3C) : RGB(hex: 0x8E8E93))
     }
@@ -52,8 +52,9 @@ struct HeaderTint: Equatable, Sendable {
     private static let minimumChroma = 0.25
     /// The share of the icon's opaque pixels the leading colour must cover to be the icon's colour.
     private static let minimumShare = 0.08
-    /// Oranges, which are drawn into the burnt oranges below as they deepen, keeping their order.
-    private static let oranges = 28.0..<42.0
+    /// Oranges, which are drawn into the burnt oranges below as they deepen, keeping their order. The range starts
+    /// where the burnt oranges do, so a hue just below it and one just inside it stay as close as they were.
+    private static let oranges = 25.0..<42.0
     private static let burntOranges = 25.0...30.0
     /// Yellows, from where the oranges end to yellow-green, which stay light.
     private static let lightHues = oranges.upperBound...85.0

@@ -3,15 +3,16 @@ import SwiftUI
 import XCTest
 @testable import Keeptide
 
-/// Renders the strip's cards to PNG files for a person to compare with the design. It runs only when
-/// `KEEPTIDE_SNAPSHOT_DIR` names a folder, which `xcodebuild` passes on from `TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR`;
+/// Renders the strip's cards, and the whole panel, to PNG files for a person to compare with the design. It runs only
+/// when `KEEPTIDE_SNAPSHOT_DIR` names a folder, which `xcodebuild` passes on from `TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR`;
 /// otherwise it is skipped and writes nothing. The tests run inside the sandboxed app, which may not write to a folder
 /// outside its container: the files then go to a folder of the same name in the app's temporary directory, and the
 /// log says where. Each file is attached to the test's result as well.
 ///
 /// Each card is the real `StripFrameView` in its own `NSHostingView`, laid out in a row as the strip lays them out, on
-/// the band's colour and drawn at twice its size. Every clip is made up here. Apps that ship with macOS stand in as the
-/// clips' sources, and only their icons and names are read.
+/// the band's colour and drawn at twice its size. The panel is the real `PanelController` over a temporary library,
+/// laid out for a 1440 × 875 screen. Every clip is made up here. Apps that ship with macOS stand in as the clips'
+/// sources, and only their icons and names are read.
 @MainActor
 final class QuickAccessSnapshotTests: XCTestCase {
     private enum App {
@@ -55,6 +56,55 @@ final class QuickAccessSnapshotTests: XCTestCase {
             }
         }
         print("Card snapshots written to \(output.directory.path)")
+    }
+
+    func testRenderPanel() async throws {
+        guard let folder = ProcessInfo.processInfo.environment["KEEPTIDE_SNAPSHOT_DIR"], !folder.isEmpty else {
+            throw XCTSkip("Set TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR to render the panel")
+        }
+        let output = SnapshotFolder(requested: URL(fileURLWithPath: folder, isDirectory: true))
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await seedPanelClips(into: harness, now: Date())
+        try await harness.consumer.synchronize()
+        let repository = ContentRepository(controller: harness.controller)
+        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) }, recordUse: { _ in },
+                                 didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste,
+                                           preview: PreviewService(read: { try await repository.read($0) }))
+        let suite = "QuickAccessSnapshotTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        preferences.cardSize = .medium
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
+        let controller = PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
+                                         visibleFrame: screen)
+        addTeardownBlock { controller.state.close() }
+        let window = try XCTUnwrap(controller.window)
+
+        // As it opens: the newest clips, the search folded to its icon.
+        controller.state.open()
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let rows = controller.state.selection.rows
+            return rows.count == 8 && rows.prefix(6).allSatisfy { controller.state.details[$0.ref] != nil }
+        }
+        try await write(window, as: "panel-open", into: output)
+
+        // Searching "rebase": the search open with the query, and the three clips that match.
+        let field = try XCTUnwrap(window.contentView.flatMap { views(QuickAccessSearchField.self, in: $0).first })
+        XCTAssertTrue(window.makeFirstResponder(field))
+        try XCTUnwrap(field.currentEditor() as? NSTextView)
+            .insertText("rebase", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let state = controller.state
+            return state.query == "rebase" && state.phase == .results && state.selection.isComplete
+                && state.selection.rows.allSatisfy { state.details[$0.ref] != nil }
+        }
+        XCTAssertEqual(controller.state.selection.rows.count, 3)
+        try await write(window, as: "panel-search", into: output)
+        print("Panel snapshots written to \(output.directory.path)")
     }
 
     // MARK: The clips
@@ -145,6 +195,141 @@ final class QuickAccessSnapshotTests: XCTestCase {
         )
     }
 
+    /// The clips the design's boards show, stored in a temporary library, newest last: two found by "rebase" that
+    /// are older than the rest, then an email, a PDF, a Chinese note, a page, a command and a screenshot.
+    private func seedPanelClips(into harness: SearchHarness, now: Date) async throws {
+        func store(_ title: String, _ representations: [(String, Data)], from app: String,
+                   minutesAgo: Double) async throws {
+            let capture = try ContentStoreFixtures.capture([representations])
+            let item = ItemValue(sourceApp: app, title: title, captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: now.addingTimeInterval(-minutesAgo * 60), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        }
+        func text(_ string: String) -> (String, Data) { ("public.utf8-plain-text", Data(string.utf8)) }
+        func link(_ url: String, title: String) -> [(String, Data)] {
+            [("public.url", Data(url.utf8)), ("public.url-name", Data(title.utf8)), text(url)]
+        }
+        let checklist = "Rebase checklist: fetch, rebase onto main, run tests, push with lease."
+        let email = "Thursday at 3 works for me. I’ll book the small room on the fourth floor and bring the printouts of both directions."
+        let note = "下周三前把设计定稿，周四上午和产品一起过一遍交互细节。"
+        let page = "https://developer.apple.com/documentation/appkit/nspanel"
+        try await store("git-rebase", link("https://git-scm.com/docs/git-rebase", title: "Git - git-rebase Documentation"),
+                        from: App.safari, minutesAgo: 2 * 24 * 60)
+        try await store("Rebase checklist", [text(checklist)], from: App.notes, minutesAgo: 27 * 60)
+        try await store("Thursday", [text(email)], from: App.mail, minutesAgo: 26 * 60)
+        // A file is stored by reference, its location kept apart from the clip as the library keeps it.
+        let file = try ContentStoreFixtures.localReferenceCapture()
+        let reference = try XCTUnwrap(file.representations.first)
+        try await FileAccessStore(controller: harness.controller).put(
+            LocalFileAccess(id: reference.id, snapshotID: file.id,
+                            bytes: Data("file:///Synthetic/Quick%20Access%20%E2%80%94%20Review.pdf".utf8)),
+            expecting: harness.controller.identity())
+        try await ContentStoreFixtures.insert(
+            ItemValue(sourceApp: App.finder, title: "Quick Access — Review.pdf", captureID: file.id, historyEligible: true,
+                      lastCopiedAt: now.addingTimeInterval(-180 * 60), copyCount: 1),
+            file, into: harness.controller)
+        try await store("Note", [text(note)], from: App.notes, minutesAgo: 60)
+        try await store("NSPanel", link(page, title: "NSPanel — AppKit | Apple Developer Documentation"),
+                        from: App.safari, minutesAgo: 15)
+        try await store("git rebase origin/main", [text("git rebase origin/main")], from: App.terminal, minutesAgo: 2)
+        let picture = try XCTUnwrap(NSBitmapImageRep(cgImage: try screenshot(scale: 4))
+            .representation(using: .png, properties: [:]))
+        try await store("Screenshot", [("public.png", picture)], from: App.preview, minutesAgo: 0)
+    }
+
+    /// Draws the panel's window in dark and in light, at twice its size, over the design's desktop.
+    private func write(_ window: NSWindow, as name: String, into output: SnapshotFolder) async throws {
+        for dark in [true, false] {
+            let file = "\(name)-medium-\(dark ? "dark" : "light").png"
+            let png = try await renderPanel(window, dark: dark)
+            let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+            attachment.name = file
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            try output.write(png, named: file)
+        }
+    }
+
+    /// The window's content in one appearance, over the design's desktop and the window behind the panel. The band's
+    /// material is the window server's work: it blurs what lies behind the window, and AppKit draws a flat grey in its
+    /// place in a picture like this one. So the band is drawn as it is with Reduce Transparency, in the design's own
+    /// colour for it, without the blur.
+    private func renderPanel(_ window: NSWindow, dark: Bool) async throws -> Data {
+        let appearance = try XCTUnwrap(NSAppearance(named: dark ? .darkAqua : .aqua))
+        window.appearance = appearance
+        window.colorSpace = .sRGB
+        let content = try XCTUnwrap(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        // SwiftUI draws on the next turn of the run loop.
+        try await Task.sleep(for: .milliseconds(300))
+        let backdrop = try XCTUnwrap(views(QuickAccessBandBackdrop.self, in: content).first)
+        backdrop.reducesTransparency = true
+        content.layoutSubtreeIfNeeded()
+        let size = content.bounds.size
+        func bitmap() throws -> NSBitmapImageRep {
+            let rep = try XCTUnwrap(NSBitmapImageRep(
+                bitmapDataPlanes: nil, pixelsWide: Int(size.width) * 2, pixelsHigh: Int(size.height) * 2,
+                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                bytesPerRow: 0, bitsPerPixel: 0)?.retagging(with: .sRGB))
+            rep.size = size
+            return rep
+        }
+        let panel = try bitmap()
+        appearance.performAsCurrentDrawingAppearance {
+            content.cacheDisplay(in: content.bounds, to: panel)
+        }
+        let picture = try bitmap()
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: picture))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphics
+        drawDesktop(in: NSRect(origin: .zero, size: size), screenOrigin: window.frame.origin, dark: dark)
+        panel.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1,
+                   respectFlipped: false, hints: nil)
+        NSGraphicsContext.restoreGraphicsState()
+        return try XCTUnwrap(picture.representation(using: .png, properties: [:]))
+    }
+
+    /// The boards' desktop: a diagonal wash, with a document window over it. `screenOrigin` is where the panel's
+    /// window sits on the 1440 × 875 screen, which is all of a 1440 × 900 screen but its menu bar.
+    private func drawDesktop(in rect: NSRect, screenOrigin: NSPoint, dark: Bool) {
+        func colour(_ hex: UInt32) -> NSColor {
+            NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255, green: CGFloat((hex >> 8) & 0xFF) / 255,
+                    blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        }
+        let wash = dark ? [colour(0x1B2230), colour(0x2A2333), colour(0x1E1A24)]
+            : [colour(0xD9DEE3), colour(0xE8E4DC), colour(0xE2D8CA)]
+        NSGradient(colors: wash, atLocations: [0, dark ? 0.58 : 0.55, 1], colorSpace: .sRGB)?
+            .draw(in: rect, angle: -70)
+        // The document window: 1120 × 720, 96 from the screen's left and 64 below its top, in the boards' 900 pt
+        // tall screen whose menu bar is 25 tall.
+        let document = NSRect(x: 96 - screenOrigin.x, y: 900 - 64 - 720 - screenOrigin.y, width: 1120, height: 720)
+        let shape = NSBezierPath(roundedRect: document, xRadius: 14, yRadius: 14)
+        (dark ? colour(0x232327) : colour(0xFFFFFF)).setFill()
+        shape.fill()
+        let sidebar = NSRect(x: document.minX, y: document.minY, width: 230, height: document.height)
+        NSGraphicsContext.saveGraphicsState()
+        shape.addClip()
+        (dark ? colour(0x1C1C1F) : colour(0xF4F3F1)).setFill()
+        sidebar.fill()
+        let lines: [(width: CGFloat, height: CGFloat)] = [(0.44, 22), (0.96, 9), (0.90, 9), (0.93, 9), (0.58, 9),
+                                                          (0, 9), (0.92, 9), (0.97, 9), (0.86, 9)]
+        var top = document.maxY - 96
+        let textWidth = document.width - 230 - 240
+        for (index, line) in lines.enumerated() {
+            let bar = NSRect(x: sidebar.maxX + 120, y: top - line.height, width: textWidth * line.width,
+                             height: line.height)
+            (index == 0 ? (dark ? colour(0xE5E5EA) : colour(0x1D1D1F)) : (dark ? colour(0x3A3A3F) : colour(0xDCDAD5)))
+                .setFill()
+            NSBezierPath(roundedRect: bar, xRadius: line.height / 2, yRadius: line.height / 2).fill()
+            top -= line.height + 16
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private func views<View: NSView>(_ type: View.Type, in view: NSView) -> [View] {
+        ((view as? View).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
+    }
+
     /// A made-up till receipt, ten times as tall as it is wide.
     private func receipt() throws -> CGImage {
         let (width, height) = (60, 600)
@@ -161,13 +346,15 @@ final class QuickAccessSnapshotTests: XCTestCase {
         return try XCTUnwrap(context.makeImage())
     }
 
-    /// A made-up screenshot of a window on a desktop, 16:10 like a laptop's screen.
-    private func screenshot() throws -> CGImage {
+    /// A made-up screenshot of a window on a desktop, 16:10 like a laptop's screen: 720 × 450 pixels, or `scale` times
+    /// as many each way, as a Retina screen's is.
+    private func screenshot(scale: Int = 1) throws -> CGImage {
         let (width, height) = (720, 450)
         let context = try XCTUnwrap(CGContext(
-            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            data: nil, width: width * scale, height: height * scale, bitsPerComponent: 8, bytesPerRow: 0,
             space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
         func fill(_ rect: CGRect, _ red: Double, _ green: Double, _ blue: Double, radius: CGFloat = 0) {
             context.setFillColor(CGColor(srgbRed: red, green: green, blue: blue, alpha: 1))
             context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))

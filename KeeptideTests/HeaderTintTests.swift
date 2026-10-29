@@ -53,12 +53,28 @@ final class HeaderTintTests: XCTestCase {
             let tint = HeaderTint.tint(of: try icon(fill: fill))
             XCTAssertFalse(tint.usesDarkText, "\(fill)")
             XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(white, tint.background), 4.5, "\(fill)")
-            XCTAssertEqual(hue(of: tint.background), 27, accuracy: 4, "\(fill)")
+            XCTAssertEqual(hue(of: tint.background), 28, accuracy: 1, "\(fill)")
         }
         // A real yellow keeps its light band and dark text.
         let yellow = HeaderTint.tint(of: try icon(fill: (1.0, 0.84, 0.04)))
         XCTAssertTrue(yellow.usesDarkText)
         XCTAssertEqual(hue(of: yellow.background), 50, accuracy: 4)
+    }
+
+    func testOrangesDeepenAlongTheWheelWithoutAJump() throws {
+        // Icons a degree apart from red-orange to amber: their bands' hues never turn back and never jump, so two
+        // oranges that look alike get bands that look alike. A degree of the icon is at most a degree of the band, give
+        // or take what drawing the icon in 8 bits a channel moves it.
+        var previous: Double?
+        for degrees in 18...41 {
+            let tint = HeaderTint.tint(of: try icon(fill: fullySaturated(hue: Double(degrees))))
+            let hue = hue(of: tint.background)
+            if let previous {
+                XCTAssertGreaterThan(hue, previous - 0.1, "\(degrees)° turns back from \(previous) to \(hue)")
+                XCTAssertLessThan(hue - previous, 1.5, "\(degrees)° jumps from \(previous) to \(hue)")
+            }
+            previous = hue
+        }
     }
 
     func testAGreyOrMissingIconGivesTheNeutralHeader() throws {
@@ -116,6 +132,12 @@ final class HeaderTintTests: XCTestCase {
         guard high > low else { return 0 }
         let sector = high == r ? (g - b) / (high - low) : high == g ? (b - r) / (high - low) + 2 : (r - g) / (high - low) + 4
         return (sector * 60 + 360).truncatingRemainder(dividingBy: 360)
+    }
+
+    /// The colour of a hue below 60 degrees at full saturation and half lightness: red at full, green rising with the
+    /// hue, no blue.
+    private func fullySaturated(hue degrees: Double) -> (Double, Double, Double) {
+        (1, degrees / 60, 0)
     }
 
     /// A 64 × 64 icon: a rounded square inset as an app icon is, filled with one colour, with a band of another colour

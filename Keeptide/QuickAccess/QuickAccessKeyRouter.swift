@@ -1,7 +1,7 @@
 import Foundation
 
-/// Where keys are aimed. Top to bottom the panel holds the search field, the filter row and the
-/// strip of clips (`results`); `preview` is the expanded preview.
+/// Where keys are aimed. Along the band's toolbar the panel holds the search field and the filters, and below
+/// them the strip of clips (`results`); `preview` is the expanded preview.
 enum QuickAccessFocus: Equatable {
     case searchField, filters, results, preview
 }
@@ -18,9 +18,9 @@ enum QuickAccessKey: Equatable {
 
 /// A view that builds this from a key event follows these rules: Tab and ⇧Tab are `tab` and `backTab`;
 /// Space, Return and Tab are never `character`, which is a key that types text with neither ⌘ nor ⌃
-/// held; `queryIsEmpty` and `filtersVisible` are always passed, never left to their defaults; a repeat
-/// of a key that acts once when held is dropped where it would act, and never typed in its place; and a
-/// key routed to `passThrough` that the view has no native use for is dropped without an alert sound.
+/// held; `queryIsEmpty` is always passed, never left to its default; a repeat of a key that acts once
+/// when held is dropped where it would act, and never typed in its place; and a key routed to
+/// `passThrough` that the view has no native use for is dropped without an alert sound.
 struct QuickAccessKeyInput: Equatable {
     var key: QuickAccessKey
     var shift = false
@@ -30,13 +30,11 @@ struct QuickAccessKeyInput: Equatable {
     var isSingleLine = true
     /// An empty search field has no caret to move, so ← and → are free to step the strip.
     var queryIsEmpty = true
-    /// The filter row is shown between the search field and the strip.
-    var filtersVisible = false
 }
 
 enum QuickAccessCommand: Equatable {
     case passThrough, focusResults, move(Int), primary, plainText, togglePreview, escape
-    case focusFilters, focusSearchField, cycleFocus(forward: Bool)
+    case focusSearchField, cycleFocus(forward: Bool)
     case moveFilter(Int), toggleFilter, typeIntoSearch
 }
 
@@ -49,16 +47,16 @@ enum QuickAccessKeyRouter {
         guard !input.eventBeganWithMarkedText else { return .passThrough }
         switch (input.key, input.focus) {
         // Search field. An empty one has no caret to move, so ← and → step the strip; with text they edit it.
+        // The filters sit beside it in the toolbar, so Down goes to the strip below.
         case (.left, .searchField):
             return input.queryIsEmpty ? .move(-1) : .passThrough
         case (.right, .searchField):
             return input.queryIsEmpty ? .move(1) : .passThrough
         case (.down, .searchField):
-            guard input.isSingleLine else { return .passThrough }
-            return input.filtersVisible ? .focusFilters : .focusResults
+            return input.isSingleLine ? .focusResults : .passThrough
         case (.space, .searchField):
             return input.queryIsEmpty ? .togglePreview : .passThrough
-        // Filter row.
+        // Filters.
         case (.left, .filters):
             return .moveFilter(-1)
         case (.right, .filters):
@@ -75,7 +73,7 @@ enum QuickAccessKeyRouter {
         case (.right, .results):
             return .move(1)
         case (.up, .results):
-            return input.filtersVisible ? .focusFilters : .focusSearchField
+            return .focusSearchField
         case (.space, .results):
             return .togglePreview
         // The expanded preview closes on Space, as on Escape; it keeps the arrows for its own text.
@@ -95,5 +93,17 @@ enum QuickAccessKeyRouter {
         default:
             return .passThrough
         }
+    }
+
+    /// Where Tab (`forward`) or ⇧Tab takes the keys from `current`: round the search field, the filters and the
+    /// strip, in that order. The strip is left out while it has no clips. From the preview's text, or from nowhere
+    /// in the panel, Tab starts at the search field and ⇧Tab at the end of the round.
+    static func focus(after current: QuickAccessFocus?, forward: Bool, hasClips: Bool) -> QuickAccessFocus {
+        var order: [QuickAccessFocus] = [.searchField, .filters]
+        if hasClips { order.append(.results) }
+        guard let index = current.flatMap(order.firstIndex(of:)) else {
+            return forward ? order[0] : order[order.count - 1]
+        }
+        return order[(index + (forward ? 1 : order.count - 1)) % order.count]
     }
 }

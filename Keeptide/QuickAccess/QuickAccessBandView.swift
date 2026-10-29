@@ -1,52 +1,39 @@
 import AppKit
 import SwiftUI
 
-/// The quick access band: a glass bar whose ends fade away where more clips lie beyond them, holding from the
-/// top the search row, the filter row while it shows, the strip of clips and the caption for the selected clip.
-/// Faint ← and → hints sit beside it, and the preview card above it while the preview is open. The panel owns
-/// the AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the
-/// state.
+/// The quick access band, backed as the app switcher is: the system's material in a rounded rectangle with a hairline
+/// edge and a soft shadow. Along its top the toolbar, below it the strip of clips, which the band's rounded edge cuts
+/// off where it goes on beyond either end; and the preview card above it while the preview is open. The panel owns
+/// the AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
     struct Layout: Equatable {
         var metrics: StripMetrics
-        var filtersVisible: Bool
         /// The preview card's size while the preview is open.
         var previewSize: CGSize?
-        /// Whether each end fades out, as the strip's `fades` say: an end the film goes on beyond does.
-        var fadesLeading = false
-        var fadesTrailing = false
-        /// Whether a change of the fades eases, as the strip's `animatesFades` says; otherwise it shows at once.
-        var animatesFades = false
+        /// How far the band's bottom edge is above the panel's: the room its shadow has there.
+        var roomBelow: CGFloat
     }
 
     struct Actions {
-        let copy: () -> Void
-        let toggleFilters: () -> Void
         /// Keys pressed in the preview's text.
         let previewCommand: (QuickAccessCommand) -> Void
     }
 
     let layout: Layout
     let state: QuickAccessState
-    let searchField: QuickAccessSearchField
-    let filterRow: QuickAccessFilterRow
+    let toolbar: QuickAccessToolbar
     let strip: QuickAccessStripView
     let applicationNames: ApplicationNames
     let actions: Actions
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
 
-    /// The selected clip's ring is drawn outside its frame, so the strip reaches this far into the rows above
-    /// and below it.
+    /// The selected clip's ring is drawn outside its frame, so the strip reaches this far above and below the cards.
     private static let ringRoom: CGFloat = 8
 
     private var metrics: StripMetrics { layout.metrics }
-    private var bandHeight: CGFloat { StripLayout.bandHeight(metrics, filtersVisible: layout.filtersVisible) }
-    /// Text and controls keep clear of the ends, faded or not.
-    private var fadeInset: CGFloat { metrics.bandWidth * StripLayout.fade }
-    private var fadeAnimation: Animation? { reduceMotion ? nil : .easeInOut(duration: 0.2) }
     private var hasFrames: Bool { !state.selection.rows.isEmpty }
     private var selectedRow: QuickAccessRow? {
         state.selection.selection.flatMap { selected in state.selection.rows.first { $0.ref == selected } }
@@ -55,76 +42,34 @@ struct QuickAccessBandView: View {
     var body: some View {
         VStack(spacing: StripLayout.previewGap) {
             if let size = layout.previewSize {
-                previewCard.frame(width: size.width, height: size.height)
+                // Over the band's shadow, which reaches up toward the card.
+                previewCard.frame(width: size.width, height: size.height).zIndex(1)
             }
-            HStack(spacing: 0) {
-                keyHint("←")
-                band
-                keyHint("→")
-            }
+            band
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(.bottom, layout.roomBelow)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
     // MARK: Band
 
     private var band: some View {
-        let shape = RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous)
-        return VStack(spacing: 0) {
-            searchRow.frame(height: StripLayout.searchHeight)
-            // The row stays in place while hidden, so it can take the keys the moment it shows.
-            HostedView(view: filterRow).frame(height: layout.filtersVisible ? StripLayout.filterHeight : 0)
-            stripRow.frame(height: metrics.frameSize.height)
-            captionRow.frame(height: StripLayout.captionHeight)
+        VStack(spacing: 0) {
+            HostedView(view: toolbar)
+                .frame(width: metrics.bandWidth, height: QuickAccessToolbar.height)
+                .padding(.top, StripLayout.toolbarTop - QuickAccessToolbar.focusRoom)
+            stripRow
+                .padding(.top, StripLayout.toolbarGap - QuickAccessToolbar.focusRoom - Self.ringRoom)
+            Spacer(minLength: 0)
         }
-        .frame(width: metrics.bandWidth, height: bandHeight)
+        .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics), alignment: .top)
+        // The band's edge is clear: cards that go on beyond it are cut off there.
+        .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
-            // With Reduce Transparency the bar is solid.
-            if reduceTransparency { shape.fill(Color(nsColor: .windowBackgroundColor)) }
+            BandBackdrop(reducesTransparency: reduceTransparency, increasesContrast: contrast == .increased)
+                .padding(EdgeInsets(top: -StripLayout.shadowRoom.above, leading: -StripLayout.sideMargin,
+                                    bottom: -StripLayout.shadowRoom.below, trailing: -StripLayout.sideMargin))
         }
-        .glassEffect(reduceTransparency ? .identity : .regular, in: shape)
-        // An end the film goes on beyond fades out, the bar and everything on it alike, so the clips there leave no
-        // edge. At an end of the clips the bar keeps its own rounded edge. Along the film a fade comes and goes in a
-        // short ease; as the film appears or goes, and with Reduce Motion, it switches at once.
-        .mask {
-            HStack(spacing: 0) {
-                LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: layout.fadesLeading ? fadeInset : 0)
-                Color.black
-                LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
-                    .frame(width: layout.fadesTrailing ? fadeInset : 0)
-            }
-            .animation(layout.animatesFades ? fadeAnimation : nil, value: layout.fadesLeading)
-            .animation(layout.animatesFades ? fadeAnimation : nil, value: layout.fadesTrailing)
-        }
-        .shadow(color: .black.opacity(0.2), radius: 14, y: 6)
-    }
-
-    private var searchRow: some View {
-        ZStack {
-            SearchField(field: searchField).frame(maxWidth: 560)
-            HStack {
-                Spacer(minLength: 0)
-                filterButton
-            }
-        }
-        .padding(.horizontal, fadeInset)
-    }
-
-    /// Shows or hides the filter row. While a query or a filter holds the row up it cannot hide it; it keeps
-    /// its shown look then.
-    private var filterButton: some View {
-        let title = state.filtersVisible ? "Hide filters" : "Show filters"
-        return Button(action: actions.toggleFilters) {
-            Image(systemName: state.kinds.isEmpty ? "line.3.horizontal.decrease.circle"
-                                                  : "line.3.horizontal.decrease.circle.fill")
-                .font(.system(size: 18))
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(state.filtersVisible ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
-        .help(title)
-        .accessibilityLabel(title)
-        .accessibilityIdentifier("QuickAccessFilterButton")
     }
 
     private var stripRow: some View {
@@ -156,76 +101,6 @@ struct QuickAccessBandView: View {
         }
     }
 
-    // MARK: Caption
-
-    /// What the selected clip is and a way to copy it with the pointer. A refused copy's reason, or else a
-    /// status, takes the place of the clip's source; the reason answers what was just done, so it comes first.
-    private var captionRow: some View {
-        HStack(spacing: 14) {
-            captionText
-            if state.selection.selection != nil { copyButton }
-        }
-        .font(.system(size: 13))
-        .lineLimit(1)
-        .padding(.horizontal, fadeInset)
-    }
-
-    @ViewBuilder
-    private var captionText: some View {
-        if let failure = state.failure {
-            Text(failure.message).foregroundStyle(Color(nsColor: .systemRed)).accessibilityIdentifier("QuickAccessFailure")
-        } else if let status = statusLine {
-            Text(status).foregroundStyle(.secondary).accessibilityIdentifier("QuickAccessStatus")
-        } else if let row = selectedRow {
-            HStack(spacing: 6) {
-                Image(nsImage: applicationNames.icon(for: row.sourceApp))
-                    .resizable()
-                    .interpolation(.high)
-                    .frame(width: 16, height: 16)
-                    .accessibilityHidden(true)
-                Text(QuickAccessRowContent.detail(for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:))))
-            }
-        }
-    }
-
-    /// The line over clips that are on screen; with none, the empty state says it.
-    private var statusLine: String? {
-        guard hasFrames else { return nil }
-        return QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
-                                      isComplete: state.selection.isComplete, notice: state.indexNotice)
-    }
-
-    private var copyButton: some View {
-        Button(action: actions.copy) {
-            HStack(spacing: 6) {
-                Keycap(symbol: "⏎")
-                Text("Copy")
-            }
-        }
-        .buttonStyle(.borderless)
-        .disabled(state.selection.executableSelection == nil)
-        .accessibilityLabel("Copy")
-        .accessibilityIdentifier("QuickAccessCopyButton")
-    }
-
-    /// A faint ← or → beside the band, level with the clips. Only a hint: it takes no clicks, is not read, and
-    /// goes when there are no clips.
-    private func keyHint(_ symbol: String) -> some View {
-        let middle = StripLayout.searchHeight + (layout.filtersVisible ? StripLayout.filterHeight : 0)
-            + metrics.frameSize.height / 2
-        return Color.clear
-            .frame(width: StripLayout.sideMargin, height: bandHeight)
-            .overlay(alignment: .top) {
-                if hasFrames {
-                    Keycap(symbol: symbol)
-                        .foregroundStyle(.tertiary)
-                        .offset(y: middle - Keycap.side / 2)
-                }
-            }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
-
     // MARK: Preview
 
     /// An opaque card over the band, with the selected clip in full.
@@ -238,23 +113,6 @@ struct QuickAccessBandView: View {
     }
 }
 
-/// A key drawn as a small cap: Return before Copy, and the arrow hints beside the band.
-private struct Keycap: View {
-    static let side: CGFloat = 20
-    let symbol: String
-
-    var body: some View {
-        Text(symbol)
-            .font(.system(size: 12, weight: .medium))
-            .frame(minWidth: Self.side, minHeight: Self.side)
-            .overlay {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(.foreground.opacity(0.5), lineWidth: 1)
-            }
-            .accessibilityHidden(true)
-    }
-}
-
 /// Places one of the panel's AppKit views in the band. The panel keeps the view up to date itself.
 private struct HostedView<Content: NSView>: NSViewRepresentable {
     let view: Content
@@ -262,97 +120,151 @@ private struct HostedView<Content: NSView>: NSViewRepresentable {
     func updateNSView(_ nsView: Content, context: Context) {}
 }
 
-/// The filter row: All, Text, Links, Images and Files, where All clears the filters. A click chooses directly.
-/// With the keys the row itself takes focus: ← and → move a cursor along the choices, ringed as focus, and
-/// Space chooses the one under it.
-@MainActor
-final class QuickAccessFilterRow: NSView {
-    /// The choices in order; nil is All.
-    static let choices: [ContentKind?] = [nil] + ContentKind.filters
+/// Places the band's backdrop behind it, reaching into the room the panel leaves around the band for the shadow.
+private struct BandBackdrop: NSViewRepresentable {
+    let reducesTransparency: Bool
+    let increasesContrast: Bool
 
-    var onCommand: ((QuickAccessCommand) -> Void)?
-    /// A choice was clicked; its index in `choices`.
-    var onChoose: ((Int) -> Void)?
-    /// What a key means here depends on the rest of the panel, which keeps this current.
-    var queryIsEmpty = true
-    /// The choice ← and → move and Space chooses.
-    var cursor = 0 {
-        didSet { noteFocusRingMaskChanged() }
+    func makeNSView(context: Context) -> QuickAccessBandBackdrop { QuickAccessBandBackdrop() }
+
+    func updateNSView(_ backdrop: QuickAccessBandBackdrop, context: Context) {
+        backdrop.reducesTransparency = reducesTransparency
+        backdrop.increasesContrast = increasesContrast
     }
-    private let buttons: [NSButton]
+}
+
+/// What the band stands on, as the app switcher does: the system's material, blurring what lies behind the window, in
+/// a rounded rectangle with a hairline edge, and a soft shadow around it, never under it. With Reduce Transparency the
+/// band is solid, and with Increase Contrast its edge is 1 pt and stronger. The view reaches beyond the band by the
+/// room the panel leaves around it, where the shadow falls; it takes no clicks.
+@MainActor
+final class QuickAccessBandBackdrop: NSView {
+    /// How far the view reaches beyond the band on each side.
+    static let reach = NSEdgeInsets(top: StripLayout.shadowRoom.above, left: StripLayout.sideMargin,
+                                    bottom: StripLayout.shadowRoom.below, right: StripLayout.sideMargin)
+
+    let material = NSVisualEffectView()
+    /// The solid fill under Reduce Transparency, and the edge.
+    let surface = QuickAccessBandSurface()
+    var reducesTransparency = false {
+        didSet { if reducesTransparency != oldValue { restyle() } }
+    }
+    var increasesContrast = false {
+        didSet { if increasesContrast != oldValue { restyle() } }
+    }
+    private var maskedSize = NSSize.zero
 
     override init(frame frameRect: NSRect) {
-        buttons = Self.choices.map { NSButton(title: $0?.filterTitle ?? "All", target: nil, action: nil) }
         super.init(frame: frameRect)
-        for (index, button) in buttons.enumerated() {
-            button.setButtonType(.pushOnPushOff)
-            button.bezelStyle = .accessoryBar
-            // Clicking a choice leaves the keys where they are.
-            button.refusesFirstResponder = true
-            button.tag = index
-            button.target = self
-            button.action = #selector(choose(_:))
-        }
-        let stack = NSStackView(views: buttons)
-        stack.orientation = .horizontal
-        stack.spacing = 6
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-            stack.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
-        setAccessibilityElement(true)
-        setAccessibilityRole(.group)
-        setAccessibilityLabel("Filter by type")
-        setAccessibilityIdentifier("QuickAccessFilters")
+        material.blendingMode = .behindWindow
+        material.state = .active
+        addSubview(material)
+        addSubview(surface)
+        restyle()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    /// Marks the filters that are on, or All when none is.
-    func show(kinds: Set<ContentKind>) {
-        for (button, kind) in zip(buttons, Self.choices) {
-            button.state = (kind.map(kinds.contains) ?? kinds.isEmpty) ? .on : .off
+    /// The band within the view.
+    var bandRect: NSRect {
+        let reach = Self.reach
+        return NSRect(x: reach.left, y: reach.bottom, width: max(0, bounds.width - reach.left - reach.right),
+                      height: max(0, bounds.height - reach.top - reach.bottom))
+    }
+
+    /// The band's outline in `rect`, with continuous corners as the content's clip has them.
+    static func outline(in rect: NSRect) -> CGPath {
+        RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous).path(in: rect).cgPath
+    }
+
+    override func layout() {
+        super.layout()
+        let band = bandRect
+        material.frame = band
+        surface.frame = band
+        if band.size != maskedSize {
+            maskedSize = band.size
+            material.maskImage = NSImage(size: band.size, flipped: false) { rect in
+                NSColor.black.setFill()
+                NSBezierPath(cgPath: Self.outline(in: rect)).fill()
+                return true
+            }
+            needsDisplay = true
         }
     }
 
-    /// The cursor stops at either end.
-    func moveCursor(by offset: Int) {
-        cursor = min(max(cursor + offset, 0), buttons.count - 1)
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        restyle()
     }
 
-    @objc private func choose(_ sender: NSButton) {
-        cursor = sender.tag
-        onChoose?(sender.tag)
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+
+    private func restyle() {
+        // A dark HUD's material in dark mode, a popover's light one in light mode.
+        material.material = isDark ? .hudWindow : .popover
+        material.isHidden = reducesTransparency
+        surface.isSolid = reducesTransparency
+        surface.increasesContrast = increasesContrast
+        surface.needsDisplay = true
+        needsDisplay = true
     }
 
-    override var acceptsFirstResponder: Bool { true }
+    /// The shadow: 30 pt down and 90 pt soft, black at 55 percent in dark mode; 80 pt soft and a faint blue-grey at 22
+    /// percent in light mode. It is drawn only outside the band, so none of it shows through the material.
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let band = Self.outline(in: bandRect)
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.addRect(bounds)
+        context.addPath(band)
+        context.clip(using: .evenOdd)
+        // A shadow's offset and blur are taken in the context's device units, which no transform reaches: on a Retina
+        // screen a point is two of them, and drawing into a picture may turn them upside down. So the design's 30
+        // points down this view's own way, and its blur, are carried into those units by hand.
+        let offset = context.convertToDeviceSpace(CGSize(width: 0, height: isFlipped ? 30 : -30))
+        let blur = abs(context.convertToDeviceSpace(CGSize(width: isDark ? 90 : 80, height: 0)).width)
+        context.setShadow(offset: offset, blur: blur,
+                          color: isDark ? CGColor(gray: 0, alpha: 0.55)
+                              : CGColor(srgbRed: 30 / 255, green: 30 / 255, blue: 40 / 255, alpha: 0.22))
+        context.addPath(band)
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fillPath()
+    }
+}
 
-    override func keyDown(with event: NSEvent) {
-        let key = QuickAccessStripView.key(for: event)
-        // A held Space, Return or Escape has acted already.
-        guard !(event.isARepeat && key.actsOnceWhenHeld) else { return }
-        let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
-            key: key, shift: event.modifierFlags.contains(.shift), focus: .filters,
-            queryIsEmpty: queryIsEmpty, filtersVisible: true
-        ))
-        // A key with no meaning here is dropped, not passed on to end in the alert sound.
-        guard command != .passThrough else { return }
-        onCommand?(command)
+/// The band's edge, a hairline inside it in white at 16 percent in dark mode and black at 10 percent in light mode, 1 pt
+/// and stronger with Increase Contrast; and, when the band is solid, its fill: #1E1E20 in dark mode, #F6F6F8 in light.
+@MainActor
+final class QuickAccessBandSurface: NSView {
+    var isSolid = false {
+        didSet { if isSolid != oldValue { needsDisplay = true } }
+    }
+    var increasesContrast = false {
+        didSet { if increasesContrast != oldValue { needsDisplay = true } }
     }
 
-    // The focus ring goes around the choice under the cursor, not around the whole row.
+    /// The edge's width.
+    var edgeWidth: CGFloat { increasesContrast ? 1 : 0.5 }
 
-    override var focusRingMaskBounds: NSRect { cursorFrame }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    override func drawFocusRingMask() {
-        let frame = cursorFrame
-        NSBezierPath(roundedRect: frame, xRadius: frame.height / 2, yRadius: frame.height / 2).fill()
-    }
-
-    private var cursorFrame: NSRect {
-        convert(buttons[cursor].bounds, from: buttons[cursor])
+    override func draw(_ dirtyRect: NSRect) {
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        if isSolid {
+            (isDark ? NSColor(srgbRed: 0x1E / 255, green: 0x1E / 255, blue: 0x20 / 255, alpha: 1)
+                : NSColor(srgbRed: 0xF6 / 255, green: 0xF6 / 255, blue: 0xF8 / 255, alpha: 1)).setFill()
+            NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: bounds)).fill()
+        }
+        let width = edgeWidth
+        let edge = NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: bounds.insetBy(dx: width / 2, dy: width / 2)))
+        edge.lineWidth = width
+        (isDark ? NSColor(white: 1, alpha: increasesContrast ? 0.4 : 0.16)
+            : NSColor(white: 0, alpha: increasesContrast ? 0.3 : 0.1)).setStroke()
+        edge.stroke()
     }
 }
 

@@ -37,6 +37,9 @@ final class AppEnvironment {
         self.panel = panel
         captureSession.onServicesChanged = { [weak panel] in panel?.state.servicesDidChange() }
         captureSession.onRecentClipsChanged = { [weak panel] in panel?.state.recentClipsChanged() }
+        // The panel's ⋯ menu does what the menu bar's Open Library and Settings… do.
+        panel.onOpenLibrary = { [weak self] in self?.showLibrary() }
+        panel.onOpenSettings = { [weak self] in self?.showSettings() }
         return panel
     }
 

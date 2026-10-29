@@ -102,10 +102,10 @@ private final class PreviewTextView: NSTextView {
         let key = QuickAccessStripView.key(for: event)
         // A held Space, Return or Escape has acted already.
         guard !(event.isARepeat && key.actsOnceWhenHeld) else { return }
-        // What these keys do in the preview does not depend on the query or on the filter row.
+        // What these keys do in the preview does not depend on the query.
         let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
             key: key, shift: event.modifierFlags.contains(.shift), focus: .preview,
-            eventBeganWithMarkedText: hasMarkedText(), queryIsEmpty: true, filtersVisible: false
+            eventBeganWithMarkedText: hasMarkedText(), queryIsEmpty: true
         ))
         guard command != .passThrough else { return super.keyDown(with: event) }
         onCommand(command)

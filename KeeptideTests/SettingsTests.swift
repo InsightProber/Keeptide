@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import SwiftUI
 import XCTest
 @testable import Keeptide
 
@@ -49,6 +51,49 @@ final class SettingsTests: XCTestCase {
 
         XCTAssertEqual(defaults.object(forKey: "quickAccess.cardSize") as? String, "large")
         XCTAssertEqual(QuickAccessPreferences(defaults: defaults).cardSize, .large)
+    }
+
+    func testAStoredCardSizeThatIsNotTextReadsAsMedium() throws {
+        // A number, a flag, data or a list under the card size key is not a card size. It reads as the default, and
+        // the old clips-in-a-row key is not consulted in its place, even where it would give another size.
+        let stored: [Any] = [11, true, 2.5, Data("large".utf8), ["large"]]
+        for value in stored {
+            let defaults = try makeDefaults()
+            defaults.set(7, forKey: "quickAccessClipsPerRow")
+            defaults.set(value, forKey: "quickAccess.cardSize")
+
+            XCTAssertEqual(QuickAccessPreferences(defaults: defaults).cardSize, .medium, "\(value)")
+        }
+    }
+
+    func testTheCardSizeChoiceReadsAsThreeRadioButtons() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let hosting = NSHostingView(rootView: SettingsView(preferences: preferences))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        settleLayout()
+        // SwiftUI builds what VoiceOver reads only once an assistive client asks the app for anything; asking the
+        // app's own accessibility element for its role is enough.
+        var applicationRole: CFTypeRef?
+        _ = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()), kAXRoleAttribute as CFString,
+                                          &applicationRole)
+        settleLayout()
+
+        let group = try XCTUnwrap(accessibilityElements(in: hosting).first { role(of: $0) == .radioGroup })
+        let buttons = accessibilityElements(in: group).filter { role(of: $0) == .radioButton }
+        XCTAssertEqual(buttons.map { label(of: $0) }, ["Small", "Medium", "Large"])
+        XCTAssertEqual(buttons.map { ($0.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }, [0, 1, 0],
+                       "Medium is the one chosen")
+
+        // The group follows the preference: once Large is chosen, Large reads as the chosen one.
+        preferences.cardSize = .large
+        settleLayout()
+        let chosen = accessibilityElements(in: group).filter { role(of: $0) == .radioButton }
+        XCTAssertEqual(chosen.map { ($0.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }, [0, 0, 1])
     }
 
     func testChangesPersistImmediately() throws {
@@ -169,6 +214,21 @@ final class SettingsTests: XCTestCase {
 
     private func settleLayout() {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+    }
+
+    /// Every element below `element` that VoiceOver could reach, depth first. SwiftUI's elements do not declare the
+    /// accessibility protocol to Swift, so their children are asked for by name.
+    private func accessibilityElements(in element: NSObject) -> [NSObject] {
+        let children = (element.value(forKey: "accessibilityChildren") as? [Any] ?? []).compactMap { $0 as? NSObject }
+        return children.flatMap { [$0] + accessibilityElements(in: $0) }
+    }
+
+    private func role(of element: NSObject) -> NSAccessibility.Role? {
+        (element.value(forKey: "accessibilityRole") as? String).map(NSAccessibility.Role.init(rawValue:))
+    }
+
+    private func label(of element: NSObject) -> String? {
+        element.value(forKey: "accessibilityLabel") as? String
     }
 
     /// Each test reads and writes its own suite, removed when the test ends.

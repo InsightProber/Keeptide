@@ -722,39 +722,43 @@ final class QuickAccessStateTests: XCTestCase {
         state.close()
     }
 
-    func testFilterRowShowsWithQueryFiltersOrWhenRevealed() async throws {
+    func testTheSearchIsOpenWhileItHasAQueryOrOnceUnfolded() async throws {
         let fixture = try makeFixture()
         try await insert("alpha note", at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         state.open()
         try await settled(state)
-        XCTAssertFalse(state.filtersVisible, "A fresh panel keeps the filter row out of the way")
+        XCTAssertFalse(state.isSearchExpanded, "The panel opens with the search folded")
 
+        // A query holds the search open; without one it folds again.
         state.setQuery("alpha")
-        XCTAssertTrue(state.filtersVisible)
+        XCTAssertTrue(state.isSearchExpanded)
         state.setQuery("")
-        XCTAssertFalse(state.filtersVisible)
+        XCTAssertFalse(state.isSearchExpanded)
 
+        // A filter alone does not open it.
         state.toggleKind(.text)
-        XCTAssertTrue(state.filtersVisible)
+        XCTAssertFalse(state.isSearchExpanded)
         state.toggleKind(.text)
-        XCTAssertFalse(state.filtersVisible)
 
-        state.revealFilters()
-        XCTAssertTrue(state.filtersVisible)
-        state.toggleFiltersRevealed()
-        XCTAssertFalse(state.filtersVisible)
-        state.toggleFiltersRevealed()
-        XCTAssertTrue(state.filtersVisible)
+        // Unfolded by hand, it stays open with or without a query, until it is folded.
+        state.unfoldSearch()
+        XCTAssertTrue(state.isSearchExpanded)
+        state.setQuery("alpha")
+        state.setQuery("")
+        XCTAssertTrue(state.isSearchExpanded)
+        state.foldSearch()
+        XCTAssertFalse(state.isSearchExpanded)
 
-        // Each time the panel opens, the filter row starts hidden again.
+        // Each time the panel opens, the search starts folded again.
+        state.unfoldSearch()
         state.close()
         state.open()
-        XCTAssertFalse(state.filtersVisible)
+        XCTAssertFalse(state.isSearchExpanded)
         try await settled(state)
     }
 
-    func testClearingQueryAndFiltersHidesARevealedFilterRow() async throws {
+    func testClearingQueryAndFiltersFoldsTheSearch() async throws {
         let fixture = try makeFixture()
         try await insert("alpha note", at: 1, into: fixture)
         try await insert("beta note", at: 2, into: fixture)
@@ -764,23 +768,20 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
         let chosen = state.selection.selection
 
-        // A filter row brought up with nothing chosen is a layer of its own, and the list stays as it is.
-        state.revealFilters()
-        state.clearQueryAndFilters()
-
-        XCTAssertFalse(state.filtersRevealed)
-        XCTAssertFalse(state.filtersVisible)
-        XCTAssertEqual(state.phase, .results, "Hiding an empty filter row does not search again")
+        // Folding an open search with nothing in it does not search again.
+        state.unfoldSearch()
+        state.foldSearch()
+        XCTAssertEqual(state.phase, .results, "Folding an empty search does not search again")
         XCTAssertEqual(state.selection.selection, chosen)
 
-        state.revealFilters()
+        state.unfoldSearch()
         state.setQuery("alpha")
         state.toggleKind(.text)
         try await settled(state)
         state.clearQueryAndFilters()
         try await settled(state)
 
-        XCTAssertFalse(state.filtersVisible)
+        XCTAssertFalse(state.isSearchExpanded)
         XCTAssertEqual(state.query, "")
         XCTAssertEqual(state.kinds, [])
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])

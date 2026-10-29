@@ -1,35 +1,42 @@
 import AppKit
 import Carbon.HIToolbox
-import SwiftUI
-
-/// Places the panel's search field in the band.
-struct SearchField: NSViewRepresentable {
-    let field: QuickAccessSearchField
-    func makeNSView(context: Context) -> QuickAccessSearchField { field }
-    func updateNSView(_ nsView: QuickAccessSearchField, context: Context) {}
-}
 
 /// What Escape may peel in the panel besides the search field's own text.
 struct QuickAccessEscapeContext {
     var isPreviewExpanded = false
     var hasFilters = false
+    var isSearchExpanded = false
 }
 
+/// The panel's search field. It draws only its text: the toolbar's search control draws the round icon or the pill
+/// around it, the magnifier and the clear button.
 final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     /// The committed query; never reported while an input method has marked text.
     var onQueryChange: ((String) -> Void)?
+    /// Text went into the field, an input method's first key included, so the search should show it.
+    var onType: (() -> Void)?
     /// Commands from keys the field does not handle natively.
     var onCommand: ((QuickAccessCommand) -> Void)?
-    /// Escape layers handled outside the field: collapsing the preview, clearing filters.
+    /// Escape layers handled outside the field: collapsing the preview, clearing filters, folding the search.
     var onEscape: ((QuickAccessEscapeAction) -> Void)?
     var escapeContext: () -> QuickAccessEscapeContext = { QuickAccessEscapeContext() }
-    /// Whether the panel shows the filter row below the field, where Down then goes. The panel keeps it current.
-    var filtersVisible = false
 
     init() {
         super.init(frame: .zero)
-        placeholderString = "Search"
-        font = .preferredFont(forTextStyle: .title3)
+        isBezeled = false
+        isBordered = false
+        drawsBackground = false
+        focusRingType = .none
+        font = .systemFont(ofSize: 15)
+        textColor = ToolbarPalette.fieldText
+        placeholderAttributedString = NSAttributedString(string: "Search", attributes: [
+            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: ToolbarPalette.placeholder,
+        ])
+        // The field's own magnifier and cancel button stay, for what they do, and are never drawn.
+        if let cell = cell as? NSSearchFieldCell {
+            cell.searchButtonCell?.isTransparent = true
+            cell.cancelButtonCell?.isTransparent = true
+        }
         delegate = self
         setAccessibilityLabel("Quick access query")
         setAccessibilityIdentifier("Quick access query")
@@ -37,8 +44,18 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // The text takes the whole field; the search control draws the magnifier and the clear button.
+
+    override func rectForSearchText(whenCentered isCentered: Bool) -> NSRect { bounds }
+
+    override func rectForSearchButton(whenCentered isCentered: Bool) -> NSRect { .zero }
+
+    override func rectForCancelButton(whenCentered isCentered: Bool) -> NSRect { .zero }
+
     func controlTextDidChange(_ notification: Notification) {
-        guard let editor = currentEditor() as? NSTextView, !editor.hasMarkedText() else { return }
+        guard let editor = currentEditor() as? NSTextView else { return }
+        if !editor.string.isEmpty { onType?() }
+        guard !editor.hasMarkedText() else { return }
         onQueryChange?(stringValue)
     }
 
@@ -78,7 +95,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
             key: key, shift: NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false, focus: .searchField,
             eventBeganWithMarkedText: (editor as? QuickAccessFieldEditor)?.currentEventBeganWithMarkedText ?? false,
-            queryIsEmpty: editor.string.isEmpty, filtersVisible: filtersVisible
+            queryIsEmpty: editor.string.isEmpty
         ))
         guard command != .passThrough else { return false }
         if acts { onCommand?(command) }
@@ -89,7 +106,8 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         let context = escapeContext()
         let action = QuickAccessEscapePolicy.action(hasMarkedText: textView.hasMarkedText(),
                                                     isPreviewExpanded: context.isPreviewExpanded,
-                                                    hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters)
+                                                    hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters,
+                                                    isSearchExpanded: context.isSearchExpanded)
         switch action {
         case .cancelComposition:
             // The input method already declined Escape. Remove only its marked range;
@@ -97,7 +115,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
             textView.insertText("", replacementRange: textView.markedRange())
             textView.inputContext?.discardMarkedText()
             return true
-        case .collapsePreview:
+        case .collapsePreview, .foldSearch:
             onEscape?(action)
             return true
         case .clearQuery:
@@ -156,16 +174,17 @@ final class QuickAccessFieldEditor: NSTextView {
 }
 
 enum QuickAccessEscapeAction: Equatable {
-    case cancelComposition, collapsePreview, clearQuery, closePanel
+    case cancelComposition, collapsePreview, clearQuery, foldSearch, closePanel
 }
 
-/// Escape handles only the top layer: composition, then preview, then the query and
-/// temporary filters, then the panel.
+/// Escape handles only the top layer: composition, then preview, then the query and filters, which folds the
+/// search with them, then an open search with nothing in it, then the panel.
 enum QuickAccessEscapePolicy {
-    static func action(hasMarkedText: Bool, isPreviewExpanded: Bool = false,
-                       hasQuery: Bool, hasFilters: Bool = false) -> QuickAccessEscapeAction {
+    static func action(hasMarkedText: Bool, isPreviewExpanded: Bool = false, hasQuery: Bool, hasFilters: Bool = false,
+                       isSearchExpanded: Bool = false) -> QuickAccessEscapeAction {
         if hasMarkedText { return .cancelComposition }
         if isPreviewExpanded { return .collapsePreview }
-        return hasQuery || hasFilters ? .clearQuery : .closePanel
+        if hasQuery || hasFilters { return .clearQuery }
+        return isSearchExpanded ? .foldSearch : .closePanel
     }
 }

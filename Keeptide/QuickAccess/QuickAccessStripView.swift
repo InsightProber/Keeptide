@@ -18,23 +18,15 @@ final class QuickAccessStripView: NSView {
     /// when to load more. Called when either changes, and again while a framed row has no details.
     var onVisibleRefsChanged: (([ContentRef], Int) -> Void)?
     var onContextMenu: ((ContentRef) -> NSMenu?)?
-    /// Called when `fades` changes.
-    var onFadesChanged: (() -> Void)?
     var haptics: any HapticPerforming = SystemHaptics()
     /// Whether the trackpad ticks for each step of the selection. The strip moves the same either way.
     var ticksEnabled = true
-    /// What a key means here depends on the rest of the panel, which keeps these current.
-    var filtersVisible = false
+    /// What a key means here depends on the rest of the panel, which keeps this current.
     var queryIsEmpty = true
     /// While the preview is open, the frames beside the selected one step back to half strength.
     var dimsSideFrames = false {
         didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
     }
-    /// Which ends of the band fade out: those the film goes on beyond, where it lies now, under the fingers too.
-    private(set) var fades = (leading: false, trailing: false)
-    /// Whether the last change of `fades` eases. Only a change made while the film is on screen before and after it
-    /// does; as the film appears or goes, the fades switch at once.
-    private(set) var animatesFades = false
     /// The selected clip's frame in the strip's coordinates, or nil while nothing is selected.
     var selectedFrame: NSRect? {
         selection.flatMap { frames[$0] }.map { convert($0.frame, from: film) }
@@ -68,8 +60,6 @@ final class QuickAccessStripView: NSView {
     /// Set while the panel shows a step the scroller asked for, so that `show` can tell it from a change made
     /// elsewhere.
     private var showingScrollStep = false
-    /// Whether the fades were last taken from a film on screen.
-    private var fadesHadFilm = false
     /// Where index 0's frame was when a slide started, within the band. The frames on screen there stay until the
     /// slide settles, so none vanishes on screen.
     private var slideStart: CGFloat?
@@ -148,7 +138,6 @@ final class QuickAccessStripView: NSView {
             }
             placeFrames()
         }
-        updateFades()
         if selectionChanged { announceSelection() }
         reportFramedRows()
     }
@@ -334,7 +323,7 @@ final class QuickAccessStripView: NSView {
     /// The fingers have carried the selection `progress` of a step past the selected clip and stretched an end by
     /// `rubberBand`, positive past the oldest clip. The film moves as far as its place moves with the selection,
     /// which is not at all while the selection walks along a docked film, and the stretch pulls it the way the
-    /// fingers go. The fades follow where it lies.
+    /// fingers go.
     private func follow(progress: CGFloat, rubberBand: CGFloat, springing: Bool) {
         self.progress = progress
         var offset = -rubberBand
@@ -342,20 +331,6 @@ final class QuickAccessStripView: NSView {
             offset += carried.firstOrigin - rest.firstOrigin
         }
         push(to: offset, springing: springing)
-        updateFades()
-    }
-
-    /// Takes the fades from where the film lies now, and tells the panel when they change. Without clips
-    /// nothing goes on beyond either end. A change eases only while the film stays on screen.
-    private func updateFades() {
-        let live = placement(at: livePosition)
-        let fades = (leading: live?.fadesLeading ?? false, trailing: live?.fadesTrailing ?? false)
-        let withinFilm = fadesHadFilm && live != nil
-        fadesHadFilm = live != nil
-        guard fades != self.fades else { return }
-        self.fades = fades
-        animatesFades = withinFilm
-        onFadesChanged?()
     }
 
     // MARK: Scrolling
@@ -446,8 +421,7 @@ final class QuickAccessStripView: NSView {
         // A held Space, Return or Escape has acted already.
         guard !(event.isARepeat && key.actsOnceWhenHeld) else { return }
         let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
-            key: key, shift: event.modifierFlags.contains(.shift), focus: .results,
-            queryIsEmpty: queryIsEmpty, filtersVisible: filtersVisible
+            key: key, shift: event.modifierFlags.contains(.shift), focus: .results, queryIsEmpty: queryIsEmpty
         ))
         // A key with no meaning here is dropped, not passed on to end in the alert sound.
         guard command != .passThrough else { return }

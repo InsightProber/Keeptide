@@ -39,7 +39,8 @@ struct StripFrameContent: Equatable {
     /// What VoiceOver names the clip by, after the band and the footer: the title a link's card shows, and the clip's
     /// own title for everything else.
     var accessibilityTitle: String
-    /// A saved memo's own title, when its body does not already begin with it.
+    /// A saved memo's own title, shown above its body when the body does not already begin with it, and above the
+    /// notice that stands in for a body whose text is gone.
     var memoTitle: String?
     var body: Body
     /// The line in the card's footer: a text's length, a picture's size, a link's host, or what a file clip holds.
@@ -227,8 +228,8 @@ struct StripFrameView: View {
     let content: StripFrameContent
     let applicationIcon: NSImage
     let metrics: StripMetrics
-    /// The band's colour once it has been worked out from the source app's icon. Until then, and for a clip
-    /// without a source app, the band is neutral.
+    /// The band's colour, worked out from the source app's icon when the app's first card is made. A clip without a
+    /// source app has none, and its band is neutral.
     let headerTint: HeaderTint?
     let isSelected: Bool
 

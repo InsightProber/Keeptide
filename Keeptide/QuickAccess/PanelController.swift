@@ -2,14 +2,15 @@ import AppKit
 import SwiftUI
 
 /// The quick access panel: a borderless, see-through, non-activating window around the band. It owns the window,
-/// where the keys go among the search field, the filter row and the strip, and what each command does.
+/// where the keys go among the search field, the filters and the strip, and what each command does.
 /// `QuickAccessBandView` draws the band and `QuickAccessState` holds what it shows.
 @MainActor
 final class PanelController: NSWindowController, NSWindowDelegate {
     let state: QuickAccessState
     private let preferences: QuickAccessPreferences
     private let searchField = QuickAccessSearchField()
-    private let filterRow = QuickAccessFilterRow()
+    private lazy var toolbar = QuickAccessToolbar(field: searchField)
+    private var filterRow: QuickAccessFilterRow { toolbar.filters }
     private let strip = QuickAccessStripView()
     private let applicationNames = ApplicationNames()
     private var hosting: NSHostingView<QuickAccessBandView>?
@@ -22,9 +23,14 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private let toast = CopyToastController(duration: PanelController.toastDuration)
     /// The visible area of the screen the panel opens on and the frame sizes for it, settled each time it opens.
     private var visibleFrame: NSRect
+    /// A visible area given for tests in place of the screen's.
+    private let fixedVisibleFrame: NSRect?
     private var metrics: StripMetrics
     /// Where the band is on screen, for the copy confirmation.
     private var bandFrame = NSRect.zero
+    /// What the panel shows in its window: the band, and the preview card while it is open. A click anywhere else
+    /// falls on the room left around them for the band's shadow.
+    private var contentFrames: [NSRect] = []
     /// Whether the strip's last row is the oldest there is: not while a search is still scanning, nor while another
     /// page may follow. While a new query has brought no rows yet, the rows still on screen keep what they had.
     private var oldestIsLoaded = true
@@ -35,14 +41,24 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var presentActionMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
     }
+    /// Shows the ⋯ menu. Tests replace it, as they do the actions menu.
+    var presentMoreMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
+        menu.popUp(positioning: nil, at: point, in: view)
+    }
+    /// The ⋯ menu's Open Library and Settings…, which the app points at its own commands.
+    var onOpenLibrary: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
 
     /// `preferences` defaults to a fresh copy for tests; the app passes the one its Settings window edits.
+    /// `visibleFrame` stands in for the screen's visible area, so a test can lay the panel out for a screen of its own.
     init(state: QuickAccessState = QuickAccessState(services: { nil }),
-         preferences: QuickAccessPreferences = QuickAccessPreferences()) {
+         preferences: QuickAccessPreferences = QuickAccessPreferences(), visibleFrame: NSRect? = nil) {
         self.state = state
         self.preferences = preferences
-        visibleFrame = Self.workingScreen()?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleFrame.width)
+        fixedVisibleFrame = visibleFrame
+        self.visibleFrame = visibleFrame ?? Self.workingScreen()?.visibleFrame
+            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: self.visibleFrame.width)
         let panel = QuickAccessPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
         super.init(window: panel)
@@ -53,12 +69,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         panel.becomesKeyOnlyIfNeeded = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
-        // The band fades out at its ends and draws its own shadow, so the window has neither a background nor one.
+        // The band draws its own material, edge and shadow, so the window has neither a background nor a shadow.
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
         let hosting = NSHostingView(rootView: bandView(QuickAccessBandView.Layout(
-            metrics: metrics, filtersVisible: false, previewSize: nil
+            metrics: metrics, previewSize: nil, roomBelow: StripLayout.shadowRoom.below
         )))
         // AppKit owns the window's geometry; SwiftUI lays out only what is inside it.
         hosting.sizingOptions = []
@@ -68,6 +84,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         panel.delegate = self
         panel.onEscape = { [weak self] in self?.escape() }
         panel.onKeyEquivalent = { [weak self] in self?.handleKeyEquivalent($0) ?? false }
+        panel.onFirstResponderChange = { [weak self] in self?.focusChanged() }
+        panel.isOutsideContent = { [weak self] point in
+            guard let self else { return false }
+            return !contentFrames.contains { $0.contains(point) }
+        }
+        panel.onClickOutside = { [weak self] in self?.close() }
         connect()
         followState()
     }
@@ -76,18 +98,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     func show() {
         guard let window else { return }
-        if !isSessionOpen {
+        let opening = !isSessionOpen
+        if opening {
             searchField.stringValue = ""
             filterRow.cursor = 0
             state.open()
             // Settle the screen before this panel takes keyboard focus, and take the settings as they are now.
-            visibleFrame = Self.workingScreen()?.visibleFrame ?? visibleFrame
+            visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
             metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
             update()
             isSessionOpen = true
         }
         window.makeKeyAndOrderFront(nil)
+        // The search opens folded, its field holding the keys, so the first key typed is the search's.
+        if opening { focusSearchField() }
     }
 
     override func close() {
@@ -121,14 +146,22 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             self?.state.setQuery($0)
             self?.update()
         }
+        searchField.onType = { [weak self] in self?.searchTyped() }
         searchField.onCommand = { [weak self] in self?.perform($0) }
         searchField.onEscape = { [weak self] in self?.applyEscape($0) }
         searchField.escapeContext = { [weak self] in
             QuickAccessEscapeContext(isPreviewExpanded: self?.state.isPreviewExpanded ?? false,
-                                     hasFilters: self?.state.filtersVisible ?? false)
+                                     hasFilters: !(self?.state.kinds.isEmpty ?? true),
+                                     isSearchExpanded: self?.state.isSearchExpanded ?? false)
         }
+        toolbar.search.onUnfold = { [weak self] in self?.unfoldSearch() }
+        toolbar.search.onClear = { [weak self] in self?.clearSearchText() }
         filterRow.onCommand = { [weak self] in self?.perform($0) }
         filterRow.onChoose = { [weak self] in self?.chooseFilter(at: $0) }
+        toolbar.copyHint.target = self
+        toolbar.copyHint.action = #selector(copyFromToolbar)
+        toolbar.moreButton.target = self
+        toolbar.moreButton.action = #selector(showMoreMenu)
         strip.onSelect = { [weak self] in
             self?.state.select($0)
             self?.update()
@@ -136,8 +169,6 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.onCommand = { [weak self] in self?.perform($0) }
         strip.onVisibleRefsChanged = { [weak self] in self?.loadFramedRows($0, lastOnScreen: $1) }
         strip.onContextMenu = { [weak self] in self?.actionMenu(for: $0) }
-        // The band fades the ends the strip's film goes on beyond.
-        strip.onFadesChanged = { [weak self] in self?.layoutPanel() }
         state.onCopied = { [weak self] in self?.confirmCopy() }
         state.onPreviewCollapsed = { [weak self] in self?.previewCollapsed() }
     }
@@ -159,11 +190,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// their keys mean.
     private func update() {
         layoutPanel()
-        searchField.filtersVisible = state.filtersVisible
-        filterRow.isHidden = !state.filtersVisible
+        toolbar.setSearchExpanded(state.isSearchExpanded)
+        toolbar.search.hasText = !state.query.isEmpty
+        toolbar.note = toolbarNote
         filterRow.queryIsEmpty = state.query.isEmpty
         filterRow.show(kinds: state.kinds)
-        strip.filtersVisible = state.filtersVisible
         strip.queryIsEmpty = state.query.isEmpty
         strip.dimsSideFrames = state.isPreviewExpanded
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
@@ -171,41 +202,52 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded)
     }
 
+    /// What the toolbar's right end says. A refused copy's reason answers what was just done, so it comes first;
+    /// then a status over clips on screen; then, with a clip selected, what Return does. With no clips the empty
+    /// state says it all.
+    private var toolbarNote: QuickAccessToolbar.Note {
+        if let failure = state.failure { return .failure(failure.message) }
+        if !state.selection.rows.isEmpty,
+           let line = QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
+                                             isComplete: state.selection.isComplete, notice: state.indexNotice) {
+            return .status(line)
+        }
+        guard state.selection.selection != nil else { return .none }
+        return .copy(enabled: state.selection.executableSelection != nil)
+    }
+
     /// Places the panel around the band, and around the preview card above it while the preview is open, and
-    /// lays the band out to match. The band sits in the middle of the screen's visible area, and its search row
-    /// stays put when the filter row shows; a card with no room above the band moves it down.
+    /// lays the band out to match. The band sits in the middle of the screen's visible area; a card with no room
+    /// above it moves the band down. The panel leaves room around them for the band's shadow, as much as the
+    /// screen has.
     private func layoutPanel() {
         guard let window, let hosting else { return }
-        let filtersVisible = state.filtersVisible
-        var band = StripLayout.bandFrame(metrics, filtersVisible: filtersVisible, in: visibleFrame)
+        var band = StripLayout.bandFrame(metrics, in: visibleFrame)
         var preview: NSRect?
         if state.isPreviewExpanded {
-            let placed = StripLayout.previewLayout(band: band, filtersVisible: filtersVisible, in: visibleFrame)
+            let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
         }
-        let layout = QuickAccessBandView.Layout(metrics: metrics, filtersVisible: filtersVisible,
-                                                previewSize: preview?.size, fadesLeading: strip.fades.leading,
-                                                fadesTrailing: strip.fades.trailing, animatesFades: strip.animatesFades)
-        if hosting.rootView.layout != layout { hosting.rootView = bandView(layout) }
         // On whole points, which are whole pixels on every screen; AppKit would cut a window's frame to them anyway.
-        let frame = NSIntegralRectWithOptions(StripLayout.panelFrame(band: band, preview: preview), .alignAllEdgesNearest)
+        let frame = NSIntegralRectWithOptions(StripLayout.panelFrame(band: band, preview: preview, in: visibleFrame),
+                                              .alignAllEdgesNearest)
+        let roomBelow = (band.minY - frame.minY).rounded()
+        let layout = QuickAccessBandView.Layout(metrics: metrics, previewSize: preview?.size, roomBelow: roomBelow)
+        if hosting.rootView.layout != layout { hosting.rootView = bandView(layout) }
         if window.frame != frame { window.setFrame(frame, display: window.isVisible) }
-        bandFrame = NSRect(x: frame.minX + StripLayout.sideMargin, y: frame.minY + StripLayout.shadowMargin,
-                           width: band.width, height: band.height)
-        // A filter row that went away cannot keep the keys; the search field takes them.
-        if !filtersVisible, currentFocus == .filters { focusSearchField() }
+        let bandInWindow = NSRect(x: StripLayout.sideMargin, y: roomBelow, width: band.width, height: band.height)
+        bandFrame = bandInWindow.offsetBy(dx: frame.minX, dy: frame.minY)
+        contentFrames = [bandInWindow] + (preview.map { [NSRect(
+            x: bandInWindow.midX - $0.width / 2, y: bandInWindow.maxY + StripLayout.previewGap, width: $0.width,
+            height: $0.height
+        )] } ?? [])
     }
 
     private func bandView(_ layout: QuickAccessBandView.Layout) -> QuickAccessBandView {
         QuickAccessBandView(
-            layout: layout, state: state, searchField: searchField, filterRow: filterRow, strip: strip,
-            applicationNames: applicationNames,
-            actions: QuickAccessBandView.Actions(
-                copy: { [weak self] in self?.perform(.primary) },
-                toggleFilters: { [weak self] in self?.toggleFilters() },
-                previewCommand: { [weak self] in self?.perform($0) }
-            )
+            layout: layout, state: state, toolbar: toolbar, strip: strip, applicationNames: applicationNames,
+            actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) })
         )
     }
 
@@ -228,8 +270,6 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .focusResults:
             guard !state.selection.rows.isEmpty else { return }
             window?.makeFirstResponder(strip)
-        case .focusFilters:
-            focusFilters()
         case .focusSearchField:
             focusSearchField()
         case .cycleFocus(let forward):
@@ -273,39 +313,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         keepFocus(focus)
     }
 
-    /// Tab and ⇧Tab go round the search field, the filter row and the strip, showing the filter row when it is
-    /// hidden. The strip is left out while it has no clips. From the preview's text, Tab goes on to the search
-    /// field and ⇧Tab back to the strip.
+    /// Tab and ⇧Tab go round the search field, the filters and the strip.
     private func cycleFocus(forward: Bool) {
-        var order: [QuickAccessFocus] = [.searchField, .filters]
-        if !state.selection.rows.isEmpty { order.append(.results) }
-        let target: QuickAccessFocus
-        if let index = currentFocus.flatMap(order.firstIndex(of:)) {
-            target = order[(index + (forward ? 1 : order.count - 1)) % order.count]
-        } else {
-            target = forward ? order[0] : order[order.count - 1]
-        }
-        switch target {
+        switch QuickAccessKeyRouter.focus(after: currentFocus, forward: forward,
+                                          hasClips: !state.selection.rows.isEmpty) {
         case .searchField:
             focusSearchField()
         case .filters:
-            state.revealFilters()
-            update()
-            focusFilters()
+            window?.makeFirstResponder(filterRow)
         case .results, .preview:
             window?.makeFirstResponder(strip)
         }
     }
 
-    private func focusFilters() {
-        guard state.filtersVisible else { return }
-        window?.makeFirstResponder(filterRow)
-    }
-
-    /// All clears the filters; each kind turns on or off. The row stays while it is used, even when the choice
-    /// leaves no query or filter to hold it up.
+    /// All clears the filters; each kind turns on or off.
     private func chooseFilter(at index: Int) {
-        state.revealFilters()
         if let kind = QuickAccessFilterRow.choices[index] {
             state.toggleKind(kind)
         } else {
@@ -314,15 +336,27 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         update()
     }
 
-    /// The filter button shows a hidden filter row and hides one brought up by hand. A row a query or a filter
-    /// holds up stays; brought up by hand as well, it goes once they do.
-    private func toggleFilters() {
-        if !state.filtersVisible {
-            state.revealFilters()
-        } else if state.filtersRevealed {
-            state.toggleFiltersRevealed()
-        }
+    /// A click on the folded search, or ⌘F: the search opens and its field takes the keys.
+    private func unfoldSearch() {
+        state.unfoldSearch()
         update()
+        focusSearchField()
+    }
+
+    /// Something was typed into the field, perhaps while it was folded: the search opens to show it.
+    private func searchTyped() {
+        guard !state.isSearchExpanded else { return }
+        state.unfoldSearch()
+        update()
+    }
+
+    /// The clear button empties the field, as deleting its text would, and leaves the search open with the keys.
+    private func clearSearchText() {
+        focusSearchField()
+        guard let editor = searchField.currentEditor() as? NSTextView else { return }
+        // Through the editor, so the change is reported as typing is and Undo brings the query back.
+        editor.selectAll(nil)
+        editor.delete(nil)
     }
 
     /// A key typed below the search field belongs in it. The field takes the keys, and the key event is posted
@@ -353,6 +387,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return .preview
     }
 
+    /// The open search is ringed while its field has the keys.
+    private func focusChanged() {
+        toolbar.showsSearchFocus = currentFocus == .searchField
+    }
+
     /// Restores focus now and again once SwiftUI has applied the new layout. Focus that was in the preview goes
     /// to the strip, or to the search field when there are no clips.
     private func keepFocus(_ focus: QuickAccessFocus?) {
@@ -364,7 +403,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let rowsShown = !state.selection.rows.isEmpty
         switch focus {
-        case .filters? where state.filtersVisible:
+        case .filters?:
             if window.firstResponder !== filterRow { window.makeFirstResponder(filterRow) }
         case .results? where rowsShown, .preview? where rowsShown, nil where rowsShown:
             if window.firstResponder !== strip { window.makeFirstResponder(strip) }
@@ -390,6 +429,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         Task { await state.copy(target, mode: mode) }
     }
 
+    /// The toolbar's "⏎ Copy", for the pointer.
+    @objc private func copyFromToolbar() {
+        perform(.primary)
+    }
+
     /// Closes the panel and confirms the copy where the band was.
     private func confirmCopy() {
         let band = bandFrame
@@ -405,7 +449,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return .milliseconds(1_200)
     }
 
-    // MARK: Actions menu
+    // MARK: Menus
+
+    /// The ⋯ menu, below its button.
+    @objc private func showMoreMenu() {
+        let menu = NSMenu(title: "More")
+        menu.autoenablesItems = false
+        menu.addItem(ClosureMenuItem("Open Library") { [weak self] in self?.onOpenLibrary?() })
+        menu.addItem(ClosureMenuItem("Settings…") { [weak self] in self?.onOpenSettings?() })
+        let button = toolbar.moreButton
+        presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
+    }
 
     /// ⌘K: the selected clip's actions, beside it; with nothing selected, beside the middle of the strip.
     func openActions() {
@@ -439,18 +493,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Escape
 
-    /// Escape from the strip, the filter row or the preview; the search field peels its own layers first.
+    /// Escape from the strip, the filters or the preview; the search field peels its own layers first.
     private func escape() {
         let action = QuickAccessEscapePolicy.action(hasMarkedText: false, isPreviewExpanded: state.isPreviewExpanded,
                                                     hasQuery: !searchField.stringValue.isEmpty,
-                                                    hasFilters: state.filtersVisible)
+                                                    hasFilters: !state.kinds.isEmpty,
+                                                    isSearchExpanded: state.isSearchExpanded)
         switch action {
         case .closePanel:
             close()
         case .clearQuery:
             searchField.stringValue = ""
             applyEscape(action)
-        case .cancelComposition, .collapsePreview:
+        case .cancelComposition, .collapsePreview, .foldSearch:
             applyEscape(action)
         }
     }
@@ -462,6 +517,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .clearQuery:
             state.clearQueryAndFilters()
             update()
+        case .foldSearch:
+            state.foldSearch()
+            update()
         case .cancelComposition, .closePanel:
             break
         }
@@ -472,6 +530,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return false
         }
         switch event.charactersIgnoringModifiers?.lowercased() {
+        case "f":
+            unfoldSearch()
+            return true
         case "k":
             openActions()
             return true
@@ -484,9 +545,29 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 }
 
+/// A menu item that runs a closure.
+private final class ClosureMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc private func run() { handler() }
+}
+
 private final class QuickAccessPanel: NSPanel {
     var onEscape: (() -> Void)?
     var onKeyEquivalent: ((NSEvent) -> Bool)?
+    /// Called whenever the keys move from one view to another.
+    var onFirstResponderChange: (() -> Void)?
+    /// Whether a point in the window lies outside what the panel shows, in the room left for the band's shadow.
+    var isOutsideContent: ((NSPoint) -> Bool)?
+    var onClickOutside: (() -> Void)?
 
     // A borderless window cannot become key unless it says so.
     override var canBecomeKey: Bool { true }
@@ -510,5 +591,22 @@ private final class QuickAccessPanel: NSPanel {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         onKeyEquivalent?(event) == true || super.performKeyEquivalent(with: event)
+    }
+
+    override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let made = super.makeFirstResponder(responder)
+        onFirstResponderChange?()
+        return made
+    }
+
+    /// The window reaches well beyond the band, for its shadow, and the shadow is not quite transparent, so clicks
+    /// there come to the panel. Such a click is a click beside the panel, and closes it as one would.
+    override func sendEvent(_ event: NSEvent) {
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+           isOutsideContent?(event.locationInWindow) == true {
+            onClickOutside?()
+            return
+        }
+        super.sendEvent(event)
     }
 }
