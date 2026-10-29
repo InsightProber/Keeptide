@@ -202,7 +202,7 @@ final class CaptureSession {
         actionMessage = nil
         switch await pasteService.execute(PasteRequest(ref: ref, queryGeneration: generation, mode: .original,
                                                        session: session)) {
-        case .copied:
+        case .copied, .copiedInstead, .dispatched:
             actionMessage = "Copied"
         case .refused(.stale):
             break // A newer selection or copy owns the message.

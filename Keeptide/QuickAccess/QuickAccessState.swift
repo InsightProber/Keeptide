@@ -264,7 +264,7 @@ final class QuickAccessState {
         // A reopened panel or a newer selection owns the screen now.
         guard isOpen, self.session === session else { return }
         switch outcome {
-        case .copied: onCopied?()
+        case .copied, .copiedInstead, .dispatched: onCopied?()
         case .refused(let refusal): if selection.selection == target.ref { failure = refusal }
         }
     }
