@@ -36,6 +36,9 @@ struct StripFrameContent: Equatable {
     var time: String
     /// The app the clip came from. Its icon gives the colour band its colour.
     var sourceApp: String?
+    /// What VoiceOver names the clip by, after the band and the footer: the title a link's card shows, and the clip's
+    /// own title for everything else.
+    var accessibilityTitle: String
     /// A saved memo's own title, when its body does not already begin with it.
     var memoTitle: String?
     var body: Body
@@ -58,56 +61,65 @@ struct StripFrameContent: Equatable {
     /// `detail` is nil until the details have arrived, and when they could not be read. A text search
     /// result already has its snippet, so it shows it without them and only its caption waits. `now` is the
     /// moment the time is told from.
-    static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize, now: Date = Date()) -> StripFrameContent {
+    static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
+                     now: Date = Date()) -> StripFrameContent {
         var content = StripFrameContent(
             kind: row.kind, time: QuickAccessRowContent.time(of: row.date, relativeTo: now), sourceApp: row.sourceApp,
+            accessibilityTitle: row.displayTitle,
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
             extraItems: 0, markers: [], isTextUnavailable: row.isTextUnavailable
         )
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
-        guard let detail else {
+        if let detail {
+            content.show(detail, of: row, cardSize: cardSize)
+        } else {
             content.showSnippet(of: row, cardSize: cardSize)
-            return content
         }
+        // A memo whose text is gone keeps its own title, above the notice that stands in for the text.
+        if row.isTextUnavailable, row.savedAsMemo, !row.title.isEmpty { content.memoTitle = row.title }
+        return content
+    }
 
-        content.extraItems = max(0, detail.itemCount - 1)
-        content.info = info(for: row.kind, detail: detail)
+    /// Fills in what the details tell: the footer, how many more items there are, and the clip itself.
+    private mutating func show(_ detail: ClipDetail, of row: QuickAccessRow, cardSize: CardSize) {
+        extraItems = max(0, detail.itemCount - 1)
+        info = Self.info(for: row.kind, detail: detail)
         switch row.kind {
         case .text:
-            if !content.showSnippet(of: row, cardSize: cardSize), let excerpt = detail.excerpt, !excerpt.isEmpty {
-                content.setText(AttributedString(excerpt), plain: excerpt, for: row, cardSize: cardSize)
+            if !showSnippet(of: row, cardSize: cardSize), let excerpt = detail.excerpt, !excerpt.isEmpty {
+                setText(AttributedString(excerpt), plain: excerpt, for: row, cardSize: cardSize)
             }
         case .url:
             guard let address = detail.excerpt, !address.isEmpty else { break }
-            if let (host, rest) = split(link: address) {
+            if let (host, rest) = Self.split(link: address) {
                 let pageTitle = detail.linkTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let title = memoTitle(of: row, over: address)
+                let title = Self.memoTitle(of: row, over: address)
                     ?? pageTitle.flatMap { $0.isEmpty ? nil : $0 }
                     ?? (rest.isEmpty ? host : rest)
-                content.body = .link(title: highlighted(title, like: row.snippet))
+                body = .link(title: Self.highlighted(title, like: row.snippet))
+                accessibilityTitle = title
             } else {
-                content.setText(AttributedString(address), plain: address, for: row, cardSize: cardSize)
+                setText(AttributedString(address), plain: address, for: row, cardSize: cardSize)
             }
         case .image:
             if let thumbnail = detail.thumbnail {
-                content.body = .image(thumbnail, fills: detail.fillsFrame)
+                body = .image(thumbnail, fills: detail.fillsFrame)
                 if let size = detail.pixelSize, size.width > 0, size.height > 0 {
-                    content.imageAspectRatio = size.width / size.height
+                    imageAspectRatio = size.width / size.height
                 }
             }
         case .file:
             if let name = detail.fileNames.first {
                 let pathExtension = (name as NSString).pathExtension
                 let type = pathExtension.isEmpty ? nil : UTType(filenameExtension: pathExtension)
-                content.body = .file(name: name, typeIdentifier: type?.identifier)
+                body = .file(name: name, typeIdentifier: type?.identifier)
             } else {
-                content.body = .file(name: row.displayTitle, typeIdentifier: nil)
+                body = .file(name: row.displayTitle, typeIdentifier: nil)
             }
         case .other:
             break
         }
-        return content
     }
 
     /// The text of the footer: a picture's size, a text's length, a link's host (or its length when it has no
@@ -166,6 +178,8 @@ struct StripFrameContent: Equatable {
             var start = text.startIndex
             while start < text.endIndex,
                   let found = text.range(of: hit, options: SearchService.snippetOptions, range: start..<text.endIndex) {
+                // An empty match would never move on.
+                guard !found.isEmpty else { break }
                 if let lower = AttributedString.Index(found.lowerBound, within: attributed),
                    let upper = AttributedString.Index(found.upperBound, within: attributed), lower < upper {
                     attributed[lower..<upper].inlinePresentationIntent = .stronglyEmphasized
@@ -403,7 +417,7 @@ struct StripFrameView: View {
         let (top, gap, bottom, tile) = (22 * scale, 14 * scale, 14 * scale, 48 * scale)
         let room = metrics.contentSize.height - top - tile - gap - bottom
         return VStack(spacing: gap) {
-            RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+            RoundedRectangle(cornerRadius: 14 * scale, style: .continuous)
                 .fill(Palette.globeTile)
                 .frame(width: tile, height: tile)
                 .overlay {
@@ -424,7 +438,8 @@ struct StripFrameView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    /// A picture covering the middle, cut evenly at its edges.
+    /// A picture covering the middle, cut evenly at its edges. A picture is shown this way when its shape is within a
+    /// factor of two of the middle's.
     private func filledImage(_ image: CGImage) -> some View {
         Image(decorative: image, scale: 1)
             .resizable()
@@ -433,7 +448,8 @@ struct StripFrameView: View {
             .clipped()
     }
 
-    /// A picture too wide or too tall to cover the middle, shown whole on the paper.
+    /// A picture whose shape is more than twice as wide or as tall as the middle's, shown whole on the paper:
+    /// covering the middle would cut most of it away.
     private func wholeImage(_ image: CGImage) -> some View {
         let aspect = content.imageAspectRatio ?? CGFloat(image.width) / CGFloat(max(image.height, 1))
         return Image(decorative: image, scale: 1)

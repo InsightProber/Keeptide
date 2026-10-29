@@ -36,10 +36,6 @@ final class QuickAccessSnapshotTests: XCTestCase {
         }
         let output = SnapshotFolder(requested: URL(fileURLWithPath: folder, isDirectory: true))
         let names = ApplicationNames()
-        var tints: [String: HeaderTint] = [:]
-        for app in [App.preview, App.terminal, App.safari, App.notes, App.finder, App.mail] {
-            tints[app] = await HeaderTint.tint(forIconOf: app)
-        }
         let now = Date()
         let rows: [(name: String, cards: [Card])] = [
             ("open", try openRow(now: now)), ("search", searchRow(now: now)), ("states", try statesRow(now: now)),
@@ -49,7 +45,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
             for cardSize in CardSize.allCases {
                 for dark in [true, false] {
                     let file = "cards-\(name)-\(cardSize.rawValue)-\(dark ? "dark" : "light").png"
-                    let png = try await render(cards, cardSize: cardSize, dark: dark, now: now, names: names, tints: tints)
+                    let png = try await render(cards, cardSize: cardSize, dark: dark, now: now, names: names)
                     let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
                     attachment.name = file
                     attachment.lifetime = .keepAlways
@@ -202,8 +198,8 @@ final class QuickAccessSnapshotTests: XCTestCase {
 
     /// Lays the cards out from the band's left end as the strip does when it opens, each in its own hosting view, and
     /// draws them at twice their size, as PNG data.
-    private func render(_ cards: [Card], cardSize: CardSize, dark: Bool, now: Date, names: ApplicationNames,
-                        tints: [String: HeaderTint]) async throws -> Data {
+    private func render(_ cards: [Card], cardSize: CardSize, dark: Bool, now: Date,
+                        names: ApplicationNames) async throws -> Data {
         let metrics = StripLayout.metrics(for: cardSize, visibleWidth: 1440)
         // Room above and below the cards for the selection ring and the cards' shadows.
         let (above, below): (CGFloat, CGFloat) = (24, 36)
@@ -223,10 +219,13 @@ final class QuickAccessSnapshotTests: XCTestCase {
             : CGColor(srgbRed: 0xF6 / 255, green: 0xF6 / 255, blue: 0xF8 / 255, alpha: 1)
         window.contentView = band
         for (index, card) in cards.enumerated() {
+            // As in the strip, each band takes its colour from the icon its card shows.
+            let icon = names.icon(for: card.row.sourceApp)
             let view = StripFrameView(
                 content: StripFrameContent.make(row: card.row, detail: card.detail, cardSize: cardSize, now: now),
-                applicationIcon: names.icon(for: card.row.sourceApp), metrics: metrics,
-                headerTint: card.row.sourceApp.flatMap { tints[$0] }, isSelected: card.isSelected)
+                applicationIcon: icon, metrics: metrics,
+                headerTint: card.row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
+                isSelected: card.isSelected)
             let host = NSHostingView(rootView: view)
             host.sizingOptions = []
             // The ring and the shadow are drawn outside the card.

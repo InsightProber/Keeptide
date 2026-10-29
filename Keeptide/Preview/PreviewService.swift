@@ -12,7 +12,8 @@ struct ClipDetail: Equatable, Sendable {
     /// The picture's size as shown, taken from its header.
     var pixelSize: CGSize?
     var thumbnail: CGImage?
-    /// Whether the thumbnail covers the whole picture area, or is shown whole inside it.
+    /// Whether the thumbnail covers the card's picture area, cut at its edges, as it does when its shape is within a
+    /// factor of two of the area's; a picture more than twice as wide or as tall for its size is shown whole instead.
     var fillsFrame = true
     var fileNames: [String] = []
     var itemCount = 1

@@ -63,7 +63,8 @@ enum StripLayout {
         let card = cardDimensions(for: size)
         return StripMetrics(
             cardSize: size, bandWidth: visibleWidth - 2 * sideMargin, frameSize: card.frame, gap: 14,
-            cornerRadius: 14, dockInset: 20, headerHeight: card.header, footerHeight: card.footer, iconSize: card.icon
+            cornerRadius: card.radius, dockInset: 20, headerHeight: card.header, footerHeight: card.footer,
+            iconSize: card.icon
         )
     }
 
@@ -146,14 +147,15 @@ enum StripLayout {
         return content.insetBy(dx: -sideMargin, dy: -shadowMargin)
     }
 
-    /// A frame's size, the heights of its colour band and its footer, and the side of the app icon in the band.
+    /// A frame's size, the heights of its colour band and its footer, the side of the app icon in the band, and the
+    /// radius of its corners, which grows with the card.
     static func cardDimensions(
         for size: CardSize
-    ) -> (frame: CGSize, header: CGFloat, footer: CGFloat, icon: CGFloat) {
+    ) -> (frame: CGSize, header: CGFloat, footer: CGFloat, icon: CGFloat, radius: CGFloat) {
         switch size {
-        case .small: (CGSize(width: 200, height: 220), 52, 28, 36)
-        case .medium: (CGSize(width: 228, height: 250), 56, 30, 40)
-        case .large: (CGSize(width: 260, height: 286), 60, 32, 44)
+        case .small: (CGSize(width: 200, height: 220), 52, 28, 36, 18)
+        case .medium: (CGSize(width: 228, height: 250), 56, 30, 40, 20)
+        case .large: (CGSize(width: 260, height: 286), 60, 32, 44, 22)
         }
     }
 }

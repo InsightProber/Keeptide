@@ -1,14 +1,14 @@
 import AppKit
 import os
 import SwiftUI
-import UniformTypeIdentifiers
 
 /// The colour band across the top of a card, taken from the icon of the app the clip came from.
 ///
 /// The band is the colour that most of the icon's clearly coloured pixels share, made solid: deep enough for white
-/// text to read on it at better than 4.5:1. Yellows stay light instead, since deepened they turn olive or brown, and
-/// their text is a dark shade of the same hue. An icon with no colour to speak of (grey, pale, or white with only a
-/// touch of colour) gives the dark neutral band, as Terminal's does. The same icon always gives the same band.
+/// text to read on it at better than 4.5:1. Oranges are drawn toward red as they deepen, so that they become a burnt
+/// orange and not a brown. Yellows stay light instead, since deepened they turn olive, and their text is a dark shade
+/// of the same hue. An icon with no colour to speak of (grey, pale, or white with only a touch of colour) gives the
+/// dark neutral band, as Terminal's does. The same icon always gives the same band.
 struct HeaderTint: Equatable, Sendable {
     /// A colour in sRGB, each component from 0 to 1.
     struct RGB: Equatable, Sendable {
@@ -52,8 +52,11 @@ struct HeaderTint: Equatable, Sendable {
     private static let minimumChroma = 0.25
     /// The share of the icon's opaque pixels the leading colour must cover to be the icon's colour.
     private static let minimumShare = 0.08
-    /// Yellows, from amber to yellow-green, which stay light.
-    private static let lightHues = 36.0...85.0
+    /// Oranges, which are drawn into the burnt oranges below as they deepen, keeping their order.
+    private static let oranges = 28.0..<42.0
+    private static let burntOranges = 25.0...30.0
+    /// Yellows, from where the oranges end to yellow-green, which stay light.
+    private static let lightHues = oranges.upperBound...85.0
     /// A band is never lighter than this, nor deepened past the floor below it.
     private static let lightnessRange = 0.25...0.54
     private static let saturationRange = 0.45...0.75
@@ -80,7 +83,8 @@ struct HeaderTint: Equatable, Sendable {
         let peak = (0..<hueSlices).max { first, second in
             around(first).reduce(0) { $0 + slices[$1] } < around(second).reduce(0) { $0 + slices[$1] }
         } ?? 0
-        let members = coloured.filter { around(peak).contains($0.slice) }.map(\.colour)
+        let window = around(peak)
+        let members = coloured.filter { window.contains($0.slice) }.map(\.colour)
         guard opaque > 0, Double(members.count) >= minimumShare * Double(opaque) else { return neutral(dark: true) }
         let count = Double(members.count)
         return band(from: RGB(red: members.reduce(0) { $0 + $1.red } / count,
@@ -89,10 +93,16 @@ struct HeaderTint: Equatable, Sendable {
     }
 
     /// A solid band in the colour's hue. Most hues are deepened until white reads on them at 5:1, a little above the
-    /// 4.5:1 asked, so that the line under the title reads too. A yellow keeps its lightness and takes dark text,
-    /// lightened further if that is what the dark text needs.
+    /// 4.5:1 asked, for a band of some depth; the smaller line under the title keeps its own 4.5:1 through
+    /// `secondaryText`. An orange is first drawn toward red, as the design's burnt orange #B85410 at 25 degrees is,
+    /// since deepened as it is it would turn brown. A yellow keeps its lightness and takes dark text, lightened further
+    /// if that is what the dark text needs.
     private static func band(from colour: RGB) -> HeaderTint {
-        let (hue, saturation, lightness) = hsl(colour)
+        let (iconHue, saturation, lightness) = hsl(colour)
+        let hue = oranges.contains(iconHue)
+            ? burntOranges.lowerBound + (iconHue - oranges.lowerBound) / (oranges.upperBound - oranges.lowerBound)
+                * (burntOranges.upperBound - burntOranges.lowerBound)
+            : iconHue
         let s = min(max(saturation, saturationRange.lowerBound), saturationRange.upperBound)
         var l = min(max(lightness, lightnessRange.lowerBound), lightnessRange.upperBound)
         func shade(_ l: Double) -> RGB { rgb(hue: hue, saturation: s, lightness: l) }
@@ -145,25 +155,34 @@ struct HeaderTint: Equatable, Sendable {
         return tints.withLock { $0[bundleIdentifier] }
     }
 
-    /// The tint of the app's icon. The icon is read and decoded here, away from the main thread, once per app; after
-    /// that this and `cachedTint` return what was worked out. An app that cannot be found shows the generic app
-    /// icon, which is grey, so it gets the neutral band. A clip without a source app has no icon to ask about: its
-    /// card draws `neutral(dark:)` for its own appearance.
-    static func tint(forIconOf bundleIdentifier: String,
-                     loadingIcon: @Sendable (String) -> CGImage? = { applicationIcon(of: $0) }) async -> HeaderTint {
+    /// The app's tint, taken from `icon`, the very image its card shows, when its first card is drawn, and kept by
+    /// bundle identifier from then on, whatever icon comes with it later. Drawing the icon at 32 pixels a side takes
+    /// about a millisecond on the main actor, once per app, so that no card is drawn neutral first and coloured a
+    /// moment later. An app that cannot be found shows the generic app icon, which is grey, so its band is the dark
+    /// neutral one. A clip without a source app has no icon to take a colour from: its card draws `neutral(dark:)` in
+    /// its own appearance.
+    @MainActor
+    static func tint(forIconOf bundleIdentifier: String, icon: NSImage) -> HeaderTint {
         if let known = cachedTint(forIconOf: bundleIdentifier) { return known }
-        let tint = tint(of: loadingIcon(bundleIdentifier))
+        let tint = tint(of: sampled(icon))
         tints.withLock { $0[bundleIdentifier] = tint }
         return tint
     }
 
-    /// The icon a card shows for the app, as the system draws it at the size it is sampled at.
-    static func applicationIcon(of bundleIdentifier: String) -> CGImage? {
-        let workspace = NSWorkspace.shared
-        let icon = workspace.urlForApplication(withBundleIdentifier: bundleIdentifier)
-            .map { workspace.icon(forFile: $0.path) } ?? workspace.icon(for: .applicationBundle)
-        var rect = CGRect(x: 0, y: 0, width: sampleSide, height: sampleSide)
-        return icon.cgImage(forProposedRect: &rect, context: nil, hints: nil)
+    /// `icon` drawn at `sampleSide` pixels a side in sRGB.
+    @MainActor
+    private static func sampled(_ icon: NSImage) -> CGImage? {
+        let side = sampleSide
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+            return nil
+        }
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        icon.draw(in: NSRect(x: 0, y: 0, width: side, height: side), from: .zero, operation: .copy, fraction: 1)
+        return context.makeImage()
     }
 
     // MARK: Colour arithmetic
@@ -182,7 +201,8 @@ struct HeaderTint: Equatable, Sendable {
     }
 
     private static func blend(_ top: RGB, over bottom: RGB, opacity: Double) -> RGB {
-        RGB(red: top.red * opacity + bottom.red * (1 - opacity), green: top.green * opacity + bottom.green * (1 - opacity),
+        RGB(red: top.red * opacity + bottom.red * (1 - opacity),
+            green: top.green * opacity + bottom.green * (1 - opacity),
             blue: top.blue * opacity + bottom.blue * (1 - opacity))
     }
 

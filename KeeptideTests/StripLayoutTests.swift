@@ -10,21 +10,22 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testCardSizesMatchTheSpec() {
-        let sizes: [(size: CardSize, card: CGSize, header: CGFloat, icon: CGFloat, footer: CGFloat)] = [
-            (.small, CGSize(width: 200, height: 220), 52, 36, 28),
-            (.medium, CGSize(width: 228, height: 250), 56, 40, 30),
-            (.large, CGSize(width: 260, height: 286), 60, 44, 32),
+        let sizes: [(size: CardSize, card: CGSize, header: CGFloat, icon: CGFloat, footer: CGFloat, radius: CGFloat)] = [
+            (.small, CGSize(width: 200, height: 220), 52, 36, 28, 18),
+            (.medium, CGSize(width: 228, height: 250), 56, 40, 30, 20),
+            (.large, CGSize(width: 260, height: 286), 60, 44, 32, 22),
         ]
-        for (size, card, header, icon, footer) in sizes {
+        for (size, card, header, icon, footer, radius) in sizes {
             let m = StripLayout.metrics(for: size, visibleWidth: 1440)
             XCTAssertEqual(m.cardSize, size)
             XCTAssertEqual(m.frameSize, card, "\(size)")
             XCTAssertEqual(m.headerHeight, header, "\(size)")
             XCTAssertEqual(m.iconSize, icon, "\(size)")
             XCTAssertEqual(m.footerHeight, footer, "\(size)")
-            // Gap, corners and dock inset are the same at every size.
+            // Larger cards have rounder corners.
+            XCTAssertEqual(m.cornerRadius, radius, "\(size)")
+            // Gap and dock inset are the same at every size.
             XCTAssertEqual(m.gap, 14, "\(size)")
-            XCTAssertEqual(m.cornerRadius, 14, "\(size)")
             XCTAssertEqual(m.dockInset, 20, "\(size)")
             XCTAssertEqual(m.step, card.width + 14, "\(size)")
         }

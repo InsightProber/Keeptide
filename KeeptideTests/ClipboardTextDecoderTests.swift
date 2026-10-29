@@ -112,6 +112,9 @@ final class ClipboardTextDecoderTests: XCTestCase {
         XCTAssertNil(ClipboardTextDecoder.linkTitle([url]))
         XCTAssertNil(ClipboardTextDecoder.linkTitle([url, representation(type: "public.url-name", bytes: Data(" \n\t".utf8))]))
         XCTAssertNil(ClipboardTextDecoder.linkTitle([representation(type: "public.utf8-plain-text", bytes: Data("Title".utf8))]))
+        // Only its first 4 KB is read, as for a clip's title, and never half a character: 1,365 three-byte characters.
+        let long = representation(type: "public.url-name", bytes: Data(String(repeating: "页", count: 3_000).utf8))
+        XCTAssertEqual(ClipboardTextDecoder.linkTitle([long]), String(repeating: "页", count: 1_365))
         // The name is not text in its own right: titles and previews still skip it.
         XCTAssertFalse(ClipboardTextDecoder.isTextType("public.url-name"))
         XCTAssertNil(ClipboardTextDecoder.preview([name]))

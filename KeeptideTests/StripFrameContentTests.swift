@@ -18,8 +18,8 @@ final class StripFrameContentTests: XCTestCase {
 
         XCTAssertEqual(content.body, .placeholder(symbol: "link", title: "Apple docs"))
         XCTAssertNil(content.info)
-        // The title is the placeholder's own text, so it is not shown a second time as a memo title.
-        XCTAssertNil(content.memoTitle)
+        // Its text is gone, so the notice takes the placeholder's place and the memo's own title shows above it.
+        XCTAssertEqual(content.memoTitle, "Apple docs")
         XCTAssertEqual(content.extraItems, 0)
         // What the row already says does not wait for the details.
         XCTAssertEqual(content.markers, [.savedAsMemo, .partiallyIndexed])
@@ -388,6 +388,35 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertTrue(StripFrameContent.make(row: unavailable, detail: nil, cardSize: .medium).isTextUnavailable)
         XCTAssertTrue(
             StripFrameContent.make(row: unavailable, detail: ClipDetail(), cardSize: .medium).isTextUnavailable)
+        // A clip that is not a memo has no title to show over the notice.
+        XCTAssertNil(StripFrameContent.make(row: unavailable, detail: ClipDetail(), cardSize: .medium).memoTitle)
+
+        // A saved memo whose text is gone keeps its own title above the notice, before the details and after.
+        let goneMemo = makeRow(title: "Standup", savedAsMemo: true, isTextUnavailable: true)
+        XCTAssertEqual(StripFrameContent.make(row: goneMemo, detail: nil, cardSize: .medium).memoTitle, "Standup")
+        XCTAssertEqual(StripFrameContent.make(row: goneMemo, detail: ClipDetail(), cardSize: .medium).memoTitle, "Standup")
+        // One without a title has none to show.
+        let untitled = makeRow(title: "", savedAsMemo: true, isTextUnavailable: true)
+        XCTAssertNil(StripFrameContent.make(row: untitled, detail: ClipDetail(), cardSize: .medium).memoTitle)
+    }
+
+    func testVoiceOverNamesAClipByTheTitleItsCardShows() {
+        let address = "https://git-scm.com/docs/git-rebase"
+        // A link is named by its page's title, or by its path, as its card shows it, and not by its address.
+        let titled = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address),
+            detail: ClipDetail(excerpt: address, characterCount: 35, linkTitle: "Git - git-rebase Documentation"),
+            cardSize: .medium)
+        XCTAssertEqual(titled.accessibilityTitle, "Git - git-rebase Documentation")
+        let untitled = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address), detail: ClipDetail(excerpt: address, characterCount: 35),
+            cardSize: .medium)
+        XCTAssertEqual(untitled.accessibilityTitle, "/docs/git-rebase")
+        // Until the details arrive, and for every other kind, the clip's own title names it.
+        XCTAssertEqual(StripFrameContent.make(row: makeRow(kind: .url, title: address), detail: nil, cardSize: .medium)
+            .accessibilityTitle, address)
+        XCTAssertEqual(StripFrameContent.make(row: makeRow(title: ""), detail: ClipDetail(excerpt: "Hello", characterCount: 5),
+                                              cardSize: .medium).accessibilityTitle, "Clipboard Item")
     }
 
     /// The runs set in bold, in order.

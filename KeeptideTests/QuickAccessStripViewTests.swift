@@ -414,9 +414,12 @@ final class QuickAccessStripViewTests: XCTestCase {
             makeRow(title: "Standup notes", savedAsMemo: true, isPartiallyIndexed: true, isTextUnavailable: true),
             makeRow(kind: .url, title: ""),
             makeRow(kind: .image, title: "Screenshot"),
+            makeRow(kind: .url, title: "https://git-scm.com/docs/git-rebase"),
         ]
         let details = [rows[0].ref: ClipDetail(excerpt: "Quarterly numbers draft..", characterCount: 25),
-                       rows[3].ref: ClipDetail(pixelSize: CGSize(width: 2880, height: 1800))]
+                       rows[3].ref: ClipDetail(pixelSize: CGSize(width: 2880, height: 1800)),
+                       rows[4].ref: ClipDetail(excerpt: "https://git-scm.com/docs/git-rebase", characterCount: 35,
+                                               linkTitle: "Git - git-rebase Documentation")]
 
         strip.show(rows, selection: rows[0].ref, details: details, metrics: metrics, applicationNames: names)
 
@@ -425,8 +428,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(strip.accessibilityIdentifier(), "QuickAccessStrip")
         // One element per frame, left to right as on screen: the selected newest first and the oldest last.
         let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
-        guard children.count == 4 else { return XCTFail("Expected an element per frame, got \(children.count)") }
-        let (selected, memo, link, image) = (children[0], children[1], children[2], children[3])
+        guard children.count == 5 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        let (selected, memo, link, image, page) = (children[0], children[1], children[2], children[3], children[4])
         let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
 
         // The kind, the time, where the clip came from and what its footer says, as the card shows them; then what
@@ -445,6 +448,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(link.accessibilityLabel(), "Link, \(time(rows[2])): Clipboard Item")
         // A picture's size is said in words.
         XCTAssertEqual(image.accessibilityLabel(), "Image, \(time(rows[3])), 2880 by 1800: Screenshot")
+        // A link is named by the title its card shows, not by its address.
+        XCTAssertEqual(page.accessibilityLabel(), "Link, \(time(rows[4])), git-scm.com: Git - git-rebase Documentation")
         // The text drawn in a frame is read through its label, not a second time.
         XCTAssertEqual(selected.accessibilityChildren()?.count ?? 0, 0)
 
@@ -453,6 +458,27 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.show(many, selection: many[10].ref, details: [:], metrics: metrics, applicationNames: names)
         XCTAssertEqual(strip.accessibilityChildren()?.count, 9)
         XCTAssertEqual(drawings(in: strip).count, 11)
+    }
+
+    func testTheFirstShowOfAnAppAlreadyCarriesItsBandColour() throws {
+        let strip = makeStrip()
+        let names = ApplicationNames()
+        // An app that is not installed shows the system's generic app icon, which is grey, so its band is the dark
+        // neutral one. Nothing is known of the app before its first frame.
+        let app = "test.keeptide.not-installed.\(UUID().uuidString)"
+        XCTAssertNil(HeaderTint.cachedTint(forIconOf: app))
+        let rows = [makeRow(title: "From an unknown app", sourceApp: app), makeRow(title: "From no app")]
+
+        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: names)
+
+        // The first frame already has the band's own colour, worked out from the icon it shows, with no neutral
+        // first pass to be replaced later.
+        let unknown = try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "From an unknown app" })
+        XCTAssertTrue(unknown.rootView.applicationIcon === names.icon(for: app))
+        XCTAssertEqual(unknown.rootView.headerTint, .neutral(dark: true))
+        XCTAssertEqual(HeaderTint.cachedTint(forIconOf: app), .neutral(dark: true))
+        // A clip without a source app has no tint: its band is the neutral one of the appearance it is drawn in.
+        XCTAssertNil(try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "From no app" }).rootView.headerTint)
     }
 
     // MARK: Beyond the named cases

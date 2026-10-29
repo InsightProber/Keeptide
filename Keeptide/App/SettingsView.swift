@@ -43,8 +43,12 @@ extension CardSize {
 /// take theirs from their apps' icons. It is the same for every card size.
 private struct StripPreview: View {
     private static let card = CGSize(width: 52, height: 57)
-    /// A card's colour band, as tall against the card as a real card's: 56 of 250.
-    private static let colourBand = (card.height * 56 / 250).rounded()
+    /// The medium card the miniature is drawn after, and how much smaller the miniature is.
+    private static let medium = StripLayout.cardDimensions(for: .medium)
+    private static let scale = card.width / medium.frame.width
+    /// A card's colour band and its corners, in proportion to the medium card's.
+    private static let colourBand = (medium.header * scale).rounded()
+    private static let cornerRadius = medium.radius * scale
     /// Bands of an orange app, a yellow one and a blue one, which show on the band in either appearance.
     private static let tints: [UInt32] = [0xB85410, 0xE3B528, 0x2563C9]
     private static let gap: CGFloat = 8
@@ -65,10 +69,11 @@ private struct StripPreview: View {
                     HeaderTint.RGB(hex: colorScheme == .dark ? 0x2C2C2E : 0xFFFFFF).color
                 }
                 .frame(width: Self.card.width, height: Self.card.height)
-                .clipShape(.rect(cornerRadius: 6, style: .continuous))
+                .clipShape(.rect(cornerRadius: Self.cornerRadius, style: .continuous))
                 .overlay {
+                    // The ring keeps to the card's corners, 4 pt out.
                     if index == 0 {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        RoundedRectangle(cornerRadius: Self.cornerRadius + 4, style: .continuous)
                             .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
                             .padding(-4)
                     }

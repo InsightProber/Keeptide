@@ -1,5 +1,4 @@
-import CoreGraphics
-import Foundation
+import AppKit
 import XCTest
 @testable import Keeptide
 
@@ -17,12 +16,15 @@ final class HeaderTintTests: XCTestCase {
         XCTAssertFalse(tint.usesDarkText)
         XCTAssertEqual(tint.text, white)
         XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(white, band), 4.5)
-        // The smaller line under the title, the time and the marks, reads at 4.5:1 as well.
+        // The smaller line under the title, the time and the marks, reads at 4.5:1 as well; with Increase Contrast it
+        // is as strong as the title.
         XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(tint.secondaryText(increasedContrast: false), band), 4.5)
+        XCTAssertEqual(tint.secondaryText(increasedContrast: true), tint.text)
     }
 
     func testAPaleYellowIconGivesDarkText() throws {
-        let tint = HeaderTint.tint(of: try icon(fill: (1.0, 0.89, 0.40)))
+        // #FFF0A0, the light yellow of a note's page.
+        let tint = HeaderTint.tint(of: try icon(fill: (1.0, 0.94, 0.63)))
 
         let band = tint.background
         XCTAssertGreaterThan(band.green, band.blue + 0.3, "The band stays yellow")
@@ -33,9 +35,33 @@ final class HeaderTintTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(tint.text, band), 4.5)
         XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(tint.secondaryText(increasedContrast: false), band), 4.5)
         XCTAssertGreaterThan(tint.text.red, tint.text.blue, "The dark text is of the yellow family, not grey")
+        XCTAssertEqual(tint.secondaryText(increasedContrast: true), tint.text)
+
+        // A dark yellow, on which neither white nor the dark text would read, is lightened until the dark text does.
+        let olive = (0.55, 0.47, 0.09)
+        let lightened = HeaderTint.tint(of: try icon(fill: olive))
+        XCTAssertTrue(lightened.usesDarkText)
+        XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(lightened.text, lightened.background), 4.5)
+        XCTAssertGreaterThan(lightened.background.red + lightened.background.green, olive.0 + olive.1,
+                             "The band is lighter than the icon")
     }
 
-    func testAGreyOrMissingIconGivesTheNeutralHeader() async throws {
+    func testOrangesEitherSideOfAmberGetTheSameBurntOrangeBand() throws {
+        // #FF9500 and #FF9F0A lie on either side of 36 degrees, a degree and a half apart; both are deepened to a burnt
+        // orange that takes white text, nearer the red of the design's #B85410 than an olive or a brown.
+        for fill in [(1.0, 0x95 / 255.0, 0.0), (1.0, 0x9F / 255.0, 0x0A / 255.0)] {
+            let tint = HeaderTint.tint(of: try icon(fill: fill))
+            XCTAssertFalse(tint.usesDarkText, "\(fill)")
+            XCTAssertGreaterThanOrEqual(HeaderTint.contrastRatio(white, tint.background), 4.5, "\(fill)")
+            XCTAssertEqual(hue(of: tint.background), 27, accuracy: 4, "\(fill)")
+        }
+        // A real yellow keeps its light band and dark text.
+        let yellow = HeaderTint.tint(of: try icon(fill: (1.0, 0.84, 0.04)))
+        XCTAssertTrue(yellow.usesDarkText)
+        XCTAssertEqual(hue(of: yellow.background), 50, accuracy: 4)
+    }
+
+    func testAGreyOrMissingIconGivesTheNeutralHeader() throws {
         let neutral = HeaderTint.neutral(dark: true)
         XCTAssertEqual(neutral.background, HeaderTint.RGB(red: 0x3A / 255, green: 0x3A / 255, blue: 0x3C / 255))
         XCTAssertFalse(neutral.usesDarkText)
@@ -50,42 +76,46 @@ final class HeaderTintTests: XCTestCase {
         XCTAssertEqual(HeaderTint.tint(of: try icon(fill: (0.55, 0.55, 0.57))), neutral)
         XCTAssertEqual(HeaderTint.tint(of: try icon(fill: (0.10, 0.10, 0.11))), neutral)
         XCTAssertEqual(HeaderTint.tint(of: try icon(fill: (1.0, 0.96, 0.82))), neutral)
-        XCTAssertEqual(HeaderTint.tint(of: try icon(fill: (0.97, 0.97, 0.97), stripe: (0.20, 0.50, 1.0), stripeShare: 0.04)),
-                       neutral)
+        let sliver = try icon(fill: (0.97, 0.97, 0.97), stripe: (0.20, 0.50, 1.0), stripeShare: 0.04)
+        XCTAssertEqual(HeaderTint.tint(of: sliver), neutral)
         XCTAssertEqual(HeaderTint.tint(of: try icon(fill: nil)), neutral)
         XCTAssertEqual(HeaderTint.tint(of: nil), neutral)
-        let missing = await HeaderTint.tint(forIconOf: "test.keeptide.no-icon.\(UUID().uuidString)", loadingIcon: { _ in nil })
-        XCTAssertEqual(missing, neutral)
     }
 
     @MainActor
-    func testTheSameIconAlwaysGivesTheSameTint() async throws {
+    func testTheSameIconAlwaysGivesTheSameTint() throws {
         // Two copies of the same picture, drawn apart, give one tint. The larger colour wins: blue over orange.
-        let first = HeaderTint.tint(of: try icon(fill: (0.15, 0.45, 0.95), stripe: (0.98, 0.55, 0.15), stripeShare: 0.3))
-        let second = HeaderTint.tint(of: try icon(fill: (0.15, 0.45, 0.95), stripe: (0.98, 0.55, 0.15), stripeShare: 0.3))
+        let (blueFill, orangeStripe) = ((0.15, 0.45, 0.95), (0.98, 0.55, 0.15))
+        let first = HeaderTint.tint(of: try icon(fill: blueFill, stripe: orangeStripe, stripeShare: 0.3))
+        let second = HeaderTint.tint(of: try icon(fill: blueFill, stripe: orangeStripe, stripeShare: 0.3))
         XCTAssertEqual(first, second)
         XCTAssertGreaterThan(first.background.blue, first.background.red + 0.3)
         XCTAssertNotEqual(first, HeaderTint.tint(of: try icon(fill: (0.98, 0.55, 0.15), stripe: (0.15, 0.45, 0.95),
                                                                stripeShare: 0.3)))
 
-        // An app's icon is read once, away from the main thread, and its tint kept by bundle identifier.
-        let picture = try icon(fill: (0.15, 0.45, 0.95))
-        let loads = LoadLog()
+        // An app's tint comes from the very icon its card shows, worked out once and kept by bundle identifier.
+        let blue = NSImage(cgImage: try icon(fill: (0.15, 0.45, 0.95)), size: NSSize(width: 64, height: 64))
+        let red = NSImage(cgImage: try icon(fill: (0.92, 0.20, 0.18)), size: NSSize(width: 64, height: 64))
         let app = "test.keeptide.header-tint.\(UUID().uuidString)"
         XCTAssertNil(HeaderTint.cachedTint(forIconOf: app), "Nothing is known before it is worked out")
-        let worked = await HeaderTint.tint(forIconOf: app, loadingIcon: { _ in
-            loads.record(onMainThread: Thread.isMainThread)
-            return picture
-        })
-        let again = await HeaderTint.tint(forIconOf: app, loadingIcon: { _ in
-            loads.record(onMainThread: Thread.isMainThread)
-            return picture
-        })
-        XCTAssertEqual(worked, HeaderTint.tint(of: picture))
-        XCTAssertEqual(again, worked)
-        XCTAssertEqual(loads.calls, [false], "Read once, off the main thread")
+        let worked = HeaderTint.tint(forIconOf: app, icon: blue)
+        XCTAssertGreaterThan(worked.background.blue, worked.background.red + 0.3, "Taken from the blue icon it was given")
         XCTAssertEqual(HeaderTint.cachedTint(forIconOf: app), worked)
+        // Once kept, the app's tint stays what it was, whatever icon is passed later.
+        XCTAssertEqual(HeaderTint.tint(forIconOf: app, icon: red), worked)
+        let redApp = "test.keeptide.header-tint.\(UUID().uuidString)"
+        let redTint = HeaderTint.tint(forIconOf: redApp, icon: red)
+        XCTAssertGreaterThan(redTint.background.red, redTint.background.blue + 0.3)
         XCTAssertNil(HeaderTint.cachedTint(forIconOf: nil))
+    }
+
+    /// Hue in degrees, from 0 up to 360.
+    private func hue(of colour: HeaderTint.RGB) -> Double {
+        let (r, g, b) = (colour.red, colour.green, colour.blue)
+        let high = max(r, g, b), low = min(r, g, b)
+        guard high > low else { return 0 }
+        let sector = high == r ? (g - b) / (high - low) : high == g ? (b - r) / (high - low) + 2 : (r - g) / (high - low) + 4
+        return (sector * 60 + 360).truncatingRemainder(dividingBy: 360)
     }
 
     /// A 64 × 64 icon: a rounded square inset as an app icon is, filled with one colour, with a band of another colour
@@ -112,17 +142,5 @@ final class HeaderTintTests: XCTestCase {
             context.fill(CGRect(x: square.minX, y: square.maxY - height, width: square.width, height: height))
         }
         return try XCTUnwrap(context.makeImage())
-    }
-}
-
-/// Where each icon load ran, in order.
-private final class LoadLog: @unchecked Sendable {
-    private let lock = NSLock()
-    private var log: [Bool] = []
-
-    var calls: [Bool] { lock.withLock { log } }
-
-    func record(onMainThread: Bool) {
-        lock.withLock { log.append(onMainThread) }
     }
 }
