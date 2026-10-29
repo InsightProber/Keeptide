@@ -105,25 +105,26 @@ final class CaptureSessionTests: XCTestCase {
     }
 
     func testLibraryCopiesNeverPasteEvenWithATerminalInFront() async throws {
-        let configuration = try makeIsolatedSession()
+        let board = NSPasteboard.withUniqueName()
+        defer { board.releaseGlobally() }
+        // One line and a trailing newline: a terminal would take it as a command that needs no review, so a library
+        // that pasted would send ⌘V here.
+        let clip = try content("echo synthetic-beta\n")
         let system = FakeDirectPasteSystem()
         system.front = .terminal
-        let session = CaptureSession(directPaste: system.system)
-        await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
-        let ref = try XCTUnwrap(session.recent.first { $0.title == "set -e" }?.history)
+        // Made as the user's library is, with no test session's rule between its copies and a paste.
+        let session = CaptureSession(readContent: { _ in clip }, pasteboard: board, directPaste: system.system)
 
-        await session.select(ref)
-        await session.copy(ref)
+        await session.select(clip.ref)
+        await session.copy(clip.ref)
 
-        // The clip is copied as captured: it is not made a command for the terminal, which would hold it for a
-        // review and drop its trailing newline.
+        // The clip is copied as captured: it is not made a command for the terminal, which would drop its trailing
+        // newline.
         XCTAssertEqual(session.actionMessage, "Copied")
-        let board = NSPasteboard(name: .init(configuration.pasteboardName))
-        XCTAssertEqual(board.string(forType: .string), "set -e\necho synthetic-gamma\n")
+        XCTAssertEqual(board.string(forType: .string), "echo synthetic-beta\n")
         XCTAssertEqual(system.sent, [])
         // The front window is never read for the library.
         XCTAssertEqual(system.probes, 0)
-        await session.shutdown()
     }
 
     func testManualPasteQASeedsAreHarmlessAndCoverTheChecklist() throws {
@@ -170,6 +171,99 @@ final class CaptureSessionTests: XCTestCase {
         // The panel opens on the newest clip: the single-line command.
         XCTAssertEqual(recent.first?.title, "echo keeptide-qa-single")
         XCTAssertEqual(recent.map(\.kind), [.text, .text, .text, .text, .text, .url])
+    }
+
+    func testChoosingALibraryOpensNothingAndATestSessionWinsOverQA() throws {
+        let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
+        var lookups = 0
+        func choose(_ testSessionID: UUID?, manualPasteQA: Bool) throws -> CaptureLibrary? {
+            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
+                                      userLibrary: { lookups += 1; return userLibrary }())
+        }
+        let id = UUID()
+        let configuration = CaptureTestConfiguration(id: id)
+
+        // A test session wins over QA. It records, and pastes only into the system test host.
+        for manualPasteQA in [false, true] {
+            let library = try XCTUnwrap(choose(id, manualPasteQA: manualPasteQA))
+            guard case .test(let chosen) = library else { return XCTFail("Chose \(library)") }
+            XCTAssertEqual(chosen.id, id)
+            XCTAssertEqual(library.directory, configuration.directory)
+            XCTAssertEqual(library.preferencesSuite, configuration.preferencesSuite)
+            XCTAssertEqual(library.directPasteOnlyTo, CaptureTestConfiguration.systemTestHostBundleIdentifier)
+            XCTAssertTrue(library.recordsClipboard)
+        }
+        // QA only with its flag: a folder and preferences of its own, no recording, and the user's library is not even
+        // looked up.
+        let qaLibrary = try XCTUnwrap(choose(nil, manualPasteQA: true))
+        guard case .manualPasteQA(let qa) = qaLibrary else { return XCTFail("Chose \(qaLibrary)") }
+        XCTAssertEqual(qaLibrary.directory, qa.directory)
+        XCTAssertEqual(qaLibrary.preferencesSuite, qa.preferencesSuite)
+        XCTAssertNil(qaLibrary.directPasteOnlyTo)
+        XCTAssertFalse(qaLibrary.recordsClipboard)
+        XCTAssertEqual(lookups, 0)
+        // Otherwise the user's library, with the standard defaults.
+        let user = try XCTUnwrap(choose(nil, manualPasteQA: false))
+        guard case .user = user else { return XCTFail("Chose \(user)") }
+        XCTAssertEqual(user.directory, userLibrary)
+        XCTAssertNil(user.preferencesSuite)
+        XCTAssertNil(user.directPasteOnlyTo)
+        XCTAssertTrue(user.recordsClipboard)
+        XCTAssertEqual(lookups, 1)
+    }
+
+    func testTheQALibraryIsNeverTheUsersLibrary() throws {
+        // Only the path: nothing in it is opened or read.
+        let userLibrary = try CaptureLibrary.userLibraryDirectory()
+        XCTAssertTrue(userLibrary.path.hasSuffix("/Application Support/Keeptide/Library"))
+
+        let library = try XCTUnwrap(CaptureLibrary.choose(testSessionID: nil, manualPasteQA: true,
+                                                          userLibrary: userLibrary))
+
+        XCTAssertTrue(library.directory.path.hasPrefix(FileManager.default.temporaryDirectory.path))
+        XCTAssertFalse(library.directory.path.hasPrefix(userLibrary.deletingLastPathComponent().path))
+    }
+
+    func testTheManualPasteQASessionSaysSoInTheMenuAndCannotRecord() async throws {
+        let qa = ManualPasteQASession(id: UUID())
+        addTeardownBlock { qa.remove() }
+        // Opened as the QA library directly, never chosen from launch flags. Nothing here copies: this session's
+        // clipboard is the general one.
+        let session = CaptureSession()
+        await session.open(manualPasteQA: qa)
+        let configuration = try makeIsolatedSession()
+        let recording = CaptureSession()
+        await recording.initialize(testSessionID: configuration.id)
+
+        // The status menu as the app builds it, as it opens.
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        func openedMenu(for session: CaptureSession) throws -> NSMenu {
+            let bar = AppDelegate.makeMenuBarController(environment: AppEnvironment(captureSession: session),
+                launchConfiguration: LaunchConfiguration(arguments: [], environment: underXCTest),
+                canRequestQuit: { true })
+            let menu = try XCTUnwrap(bar.menu)
+            bar.menuWillOpen(menu)
+            return menu
+        }
+        func item(_ identifier: String, in menu: NSMenu) throws -> NSMenuItem {
+            try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == identifier })
+        }
+        let qaMenu = try openedMenu(for: session)
+        let recordingMenu = try openedMenu(for: recording)
+
+        // Only the six harmless clips, and the menu says this is the QA session, which cannot record.
+        XCTAssertTrue(session.isReady)
+        XCTAssertEqual(session.recent.count, 6)
+        XCTAssertEqual(try item("CaptureStatusMenuItem", in: qaMenu).title, "Manual paste QA — not recording")
+        XCTAssertFalse(try item("CaptureRecordingToggleMenuItem", in: qaMenu).isEnabled)
+        XCTAssertFalse(session.isRecording)
+        // A session that records can still start and pause, and keeps its own status.
+        XCTAssertTrue(try item("CaptureRecordingToggleMenuItem", in: recordingMenu).isEnabled)
+        XCTAssertNotEqual(try item("CaptureStatusMenuItem", in: recordingMenu).title, "Manual paste QA — not recording")
+
+        await session.shutdown()
+        await recording.shutdown()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: qa.directory.path))
     }
 
     func testManualPasteQASessionRemovesItsLibraryAndPreferences() throws {

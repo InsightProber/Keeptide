@@ -45,22 +45,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
-        menuBarController = MenuBarController(
-            showQuickAccess: { environment.panelController.show() },
-            toggleQuickAccess: { environment.panelController.toggle() },
-            showLibrary: { environment.showLibrary() },
-            showSettings: { environment.showSettings() },
-            captureIsReady: { environment.captureSession.isReady && !environment.captureSession.isPausing },
-            captureIsEnabled: { environment.captureSession.isRecording },
-            captureStatus: { environment.captureSession.status },
-            toggleCapture: {
-                environment.captureSession.preferences.isEnabled.toggle()
-            },
-            canRequestQuit: { [weak self] in self?.isShuttingDown == false },
-            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
-            registration: launchConfiguration.usesSyntheticHotKey
-                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
-                : .system()
+        menuBarController = Self.makeMenuBarController(
+            environment: environment, launchConfiguration: launchConfiguration,
+            canRequestQuit: { [weak self] in self?.isShuttingDown == false }
         )
 
         if launchConfiguration.shouldShowQuickAccess {
@@ -69,6 +56,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if launchConfiguration.shouldShowLibrary {
             environment.showLibrary()
         }
+    }
+
+    /// The status menu, wired to `environment`'s panel, windows and capture session.
+    static func makeMenuBarController(environment: AppEnvironment, launchConfiguration: LaunchConfiguration,
+                                      canRequestQuit: @escaping () -> Bool) -> MenuBarController {
+        MenuBarController(
+            showQuickAccess: { environment.panelController.show() },
+            toggleQuickAccess: { environment.panelController.toggle() },
+            showLibrary: { environment.showLibrary() },
+            showSettings: { environment.showSettings() },
+            captureIsReady: { environment.captureSession.canToggleRecording },
+            captureIsEnabled: { environment.captureSession.isRecording },
+            captureStatus: { environment.captureSession.status },
+            toggleCapture: {
+                environment.captureSession.preferences.isEnabled.toggle()
+            },
+            canRequestQuit: canRequestQuit,
+            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
+            registration: launchConfiguration.usesSyntheticHotKey
+                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
+                : .system()
+        )
     }
 
     /// The application menu's Settings… (⌘,), which reaches the delegate through the responder chain.

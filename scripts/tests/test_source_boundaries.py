@@ -25,35 +25,83 @@ ACCESSIBILITY_ELEMENT_OR_SCREEN_CAPTURE = re.compile(
     r"|\bCGDisplayStream\w*|\bScreenCaptureKit\b|\bSCStream\w*|\bSCShareableContent\b"
     r"|\bCG(?:Preflight|Request)ScreenCaptureAccess\b"
 )
-KEYBOARD_EVENT_POSTING = re.compile(r"\.post\(\s*tap:|\bCGEventPost\w*|\bpostToPid\b|\bpostToPSN\b")
+# The patterns match across line breaks, and Swift allows white space on either side of a call's opening parenthesis.
+KEYBOARD_EVENT_POSTING = re.compile(r"\.post\s*\(\s*tap\s*:|\bCGEventPost\w*|\bpostToPid\b|\bpostToPSN\b")
 KEYBOARD_EVENT_CREATION_OR_POSTING = re.compile(
-    r"\bCGEvent\(\s*keyboardEventSource\b|" + KEYBOARD_EVENT_POSTING.pattern
+    r"\bCGEvent\s*\(\s*keyboardEventSource\b|" + KEYBOARD_EVENT_POSTING.pattern
 )
 APPLICATION_ACTIVATION = re.compile(
-    r"\b(?:NSApp|NSApplication\.shared)\.activate|\.activate\((?:\)|options|from)|activateIgnoringOtherApps"
-    r"|\.unhide\("
+    r"\b(?:NSApp|NSApplication\.shared)\??\.activate\b|\.activate\s*\(\s*(?:\)|options\b|from\b)"
+    r"|\bactivate\s*\(\s*ignoringOtherApps\b|\bactivateIgnoringOtherApps\b|\.unhide\s*\("
 )
 LIVE_SYSTEM = re.compile(r"\.live\b")
+LIVE_WIRING = re.compile(r"CaptureSession\s*\(\s*directPaste\s*:\s*\.live\s*\)")
 # Reading the keyboard's state or watching other apps' events needs Input Monitoring access.
 INPUT_MONITORING = re.compile(
     r"\bCGEventSource\.keyState\b|\bCGEventSourceKeyState\b|\bCGEvent\.tapCreate\w*|\bCGEventTapCreate\w*"
-    r"|\baddGlobalMonitorForEvents\b"
+    r"|\baddGlobalMonitorForEvents\b|\bCG(?:Request|Preflight)ListenEventAccess\b|\bIOHID(?:Request|Check)Access\b"
 )
 
 
 def matching_lines(pattern: re.Pattern[str], directories: tuple[Path, ...],
                    allowed: frozenset[str] = frozenset()) -> list[str]:
-    """Each `path:line` under `directories`, other than the allowed files, whose Swift source matches `pattern`."""
+    """Each `path:line` under `directories`, other than the allowed files, where `pattern` matches the Swift source.
+    A match may run over several lines; it is reported at the line where it starts. Every directory must exist, so
+    that a moved or renamed folder fails instead of passing with nothing to check."""
     matches: list[str] = []
     for directory in directories:
+        if not directory.is_dir():
+            raise AssertionError(f"{directory} is not a directory")
         for source_file in sorted(directory.rglob("*.swift")):
             path = source_file.relative_to(REPOSITORY_ROOT).as_posix()
             if path in allowed:
                 continue
-            for number, line in enumerate(source_file.read_text(encoding="utf-8").splitlines(), start=1):
-                if pattern.search(line):
-                    matches.append(f"{path}:{number}")
+            text = source_file.read_text(encoding="utf-8")
+            for match in pattern.finditer(text):
+                matches.append(f"{path}:{text.count(chr(10), 0, match.start()) + 1}")
     return matches
+
+
+def code_only(source: str) -> str:
+    """`source` with its comments and the contents of its string literals blanked out, keeping line breaks. Block
+    comments may nest, as in Swift, and a `//` inside a string is not a comment."""
+    def blank(text: str) -> str:
+        return "".join(character if character == "\n" else " " for character in text)
+
+    kept: list[str] = []
+    depth = 0  # nested block comments
+    in_string = False
+    index = 0
+    while index < len(source):
+        character, pair = source[index], source[index:index + 2]
+        if depth and pair in ("/*", "*/"):
+            depth += 1 if pair == "/*" else -1
+            kept.append("  ")
+            index += 2
+        elif depth:
+            kept.append(blank(character))
+            index += 1
+        elif in_string and character == "\\":
+            kept.append(blank(pair))
+            index += 2
+        elif in_string:
+            in_string = character != '"'
+            kept.append(character if character == '"' else blank(character))
+            index += 1
+        elif pair == "//":
+            end = source.find("\n", index)
+            end = len(source) if end == -1 else end
+            kept.append(blank(source[index:end]))
+            index = end
+        elif pair == "/*":
+            depth = 1
+            kept.append("  ")
+            index += 2
+        else:
+            in_string = character == '"'
+            kept.append(character)
+            index += 1
+    return "".join(kept)
 
 
 class ProductionShellBoundaryTests(unittest.TestCase):
@@ -119,11 +167,13 @@ class DirectPasteBoundaryTests(unittest.TestCase):
             [],
             "Only the app delegate may use the live direct paste system; tests use a fake or .unavailable",
         )
+        # The app delegate's one `.live`, outside comments and strings, gives the capture session the live system.
         # Without it nothing pastes, and no test could tell: none may use the live system.
-        self.assertIsNotNone(
-            re.search(r"CaptureSession\(\s*directPaste:\s*\.live\s*\)",
-                      (REPOSITORY_ROOT / APP_DELEGATE).read_text(encoding="utf-8")),
-            "The app delegate must give the capture session the live direct paste system",
+        code = code_only((REPOSITORY_ROOT / APP_DELEGATE).read_text(encoding="utf-8"))
+        self.assertEqual(
+            (len(LIVE_SYSTEM.findall(code)), len(LIVE_WIRING.findall(code))),
+            (1, 1),
+            "The app delegate must use .live once, in CaptureSession(directPaste: .live)",
         )
 
     def test_no_input_monitoring_apis(self) -> None:
