@@ -69,6 +69,26 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertEqual(query.value as? String, "x")
     }
 
+    func testDownThenReturnCopiesTheNewestClip() throws {
+        let (app, host) = launchKeeptideWithHost()
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
+        // ↓ puts the keys in the strip and leaves the newest clip selected rather than stepping past it. What Return
+        // copies from there shows which clip that is, whether or not the system reports the frames' selected state.
+        app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.return, modifierFlags: [])
+        let toast = app.descendants(matching: .any)["CopyToastMessage"]
+        XCTAssertTrue(toast.waitForExistence(timeout: 3), app.debugDescription)
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].waitForNonExistence(timeout: 5))
+
+        host.activate()
+        host.buttons["Inspect Synthetic Pasteboard"].click()
+        let received = host.descendants(matching: .any)["ReceivedSyntheticText"]
+        XCTAssertTrue(received.waitForExistence(timeout: 5), host.debugDescription)
+        XCTAssertEqual(received.value as? String, "Synthetic alpha note")
+    }
+
     func testTypingSearchesAllContent() throws {
         let app = launchKeeptide()
         let frames = try openPanel(app)

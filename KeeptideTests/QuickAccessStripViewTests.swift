@@ -610,7 +610,6 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testLeavingTheEmptyDockUnderTheFingersSlides() throws {
-        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
         let strip = makeStrip()
         let content = try XCTUnwrap(strip.superview)
         content.wantsLayer = true
@@ -643,8 +642,105 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
     }
 
+    func testAClampUnderRestingFingersSlides() throws {
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        strip.haptics = RecordingHaptics()
+        let rows = makeRows(20)
+        // Another page may follow the last clip there is, so the film keeps it in the middle.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        // The fingers carry the selection a third of a step toward newer clips, and the film with it, and rest there.
+        strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1.0))
+        CATransaction.flush()
+        let carried = try drawnMidX(of: "Row 19", in: strip)
+        XCTAssertEqual(carried, centre + metrics.step / 3, accuracy: 0.5)
+
+        // Time stands still from here, so the slide stays at its beginning.
+        content.layer?.speed = 0
+        // The last page brings nothing more: the last clip is the oldest, and the film comes to rest with it at the
+        // right dock, where the fingers carry the selection along the film instead. The film slides there under the
+        // resting fingers rather than jumping, so the clip is still drawn where they carried it.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        XCTAssertEqual(try rect(titled: "Row 19", in: strip).maxX, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(try drawnMidX(of: "Row 19", in: strip), carried, accuracy: 0.5)
+        // Their push was measured again from the film's new place, so their next event moves nothing.
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.1))
+        CATransaction.flush()
+        XCTAssertEqual(try drawnMidX(of: "Row 19", in: strip), carried, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.2))
+    }
+
+    func testAScanFinishingUnderTheFingersSlides() throws {
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        strip.haptics = RecordingHaptics()
+        let rows = makeRows(3)
+        // A scan still under way has found two clips. More may follow, so the two rest at the left dock.
+        strip.show(Array(rows[...1]), selection: rows[0].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames(), oldestIsLoaded: false)
+        // The fingers push past the newest clip, stretching the end, and rest there.
+        strip.scrollWheel(with: try swipe(dx: 40, phase: .began, at: 1.0))
+        CATransaction.flush()
+        let stretched = try drawnMidX(of: "Row 0", in: strip)
+        XCTAssertEqual(stretched, dock + 12, accuracy: 0.5)
+
+        // Time stands still from here, so the slide stays at its beginning.
+        content.layer?.speed = 0
+        // The scan ends with a third clip, and the three, all there is, are centred as a group. The film slides there
+        // under the resting fingers rather than jumping, and keeps their stretch.
+        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        let group = 3 * metrics.step - metrics.gap
+        XCTAssertEqual(try rect(titled: "Row 0", in: strip).minX, (metrics.bandWidth - group) / 2 + 12, accuracy: 0.5)
+        XCTAssertEqual(try drawnMidX(of: "Row 0", in: strip), stretched, accuracy: 0.5)
+        // The stretch was kept for the film's new place, so the fingers' next event moves nothing.
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.1))
+        CATransaction.flush()
+        XCTAssertEqual(try drawnMidX(of: "Row 0", in: strip), stretched, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.2))
+    }
+
+    func testAClipArrivingUnderTheFingersSlides() throws {
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        strip.haptics = RecordingHaptics()
+        let rows = makeRows(20)
+        strip.show(rows, selection: rows[0].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        // The fingers push past the newest clip, stretching the end, and rest there.
+        strip.scrollWheel(with: try swipe(dx: 40, phase: .began, at: 1.0))
+        CATransaction.flush()
+        let stretched = try drawnMidX(of: "Row 0", in: strip)
+        XCTAssertEqual(stretched, dock + 12, accuracy: 0.5)
+
+        // Time stands still from here, so the slide stays at its beginning.
+        content.layer?.speed = 0
+        // A newer clip arrives at the dock, and the selected clip's place moves a step along the film. The change
+        // starts the fingers afresh, so their stretch goes with it; the film slides from where the clip was drawn
+        // rather than jumping.
+        strip.show([makeRow(title: "Row new")] + rows, selection: rows[0].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        CATransaction.flush()
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), dock + metrics.step, accuracy: 0.5)
+        XCTAssertEqual(try drawnMidX(of: "Row 0", in: strip), stretched, accuracy: 0.5)
+        // The fingers' next event, still resting, moves nothing.
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .mayBegin, at: 1.1))
+        CATransaction.flush()
+        XCTAssertEqual(try drawnMidX(of: "Row 0", in: strip), stretched, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.2))
+    }
+
     func testAClipArrivingBeforeACentredSelectionMovesNothing() throws {
-        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
         let strip = makeStrip()
         let content = try XCTUnwrap(strip.superview)
         content.wantsLayer = true
@@ -665,7 +761,6 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testAClipArrivingBeforeADockedSelectionSlidesItAlong() throws {
-        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
         let strip = makeStrip()
         let content = try XCTUnwrap(strip.superview)
         content.wantsLayer = true
@@ -701,7 +796,6 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testASlideKeepsTheFramesItPassesUntilItSettles() async throws {
-        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
         let strip = makeStrip()
         strip.haptics = RecordingHaptics()
         // Frames slide only where they can be seen.
@@ -723,15 +817,22 @@ final class QuickAccessStripViewTests: XCTestCase {
         let settled = Set((19...29).map { "Row \($0)" })
         try await waitUntil { Set(self.drawings(in: strip).compactMap(self.title(of:))) == settled }
 
-        // Under the fingers the frames follow them instead of sliding, so nothing is kept.
-        strip.scrollWheel(with: try swipe(dx: -10, phase: .began, at: 1.0))
-        strip.show(rows, selection: rows[25].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        // A step the fingers take follows them instead of sliding, so nothing is kept. The panel shows the step in the
+        // same turn as the swipe that asked for it.
+        var selected = 24
+        strip.onCommand = { [unowned strip, metrics = self.metrics] command in
+            guard case .move(let offset) = command else { return }
+            selected += offset
+            strip.show(rows, selection: rows[selected].ref, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+        }
+        strip.scrollWheel(with: try swipe(dx: -30, phase: .began, at: 1.0))
+        XCTAssertEqual(selected, 25)
         XCTAssertEqual(Set(drawings(in: strip).compactMap(title(of:))), Set((20...30).map { "Row \($0)" }))
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
     }
 
     func testInMidSlideThePointerFindsTheFrameWhereItIsDrawn() throws {
-        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "Frames do not slide with Reduce Motion")
         let strip = makeStrip()
         let content = try XCTUnwrap(strip.superview)
         content.wantsLayer = true
@@ -753,6 +854,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         CATransaction.flush()
         // By the places the frames are sliding to, another clip already lies under the pointer.
         XCTAssertEqual(try midX(of: "Row 23", in: strip), point.x, accuracy: 0.5)
+        // The selected clip's frame, which ⌘K opens its actions beside, is where it is drawn too.
+        XCTAssertEqual(try XCTUnwrap(strip.selectedFrame).midX, try drawnMidX(of: "Row 24", in: strip), accuracy: 0.5)
 
         strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
         _ = strip.menu(for: try mouse(.rightMouseDown, at: point, in: strip))
@@ -766,6 +869,74 @@ final class QuickAccessStripViewTests: XCTestCase {
         CATransaction.flush()
         strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
         XCTAssertEqual(selected, [rows[19].ref, rows[19].ref])
+    }
+
+    func testStackedSlidesKeepTheSweepFramed() throws {
+        let strip = makeStrip()
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Frames slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        let rows = makeRows(40)
+        strip.show(rows, selection: rows[20].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // Time stands still from here, so no slide has got anywhere when the next one starts: three steps toward older
+        // clips 30 ms apart, as from an arrow key repeating faster than the springs settle.
+        content.layer?.speed = 0
+        for index in 21...23 {
+            strip.show(rows, selection: rows[index].ref, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+            CATransaction.flush()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+        }
+
+        // The springs add up: the film is still drawn where it was before the first step, three steps from its place.
+        let film = try XCTUnwrap(strip.subviews.first?.layer)
+        let offset = try XCTUnwrap(film.presentation()).position.x - film.position.x
+        XCTAssertEqual(offset, 3 * metrics.step, accuracy: 0.5)
+        // Every clip drawn in the band there has its frame.
+        let framed = Set(drawings(in: strip).compactMap(title(of:)))
+        let selected = try rect(titled: "Row 23", in: strip)
+        let band = strip.bounds.insetBy(dx: (strip.bounds.width - metrics.bandWidth) / 2, dy: 0)
+        for index in rows.indices {
+            let drawn = selected.offsetBy(dx: CGFloat(index - 23) * metrics.step + offset, dy: 0)
+            guard drawn.intersects(band) else { continue }
+            XCTAssertTrue(framed.contains("Row \(index)"), "Row \(index) is drawn in the band without a frame")
+        }
+    }
+
+    func testReduceMotionStopsEverySlide() throws {
+        let strip = makeStrip()
+        strip.reducesMotion = { true }
+        // On screen, where the frames would otherwise slide.
+        strip.window?.orderFront(nil)
+        let film = try XCTUnwrap(strip.subviews.first?.layer)
+        let rows = makeRows(20)
+        strip.show(rows, selection: rows[18].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+
+        // A step goes straight to its place.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        XCTAssertEqual(film.animationKeys() ?? [], [], "A step")
+        XCTAssertEqual(try midX(of: "Row 19", in: strip), centre, accuracy: 0.5)
+        // So does the film when the last clip turns out to be the oldest and it comes to rest at the right dock.
+        strip.show(rows, selection: rows[19].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(film.animationKeys() ?? [], [], "A clamp")
+        XCTAssertEqual(try rect(titled: "Row 19", in: strip).maxX, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
+        // And a selected clip at the dock whose place moves along the film as a newer clip arrives before it.
+        strip.show(rows, selection: rows[2].ref, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let arrived = [makeRow(title: "Row new")] + rows
+        strip.show(arrived, selection: rows[2].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        XCTAssertEqual(film.animationKeys() ?? [], [], "An arrival")
+        XCTAssertEqual(try midX(of: "Row 2", in: strip), dock + 3 * metrics.step, accuracy: 0.5)
+
+        // Without Reduce Motion the next arrival slides.
+        strip.reducesMotion = { false }
+        strip.show([makeRow(title: "Row newer")] + arrived, selection: rows[2].ref, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        XCTAssertFalse((film.animationKeys() ?? []).isEmpty)
     }
 
     func testKeysFollowThePanelAndTheRestAreDroppedSilently() throws {
@@ -842,7 +1013,8 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// A strip one band wide in a window that is never shown, so frames go straight to their places.
+    /// A strip one band wide in a window that is never shown, so frames go straight to their places. A test that
+    /// shows the window sees them slide, whatever Reduce Motion is set to on the Mac that runs it.
     private func makeStrip(_ metrics: StripMetrics? = nil) -> QuickAccessStripView {
         let metrics = metrics ?? self.metrics
         let size = NSSize(width: metrics.bandWidth, height: 300)
@@ -852,6 +1024,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         let content = KeyRecordingView(frame: NSRect(origin: .zero, size: size))
         let strip = QuickAccessStripView(frame: NSRect(x: 0, y: 100, width: metrics.bandWidth,
                                                        height: metrics.frameSize.height + 24))
+        strip.reducesMotion = { false }
         content.addSubview(strip)
         window.contentView = content
         addTeardownBlock { window.close() }

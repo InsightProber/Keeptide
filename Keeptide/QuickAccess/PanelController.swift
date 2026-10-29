@@ -200,6 +200,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             // The field has moved and changed size, so an input method's candidates move with it.
             (searchField.currentEditor() as? NSTextView)?.inputContext?.invalidateCharacterCoordinates()
         }
+        if toolbar.search.isExpanded, !wasExpanded {
+            // Open, the search is ringed while its field has the keys, however they came. Folded again, it is as the
+            // panel opened it until the keyboard brings the keys back.
+            searchReachedByKeyboard = false
+            toolbar.ringsFoldedSearch = false
+        }
         toolbar.search.hasText = !state.query.isEmpty
         toolbar.note = toolbarNote
         filterRow.queryIsEmpty = state.query.isEmpty
@@ -483,7 +489,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
     }
 
-    /// ⌘K: the selected clip's actions, beside it; with nothing selected, beside the middle of the strip.
+    /// ⌘K: the selected clip's actions, beside it where it is drawn; with the selection vanished, beside its empty
+    /// slot at the dock; with no clips, beside the middle of the strip.
     func openActions() {
         let size = metrics.frameSize
         let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,

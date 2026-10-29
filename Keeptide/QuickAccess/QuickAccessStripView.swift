@@ -23,13 +23,19 @@ final class QuickAccessStripView: NSView {
     var ticksEnabled = true
     /// What a key means here depends on the rest of the panel, which keeps this current.
     var queryIsEmpty = true
+    /// With Reduce Motion the frames go straight to their places instead of sliding. Asked each time, since the
+    /// setting can change while the app runs.
+    var reducesMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     /// While the preview is open, the frames beside the selected one step back to half strength.
     var dimsSideFrames = false {
         didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
     }
-    /// The selected clip's frame in the strip's coordinates, or nil while nothing is selected.
+    /// Where the selected clip's frame is drawn in the strip's coordinates at this moment, mid-slide included. With
+    /// the selection vanished it is the empty slot at the dock, a step before the newest clip; nil without clips.
     var selectedFrame: NSRect? {
-        selection.flatMap { frames[$0] }.map { convert($0.frame, from: film) }
+        guard let metrics, let rest = restingPlacement else { return nil }
+        let origin = rest.firstOrigin + CGFloat(selectedIndex) * metrics.step
+        return convert(frameRect(origin: origin, metrics), from: film).offsetBy(dx: drawnOffset, dy: 0)
     }
 
     /// Frames kept beyond each end of the ones on screen, so a step or a push never shows a gap.
@@ -53,6 +59,8 @@ final class QuickAccessStripView: NSView {
     private var scroller = DetentScroller()
     /// How far past the selected clip the fingers have carried the selection, as a share of a step.
     private var progress: CGFloat = 0
+    /// How far the fingers stretch an end, positive past the oldest clip, as they last showed it.
+    private var rubberBand: CGFloat = 0
     /// How far the fingers have pushed the film off its place: as far as the selection they carry moves it, and
     /// any stretch past an end.
     private var pushed: CGFloat = 0
@@ -60,11 +68,11 @@ final class QuickAccessStripView: NSView {
     /// Set while the panel shows a step the scroller asked for, so that `show` can tell it from a change made
     /// elsewhere.
     private var showingScrollStep = false
-    /// Where index 0's frame was when a slide started, within the band. The frames on screen there stay until the
-    /// slide settles, so none vanishes on screen.
+    /// Where index 0's frame is drawn within the band as the last slide starts, the springs still running then
+    /// included. The frames on screen anywhere from there stay until the slides settle, so none vanishes on screen.
     private var slideStart: CGFloat?
     private var settling: Task<Void, Never>?
-    /// Springs get names so that `ref(at:)` can tell one is running, since a layer does not list nameless
+    /// Springs get names so that `drawnOffset` can tell one is running, since a layer does not list nameless
     /// animations. Each name is new: a spring added under a running one's name would replace it.
     private var springCount = 0
     private var hovered: ContentRef?
@@ -94,9 +102,11 @@ final class QuickAccessStripView: NSView {
     func show(_ rows: [QuickAccessRow], selection: ContentRef?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
         let selectionChanged = selection != self.selection
-        // Where the selected clip was drawn, so that the film can slide from there to where it now rests: a newly
-        // selected clip, or the same one when rows before it come or go or its place moves.
-        let start = metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX } : nil
+        // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
+        // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
+        // moves. The springs still running are read before another joins them.
+        let start = metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX }.map { $0 + pushed } : nil
+        let running = drawnOffset
         let previousIndex = selectedIndex
         self.rows = rows
         self.selection = selection
@@ -112,23 +122,28 @@ final class QuickAccessStripView: NSView {
             // fingers do not play their old push back against it.
             if !showingScrollStep {
                 scroller = DetentScroller()
+                rubberBand = 0
                 push(to: 0, springing: false)
             }
         }
         selectedIndex = index
         if selectionChanged { hovered = nil }
+        // Resting fingers keep their push from wherever the film now rests, so that their next event does not move it.
+        if fingersDown, !showingScrollStep { follow(progress: progress, rubberBand: rubberBand, springing: false) }
         let rest = restingPlacement
-        // The film moves as far as the selected clip does. It slides there on screen without Reduce Motion. Under
-        // the fingers it follows them instead, except when it leaves the empty dock, whose slot goes at once; the
+        // The film moves as far as the selected clip does, and slides there on screen without Reduce Motion. A step
+        // the fingers take follows them instead, except one that leaves the empty dock, whose slot goes at once; the
         // springs add up, so the step stays smooth.
         var displacement: CGFloat = 0
-        if let rest, let start, index >= 0, slidesAreShown, !fingersDown || previousIndex < 0 {
-            displacement = start - frameRect(origin: rest.firstOrigin + CGFloat(index) * metrics.step, metrics).midX
+        if let rest, let start, index >= 0, slidesAreShown, !(fingersDown && showingScrollStep) || previousIndex < 0 {
+            displacement = start - pushed
+                - frameRect(origin: rest.firstOrigin + CGFloat(index) * metrics.step, metrics).midX
         }
         if displacement != 0, let rest {
             settling?.cancel()
-            // Where index 0's frame starts out: the frames on screen there stay until the slide settles.
-            slideStart = rest.firstOrigin + displacement
+            // Where index 0's frame starts out, drawn where the springs already running have it too: the frames on
+            // screen anywhere from there stay until the slides settle.
+            slideStart = rest.firstOrigin + displacement + running
             placeFrames()
             settle(after: springBack(from: displacement))
         } else {
@@ -278,7 +293,15 @@ final class QuickAccessStripView: NSView {
 
     /// Frames slide only on screen, and never with Reduce Motion: they then go straight to their places.
     private var slidesAreShown: Bool {
-        window?.isVisible == true && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        window?.isVisible == true && !reducesMotion()
+    }
+
+    /// How far the springs still running draw the film from its place at this moment.
+    private var drawnOffset: CGFloat {
+        guard let layer = film.layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() else {
+            return 0
+        }
+        return drawn.position.x - layer.position.x
     }
 
     /// Starts the frames `displacement` away from where they now belong and lets them spring into place.
@@ -326,6 +349,7 @@ final class QuickAccessStripView: NSView {
     /// fingers go.
     private func follow(progress: CGFloat, rubberBand: CGFloat, springing: Bool) {
         self.progress = progress
+        self.rubberBand = rubberBand
         var offset = -rubberBand
         if let rest = restingPlacement, let carried = placement(at: livePosition) {
             offset += carried.firstOrigin - rest.firstOrigin
@@ -399,9 +423,7 @@ final class QuickAccessStripView: NSView {
     /// The row whose frame is under the pointer where it is drawn at this moment, even in mid-slide.
     private func ref(at event: NSEvent) -> ContentRef? {
         var point = film.convert(event.locationInWindow, from: nil)
-        if let layer = film.layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() {
-            point.x -= drawn.position.x - layer.position.x
-        }
+        point.x -= drawnOffset
         return frames.first { $0.value.frame.contains(point) }?.key
     }
 

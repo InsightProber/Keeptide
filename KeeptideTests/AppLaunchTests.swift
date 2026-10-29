@@ -802,21 +802,50 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(isEditing(field, in: window))
         XCTAssertFalse(toolbar.focusHalo.isHidden)
         XCTAssertFalse(controller.state.isSearchExpanded)
+
+        // Closed and opened again, the panel gives the field the keys as it opens, and the circle has no ring.
+        controller.close()
+        controller.show()
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertTrue(toolbar.focusHalo.isHidden)
+
+        // Brought back by the keyboard, the circle is ringed again. Opened with ⌘F, the search is ringed as the open
+        // search always is while its field has the keys; folded again by Escape, it is as the panel opened it, with
+        // no ring.
+        try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertTab(_:)))
+        try XCTUnwrap(window.firstResponder as? QuickAccessFilterRow)
+            .keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
+        XCTAssertFalse(toolbar.focusHalo.isHidden)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
+        XCTAssertTrue(controller.state.isSearchExpanded)
+        XCTAssertFalse(toolbar.focusHalo.isHidden)
+        try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertFalse(controller.state.isSearchExpanded)
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertTrue(toolbar.focusHalo.isHidden)
     }
 
     func testTheEmptyStateAndTheToolbarStatusHaveTheirOwnIdentifiers() throws {
+        addTeardownBlock { self.panelUnderTest = nil }
         // The panel is set up and searched in a task, and the test waits for it. What follows asks accessibility for
         // SwiftUI's elements, which turns the run loop over; it must not run inside a test's own task.
         let searched = expectation(description: "A search that finds nothing")
+        var setupError: (any Error)?
         Task { @MainActor in
             defer { searched.fulfill() }
-            let (controller, _) = try await self.makePanelWithClips(["alpha", "beta"])
-            let (_, editor) = try self.searchEditor(in: controller)
-            editor.insertText("zzzz-no-match", replacementRange: NSRange(location: NSNotFound, length: 0))
-            try await SearchTestSupport.waitUntil { controller.state.phase == .noResults }
-            self.panelUnderTest = controller
+            do {
+                let (controller, _) = try await self.makePanelWithClips(["alpha", "beta"])
+                let (_, editor) = try self.searchEditor(in: controller)
+                editor.insertText("zzzz-no-match", replacementRange: NSRange(location: NSNotFound, length: 0))
+                try await SearchTestSupport.waitUntil { controller.state.phase == .noResults }
+                self.panelUnderTest = controller
+            } catch {
+                setupError = error
+            }
         }
         wait(for: [searched], timeout: 20)
+        // A setup that failed says why, rather than leaving only a missing panel.
+        if let setupError { throw setupError }
         let controller = try XCTUnwrap(panelUnderTest)
         defer { controller.state.close() }
         let window = try XCTUnwrap(controller.window)
@@ -931,12 +960,50 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
+    func testCommandKBesideTheEmptyDock() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let items = try await insertClips((0..<40).reversed().map { "clip \($0)" }, into: harness)
+        let controller = try makePanel(over: harness, pasteboard: board)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        let metrics = try stripMetrics(in: window)
+        var anchors: [NSPoint] = []
+        controller.presentActionMenu = { _, point, _ in anchors.append(point) }
+
+        // The newest clip, selected at the dock, leaves the list, and its place there stays empty.
+        var newest = try XCTUnwrap(items.last)
+        newest.historyDeletedAt = Date()
+        try await harness.update(.item(newest.id), to: .item(newest))
+        controller.state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.selectionLost && strip.accessibilitySelectedChildren()?.isEmpty != false
+        }
+        let slot = try frame(of: "clip 1", in: strip).offsetBy(dx: -metrics.step, dy: 0)
+        XCTAssertEqual(slot.minX - (strip.bounds.midX - metrics.bandWidth / 2), metrics.dockInset, accuracy: 0.5)
+
+        // ⌘K opens beside that empty place, level with its top edge, as it would beside a clip selected there, and
+        // not beside the middle of the strip.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "k", modifiers: .command)))
+        let anchor = try XCTUnwrap(anchors.first)
+        XCTAssertEqual(anchor.x, slot.maxX, accuracy: metrics.gap)
+        XCTAssertGreaterThanOrEqual(anchor.x, slot.maxX)
+        XCTAssertEqual(anchor.y, slot.maxY, accuracy: 1)
+    }
+
     func testTheOldestEndStopsTheFilmOnlyOncePagingIsDone() async throws {
         // On screen, so the film slides where it moves.
         let (controller, _) = try await makePanelWithClips((0..<61).map { "ab \($0)" }, shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        // The film slides whatever Reduce Motion is set to on the Mac that runs the test.
+        strip.reducesMotion = { false }
         let metrics = try stripMetrics(in: window)
         let left = strip.bounds.midX - metrics.bandWidth / 2
         editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -965,13 +1032,8 @@ final class AppLaunchTests: XCTestCase {
         let oldest = try frame(of: controller.state.selection.rows[60].title, in: strip)
         XCTAssertEqual(oldest.maxX - left, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
         CATransaction.flush()
-        let resting = try frame(of: title, in: strip).midX
-        let drawn = resting + (try filmOffset(in: strip))
-        if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            XCTAssertEqual(drawn, resting, accuracy: 0.5, "With Reduce Motion the film goes straight to its place")
-        } else {
-            XCTAssertEqual(drawn - left, metrics.bandWidth / 2, accuracy: 1)
-        }
+        let drawn = try frame(of: title, in: strip).midX + (try filmOffset(in: strip))
+        XCTAssertEqual(drawn - left, metrics.bandWidth / 2, accuracy: 1)
     }
 
     func testANewQueryLeavesTheClipsInPlaceUntilItsResultsCome() async throws {
