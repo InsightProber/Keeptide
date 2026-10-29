@@ -3,9 +3,9 @@
 Keeptide is designed as a local-first native macOS application. This document
 describes the overall architecture. The native shell, local storage foundation,
 local clipboard recording, a rebuildable local search index, and quick-access
-browsing on a band of clip cards, search, text and image preview, and copying
-are implemented. Direct paste, editing, export UI, and cloud integration remain
-planned.
+browsing on a band of clip cards, search, text and image preview, copying, and
+direct paste into the app window quick access was opened from are implemented.
+Editing, export UI, and cloud integration remain planned.
 
 ## Native interfaces
 
@@ -89,10 +89,19 @@ been uploaded. Recovered references may require the user to locate a file again.
 
 ## Permissions and reuse
 
-Recording is enabled intentionally. Automatic insertion uses the system's
-Accessibility permission and validates the destination immediately before acting.
-Copying content remains an available fallback when automatic insertion is not
-available. The application does not execute saved commands.
+Recording is enabled intentionally. Direct paste uses the system's Accessibility
+(send keys) permission, which the user grants in System Settings. Without it,
+quick access copies. Quick access notes the app window it was opened from. It
+checks the front app and window before it sends a paste and again after the
+panel hides. If they changed, or anything is uncertain, it copies the clip
+instead and says so. Keeptide sends the paste and does not confirm that the app
+received it.
+
+When the target is a terminal, text is pasted as plain text only, and its
+trailing newline is removed. A multi-line command needs confirmation first,
+because a terminal can run each line as soon as it arrives. **Copy As-Is** in
+the actions menu copies the clip complete. The application does not execute saved
+commands: the paste is the only keystroke it sends.
 
 ## Extension boundary
 
