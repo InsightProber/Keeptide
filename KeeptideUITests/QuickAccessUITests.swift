@@ -183,13 +183,15 @@ final class QuickAccessUITests: XCTestCase {
     func testShiftReturnOnTheImageRowShowsTheReason() throws {
         let (app, host) = launchKeeptideWithHost()
         let frames = try openPanel(app)
-        XCTAssertTrue(clip("Copied content", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
 
-        // The image is the oldest of the seven seeded clips, at the right end. ↓ puts the keys in the strip, and
-        // each → selects the next older clip; at the oldest one → does nothing more. The reason Shift-Return gives
-        // shows that the image is the clip selected.
+        // The image is the oldest of the seven seeded clips, at the right end. A screen too narrow for all seven makes
+        // its card only as the strip comes near it. ↓ puts the keys in the strip, and each → selects the next older
+        // clip; at the oldest one → does nothing more. The reason Shift-Return gives shows that the image is the clip
+        // selected.
         app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
         for _ in 0..<7 { app.typeKey(.rightArrow, modifierFlags: []) }
+        XCTAssertTrue(clip("Copied content", in: frames).waitForExistence(timeout: 5), app.debugDescription)
 
         app.typeKey(.return, modifierFlags: .shift)
 
