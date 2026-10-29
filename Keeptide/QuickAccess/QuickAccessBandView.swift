@@ -3,13 +3,14 @@ import SwiftUI
 
 /// The quick access band, backed as the app switcher is: the system's material in a rounded rectangle with a hairline
 /// edge and a soft shadow. Along its top the toolbar, below it the strip of clips, which the band's rounded edge cuts
-/// off where it goes on beyond either end; and the preview card above it while the preview is open. The panel owns
-/// the AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the state.
+/// off where it goes on beyond either end; and a card above it: the preview while it is open, and in its place the
+/// review of a command that waits for one. The panel owns the AppKit views placed in it, keeps them up to date and lays
+/// the band out; the band reads the rest from the state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
     struct Layout: Equatable {
         var metrics: StripMetrics
-        /// The preview card's size while the preview is open.
+        /// The card's size while the preview or a command review is open.
         var previewSize: CGSize?
         /// From the band's top edge up to the card's bottom edge: less than nothing where the card lies over the band.
         var previewGap = StripLayout.previewGap
@@ -18,8 +19,11 @@ struct QuickAccessBandView: View {
     }
 
     struct Actions {
-        /// Keys pressed in the preview's text.
+        /// Keys pressed in the preview's text, or the review's.
         let previewCommand: (QuickAccessCommand) -> Void
+        /// The review card's buttons.
+        let confirmCommand: () -> Void
+        let cancelCommandReview: () -> Void
     }
 
     let layout: Layout
@@ -45,7 +49,7 @@ struct QuickAccessBandView: View {
         VStack(spacing: layout.previewGap) {
             if let size = layout.previewSize {
                 // Over the band's shadow, which reaches up toward the card, and over the band itself on a low screen.
-                previewCard.frame(width: size.width, height: size.height).zIndex(1)
+                card.frame(width: size.width, height: size.height).zIndex(1)
             }
             band
         }
@@ -104,15 +108,23 @@ struct QuickAccessBandView: View {
         }
     }
 
-    // MARK: Preview
+    // MARK: Card
 
-    /// An opaque card over the band, with the selected clip in full.
-    private var previewCard: some View {
-        QuickAccessPreviewView(preview: state.preview,
-                               applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
-                               onCommand: actions.previewCommand)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+    /// An opaque card over the band: a command's review while one waits, otherwise the selected clip in full.
+    private var card: some View {
+        Group {
+            if let review = state.commandReview {
+                CommandReviewView(review: review, confirmTitle: QuickAccessActions.confirmTitle(for: review),
+                                  onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
+                                  onCommand: actions.previewCommand)
+            } else {
+                QuickAccessPreviewView(preview: state.preview,
+                                       applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
+                                       onCommand: actions.previewCommand)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 }
 
@@ -280,7 +292,8 @@ extension PasteRefusal {
         case .contentUnavailable: "This item changed or is no longer available."
         case .noPlainText: "This item has no plain text."
         case .writeFailed: "Couldn't write to the clipboard."
-        case .commandTooLong: "This command is too long to review. Use Copy As-Is."
+        case .commandTooLong: "Too long to review — use Copy As-Is in the ⌘K menu"
+        case .terminalCannotTake: "A terminal can't take this item. Use Copy As-Is in the ⌘K menu."
         }
     }
 }

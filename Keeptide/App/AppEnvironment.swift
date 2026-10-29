@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 @MainActor
 final class AppEnvironment {
@@ -11,6 +11,8 @@ final class AppEnvironment {
     private var panel: PanelController?
     private var library: LibraryWindowController?
     private var settingsWindow: SettingsWindowController?
+    /// Shows the Enable Direct Paste alert and returns the button chosen. Tests replace it, since a real alert waits.
+    var runDirectPasteAlert: (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() }
 
     init(settings: AppSettings = AppSettings(),
          captureSession: CaptureSession? = nil,
@@ -40,6 +42,7 @@ final class AppEnvironment {
         // The panel's ⋯ menu does what the menu bar's Open Library and Settings… do.
         panel.onOpenLibrary = { [weak self] in self?.showLibrary() }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
+        panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
         return panel
     }
 
@@ -65,6 +68,28 @@ final class AppEnvironment {
     func showSettings() {
         panel?.close()
         settingsWindowController.show()
+    }
+
+    /// Enable Direct Paste… from the panel's menu, once the panel has closed. Keeptide comes to the front and says what
+    /// turning direct paste on takes. Open System Settings asks the system for access, which shows its own prompt the
+    /// first time, and opens Accessibility settings where it does not grant it; Cancel asks nothing. The system lets
+    /// Keeptide see the access only once Keeptide reopens, which the alert says and the panel says again until then.
+    func showEnableDirectPaste() {
+        panel?.close()
+        NSApplication.shared.activate()
+        guard runDirectPasteAlert(Self.enableDirectPasteAlert()) == .alertFirstButtonReturn else { return }
+        panel?.state.requestDirectPasteAccess()
+    }
+
+    /// What Enable Direct Paste… shows before anything is asked of the system.
+    static func enableDirectPasteAlert() -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Turn On Direct Paste"
+        alert.informativeText = "Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in System "
+            + "Settings › Privacy & Security › Accessibility, then quit and reopen Keeptide."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        return alert
     }
 }
 

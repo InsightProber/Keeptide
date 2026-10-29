@@ -142,9 +142,12 @@ final class QuickAccessState {
     var hasMoreRows: Bool { !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count }
 
     /// What the panel offers for the selected row.
-    var actions: QuickAccessActions {
+    var actions: QuickAccessActions { actions(for: selection.selection) }
+
+    /// What the panel offers for a listed row, such as the one a right-click is on, which need not be the selected one.
+    func actions(for ref: ContentRef?) -> QuickAccessActions {
         QuickAccessActions.make(target: pasteTarget, availability: directPaste,
-                                kind: selection.rows.first { $0.ref == selection.selection }?.kind,
+                                kind: ref.flatMap { ref in selection.rows.first { $0.ref == ref } }?.kind,
                                 accessRequested: hasRequestedDirectPasteAccess)
     }
 

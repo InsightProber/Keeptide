@@ -55,7 +55,7 @@ final class QuickAccessBandTests: XCTestCase {
                                                roomBelow: StripLayout.shadowRoom.below),
             state: QuickAccessState(services: { nil }), toolbar: QuickAccessToolbar(field: QuickAccessSearchField()),
             strip: QuickAccessStripView(), applicationNames: ApplicationNames(),
-            actions: QuickAccessBandView.Actions(previewCommand: { _ in })
+            actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {})
         )
         let root = band
             .environment(\._accessibilityReduceTransparency, reducesTransparency)

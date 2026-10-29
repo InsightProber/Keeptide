@@ -144,6 +144,32 @@ final class QuickAccessActionsTests: XCTestCase {
         }
     }
 
+    func testRefusalsThatCopyAsIsGetsRoundSayWhereToFindIt() {
+        // A terminal takes reviewed text, images and file references; for anything else, and for a command too long to
+        // review whole, only Copy As-Is in the menu copies the clip.
+        XCTAssertEqual(PasteRefusal.terminalCannotTake.message,
+                       "A terminal can't take this item. Use Copy As-Is in the ⌘K menu.")
+        XCTAssertEqual(PasteRefusal.commandTooLong.message, "Too long to review — use Copy As-Is in the ⌘K menu")
+        // A plain-text copy of a picture or a file still says what the clip lacks.
+        XCTAssertEqual(PasteRefusal.noPlainText.message, "This item has no plain text.")
+    }
+
+    func testTheReviewCardSaysWhatToCheck() {
+        let twoLines = review(delivery: .paste, targetName: "Terminal")
+        XCTAssertEqual(CommandReviewView.title(for: twoLines), "Review this 2-line command")
+        XCTAssertEqual(CommandReviewView.explanation(for: twoLines),
+                       "A terminal can run each line as soon as it arrives. Check every line.")
+        XCTAssertEqual(CommandReviewView.title(for: review(of: "a\nb\rc\u{2028}d\n")), "Review this 4-line command")
+        // One line that still needs a review holds a character a terminal acts on, or one nobody can see.
+        for command in ["echo synthetic\u{0F}", "echo \u{200B}synthetic"] {
+            let oneLine = review(of: command)
+            XCTAssertEqual(CommandReviewView.title(for: oneLine), "Review this command", command)
+            XCTAssertEqual(CommandReviewView.explanation(for: oneLine),
+                           "It contains control or invisible characters a terminal can act on.", command)
+        }
+        XCTAssertEqual(CommandReviewView.renewalNotice, "The content or target changed. Review it and confirm again.")
+    }
+
     /// Checks what shows; the copy-only mode only when the item is offered.
     private func assertActions(_ actions: QuickAccessActions, primary: String, plainText: String?,
                                copyOnly: (title: String, mode: PasteMode)?, enable: Bool = false, hint: String? = nil,
@@ -157,12 +183,16 @@ final class QuickAccessActionsTests: XCTestCase {
     }
 
     private func review(delivery: PasteDelivery, targetName: String?) -> CommandReview {
+        review(of: "set -e\necho synthetic-gamma\n", delivery: delivery, targetName: targetName)
+    }
+
+    private func review(of command: String, delivery: PasteDelivery = .paste,
+                        targetName: String? = "Terminal") -> CommandReview {
         let ref = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(),
                              digest: Data(repeating: 0, count: 32))
         return CommandReview(
             confirmation: CommandConfirmation(id: UUID(), sessionGeneration: 1, ref: ref, mode: .original,
                                               delivery: delivery),
-            command: TerminalCommand(plainText: "set -e\necho synthetic-gamma\n"), targetName: targetName,
-            isRenewal: false)
+            command: TerminalCommand(plainText: command), targetName: targetName, isRenewal: false)
     }
 }

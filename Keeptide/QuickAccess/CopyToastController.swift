@@ -15,7 +15,9 @@ final class CopyToastController {
         self.duration = duration
     }
 
-    func show(_ message: String, centeredOn frame: NSRect) {
+    /// Shows `message` centred on `frame` for `duration`, or for the time the toast was made with. Showing again
+    /// replaces the message and starts the time over.
+    func show(_ message: String, centeredOn frame: NSRect, duration: Duration? = nil) {
         let panel = panel ?? makePanel()
         self.panel = panel
         panel.label.stringValue = message
@@ -30,7 +32,7 @@ final class CopyToastController {
             .priority: NSAccessibilityPriorityLevel.high.rawValue,
         ])
         hiding?.cancel()
-        hiding = Task { [weak self, duration] in
+        hiding = Task { [weak self, duration = duration ?? self.duration] in
             try? await Task.sleep(for: duration)
             guard !Task.isCancelled else { return }
             self?.hide()

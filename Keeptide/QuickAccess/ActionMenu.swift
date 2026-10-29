@@ -1,29 +1,42 @@
 import AppKit
 
 enum ActionMenuCommand {
-    case copy, copyPlainText, togglePreview
+    case primary, plainText, copyOnly, togglePreview, enableDirectPaste
 }
 
-/// Cmd-K: the actions for the current selection only. Unavailable actions are
-/// disabled rather than hidden, so the menu's shape stays predictable.
+/// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
+/// and the copy that never pastes, where the panel offers them; then the preview; then Enable Direct Paste… when the
+/// panel only copies for want of access. Unavailable actions are disabled rather than hidden, so the menu's shape stays
+/// predictable.
 @MainActor
 enum ActionMenu {
-    static func make(row: QuickAccessRow?, canAct: Bool, isPreviewExpanded: Bool,
+    static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isPreviewExpanded: Bool,
                      perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
-        let copy = ActionMenuItem("Copy", key: "\r", modifiers: []) { perform(.copy) }
-        copy.isEnabled = canAct
-        let plainText = ActionMenuItem("Copy as Plain Text", key: "\r", modifiers: .shift) { perform(.copyPlainText) }
-        plainText.isEnabled = canAct && row.map { $0.kind != .image && $0.kind != .file } == true
+        let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
+        primary.isEnabled = canAct
+        menu.addItem(primary)
+        if let title = actions.plainTextTitle {
+            let plainText = ActionMenuItem(title, key: "\r", modifiers: .shift) { perform(.plainText) }
+            plainText.isEnabled = canAct && row.map { $0.kind != .image && $0.kind != .file } == true
+            menu.addItem(plainText)
+        }
+        if let title = actions.copyOnlyTitle {
+            let copyOnly = ActionMenuItem(title, key: "", modifiers: []) { perform(.copyOnly) }
+            copyOnly.isEnabled = canAct
+            menu.addItem(copyOnly)
+        }
+        menu.addItem(.separator())
         let preview = ActionMenuItem(isPreviewExpanded ? "Hide Preview" : "Show Preview", key: " ", modifiers: []) {
             perform(.togglePreview)
         }
         preview.isEnabled = row != nil
-        menu.addItem(copy)
-        menu.addItem(plainText)
-        menu.addItem(.separator())
         menu.addItem(preview)
+        if actions.offersEnableDirectPaste {
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Enable Direct Paste…", key: "", modifiers: []) { perform(.enableDirectPaste) })
+        }
         return menu
     }
 

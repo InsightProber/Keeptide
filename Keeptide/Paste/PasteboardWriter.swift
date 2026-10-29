@@ -31,6 +31,8 @@ enum PasteboardWriterError: Error, Equatable {
     case cannotPrepareRepresentation(itemIndex: Int, representationIndex: Int)
     case writeFailed
     case noPlainText
+    /// `prepareWithoutText` found no image or file reference to keep.
+    case noImageOrFileReference
     case commandTooLong
 }
 
@@ -116,8 +118,8 @@ final class PasteboardWriter {
     /// What a terminal gets from a clip that is not text: `prepare`, keeping only images, file URLs and the legacy
     /// list of file paths. Everything else is left out, whatever it is: a terminal can make text out of more formats
     /// than a list of text formats names, such as rich text with attachments, web archives and old text flavours.
-    /// The order is kept, and an item left with nothing is dropped. Throws `.noPlainText` when nothing is left: the
-    /// clip has neither text to review nor an image or a file, so only Copy As-Is copies it.
+    /// The order is kept, and an item left with nothing is dropped. Throws `.noImageOrFileReference` when nothing is
+    /// left: the terminal can take none of the clip, so only Copy As-Is copies it.
     nonisolated static func prepareWithoutText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
         var kept: [RepresentationValue] = []
         var lastSourceItem: Int?
@@ -134,7 +136,7 @@ final class PasteboardWriter {
             }
             kept.append(representation)
         }
-        guard !kept.isEmpty else { throw PasteboardWriterError.noPlainText }
+        guard !kept.isEmpty else { throw PasteboardWriterError.noImageOrFileReference }
         return PreparedPasteboardContent(representations: kept)
     }
 

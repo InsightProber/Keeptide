@@ -144,6 +144,71 @@ final class QuickAccessSnapshotTests: XCTestCase {
         print("Panel snapshots written to \(output.directory.path)")
     }
 
+    func testRenderDirectPastePanels() async throws {
+        guard let folder = ProcessInfo.processInfo.environment["KEEPTIDE_SNAPSHOT_DIR"], !folder.isEmpty else {
+            throw XCTSkip("Set TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR to render the panel")
+        }
+        let output = SnapshotFolder(requested: URL(fileURLWithPath: folder, isDirectory: true))
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let now = Date()
+        try await seedPanelClips(into: harness, now: now)
+        try await harness.consumer.synchronize()
+        let repository = ContentRepository(controller: harness.controller)
+        let suite = "QuickAccessSnapshotTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        preferences.cardSize = .medium
+        // A panel whose session asks `fake` what is in front. The fake never posts a key.
+        func panel(asking fake: FakeDirectPasteSystem) -> PanelController {
+            let paste = PasteService(pasteboard: board, read: { try await repository.read($0) }, recordUse: { _ in },
+                                     didWrite: { _ in }, system: fake.system)
+            let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste,
+                                               preview: PreviewService(read: { try await repository.read($0) }))
+            return PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
+                                   visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 875))
+        }
+
+        // TextEdit in front, with every check passing: the toolbar's right end names it.
+        let pasting = panel(asking: FakeDirectPasteSystem())
+        addTeardownBlock { pasting.state.close() }
+        pasting.state.open()
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let rows = pasting.state.selection.rows
+            return rows.count == 8 && rows.prefix(6).allSatisfy { pasting.state.details[$0.ref] != nil }
+        }
+        XCTAssertEqual(pasting.state.actions.primaryTitle, "Paste into TextEdit")
+        try await write(try XCTUnwrap(pasting.window), as: "panel-paste-target", into: output)
+        pasting.state.close()
+
+        // Terminal in front, and the newest clip a command of three lines, one indented with a tab: Return opens the
+        // review card in the preview's place.
+        let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(
+            "cd ~/Projects/keeptide\n\tgit fetch origin\ngit rebase origin/main\n".utf8))]])
+        try await ContentStoreFixtures.insert(
+            ItemValue(sourceApp: App.terminal, title: "cd ~/Projects/keeptide", captureID: capture.id,
+                      historyEligible: true, lastCopiedAt: now.addingTimeInterval(60), copyCount: 1),
+            capture, into: harness.controller)
+        try await harness.consumer.synchronize()
+        let terminal = FakeDirectPasteSystem()
+        terminal.front = .terminal
+        let reviewing = panel(asking: terminal)
+        addTeardownBlock { reviewing.state.close() }
+        reviewing.state.open()
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let rows = reviewing.state.selection.rows
+            return rows.count == 9 && rows.prefix(6).allSatisfy { reviewing.state.details[$0.ref] != nil }
+        }
+        reviewing.perform(.primary)
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) { reviewing.state.commandReview != nil }
+        XCTAssertEqual(reviewing.state.commandReview?.command.lineCount, 3)
+        try await write(try XCTUnwrap(reviewing.window), as: "panel-review", into: output)
+        XCTAssertEqual(terminal.sent, [])
+        print("Direct paste snapshots written to \(output.directory.path)")
+    }
+
     // MARK: The clips
 
     /// The strip as it opens, newest first: a screenshot, a command, a page, a Chinese note, a PDF and an email.

@@ -37,6 +37,9 @@ enum PasteRefusal: Error, Equatable, Sendable {
     case writeFailed
     /// A command longer than the confirmation card shows whole. Copy As-Is still copies it.
     case commandTooLong
+    /// A terminal's session has nothing of the clip to take: no text to make a command of, and no image or file
+    /// reference. Copy As-Is still copies it.
+    case terminalCannotTake
 }
 
 enum PasteDelivery: Equatable, Sendable {
@@ -225,6 +228,7 @@ final class PasteService {
             guard session.accepts(generation) else { return .refused(.stale) }
             switch error as? PasteboardWriterError {
             case .noPlainText?: return .refused(.noPlainText)
+            case .noImageOrFileReference?: return .refused(.terminalCannotTake)
             case .commandTooLong?: return .refused(.commandTooLong)
             default: return .refused(.contentUnavailable)
             }

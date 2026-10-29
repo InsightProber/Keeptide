@@ -59,9 +59,14 @@ struct QuickAccessPreviewView: View {
     }
 }
 
-/// Read-only, selectable text that keeps its line breaks and indentation.
-private struct PreviewText: NSViewRepresentable {
+/// Read-only, selectable text that keeps its line breaks and indentation: a clip in the preview card, or a command in
+/// the review card, in the system's monospaced type.
+struct PreviewText: NSViewRepresentable {
     let text: String
+    var monospaced = false
+    /// What VoiceOver calls the text, and the identifier UI tests find it by.
+    var accessibilityName = "Preview text"
+    var accessibilityID: String?
     let onCommand: (QuickAccessCommand) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -73,12 +78,14 @@ private struct PreviewText: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = false
         textView.drawsBackground = false
-        textView.font = .preferredFont(forTextStyle: .body)
+        textView.font = monospaced ? .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            : .preferredFont(forTextStyle: .body)
         textView.textContainerInset = NSSize(width: 12, height: 10)
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
-        textView.setAccessibilityLabel("Preview text")
+        textView.setAccessibilityLabel(accessibilityName)
+        if let accessibilityID { textView.setAccessibilityIdentifier(accessibilityID) }
         scroll.documentView = textView
         return scroll
     }

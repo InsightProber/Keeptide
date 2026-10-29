@@ -1,9 +1,11 @@
 import AppKit
+import Carbon.HIToolbox
 import SwiftUI
 
 /// The quick access panel: a borderless, see-through, non-activating window around the band. It owns the window,
 /// where the keys go among the search field, the filters and the strip, and what each command does.
-/// `QuickAccessBandView` draws the band and `QuickAccessState` holds what it shows.
+/// `QuickAccessBandView` draws the band and `QuickAccessState` holds what it shows. The panel never activates Keeptide:
+/// for a paste it hides, leaving the keys with the window it pastes into, and closes once the paste is done.
 @MainActor
 final class PanelController: NSWindowController, NSWindowDelegate {
     let state: QuickAccessState
@@ -20,7 +22,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return editor
     }()
     private(set) var isSessionOpen = false
-    private let toast = CopyToastController(duration: PanelController.toastDuration)
+    /// Whether the panel is off screen for a paste while its session goes on, for the check before ⌘V. It gives up the
+    /// keys as it hides, which does not close it; the paste's end does.
+    private(set) var isHiddenForPaste = false
+    /// Says what an action did, where the band was, as the panel closes.
+    let toast = CopyToastController(duration: PanelController.toastDuration(for: .copied))
+    /// Return and keypad Enter while they are down in the panel. A paste waits until they are up: hidden, the panel
+    /// would leave a held key's repeats to the app it pasted into, where a terminal would run what was pasted. The
+    /// panel forgets them as it closes, since it no longer sees them come up.
+    private var heldReturnKeys: Set<UInt16> = []
+    /// How long a paste waits for Return to come up before it copies instead.
+    static let returnReleaseWait: Duration = .seconds(1)
     /// The visible area of the screen the panel opens on and the frame sizes for it, settled each time it opens.
     private var visibleFrame: NSRect
     /// A visible area given for tests in place of the screen's.
@@ -51,6 +63,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The ⋯ menu's Open Library and Settings…, which the app points at its own commands.
     var onOpenLibrary: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// The actions menu's Enable Direct Paste…, once the panel has closed. The app explains it and asks for access,
+    /// which takes Keeptide to the front: the panel never does that itself.
+    var onEnableDirectPaste: (() -> Void)?
+    /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
+    var announce: (String) -> Void = { _ in }
 
     /// `preferences` defaults to a fresh copy for tests; the app passes the one its Settings window edits.
     /// `visibleFrame` stands in for the screen's visible area, so a test can lay the panel out for a screen of its own.
@@ -92,7 +109,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             guard let self else { return false }
             return !contentFrames.contains { $0.contains(point) }
         }
-        panel.onClickOutside = { [weak self] in self?.close() }
+        // Hidden for a paste, the panel stays open until the paste is done.
+        panel.onClickOutside = { [weak self] in
+            guard let self, !isHiddenForPaste else { return }
+            close()
+        }
+        panel.onKeyEvent = { [weak self] in self?.followReturnKey($0) }
+        announce = { [weak panel] message in
+            guard let panel else { return }
+            NSAccessibility.post(element: panel, notification: .announcementRequested, userInfo: [
+                .announcement: message,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ])
+        }
         connect()
         followState()
     }
@@ -105,6 +134,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if opening {
             searchField.stringValue = ""
             filterRow.cursor = 0
+            // The app in front is recorded as the paste target before this panel shows (decision 1).
             state.open()
             // Settle the screen before this panel takes keyboard focus, and take the settings as they are now.
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
@@ -121,6 +151,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     override func close() {
         guard isSessionOpen else { return }
         isSessionOpen = false
+        isHiddenForPaste = false
+        heldReturnKeys = []
         searchReachedByKeyboard = false
         state.close()
         window?.makeFirstResponder(nil)
@@ -134,7 +166,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return false
     }
 
-    func windowDidResignKey(_ notification: Notification) { close() }
+    /// The panel closes when it loses the keys, except while it is hidden for a paste (decision 11).
+    func windowDidResignKey(_ notification: Notification) {
+        guard !isHiddenForPaste else { return }
+        close()
+    }
 
     func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
         (client as? QuickAccessSearchField) === searchField ? fieldEditor : nil
@@ -154,7 +190,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         searchField.onCommand = { [weak self] in self?.perform($0) }
         searchField.onEscape = { [weak self] in self?.applyEscape($0) }
         searchField.escapeContext = { [weak self] in
-            QuickAccessEscapeContext(isPreviewExpanded: self?.state.isPreviewExpanded ?? false,
+            QuickAccessEscapeContext(hasCommandReview: self?.state.commandReview != nil,
+                                     isPreviewExpanded: self?.state.isPreviewExpanded ?? false,
                                      hasFilters: !(self?.state.kinds.isEmpty ?? true),
                                      isSearchExpanded: self?.state.isSearchExpanded ?? false)
         }
@@ -173,7 +210,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.onCommand = { [weak self] in self?.perform($0) }
         strip.onVisibleRefsChanged = { [weak self] in self?.loadFramedRows($0, lastOnScreen: $1) }
         strip.onContextMenu = { [weak self] in self?.actionMenu(for: $0) }
-        state.onCompleted = { [weak self] _ in self?.confirmCopy() }
+        state.onCompleted = { [weak self] in self?.finish($0) }
+        state.onCommandReviewChanged = { [weak self] in self?.commandReviewChanged() }
+        state.dismissForPaste = { [weak self] in self?.hideForPaste() }
         state.onPreviewCollapsed = { [weak self] in self?.previewCollapsed() }
     }
 
@@ -213,16 +252,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         filterRow.queryIsEmpty = state.query.isEmpty
         filterRow.show(kinds: state.kinds)
         strip.queryIsEmpty = state.query.isEmpty
-        strip.dimsSideFrames = state.isPreviewExpanded
+        strip.dimsSideFrames = hasCard
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
         strip.show(state.selection.rows, selection: state.selection.selection, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded)
     }
 
-    /// What the toolbar's right end says. A refused copy's reason answers what was just done, so it comes first;
-    /// then a status over clips on screen; then, with a clip selected, what Return does. With no clips the empty
-    /// state says it all. An index that is rebuilding is told at the toolbar's left end, and leaves Return's hint in
-    /// place.
+    /// What the toolbar's right end says. A refused action's reason answers what was just done, so it comes first;
+    /// then a status over clips on screen; then, with a clip selected, what Return does, under the name the session
+    /// gives it, with why it only copies when the user can do something about that. With no clips the empty state says
+    /// it all. An index that is rebuilding is told at the toolbar's left end, and leaves Return's hint in place.
     private var toolbarNote: QuickAccessToolbar.Note {
         if let failure = state.failure { return .failure(failure.message) }
         if !state.selection.rows.isEmpty,
@@ -231,18 +270,23 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return .status(line)
         }
         guard state.selection.selection != nil else { return .none }
-        return .copy(enabled: state.selection.executableSelection != nil)
+        let actions = state.actions
+        return .action(title: actions.primaryTitle, enabled: state.selection.executableSelection != nil,
+                       hint: actions.hint)
     }
 
-    /// Places the panel around the band, and around the preview card above it while the preview is open, and
-    /// lays the band out to match. The band sits in the middle of the screen's visible area; a card with no room
-    /// above it moves the band down, and on a screen too low for that it lies over the band's top edge. The panel
+    /// Whether a card lies above the band: the preview, or in its place a command's review.
+    private var hasCard: Bool { state.isPreviewExpanded || state.commandReview != nil }
+
+    /// Places the panel around the band, and around the card above it while the preview or a command's review is
+    /// open, and lays the band out to match. The band sits in the middle of the screen's visible area; a card with no
+    /// room above it moves the band down, and on a screen too low for that it lies over the band's top edge. The panel
     /// leaves room around them for the band's shadow, as much as the screen has.
     private func layoutPanel() {
         guard let window, let hosting else { return }
         var band = StripLayout.bandFrame(metrics, in: visibleFrame)
         var preview: NSRect?
-        if state.isPreviewExpanded {
+        if hasCard {
             let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
@@ -267,7 +311,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private func bandView(_ layout: QuickAccessBandView.Layout) -> QuickAccessBandView {
         QuickAccessBandView(
             layout: layout, state: state, toolbar: toolbar, strip: strip, applicationNames: applicationNames,
-            actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) })
+            actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
+                                                 confirmCommand: { [weak self] in self?.confirmCommand() },
+                                                 cancelCommandReview: { [weak self] in self?.cancelCommandReview() })
         )
     }
 
@@ -307,9 +353,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .typeIntoSearch:
             typeIntoSearch()
         case .primary:
-            copy(.original)
+            act(.original)
         case .plainText:
-            copy(.plainText)
+            act(.plainText)
         case .togglePreview:
             togglePreview()
         case .escape:
@@ -325,6 +371,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         state.togglePreview()
         update()
         keepFocus(focus)
+    }
+
+    /// A command's review appeared, was replaced or went: the card above the band follows, and VoiceOver reads the
+    /// title of one that appears, after the notice of one that replaces a review that no longer applied.
+    private func commandReviewChanged() {
+        let focus = currentFocus
+        update()
+        keepFocus(focus)
+        guard let review = state.commandReview else { return }
+        let title = CommandReviewView.title(for: review)
+        announce(review.isRenewal ? "\(CommandReviewView.renewalNotice) \(title)" : title)
     }
 
     /// The state closed the preview because its clip disappeared.
@@ -448,32 +505,98 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
     }
 
-    // MARK: Copying
+    // MARK: Acting
 
-    /// Captures what is selected when the key is pressed; the copy finishes later.
-    private func copy(_ mode: PasteMode) {
-        guard let target = state.copyTarget else { return }
-        Task { await state.copy(target, mode: mode) }
+    /// Return, ⇧Return and the toolbar's button: the clip selected when the key is pressed, delivered as the toolbar
+    /// says (decision 2). The action finishes later. While a command waits on the review card they do nothing: only
+    /// ⌘Return and the card's button confirm it.
+    private func act(_ mode: PasteMode) {
+        guard state.commandReview == nil, let target = state.copyTarget else { return }
+        let requested = state.preferredDelivery
+        Task {
+            guard let delivery = await deliveryOnceReturnIsUp(requested) else { return }
+            await state.act(on: target, mode: mode, delivery: delivery)
+        }
     }
 
-    /// The toolbar's "⏎ Copy", for the pointer.
+    /// The menu's copy that never pastes: "Copy", or "Copy As-Is" in a terminal's session.
+    private func copyOnly() {
+        guard let target = state.copyTarget else { return }
+        let mode = state.actions.copyOnlyMode
+        Task { await state.act(on: target, mode: mode, delivery: .copy) }
+    }
+
+    /// ⌘Return and the card's button confirm the review on the card when they are used, never one that replaced it
+    /// meanwhile. A confirmed paste goes once Return is up; with Return held past `returnReleaseWait`, nothing is
+    /// confirmed and the card stays, since confirming it as a copy would need a review of its own.
+    private func confirmCommand() {
+        guard let review = state.commandReview else { return }
+        let delivery = review.confirmation.delivery
+        Task {
+            guard await deliveryOnceReturnIsUp(delivery) == delivery, state.commandReview == review else { return }
+            await state.confirmCommand()
+        }
+    }
+
+    private func cancelCommandReview() {
+        state.cancelCommandReview()
+    }
+
+    /// `delivery` once Return and keypad Enter are up: a copy at once, and a paste once they come up within
+    /// `returnReleaseWait`, or else a copy. nil once the panel has closed meanwhile. A panel shown again meanwhile has
+    /// a session of its own, which the paste service refuses the old action for.
+    private func deliveryOnceReturnIsUp(_ delivery: PasteDelivery) async -> PasteDelivery? {
+        guard delivery == .paste, !heldReturnKeys.isEmpty else { return delivery }
+        let deadline = ContinuousClock.now.advanced(by: Self.returnReleaseWait)
+        while !heldReturnKeys.isEmpty, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+            guard isSessionOpen else { return nil }
+        }
+        return heldReturnKeys.isEmpty ? .paste : .copy
+    }
+
+    /// Follows Return and keypad Enter going down and coming up while the panel has the keys.
+    private func followReturnKey(_ event: NSEvent) {
+        guard [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode)) else { return }
+        switch event.type {
+        case .keyDown: heldReturnKeys.insert(event.keyCode)
+        case .keyUp: heldReturnKeys.remove(event.keyCode)
+        default: break
+        }
+    }
+
+    /// The toolbar's "⏎ Copy" or "⏎ Paste into …", for the pointer.
     @objc private func copyFromToolbar() {
         perform(.primary)
     }
 
-    /// Closes the panel and confirms the copy where the band was.
-    private func confirmCopy() {
-        let band = bandFrame
-        close()
-        toast.show("Copied — press ⌘V to paste", centeredOn: band)
+    /// Hides the panel for a paste, before ⌘V is posted. The session goes on for the check that follows; the paste's
+    /// end closes the panel (decision 11).
+    private func hideForPaste() {
+        isHiddenForPaste = true
+        window?.orderOut(nil)
     }
 
-    private static var toastDuration: Duration {
+    /// The action wrote the clipboard: the panel closes, and says what happened where the band was. After ⌘V it says
+    /// nothing, since the keystroke does not prove that the target pasted.
+    private func finish(_ completion: QuickAccessCompletion) {
+        let band = bandFrame
+        close()
+        guard let message = completion.toastMessage else { return }
+        toast.show(message, centeredOn: band, duration: Self.toastDuration(for: completion))
+    }
+
+    /// How long the toast stays: 1.2 s for a copy, and 2.5 s for one that says why a paste became a copy. UI tests poll
+    /// about once a second, so there every toast stays 4 s.
+    static func toastDuration(for completion: QuickAccessCompletion,
+                              arguments: [String] = ProcessInfo.processInfo.arguments) -> Duration {
         #if DEBUG
-        // UI tests poll about once a second; keep the confirmation up long enough to observe.
-        if ProcessInfo.processInfo.arguments.contains("--ui-testing") { return .seconds(4) }
+        if arguments.contains("--ui-testing") { return .seconds(4) }
         #endif
-        return .milliseconds(1_200)
+        switch completion {
+        case .copiedInstead(let fallback) where fallback != .noTarget: return .milliseconds(2_500)
+        case .copied, .copiedInstead, .dispatched: return .milliseconds(1_200)
+        }
     }
 
     // MARK: Menus
@@ -504,12 +627,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                           ActionMenu.anchor(beside: strip.selectionAnchorFrame ?? centre, in: strip), strip)
     }
 
-    /// The actions for one clip: the selected one for ⌘K, the one under the pointer for a right-click. A clip
-    /// other than the selected one is selected before its action runs, so the action is for the clip clicked;
-    /// one that left the list while the menu was open gets no action at all, never another clip's.
+    /// The actions for one clip: the selected one for ⌘K, the one under the pointer for a right-click, named for that
+    /// clip. A clip other than the selected one is selected before its action runs, so the action is for the clip
+    /// clicked; one that left the list while the menu was open gets no action at all, never another clip's.
     private func actionMenu(for ref: ContentRef?) -> NSMenu {
         let row = ref.flatMap { ref in state.selection.rows.first { $0.ref == ref } }
-        return ActionMenu.make(row: row, canAct: state.selection.executableSelection != nil,
+        return ActionMenu.make(actions: state.actions(for: ref), row: row,
+                               canAct: state.selection.executableSelection != nil,
                                isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
             guard let self else { return }
             if let ref, ref != state.selection.selection {
@@ -518,18 +642,27 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 guard state.selection.selection == ref else { return }
             }
             switch command {
-            case .copy: perform(.primary)
-            case .copyPlainText: perform(.plainText)
+            case .primary: perform(.primary)
+            case .plainText: perform(.plainText)
+            case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
+            case .enableDirectPaste: enableDirectPaste()
             }
         }
     }
 
+    /// Enable Direct Paste…: the panel closes, and the app takes it from there.
+    private func enableDirectPaste() {
+        close()
+        onEnableDirectPaste?()
+    }
+
     // MARK: Escape
 
-    /// Escape from the strip, the filters or the preview; the search field peels its own layers first.
+    /// Escape from the strip, the filters, the preview or the review card; the search field peels its own layers first.
     private func escape() {
-        let action = QuickAccessEscapePolicy.action(hasMarkedText: false, isPreviewExpanded: state.isPreviewExpanded,
+        let action = QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: state.commandReview != nil,
+                                                    isPreviewExpanded: state.isPreviewExpanded,
                                                     hasQuery: !searchField.stringValue.isEmpty,
                                                     hasFilters: !state.kinds.isEmpty,
                                                     isSearchExpanded: state.isSearchExpanded)
@@ -539,13 +672,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .clearQuery:
             searchField.stringValue = ""
             applyEscape(action)
-        case .cancelComposition, .collapsePreview, .foldSearch:
+        case .cancelComposition, .cancelCommandReview, .collapsePreview, .foldSearch:
             applyEscape(action)
         }
     }
 
     private func applyEscape(_ action: QuickAccessEscapeAction) {
         switch action {
+        case .cancelCommandReview:
+            cancelCommandReview()
         case .collapsePreview:
             togglePreview()
         case .clearQuery:
@@ -575,6 +710,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             guard !event.isARepeat else { return true }
             togglePreview()
             return true
+        case "\r":
+            // ⌘Return confirms the command on the review card, and nothing else: a preview is not a review, and while
+            // an input method composes in the search field the key is the composition's.
+            let isComposing = (searchField.currentEditor() as? NSTextView)?.hasMarkedText() == true
+            guard state.commandReview != nil, !isComposing else { return false }
+            // A key equivalent never reaches the window's own handling, so Return going down is noted here.
+            followReturnKey(event)
+            // Held down, ⌘Return has confirmed already: its repeats confirm nothing, such as a review that replaced it.
+            guard !event.isARepeat else { return true }
+            confirmCommand()
+            return true
         default:
             return false
         }
@@ -599,6 +745,8 @@ private final class ClosureMenuItem: NSMenuItem {
 private final class QuickAccessPanel: NSPanel {
     var onEscape: (() -> Void)?
     var onKeyEquivalent: ((NSEvent) -> Bool)?
+    /// Every key going down or coming up in the panel, before the panel handles it.
+    var onKeyEvent: ((NSEvent) -> Void)?
     /// Called whenever the keys move from one view to another.
     var onFirstResponderChange: (() -> Void)?
     /// Whether a point in the window lies outside what the panel shows, in the room left for the band's shadow.
@@ -643,6 +791,7 @@ private final class QuickAccessPanel: NSPanel {
             onClickOutside?()
             return
         }
+        if event.type == .keyDown || event.type == .keyUp { onKeyEvent?(event) }
         super.sendEvent(event)
     }
 }

@@ -420,11 +420,12 @@ final class CommandConfirmationTests: XCTestCase {
         XCTAssertEqual(textLikeTypes(on: fixture.board), [])
         XCTAssertEqual(fake.sent, [9, 9])
 
-        // A file item made only of a link and its name has neither an image nor a file reference to paste.
+        // A file item made only of a link and its name has neither an image nor a file reference to paste: the
+        // terminal can take none of it, and Copy As-Is is what copies it.
         let link = try await capture([("public.url", fileURL), ("public.utf8-plain-text", name)], into: fixture)
         let before = fixture.board.changeCount
         let refused = await paste.execute(request(link, session, mode: .original))
-        XCTAssertEqual(refused, .refused(.noPlainText))
+        XCTAssertEqual(refused, .refused(.terminalCannotTake))
         XCTAssertEqual(fixture.board.changeCount, before)
         XCTAssertEqual(fake.sent, [9, 9])
     }
@@ -438,11 +439,12 @@ final class CommandConfirmationTests: XCTestCase {
         let session = paste.beginSession()
         let before = fixture.board.changeCount
 
-        // A terminal takes reviewed text, images and files. Anything else has no plain text for it, either way.
+        // A terminal takes reviewed text, images and files. Anything else it cannot take, which says to use Copy As-Is;
+        // and asked for as plain text, it has none.
         let original = await paste.execute(request(ref, session, mode: .original))
         let plainText = await paste.execute(request(ref, session, mode: .plainText))
 
-        XCTAssertEqual(original, .refused(.noPlainText))
+        XCTAssertEqual(original, .refused(.terminalCannotTake))
         XCTAssertEqual(plainText, .refused(.noPlainText))
         XCTAssertEqual(fixture.board.changeCount, before)
         XCTAssertEqual(fake.sent, [])
