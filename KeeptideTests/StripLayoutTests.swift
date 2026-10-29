@@ -2,6 +2,10 @@ import XCTest
 @testable import Keeptide
 
 final class StripLayoutTests: XCTestCase {
+    /// Nine clips in a row on a 1440 pt screen: the band is 1360 pt wide, the frames 164 pt wide and 176 pt apart,
+    /// and the dock inset is 24 pt.
+    private var metrics: StripMetrics { StripLayout.metrics(for: .nine, visibleWidth: 1440) }
+
     func testReferenceSizesAtFullWidthAndOnVeryWideScreens() {
         let m = StripLayout.metrics(for: .nine, visibleWidth: 2560)
         XCTAssertEqual(m.bandWidth, 1360); XCTAssertEqual(m.scale, 1); XCTAssertEqual(m.cornerRadius, 12)
@@ -27,6 +31,74 @@ final class StripLayoutTests: XCTestCase {
         XCTAssertEqual(xs[1] - xs[2], m.step, accuracy: 0.5)                                   // index 1 is newer, so it sits right
         let lost = StripLayout.frameOrigins(m, count: 3, centredIndex: -1)
         XCTAssertEqual(lost[0] + m.frameSize.width / 2, m.bandWidth / 2 - m.step, accuracy: 0.5)
+    }
+
+    func testOpenDocksTheNewestAtTheLeftEnd() {
+        // More clips may follow the 50, so only the right end fades.
+        assertPlacement(count: 50, position: 0, origin: 24, fades: (false, true))
+    }
+
+    func testTheSelectionWalksToTheMiddleBeforeTheFilmMoves() {
+        // The film rests while the selection walks right along it: the selected frame is at 24 + 3 · 176 = 552.
+        assertPlacement(count: 50, position: 3, origin: 24, fades: (false, true))
+        // One step further it would pass the middle, so the film moves instead and the selected frame stays centred.
+        assertPlacement(count: 50, position: 4, origin: -106, fades: (true, true))
+        let moved = StripLayout.placement(metrics, count: 50, position: 4, oldestIsLoaded: false)
+        XCTAssertEqual(moved.firstOrigin + 4 * metrics.step + metrics.frameSize.width / 2, metrics.bandWidth / 2)
+    }
+
+    func testFingersMoveTheFilmOnlyPastTheDock() {
+        // A fractional position is a selection under the fingers, between two clips. Short of the middle, which
+        // it reaches at about 3.26, the film rests; past it the film follows.
+        assertPlacement(count: 50, position: 3.2, origin: 24, fades: (false, true))
+        assertPlacement(count: 50, position: 3.5, origin: -18, fades: (true, true))
+    }
+
+    func testTheOldestEndDocksOnlyWhenLoaded() {
+        // Loaded, the film follows the selection until the last frame's right edge would pass 1360 − 24 = 1336,
+        // at about index 45.7. From there it stops and the selection walks on to the last clip.
+        assertPlacement(count: 50, position: 45, loaded: true, origin: -7322, fades: (true, true))
+        assertPlacement(count: 50, position: 46, loaded: true, origin: -7452, fades: (true, false))
+        assertPlacement(count: 50, position: 49, loaded: true, origin: -7452, fades: (true, false))
+        let docked = StripLayout.placement(metrics, count: 50, position: 49, oldestIsLoaded: true)
+        let last = StripLayout.frameOrigins(metrics, count: 50, placement: docked)[49]
+        XCTAssertEqual(last + metrics.frameSize.width, 1336)
+        // While more may follow, the film keeps moving to the last clip and the right end keeps fading.
+        assertPlacement(count: 50, position: 49, origin: -8026, fades: (true, true))
+    }
+
+    func testAShortLoadedFilmIsCentredAsAGroup() {
+        // Three clips are 516 wide, which leaves 422 on each side whichever of them is selected.
+        assertPlacement(count: 3, position: 0, loaded: true, origin: 422, fades: (false, false))
+        assertPlacement(count: 3, position: 2, loaded: true, origin: 422, fades: (false, false))
+        // Seven (1220) still fit between the docks (1312). Eight (1396) do not, so the film docks at the left end.
+        assertPlacement(count: 7, position: 0, loaded: true, origin: 70, fades: (false, false))
+        assertPlacement(count: 8, position: 0, loaded: true, origin: 24, fades: (false, true))
+        // Clips that more may follow are not centred.
+        assertPlacement(count: 3, position: 0, origin: 24, fades: (false, true))
+    }
+
+    func testAVanishedSelectionKeepsAnEmptySlotAtTheDock() {
+        // The empty slot takes the dock and index 0 stands one step to its right: 24 + 176.
+        assertPlacement(count: 50, position: -1, origin: 200, fades: (false, true))
+        // A short loaded film is centred with the slot in it: four frames are 692 wide, so index 0 is at 334 + 176.
+        assertPlacement(count: 3, position: -1, loaded: true, origin: 510, fades: (false, false))
+        // Fingers between the slot and index 0 do not move the film.
+        assertPlacement(count: 50, position: -0.5, origin: 200, fades: (false, true))
+    }
+
+    func testDockInsetScalesWithTheBand() {
+        XCTAssertEqual(metrics.dockInset, 24)
+        let narrow = StripLayout.metrics(for: .nine, visibleWidth: 1168)
+        XCTAssertEqual(narrow.scale, 0.8, accuracy: 0.001)
+        XCTAssertEqual(narrow.dockInset, 19)
+        // The film docks at the scaled inset.
+        XCTAssertEqual(StripLayout.placement(narrow, count: 50, position: 0, oldestIsLoaded: false).firstOrigin, 19)
+    }
+
+    func testFrameOriginsStepRightFromTheFirst() {
+        let placement = StripPlacement(firstOrigin: 24, fadesLeading: false, fadesTrailing: true)
+        XCTAssertEqual(StripLayout.frameOrigins(metrics, count: 3, placement: placement), [24, 200, 376])
     }
 
     func testPanelAndPreviewStayInsideOddVisibleFrames() {
@@ -83,5 +155,13 @@ final class StripLayoutTests: XCTestCase {
                                                  filtersVisible: true, in: laptop)
         XCTAssertEqual(filtered.band.maxY, centred.band.maxY, accuracy: 0.5)
         XCTAssertEqual(filtered.preview, centred.preview)
+    }
+
+    private func assertPlacement(count: Int, position: CGFloat, loaded: Bool = false, origin: CGFloat,
+                                 fades: (leading: Bool, trailing: Bool), file: StaticString = #filePath,
+                                 line: UInt = #line) {
+        let placement = StripLayout.placement(metrics, count: count, position: position, oldestIsLoaded: loaded)
+        XCTAssertEqual(placement, StripPlacement(firstOrigin: origin, fadesLeading: fades.leading,
+                                                 fadesTrailing: fades.trailing), file: file, line: line)
     }
 }
