@@ -15,14 +15,14 @@ as a snippet, or write one directly.
 > The storage foundation provides local persistence, content validation, and
 > consistent reads. Local recording now preserves complete clipboard formats,
 > deduplicates exact copies, and provides a recent-clips list with copy-back.
-> The quick-access panel is a wide band, styled like the system app switcher,
-> that holds a row of large cards with the newest at the left. Each card shows the
-> clip itself under a band in its source app's colour, with the clip's details
-> below. The selection rests on the newest card and moves to the middle as you
-> step back in time. The search folds into an icon until you type. The arrow keys
-> step one card at a time, and a trackpad swipe moves one card per detent with a
-> haptic tick on a Force Touch trackpad. A minimal Settings window chooses small,
-> medium or large cards.
+> The quick-access panel is a wide translucent band that holds a row of large
+> cards with the newest at the left. Each card shows the clip itself under a
+> band in its source app's color, with the clip's details below. The selection
+> rests on the newest card and moves to the middle as you step back in time. The
+> search folds into an icon until you type. The arrow keys step one card at a
+> time, and a trackpad swipe moves one card per detent with a haptic tick on a
+> Force Touch trackpad. A minimal Settings window chooses small, medium or large
+> cards.
 > The panel browses recent clips, searches all content through a rebuildable local
 > full-text index (including one- and two-character Chinese queries), previews
 > text and images, and copies the selected item in its original formats or as
