@@ -7,19 +7,19 @@ enum ActionMenuCommand {
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
 /// and the copy that never pastes, where the panel offers them; then the preview; then Enable Direct Paste… when the
 /// panel only copies for want of access. Unavailable actions are disabled rather than hidden, so the menu's shape stays
-/// predictable.
+/// predictable: Return's and ⇧Return's are disabled while a command waits on the review card, which alone confirms it.
 @MainActor
 enum ActionMenu {
-    static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isPreviewExpanded: Bool,
-                     perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
+    static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isReviewing: Bool = false,
+                     isPreviewExpanded: Bool, perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
         let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
-        primary.isEnabled = canAct
+        primary.isEnabled = canAct && !isReviewing
         menu.addItem(primary)
         if let title = actions.plainTextTitle {
             let plainText = ActionMenuItem(title, key: "\r", modifiers: .shift) { perform(.plainText) }
-            plainText.isEnabled = canAct && row.map { $0.kind != .image && $0.kind != .file } == true
+            plainText.isEnabled = canAct && !isReviewing && row.map { $0.kind != .image && $0.kind != .file } == true
             menu.addItem(plainText)
         }
         if let title = actions.copyOnlyTitle {

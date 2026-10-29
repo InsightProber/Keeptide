@@ -13,6 +13,9 @@ final class AppEnvironment {
     private var settingsWindow: SettingsWindowController?
     /// Shows the Enable Direct Paste alert and returns the button chosen. Tests replace it, since a real alert waits.
     var runDirectPasteAlert: (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() }
+    /// Brings Keeptide to the front for the Enable Direct Paste alert. Tests replace it, so that they never bring the
+    /// test host forward.
+    var activateApp: () -> Void = { NSApplication.shared.activate() }
 
     init(settings: AppSettings = AppSettings(),
          captureSession: CaptureSession? = nil,
@@ -76,7 +79,7 @@ final class AppEnvironment {
     /// Keeptide see the access only once Keeptide reopens, which the alert says and the panel says again until then.
     func showEnableDirectPaste() {
         panel?.close()
-        NSApplication.shared.activate()
+        activateApp()
         guard runDirectPasteAlert(Self.enableDirectPasteAlert()) == .alertFirstButtonReturn else { return }
         panel?.state.requestDirectPasteAccess()
     }

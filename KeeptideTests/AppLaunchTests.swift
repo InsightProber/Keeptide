@@ -1947,6 +1947,84 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(fake.sent, [9, 9])
         XCTAssertEqual(board.changeCount, unchanged)
         XCTAssertTrue(controller.isSessionOpen)
+
+        // Keypad Enter is Return's twin in the strip: a paste waits for it to come up just the same.
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.firstResponder is QuickAccessStripView)
+        window.sendEvent(try key(kVK_ANSI_KeypadEnter, "\u{3}", windowNumber: window.windowNumber))
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(fake.sent, [9, 9])
+        XCTAssertEqual(board.changeCount, unchanged)
+        window.sendEvent(try keyUp(kVK_ANSI_KeypadEnter, "\u{3}", windowNumber: window.windowNumber))
+        try await SearchTestSupport.waitUntil { fake.sent == [9, 9, 9] }
+        XCTAssertEqual(fake.sent, [9, 9, 9])
+    }
+
+    func testAPasteChosenFromTheMenuWithReturnWaitsForItToComeUp() async throws {
+        let fake = FakeDirectPasteSystem()
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true, system: fake.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
+        let returnUp = try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber)
+        let before = board.changeCount
+
+        // A menu takes the key-down that chooses an item, so the panel never sees Return go down; the event the app is
+        // handling as the item acts is that key-down. Nothing is written or sent while Return is down.
+        controller.currentEvent = { returnDown }
+        let menu = try actionMenu(of: controller)
+        XCTAssertEqual(menu.items.first?.title, "Paste into TextEdit")
+        menu.performActionForItem(at: 0)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(board.changeCount, before)
+        XCTAssertTrue(window.isVisible)
+        // It comes up through the panel, which still has the keys, and the paste goes.
+        window.sendEvent(returnUp)
+        try await SearchTestSupport.waitUntil { fake.sent == [9] && !controller.isSessionOpen }
+        XCTAssertEqual(board.string(forType: .string), "newer")
+
+        // Chosen with keypad Enter, which stays down for more than a second: the clip is copied instead.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        let enterDown = try key(kVK_ANSI_KeypadEnter, "\u{3}", windowNumber: window.windowNumber)
+        controller.currentEvent = { enterDown }
+        let copiedFrom = board.changeCount
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(controller.isSessionOpen, "Still waiting for keypad Enter")
+        XCTAssertEqual(board.changeCount, copiedFrom)
+        try await SearchTestSupport.waitUntil(timeout: .seconds(3)) { !controller.isSessionOpen }
+        XCTAssertEqual(fake.sent, [9])
+        XCTAssertGreaterThan(board.changeCount, copiedFrom)
+        XCTAssertEqual(toastMessage(of: controller), "Copied — press ⌘V to paste")
+
+        // Chosen with the pointer, the item acts at once.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                     clickCount: 1, pressure: 0))
+        controller.currentEvent = { click }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await SearchTestSupport.waitUntil { fake.sent == [9, 9] && !controller.isSessionOpen }
+
+        // Only a key going down counts. Return held in the panel keeps a paste waiting, even when the menu's event is
+        // a key-up: it takes Return's own key-up for the paste to go.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        window.sendEvent(returnDown)
+        controller.currentEvent = { returnUp }
+        let previewItem = try XCTUnwrap(try actionMenu(of: controller).items.firstIndex { $0.title == "Show Preview" })
+        try actionMenu(of: controller).performActionForItem(at: previewItem)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(fake.sent, [9, 9])
+        window.sendEvent(returnUp)
+        try await SearchTestSupport.waitUntil { fake.sent == [9, 9, 9] }
+        XCTAssertEqual(fake.sent, [9, 9, 9])
     }
 
     func testAConfirmationWaitsForReturnToComeUpAndLapsesIfItStaysDown() async throws {
@@ -2033,6 +2111,60 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(toastMessage(of: controller), "Secure input is on — copied instead. Press ⌘V to paste.")
         XCTAssertEqual(board.string(forType: .string), "set -e\necho synthetic-gamma")
         XCTAssertEqual(fake.sent, [])
+    }
+
+    func testWhileAReviewShowsOnlyTheCardConfirmsIt() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let (controller, _) = try await makePanelWithClips(
+            ["older", "gamma"], bodies: ["gamma": Self.multiLineCommand], shown: true, system: fake.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let command = QuickAccessToolbar.Note.action(title: "Paste Command", enabled: true, hint: nil)
+        _ = try await toolbarSaying(command, in: controller)
+        XCTAssertTrue(try actionMenu(of: controller).items[0].isEnabled)
+
+        // While the command waits on the card, only the card confirms it: the toolbar's "⏎ Paste Command" and the menu's
+        // item for Return are disabled. Copy As-Is and the preview still work.
+        controller.perform(.primary)
+        try await waitForReview(Self.reviewedCommand, in: window)
+        let toolbar = try await toolbarSaying(.action(title: "Paste Command", enabled: false, hint: nil), in: controller)
+        XCTAssertFalse(toolbar.copyHint.isEnabled)
+        let menu = try actionMenu(of: controller)
+        XCTAssertEqual(menu.items.map(\.title), ["Paste Command", "Copy As-Is (Keeps Trailing Newline)", "",
+                                                 "Show Preview"])
+        XCTAssertFalse(menu.items[0].isEnabled)
+        XCTAssertTrue(menu.items[1].isEnabled)
+        XCTAssertTrue(menu.items[3].isEnabled)
+
+        // Without the card, Return's actions are offered again.
+        controller.perform(.escape)
+        XCTAssertNil(controller.state.commandReview)
+        _ = try await toolbarSaying(command, in: controller)
+        XCTAssertTrue(try actionMenu(of: controller).items[0].isEnabled)
+        XCTAssertEqual(fake.sent, [])
+    }
+
+    func testTheShortcutsWorkWithCapsLockOn() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let (controller, board) = try await makePanelWithClips(
+            ["older", "gamma"], bodies: ["gamma": Self.multiLineCommand], shown: true, system: fake.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.primary)
+        try await waitForReview(Self.reviewedCommand, in: window)
+
+        // Caps Lock is no modifier a shortcut asks for: ⌘K opens the menu and ⌘Return confirms with it on.
+        var shown = 0
+        controller.presentActionMenu = { _, _, _ in shown += 1 }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "k", modifiers: [.command, .capsLock])))
+        XCTAssertEqual(shown, 1)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_Return, "\r", modifiers: [.command, .capsLock],
+                                                                windowNumber: window.windowNumber)))
+        window.sendEvent(try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber))
+        try await SearchTestSupport.waitUntil { fake.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "set -e\necho synthetic-gamma")
     }
 
     func testTheReviewCardSaysWhatItIsForAndItsButtonsConfirmOrCancel() throws {
@@ -2137,8 +2269,13 @@ final class AppLaunchTests: XCTestCase {
             alerts.append(alert)
             return choice
         }
+        // Keeptide comes forward for the alert; a unit test only counts it, and never brings the test host forward.
+        var activations = 0
+        environment.activateApp = { activations += 1 }
         XCTAssertTrue(environment.panelController === panel)
         addTeardownBlock { panel.close() }
+        // Chosen with the pointer, until the end of the test.
+        panel.currentEvent = { nil }
         func chooseEnableDirectPaste() async throws {
             panel.show()
             try await SearchTestSupport.waitUntil { panel.state.selection.executableSelection != nil }
@@ -2157,6 +2294,7 @@ final class AppLaunchTests: XCTestCase {
             """)
         XCTAssertEqual(alert.buttons.map(\.title), ["Open System Settings", "Cancel"])
         XCTAssertEqual(alert.buttons.first?.keyEquivalent, "\r", "Open System Settings is the default")
+        XCTAssertEqual(activations, 1)
         XCTAssertEqual(fake.accessRequests, 0)
         XCTAssertEqual(fake.settingsOpened, 0)
 
@@ -2164,6 +2302,7 @@ final class AppLaunchTests: XCTestCase {
         choice = .alertFirstButtonReturn
         try await chooseEnableDirectPaste()
         XCTAssertEqual(alerts.count, 2)
+        XCTAssertEqual(activations, 2)
         XCTAssertFalse(panel.isSessionOpen)
         XCTAssertEqual(fake.accessRequests, 1)
         XCTAssertEqual(fake.settingsOpened, 1)
@@ -2171,6 +2310,33 @@ final class AppLaunchTests: XCTestCase {
         panel.show()
         _ = try await toolbarSaying(.action(title: "Copy", enabled: true,
                                             hint: "Reopen Keeptide to finish turning on direct paste"), in: panel)
+
+        // Chosen with Return, the item waits for it to come up: held, its repeats would press the alert's default
+        // button.
+        let window = try XCTUnwrap(panel.window)
+        let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
+        let returnUp = try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber)
+        panel.currentEvent = { returnDown }
+        choice = .alertSecondButtonReturn
+        try await chooseEnableDirectPaste()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(alerts.count, 2)
+        XCTAssertTrue(panel.isSessionOpen)
+        window.sendEvent(returnUp)
+        try await SearchTestSupport.waitUntil { alerts.count == 3 }
+        XCTAssertFalse(panel.isSessionOpen)
+        XCTAssertEqual(activations, 3)
+
+        // Still down after a second, it shows nothing, and the panel stays as it was.
+        try await chooseEnableDirectPaste()
+        try await Task.sleep(for: .milliseconds(1_400))
+        XCTAssertEqual(alerts.count, 3)
+        XCTAssertTrue(panel.isSessionOpen)
+        window.sendEvent(returnUp)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(alerts.count, 3, "Return coming up late shows nothing either")
+        XCTAssertEqual(activations, 3)
+        XCTAssertEqual(fake.accessRequests, 1)
     }
 
     /// Runs `body` in a task of its own and waits for it. What a test does afterwards may turn the run loop over, as

@@ -68,6 +68,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var onEnableDirectPaste: (() -> Void)?
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
+    /// The event the app is handling now. For a menu item chosen with Return, it is the key-down that chose it, which
+    /// the menu took before the panel could see it. Tests replace it.
+    var currentEvent: () -> NSEvent? = { NSApp.currentEvent }
 
     /// `preferences` defaults to a fresh copy for tests; the app passes the one its Settings window edits.
     /// `visibleFrame` stands in for the screen's visible area, so a test can lay the panel out for a screen of its own.
@@ -271,7 +274,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
         guard state.selection.selection != nil else { return .none }
         let actions = state.actions
-        return .action(title: actions.primaryTitle, enabled: state.selection.executableSelection != nil,
+        // While a command waits on the review card, only the card confirms it.
+        return .action(title: actions.primaryTitle,
+                       enabled: state.selection.executableSelection != nil && state.commandReview == nil,
                        hint: actions.hint)
     }
 
@@ -547,21 +552,29 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// a session of its own, which the paste service refuses the old action for.
     private func deliveryOnceReturnIsUp(_ delivery: PasteDelivery) async -> PasteDelivery? {
         guard delivery == .paste, !heldReturnKeys.isEmpty else { return delivery }
+        return await returnKeysComeUp().map { $0 ? .paste : .copy }
+    }
+
+    /// Whether Return and keypad Enter are up within `returnReleaseWait`: true once they are, false when one is still
+    /// down then, and nil once the panel has closed meanwhile.
+    private func returnKeysComeUp() async -> Bool? {
         let deadline = ContinuousClock.now.advanced(by: Self.returnReleaseWait)
         while !heldReturnKeys.isEmpty, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(10))
             guard isSessionOpen else { return nil }
         }
-        return heldReturnKeys.isEmpty ? .paste : .copy
+        return heldReturnKeys.isEmpty
     }
 
-    /// Follows Return and keypad Enter going down and coming up while the panel has the keys.
+    /// Follows Return and keypad Enter going down and coming up while the panel has the keys. Any other event, and any
+    /// other key, is left alone; only a key event has a key code to read.
     private func followReturnKey(_ event: NSEvent) {
-        guard [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode)) else { return }
-        switch event.type {
-        case .keyDown: heldReturnKeys.insert(event.keyCode)
-        case .keyUp: heldReturnKeys.remove(event.keyCode)
-        default: break
+        guard event.type == .keyDown || event.type == .keyUp,
+              [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode)) else { return }
+        if event.type == .keyDown {
+            heldReturnKeys.insert(event.keyCode)
+        } else {
+            heldReturnKeys.remove(event.keyCode)
         }
     }
 
@@ -634,8 +647,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let row = ref.flatMap { ref in state.selection.rows.first { $0.ref == ref } }
         return ActionMenu.make(actions: state.actions(for: ref), row: row,
                                canAct: state.selection.executableSelection != nil,
+                               isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
             guard let self else { return }
+            // An item chosen with Return or keypad Enter acts while the key is still down: the menu took its key-down,
+            // which the panel notes here, so that what the item does waits for the key to come up as it would for a
+            // key pressed in the panel. The key-up comes to the panel, which still has the keys.
+            if let event = currentEvent(), event.type == .keyDown { followReturnKey(event) }
             if let ref, ref != state.selection.selection {
                 state.select(ref)
                 update()
@@ -651,8 +669,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Enable Direct Paste…: the panel closes, and the app takes it from there.
+    /// Enable Direct Paste…: the panel closes, and the app takes it from there. With Return still down, from choosing
+    /// the item, the panel first waits for it to come up: held, its repeats would press the alert's default button.
+    /// Still down after `returnReleaseWait`, nothing happens.
     private func enableDirectPaste() {
+        guard !heldReturnKeys.isEmpty else { return handOverEnableDirectPaste() }
+        Task {
+            guard await returnKeysComeUp() == true else { return }
+            // The alert runs a loop of its own, so it starts on a turn of its own rather than inside this task.
+            DispatchQueue.main.async { self.handOverEnableDirectPaste() }
+        }
+    }
+
+    private func handOverEnableDirectPaste() {
         close()
         onEnableDirectPaste?()
     }
@@ -695,7 +724,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
-        guard isSessionOpen, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else {
+        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for.
+        guard isSessionOpen, event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command else {
             return false
         }
         switch event.charactersIgnoringModifiers?.lowercased() {
