@@ -173,7 +173,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.onCommand = { [weak self] in self?.perform($0) }
         strip.onVisibleRefsChanged = { [weak self] in self?.loadFramedRows($0, lastOnScreen: $1) }
         strip.onContextMenu = { [weak self] in self?.actionMenu(for: $0) }
-        state.onCopied = { [weak self] in self?.confirmCopy() }
+        state.onCompleted = { [weak self] _ in self?.confirmCopy() }
         state.onPreviewCollapsed = { [weak self] in self?.previewCollapsed() }
     }
 

@@ -130,7 +130,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await insert("copy me", at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         let copied = CallCounter()
-        state.onCopied = { copied.count += 1 }
+        state.onCompleted = { _ in copied.count += 1 }
         state.open()
         try await settled(state)
 
@@ -146,7 +146,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await insert("too early", at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         let copied = CallCounter()
-        state.onCopied = { copied.count += 1 }
+        state.onCompleted = { _ in copied.count += 1 }
         let before = fixture.board.changeCount
 
         state.open()
@@ -163,7 +163,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await fixture.harness.consumer.synchronize()
         let state = QuickAccessState(services: { fixture.services })
         let copied = CallCounter()
-        state.onCopied = { copied.count += 1 }
+        state.onCompleted = { _ in copied.count += 1 }
         state.open()
         try await settled(state)
         let before = fixture.board.changeCount
@@ -318,7 +318,7 @@ final class QuickAccessStateTests: XCTestCase {
         var item = try await insert("doomed", at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         let copied = CallCounter()
-        state.onCopied = { copied.count += 1 }
+        state.onCompleted = { _ in copied.count += 1 }
         state.open()
         try await settled(state)
         let before = fixture.board.changeCount
@@ -350,7 +350,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await insert("alpha note", at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         let copied = CallCounter()
-        state.onCopied = { copied.count += 1 }
+        state.onCompleted = { _ in copied.count += 1 }
         state.open()
         try await settled(state)
         let before = fixture.board.changeCount
@@ -501,7 +501,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await insert("alpha note", at: 1, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         let copied = CallCounter()
-        state.onCopied = { copied.count += 1 }
+        state.onCompleted = { _ in copied.count += 1 }
         state.open()
         try await settled(state)
         let old = Task { await state.copySelection(.original) }
@@ -823,6 +823,290 @@ final class QuickAccessStateTests: XCTestCase {
                                                  detail: "Recent clips appear here once the library opens."))
     }
 
+    // MARK: Direct paste
+
+    func testOpeningRecordsTheTargetAndOffersPaste() async throws {
+        let fake = FakeDirectPasteSystem()
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("paste me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+
+        state.open()
+        try await settled(state)
+
+        XCTAssertEqual(state.pasteTarget, .textEdit)
+        XCTAssertEqual(state.directPaste, .paste(.textEdit))
+        XCTAssertEqual(state.preferredDelivery, .paste)
+        XCTAssertEqual(state.actions.primaryTitle, "Paste into TextEdit")
+        // Opening only asks what the system allows: it never asks for access.
+        XCTAssertEqual(fake.accessRequests, 0)
+        XCTAssertEqual(fake.settingsOpened, 0)
+
+        // The target goes with the session.
+        state.close()
+        XCTAssertNil(state.pasteTarget)
+        XCTAssertNil(state.directPaste)
+        XCTAssertEqual(state.preferredDelivery, .copy)
+    }
+
+    func testServicesChangingKeepsTheTargetRecordedAtOpen() async throws {
+        let fake = FakeDirectPasteSystem()
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("paste me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        // The library reopens while Notes is in front: the session keeps TextEdit, and the checks find it gone.
+        fake.front = .notes
+        state.servicesDidChange()
+        try await settled(state)
+
+        XCTAssertEqual(state.pasteTarget, .textEdit)
+        XCTAssertEqual(state.directPaste, .copy(.targetChanged))
+        XCTAssertEqual(state.preferredDelivery, .copy)
+        XCTAssertEqual(state.actions.primaryTitle, "Copy")
+    }
+
+    func testAPanelOpenedBeforeTheLibraryOnlyCopies() async throws {
+        let fake = FakeDirectPasteSystem()
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("late library", at: 1, into: fixture)
+        let box = ServicesBox()
+        let state = QuickAccessState(services: { box.services })
+
+        state.open()
+        XCTAssertNil(state.pasteTarget)
+        XCTAssertNil(state.directPaste)
+
+        box.services = fixture.services
+        state.servicesDidChange()
+        try await settled(state)
+
+        // The front window is read only as the panel opens, and then there was no library to read it for.
+        XCTAssertNil(state.pasteTarget)
+        XCTAssertEqual(state.directPaste, .copy(.noTarget))
+        XCTAssertEqual(state.preferredDelivery, .copy)
+        XCTAssertEqual(state.actions.primaryTitle, "Copy")
+        XCTAssertEqual(fake.probes, 0)
+    }
+
+    func testReturnPastesAndReportsDispatchedAfterHiding() async throws {
+        let fake = FakeDirectPasteSystem()
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("paste me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        fake.onSend = { events.dismissalsAtSend = events.dismissals }
+        state.open()
+        try await settled(state)
+
+        try await pressReturn(state)
+
+        XCTAssertEqual(events.completions, [.dispatched])
+        XCTAssertEqual(events.dismissals, 1)
+        XCTAssertEqual(events.dismissalsAtSend, 1)
+        XCTAssertEqual(fake.sent, [9])
+        XCTAssertEqual(fixture.board.string(forType: .string), "paste me")
+    }
+
+    func testACopyCaptionNeverTurnsIntoAPaste() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.permitted = false
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("copy me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.directPaste, .copy(.notPermitted))
+        XCTAssertEqual(state.actions.primaryTitle, "Copy")
+        XCTAssertTrue(state.actions.offersEnableDirectPaste)
+
+        // Enable Direct Paste… is granted before Return.
+        fake.grantsOnRequest = true
+        fake.permitted = true
+        state.requestDirectPasteAccess()
+        XCTAssertEqual(fake.accessRequests, 1)
+        try await pressReturn(state)
+
+        XCTAssertEqual(events.completions, [.copied])
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.dismissals, 0)
+        XCTAssertEqual(fixture.board.string(forType: .string), "copy me")
+    }
+
+    func testAMultiLineCommandOpensAReviewThatConfirmPastes() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.actions.primaryTitle, "Paste Command")
+        let before = fixture.board.changeCount
+
+        try await pressReturn(state)
+
+        let review = try XCTUnwrap(state.commandReview)
+        XCTAssertEqual(review.command.text, "set -e\necho synthetic-gamma")
+        XCTAssertEqual(review.confirmation.delivery, .paste)
+        XCTAssertEqual(QuickAccessActions.confirmTitle(for: review), "Confirm Paste into Terminal")
+        XCTAssertEqual(events.reviewChanges, 1)
+        XCTAssertEqual(events.completions, [])
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [])
+
+        await state.confirmCommand()
+
+        XCTAssertEqual(events.completions, [.dispatched])
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(fake.sent, [9])
+        XCTAssertEqual(events.dismissals, 1)
+        XCTAssertEqual(fixture.board.string(forType: .string), "set -e\necho synthetic-gamma")
+    }
+
+    func testAConfirmedCopyReviewSaysWhyItDidNotPaste() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.actions.primaryTitle, "Paste Command")
+
+        // Secure input comes on before Return, so the command is reviewed for a copy.
+        fake.secureInput = true
+        try await pressReturn(state)
+        let review = try XCTUnwrap(state.commandReview)
+        XCTAssertEqual(QuickAccessActions.confirmTitle(for: review), "Confirm Copy Command")
+
+        await state.confirmCommand()
+
+        // Confirming asks again for the paste Return asked for, so the copy comes back with its reason.
+        XCTAssertEqual(events.completions, [.copiedInstead(.secureInput)])
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.dismissals, 0)
+        XCTAssertEqual(fixture.board.string(forType: .string), "set -e\necho synthetic-gamma")
+    }
+
+    func testMovingOrLosingTheSelectionDropsTheReview() async throws {
+        let gate = CopyGate()
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(readGate: gate, system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        var delta = try await insert("delta", body: "set -u\necho synthetic-delta\n", at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["delta", "gamma"])
+        let before = fixture.board.changeCount
+
+        // A review that comes back after the selection moved on is not shown.
+        let held = try XCTUnwrap(state.copyTarget)
+        let late = Task { await state.act(on: held, mode: .original, delivery: state.preferredDelivery) }
+        try await SearchTestSupport.waitUntil { await gate.entries == 1 }
+        state.moveSelection(by: 1)
+        await gate.open()
+        await late.value
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 0)
+
+        // Moving to another clip drops the review of the one selected before.
+        try await pressReturn(state)
+        XCTAssertEqual(state.commandReview?.command.text, "set -e\necho synthetic-gamma")
+        XCTAssertEqual(events.reviewChanges, 1)
+        state.moveSelection(by: -1)
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 2)
+
+        // A selected clip that leaves the list takes its review along.
+        try await pressReturn(state)
+        XCTAssertEqual(state.commandReview?.command.text, "set -u\necho synthetic-delta")
+        XCTAssertEqual(events.reviewChanges, 3)
+        delta.historyDeletedAt = Date()
+        try await fixture.harness.update(.item(delta.id), to: .item(delta))
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { state.selection.selectionLost }
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 4)
+
+        // With no review left, confirming does nothing; nothing was written or sent along the way.
+        await state.confirmCommand()
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.completions, [])
+    }
+
+    func testANewQueryOrClosingDropsTheReview() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        let reviewed = state.selection.selection
+        try await pressReturn(state)
+        XCTAssertNotNil(state.commandReview)
+
+        // The query finds the same clip, which stays selected, but the review was made under the query before.
+        state.setQuery("gamma")
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 2)
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        XCTAssertEqual(state.selection.selection, reviewed)
+        XCTAssertNil(state.commandReview)
+
+        try await pressReturn(state)
+        XCTAssertNotNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 3)
+        state.close()
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 4)
+        XCTAssertEqual(fake.sent, [])
+    }
+
+    func testCancellingTheReviewSendsAndCopiesNothing() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("gamma", body: Self.multiLine, at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let events = PasteEvents(state)
+        state.open()
+        try await settled(state)
+        let target = try XCTUnwrap(state.copyTarget)
+        let before = fixture.board.changeCount
+        await state.act(on: target, mode: .original, delivery: state.preferredDelivery)
+        XCTAssertNotNil(state.commandReview)
+
+        state.cancelCommandReview()
+
+        XCTAssertNil(state.commandReview)
+        XCTAssertEqual(events.reviewChanges, 2)
+        // The confirmation went with the card.
+        await state.confirmCommand()
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [])
+        XCTAssertEqual(events.dismissals, 0)
+        XCTAssertEqual(events.completions, [])
+        try await Task.sleep(for: .milliseconds(100))
+        let uses = try await LocalUsageStore(controller: fixture.harness.controller).summaries(for: [target.ref])
+        XCTAssertEqual(uses.first?.useCount ?? 0, 0)
+    }
+
+    /// The quick-access seed's multi-line command.
+    private static let multiLine = "set -e\necho synthetic-gamma\n"
+
     private struct Fixture {
         let harness: SearchHarness
         let board: NSPasteboard
@@ -830,9 +1114,12 @@ final class QuickAccessStateTests: XCTestCase {
     }
 
     /// `onScanProgress`, when given, gets the progress of every search that scans rather than looks its terms up.
+    /// `system` and `directPasteOnlyTo` go to the paste service; by default it has no target and only copies.
     private func makeFixture(search: SearchService? = nil, withoutSearch: Bool = false, withoutPreview: Bool = false,
                              readGate: CopyGate? = nil, previewGate: CopyGate? = nil,
-                             onScanProgress: (@Sendable (Int64) -> Void)? = nil) throws -> Fixture {
+                             onScanProgress: (@Sendable (Int64) -> Void)? = nil,
+                             system: DirectPasteSystem = .unavailable,
+                             directPasteOnlyTo: String? = nil) throws -> Fixture {
         let harness = try SearchHarness.make(in: self)
         let scanning = onScanProgress.map {
             SearchService(index: harness.index, status: harness.status, onScanProgress: $0)
@@ -844,7 +1131,10 @@ final class QuickAccessStateTests: XCTestCase {
         let paste = PasteService(pasteboard: board, read: { ref in
             await readGate?.enter()
             return try await repository.read(ref)
-        }, recordUse: { try await usage.record($0) }, didWrite: { _ in })
+        }, recordUse: { try await usage.record($0) }, didWrite: { _ in }, system: system,
+           directPasteOnlyTo: directPasteOnlyTo)
+        // A paste request the panel could not hide for stops a debug build; here it fails the test instead.
+        paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let preview = PreviewService(read: { ref in
             await previewGate?.enter()
             return try await repository.read(ref)
@@ -898,6 +1188,12 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.phase != .loading }
     }
 
+    /// Return, as the panel sends it: the selected clip's original formats, delivered as the toolbar said.
+    private func pressReturn(_ state: QuickAccessState) async throws {
+        let target = try XCTUnwrap(state.copyTarget)
+        await state.act(on: target, mode: .original, delivery: state.preferredDelivery)
+    }
+
     /// Returns once every search asked for so far has run and handed its pages to the state. The yield lets a
     /// search the state has just asked for reach the search queue. Searches run there one at a time, so one made
     /// after it finishes after it, and resumes this test only after its pages have reached the main actor.
@@ -915,6 +1211,23 @@ private final class ServicesBox {
 @MainActor
 private final class CallCounter {
     var count = 0
+}
+
+/// What the panel would see of a state's actions: each completion, each change of the command review, and each time
+/// the state hides the panel for a paste. It takes the state's callbacks.
+@MainActor
+private final class PasteEvents {
+    var completions: [QuickAccessCompletion] = []
+    var reviewChanges = 0
+    var dismissals = 0
+    /// How many times the panel had hidden when ⌘V was sent.
+    var dismissalsAtSend: Int?
+
+    init(_ state: QuickAccessState) {
+        state.onCompleted = { [weak self] in self?.completions.append($0) }
+        state.onCommandReviewChanged = { [weak self] in self?.reviewChanges += 1 }
+        state.dismissForPaste = { [weak self] in self?.dismissals += 1 }
+    }
 }
 
 /// Counts the scanned ranges searches report, from the search queue.

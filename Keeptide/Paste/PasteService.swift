@@ -111,6 +111,7 @@ struct PasteRequest {
     let session: PasteSession
     var delivery: PasteDelivery = .copy
     /// Hides the panel for a paste. Called once, after the clipboard is written and before the last check.
+    /// It hides the panel before the keystroke without ending the session, which the last check still needs.
     var dismiss: (@MainActor () -> Void)? = nil
     /// The confirmation from the review of this command, once the user confirms it.
     var confirmation: CommandConfirmation? = nil

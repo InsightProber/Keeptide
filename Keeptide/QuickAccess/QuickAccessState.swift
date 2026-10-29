@@ -73,7 +73,18 @@ final class QuickAccessState {
     private(set) var details: [ContentRef: ClipDetail] = [:]
     /// Whether the search was unfolded by hand or by typing, and has not been folded since.
     private(set) var isSearchUnfolded = false
-    @ObservationIgnored var onCopied: (@MainActor () -> Void)?
+    /// What the checks allowed for the session's target when the session started: a paste, or why not. nil without
+    /// a library.
+    private(set) var directPaste: DirectPasteAvailability?
+    /// The command the selected clip's last action is waiting on. Nothing has been written or sent for it.
+    private(set) var commandReview: CommandReview?
+    /// Called once an action has written the clipboard, whether it pasted, copied or copied instead.
+    @ObservationIgnored var onCompleted: (@MainActor (QuickAccessCompletion) -> Void)?
+    /// Called when a command review appears, is replaced or is dropped. An action that completes clears the review
+    /// without this call, since the panel closes.
+    @ObservationIgnored var onCommandReviewChanged: (@MainActor () -> Void)?
+    /// Hides the panel for a paste, before the keystroke, without ending its session. Every action passes it on.
+    @ObservationIgnored var dismissForPaste: (@MainActor () -> Void)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
 
@@ -82,6 +93,8 @@ final class QuickAccessState {
     @ObservationIgnored private var isOpen = false
     /// The session a copy is running for; a reopened panel's session can copy at once.
     @ObservationIgnored private var copying: PasteSession?
+    /// The action `commandReview` is for. Confirming sends it again with the review's confirmation.
+    @ObservationIgnored private var reviewedAction: (target: CopyTarget, mode: PasteMode, delivery: PasteDelivery)?
     private var totalMatches = 0
     @ObservationIgnored private var previewedRef: ContentRef?
     @ObservationIgnored private var loading: Task<Void, Never>?
@@ -116,6 +129,23 @@ final class QuickAccessState {
     /// A search has another page to fetch, so the last row listed is not the last there is.
     var hasMoreRows: Bool { !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count }
 
+    /// The app window this session would paste into, recorded as the panel opened.
+    var pasteTarget: PasteTarget? { session?.target }
+
+    /// What the panel offers for the selected row.
+    var actions: QuickAccessActions {
+        QuickAccessActions.make(target: pasteTarget, availability: directPaste,
+                                kind: selection.rows.first { $0.ref == selection.selection }?.kind)
+    }
+
+    /// The delivery Return and ⇧Return ask for. It is a paste only when the session started able to paste, so a
+    /// panel that opened offering Copy keeps copying even once access arrives (decision 2). The paste service checks
+    /// everything again before it sends.
+    var preferredDelivery: PasteDelivery {
+        if case .paste? = directPaste { .paste } else { .copy }
+    }
+
+    /// Records the front app window as the target, before the panel takes the keys, and lists recent clips.
     func open() {
         isOpen = true
         query = ""
@@ -124,7 +154,7 @@ final class QuickAccessState {
         isPreviewExpanded = false
         selection = SelectionCoordinator()
         dropDetailsOfUnlistedRows()
-        startSession()
+        startSession(recordingTarget: true)
     }
 
     func close() {
@@ -136,15 +166,18 @@ final class QuickAccessState {
         details = [:]
         session?.end()
         session = nil
+        directPaste = nil
         isPreviewExpanded = false
         preview = nil
         failure = nil
+        dropCommandReview()
     }
 
-    /// The library opened or closed; an open panel reloads its current query.
+    /// The library opened or closed; an open panel reloads its current query. The new session keeps the target
+    /// recorded as the panel opened, and the front window is not read again (decision 1).
     func servicesDidChange() {
         guard isOpen else { return }
-        startSession()
+        startSession(recordingTarget: false)
     }
 
     /// New clips arrived; the recent list reloads without moving the selection.
@@ -253,21 +286,56 @@ final class QuickAccessState {
         selection.executableSelection.map { CopyTarget(ref: $0, generation: selection.generation) }
     }
 
-    /// Copies what was selected when the key was pressed, never a row selected later.
-    func copy(_ target: CopyTarget, mode: PasteMode) async {
+    /// Acts on what was selected when the key was pressed, never a row selected later: writes the clipboard and, for
+    /// a paste whose checks pass, sends ⌘V once the panel hides. A command that needs a review writes nothing; it
+    /// opens the review instead. `confirmation` is the review's, once the user confirms it.
+    func act(on target: CopyTarget, mode: PasteMode, delivery: PasteDelivery,
+             confirmation: CommandConfirmation? = nil) async {
         guard let session, copying !== session, let paste = services()?.paste else { return }
         copying = session
         defer { if copying === session { copying = nil } }
         failure = nil
         let outcome = await paste.execute(PasteRequest(ref: target.ref, queryGeneration: target.generation, mode: mode,
-                                                       session: session))
+                                                       session: session, delivery: delivery, dismiss: dismissForPaste,
+                                                       confirmation: confirmation))
         // A reopened panel or a newer selection owns the screen now.
         guard isOpen, self.session === session else { return }
         switch outcome {
-        case .copied, .copiedInstead, .dispatched: onCopied?()
-        case .needsConfirmation: break
-        case .refused(let refusal): if selection.selection == target.ref { failure = refusal }
+        case .copied: complete(.copied)
+        case .copiedInstead(let fallback): complete(.copiedInstead(fallback))
+        case .dispatched: complete(.dispatched)
+        case .needsConfirmation(let review):
+            // A review is for the selected row: one that comes back after the selection moved on is not shown.
+            guard selection.selection == target.ref else { return }
+            reviewedAction = (target, mode, delivery)
+            commandReview = review
+            onCommandReviewChanged?()
+        case .refused(let refusal):
+            if selection.selection == target.ref { failure = refusal }
         }
+    }
+
+    /// Sends the reviewed action again, with the review's confirmation. The paste service checks the clip, the
+    /// target and the delivery again, so any change comes back as a new review.
+    func confirmCommand() async {
+        guard let commandReview, let reviewedAction else { return }
+        await act(on: reviewedAction.target, mode: reviewedAction.mode, delivery: reviewedAction.delivery,
+                  confirmation: commandReview.confirmation)
+    }
+
+    func cancelCommandReview() {
+        dropCommandReview()
+    }
+
+    /// Enable Direct Paste…: asks for access, and opens Accessibility settings when the system no longer asks. What
+    /// the panel offers stays as it was when it opened.
+    func requestDirectPasteAccess() {
+        services()?.paste.requestDirectPasteAccess()
+    }
+
+    /// Copies what was selected when the key was pressed, never a row selected later.
+    func copy(_ target: CopyTarget, mode: PasteMode) async {
+        await act(on: target, mode: mode, delivery: .copy)
     }
 
     func copySelection(_ mode: PasteMode) async {
@@ -307,9 +375,20 @@ final class QuickAccessState {
         !Task.isCancelled && currentGeneration == generation
     }
 
-    private func startSession() {
+    /// Starts a paste session and reloads. Only an opening panel records the front app window as the target; a
+    /// later session keeps the previous session's target, or has none. Each session's checks run once, here, and
+    /// never ask for access.
+    private func startSession(recordingTarget: Bool) {
+        let previousTarget = session?.target
         session?.end()
-        session = services()?.paste.beginSession()
+        if let paste = services()?.paste {
+            let session = recordingTarget ? paste.beginSession() : paste.beginSession(target: previousTarget)
+            self.session = session
+            directPaste = paste.availability(for: session)
+        } else {
+            session = nil
+            directPaste = nil
+        }
         reload()
     }
 
@@ -317,6 +396,8 @@ final class QuickAccessState {
         cancelLoads()
         failure = nil
         preview = nil
+        // A review belongs to the query it was made under, even when the new one keeps the clip selected.
+        dropCommandReview()
         guard isOpen, let services = services(), let session else {
             selection = SelectionCoordinator()
             dropDetailsOfUnlistedRows()
@@ -396,9 +477,25 @@ final class QuickAccessState {
         followSelection()
     }
 
-    /// Keeps an open preview on the selected row; it never shows another row's content,
-    /// and it collapses when the selected row is gone.
+    /// The clipboard is written, so the review, if any, is done with. The panel closes on `onCompleted`.
+    private func complete(_ completion: QuickAccessCompletion) {
+        commandReview = nil
+        reviewedAction = nil
+        onCompleted?(completion)
+    }
+
+    private func dropCommandReview() {
+        guard commandReview != nil else { return }
+        commandReview = nil
+        reviewedAction = nil
+        onCommandReviewChanged?()
+    }
+
+    /// Keeps what the panel shows for a row on the selected row. A command review of another row, or of a row that
+    /// is gone, is dropped. An open preview never shows another row's content, and it collapses when the selected
+    /// row is gone.
     private func followSelection() {
+        if let reviewedAction, selection.selection != reviewedAction.target.ref { dropCommandReview() }
         guard isPreviewExpanded else { return }
         if selection.selectionLost {
             isPreviewExpanded = false
