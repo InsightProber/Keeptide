@@ -27,4 +27,9 @@ enum ClipInfoFormatter {
     static func items(_ count: Int) -> String {
         count == 1 ? "1 item" : "\(count) items"
     }
+
+    /// The caption as VoiceOver says it: a picture's size reads "2880 by 1800".
+    static func spoken(_ info: String) -> String {
+        info.replacingOccurrences(of: " × ", with: " by ")
+    }
 }

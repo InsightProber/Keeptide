@@ -40,7 +40,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         narrowStrip.show(rows, selection: rows[5].ref, details: [:], metrics: narrow,
                          applicationNames: ApplicationNames())
         XCTAssertFalse(drawings(in: narrowStrip).isEmpty)
-        XCTAssertTrue(drawings(in: narrowStrip).allSatisfy { $0.rootView.cardSize == .large })
+        XCTAssertTrue(drawings(in: narrowStrip).allSatisfy { $0.rootView.metrics == narrow })
         XCTAssertEqual(try midX(of: "Row 5", in: narrowStrip), narrow.bandWidth / 2, accuracy: 0.5)
         XCTAssertEqual(try rect(titled: "Row 5", in: narrowStrip).size, narrow.frameSize)
     }
@@ -413,8 +413,10 @@ final class QuickAccessStripViewTests: XCTestCase {
             makeRow(title: "Quarterly numbers draft", sourceApp: finder),
             makeRow(title: "Standup notes", savedAsMemo: true, isPartiallyIndexed: true, isTextUnavailable: true),
             makeRow(kind: .url, title: ""),
+            makeRow(kind: .image, title: "Screenshot"),
         ]
-        let details = [rows[0].ref: ClipDetail(excerpt: "Quarterly numbers draft..", characterCount: 25)]
+        let details = [rows[0].ref: ClipDetail(excerpt: "Quarterly numbers draft..", characterCount: 25),
+                       rows[3].ref: ClipDetail(pixelSize: CGSize(width: 2880, height: 1800))]
 
         strip.show(rows, selection: rows[0].ref, details: details, metrics: metrics, applicationNames: names)
 
@@ -423,21 +425,27 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(strip.accessibilityIdentifier(), "QuickAccessStrip")
         // One element per frame, left to right as on screen: the selected newest first and the oldest last.
         let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
-        guard children.count == 3 else { return XCTFail("Expected an element per frame, got \(children.count)") }
-        let (selected, memo, link) = (children[0], children[1], children[2])
-        let time = { (row: QuickAccessRow) in QuickAccessRowContent.detail(for: row, applicationName: nil) }
+        guard children.count == 4 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        let (selected, memo, link, image) = (children[0], children[1], children[2], children[3])
+        let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
 
-        XCTAssertEqual(selected.accessibilityLabel(), "Text, from \(app), \(time(rows[0])): Quarterly numbers draft")
-        XCTAssertEqual(selected.accessibilityValue() as? String, "25 characters")
+        // The kind, the time, where the clip came from and what its footer says, as the card shows them; then what
+        // the clip holds.
+        XCTAssertEqual(selected.accessibilityLabel(),
+                       "Text, \(time(rows[0])), from \(app), 25 characters: Quarterly numbers draft")
+        XCTAssertNil(selected.accessibilityValue(), "The footer is read with the label, not a second time")
         XCTAssertTrue(selected.isAccessibilitySelected())
         XCTAssertEqual(strip.accessibilitySelectedChildren() as? [NSView], [selected])
-        // Without a known source app the label leaves out where it came from; the marks follow the title.
+        // Without a known source app the label leaves out where it came from, and without details what the footer
+        // would say; the marks follow the title.
         XCTAssertEqual(memo.accessibilityLabel(),
                        "Text, \(time(rows[1])): Standup notes, Saved as Memo, Partially indexed, Text unavailable")
-        XCTAssertNil(memo.accessibilityValue(), "No info line before the details arrive")
+        XCTAssertNil(memo.accessibilityValue())
         XCTAssertFalse(memo.isAccessibilitySelected())
         XCTAssertEqual(link.accessibilityLabel(), "Link, \(time(rows[2])): Clipboard Item")
-        // The text drawn in a frame is read through its label and value, not a second time.
+        // A picture's size is said in words.
+        XCTAssertEqual(image.accessibilityLabel(), "Image, \(time(rows[3])), 2880 by 1800: Screenshot")
+        // The text drawn in a frame is read through its label, not a second time.
         XCTAssertEqual(selected.accessibilityChildren()?.count ?? 0, 0)
 
         // Frames kept beyond the ends of the band are not read: nine are on screen.

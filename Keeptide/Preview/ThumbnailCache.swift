@@ -20,7 +20,7 @@ import os
 /// This can be shared across threads: the dictionary sits behind a lock, `NSCache` is safe to use from
 /// any thread, and an entry is never changed once stored.
 final class ThumbnailCache: @unchecked Sendable {
-    /// The image cache counts the thumbnails' memory alone; this holds about seventy at the default card size.
+    /// The image cache counts the thumbnails' memory alone; this holds about ninety at the default card size.
     private static let costLimit = 64 * 1024 * 1024
     /// How many details `texts` keeps before it is emptied.
     private static let textLimit = 2_000

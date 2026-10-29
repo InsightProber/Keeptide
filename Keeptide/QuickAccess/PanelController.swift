@@ -209,12 +209,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         )
     }
 
-    /// Reads details for the framed clips alone, at the frames' size in pixels, and loads more results before
-    /// the strip runs out. Neither repeats work already done, so the strip may ask as often as it likes.
+    /// Reads details for the framed clips alone, with pictures cut to the size in pixels of a card's middle, where
+    /// they show, and loads more results before the strip runs out. Neither repeats work already done, so the strip
+    /// may ask as often as it likes.
     private func loadFramedRows(_ refs: [ContentRef], lastOnScreen: Int) {
         let scale = window?.backingScaleFactor ?? 2
-        state.loadDetails(for: refs, frameSize: CGSize(width: metrics.frameSize.width * scale,
-                                                       height: metrics.frameSize.height * scale))
+        state.loadDetails(for: refs, frameSize: CGSize(width: metrics.contentSize.width * scale,
+                                                       height: metrics.contentSize.height * scale))
         state.loadMoreIfNeeded(visibleRow: lastOnScreen)
     }
 

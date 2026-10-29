@@ -98,6 +98,37 @@ final class ClipDetailTests: XCTestCase {
         let longDetail = try await service.detail(for: longRef, kind: .url, frameSize: stripFrame)
         XCTAssertEqual(longDetail.characterCount, 5_020)
         XCTAssertEqual(longDetail.excerpt, String(long.prefix(2_048)))
+        // None of these carries a page title.
+        XCTAssertNil(detail.linkTitle)
+        XCTAssertNil(longDetail.linkTitle)
+    }
+
+    func testLinkCarriesThePageTitleItWasCopiedWith() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = makeService(harness)
+        let url = "https://git-scm.com/docs/git-rebase"
+        let ref = try await insert(
+            [[("public.url", Data(url.utf8)), ("public.url-name", Data(" Git - git-rebase Documentation\n".utf8))]],
+            into: harness)
+
+        let detail = try await service.detail(for: ref, kind: .url, frameSize: stripFrame)
+
+        // The title is read as the link's text is, without the whitespace around it; the link is unchanged.
+        XCTAssertEqual(detail.linkTitle, "Git - git-rebase Documentation")
+        XCTAssertEqual(detail.excerpt, url)
+        XCTAssertEqual(detail.characterCount, 35)
+
+        // A title of only blanks is no title.
+        let blankRef = try await insert([[("public.url", Data(url.utf8)), ("public.url-name", Data(" \n".utf8))]],
+                                        into: harness)
+        let blank = try await service.detail(for: blankRef, kind: .url, frameSize: stripFrame)
+        XCTAssertNil(blank.linkTitle)
+
+        // A text clip's detail never has one, whatever it holds.
+        let textRef = try await insert(
+            [[("public.utf8-plain-text", Data("Plain".utf8)), ("public.url-name", Data("Not a link".utf8))]], into: harness)
+        let text = try await service.detail(for: textRef, kind: .text, frameSize: stripFrame)
+        XCTAssertNil(text.linkTitle)
     }
 
     func testImageSizeComesFromTheHeaderAndThumbnailsCoverTheFrame() async throws {

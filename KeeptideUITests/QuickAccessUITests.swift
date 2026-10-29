@@ -221,7 +221,7 @@ final class QuickAccessUITests: XCTestCase {
         app.descendants(matching: .any)["QuickAccessStrip"]
     }
 
-    /// The frame of the clip with this title. A frame is labelled "<Kind>, from <App>, <time>: <title>",
+    /// The frame of the clip with this title. A frame is labelled "<Kind>, <time>, from <App>, <footer>: <title>",
     /// with the clip's marks after the title when it has any, so the title is matched inside the label.
     private func clip(_ title: String, in frames: XCUIElementQuery) -> XCUIElement {
         frames.matching(NSPredicate(format: "label CONTAINS %@", ": \(title)")).firstMatch

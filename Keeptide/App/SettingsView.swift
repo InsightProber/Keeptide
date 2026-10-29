@@ -19,7 +19,7 @@ struct SettingsView: View {
             } header: {
                 Text("Quick Access")
             } footer: {
-                Text("Larger cards show more of each clip. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
+                Text("Larger cards give each clip more room and larger type. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
             }
         }
         .formStyle(.grouped)
@@ -39,9 +39,14 @@ extension CardSize {
 }
 
 /// A small, inert picture of the strip as it opens: the newest card selected at the band's left end, which is hard,
-/// the next one beside it, and a third cut off by the right edge. It is the same for every card size.
+/// the next one beside it, and a third cut off by the right edge. Each card has its colour band, as the strip's cards
+/// take theirs from their apps' icons. It is the same for every card size.
 private struct StripPreview: View {
     private static let card = CGSize(width: 52, height: 57)
+    /// A card's colour band, as tall against the card as a real card's: 56 of 250.
+    private static let colourBand = (card.height * 56 / 250).rounded()
+    /// Bands of an orange app, a yellow one and a blue one, which show on the band in either appearance.
+    private static let tints: [UInt32] = [0xB85410, 0xE3B528, 0x2563C9]
     private static let gap: CGFloat = 8
     /// How far in from the band's edges the first card rests.
     private static let inset: CGFloat = 10
@@ -49,19 +54,25 @@ private struct StripPreview: View {
     private static let band = CGSize(width: inset + 2 * (card.width + gap) + card.width / 2,
                                      height: card.height + 2 * inset)
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
         HStack(spacing: Self.gap) {
             ForEach(0..<3, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color(nsColor: .textBackgroundColor))
-                    .frame(width: Self.card.width, height: Self.card.height)
-                    .overlay {
-                        if index == 0 {
-                            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                                .strokeBorder(Color.accentColor, lineWidth: 2)
-                                .padding(-4)
-                        }
+                VStack(spacing: 0) {
+                    HeaderTint.RGB(hex: Self.tints[index]).color
+                        .frame(height: Self.colourBand)
+                    HeaderTint.RGB(hex: colorScheme == .dark ? 0x2C2C2E : 0xFFFFFF).color
+                }
+                .frame(width: Self.card.width, height: Self.card.height)
+                .clipShape(.rect(cornerRadius: 6, style: .continuous))
+                .overlay {
+                    if index == 0 {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 2)
+                            .padding(-4)
                     }
+                }
             }
         }
         .padding(.leading, Self.inset)

@@ -12,10 +12,12 @@ struct ClipDetail: Equatable, Sendable {
     /// The picture's size as shown, taken from its header.
     var pixelSize: CGSize?
     var thumbnail: CGImage?
-    /// Whether the thumbnail covers the whole frame, or is shown whole inside it.
+    /// Whether the thumbnail covers the whole picture area, or is shown whole inside it.
     var fillsFrame = true
     var fileNames: [String] = []
     var itemCount = 1
+    /// The title of the page a link was copied from, when the clip carries one.
+    var linkTitle: String?
 }
 
 /// Reads a clip's stored content and boils it down to what a strip frame shows: an excerpt and the
@@ -27,8 +29,8 @@ struct ClipDetail: Equatable, Sendable {
 /// line as a copy's read, so a caller keeps only a few of them going at once.
 final class PreviewService: Sendable {
     private static let excerptLength = 300
-    /// A frame shows a link by its host and the start of its path, so far less than this. The cut keeps
-    /// what the cache holds small even for a huge URL, such as a data URL; the count is of all of it.
+    /// A card shows a link by its host and its page title or the start of its path, so far less than this. The cut
+    /// keeps what the cache holds small even for a huge URL, such as a data URL; the count is of all of it.
     private static let linkExcerptLength = 2_048
 
     private let read: @Sendable (ContentRef) async throws -> ResolvedContent
@@ -40,8 +42,9 @@ final class PreviewService: Sendable {
         self.cache = cache
     }
 
-    /// `frameSize` is the frame in pixels, which is its size in points times two. A cancelled call
-    /// throws `CancellationError` and caches nothing, so asking again starts from the beginning.
+    /// `frameSize` is the area a picture fills in a card, in pixels: the card's middle, between its colour band and
+    /// its footer, at the screen's scale. A cancelled call throws `CancellationError` and caches nothing, so asking
+    /// again starts from the beginning.
     func detail(for ref: ContentRef, kind: ContentKind, frameSize: CGSize) async throws -> ClipDetail {
         // Only an image's thumbnail depends on the frame.
         let frame = kind == .image ? frameSize : nil
@@ -94,7 +97,12 @@ final class PreviewService: Sendable {
         let excerpt = isLink
             ? String(text.prefix(linkExcerptLength))
             : String(text.drop(while: \.isWhitespace).prefix(excerptLength))
-        return ClipDetail(excerpt: excerpt, characterCount: characterCount)
+        var detail = ClipDetail(excerpt: excerpt, characterCount: characterCount)
+        if isLink {
+            try Task.checkCancellation()
+            detail.linkTitle = ClipboardTextDecoder.linkTitle(representations).map { String($0.prefix(excerptLength)) }
+        }
+        return detail
     }
 
     private static func imageDetail(_ representations: [RepresentationValue], frameSize: CGSize) throws -> ClipDetail {
@@ -105,7 +113,7 @@ final class PreviewService: Sendable {
         try Task.checkCancellation()
         guard frameSize.width > 0, frameSize.height > 0 else { return detail }
 
-        // An image shaped within a factor of two of the frame fills it, losing a little at the edges.
+        // An image shaped within a factor of two of the picture area fills it, losing a little at the edges.
         // One that is much wider or taller is shown whole, because filling would crop most of it away.
         let imageAspect = size.width / size.height
         let frameAspect = frameSize.width / frameSize.height

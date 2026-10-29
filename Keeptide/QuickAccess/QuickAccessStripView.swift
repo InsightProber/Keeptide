@@ -78,6 +78,8 @@ final class QuickAccessStripView: NSView {
     /// animations. Each name is new: a spring added under a running one's name would replace it.
     private var springCount = 0
     private var hovered: ContentRef?
+    /// Apps whose colour band is being worked out from their icons.
+    private var pendingTints: Set<String> = []
     /// The clip chosen by the click that began the current run of clicks.
     private var clickedRef: ContentRef?
     private var reported: (refs: [ContentRef], lastOnScreen: Int)?
@@ -244,8 +246,8 @@ final class QuickAccessStripView: NSView {
             let row = rows[index]
             let view = StripFrameView(
                 content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize),
-                applicationIcon: applicationNames.icon(for: row.sourceApp), cardSize: metrics.cardSize,
-                cornerRadius: metrics.cornerRadius, isSelected: row.ref == selection
+                applicationIcon: applicationNames.icon(for: row.sourceApp), metrics: metrics,
+                headerTint: headerTint(for: row.sourceApp), isSelected: row.ref == selection
             )
             let host = frames[row.ref] ?? spare.popLast() ?? addFrame(view)
             frames[row.ref] = host
@@ -255,6 +257,22 @@ final class QuickAccessStripView: NSView {
         }
         spare.forEach { $0.removeFromSuperview() }
         dimSideFrames()
+    }
+
+    /// The colour band's tint for the app, once it is known. The first frame of an app's clip has its icon read in
+    /// the background, and the frames are drawn again when the tint arrives; until then that band is neutral. An app
+    /// worked out before is drawn in its colour at once.
+    private func headerTint(for app: String?) -> HeaderTint? {
+        guard let app else { return nil }
+        if let tint = HeaderTint.cachedTint(forIconOf: app) { return tint }
+        if pendingTints.insert(app).inserted {
+            Task { [weak self] in
+                _ = await HeaderTint.tint(forIconOf: app)
+                self?.pendingTints.remove(app)
+                self?.placeFrames()
+            }
+        }
+        return nil
     }
 
     private func dimSideFrames() {
@@ -543,12 +561,12 @@ private final class StripFrameHost: NSView {
     func show(_ view: StripFrameView, for row: QuickAccessRow, applicationName: String?, isHovered: Bool) {
         self.row = row
         self.applicationName = applicationName
-        wash.layer?.cornerRadius = view.cornerRadius
+        wash.layer?.cornerRadius = view.metrics.cornerRadius
         self.isHovered = isHovered
         // A new root view redraws the frame, so an unchanged one is kept.
         let shown = drawing.rootView
-        if view.content != shown.content || view.isSelected != shown.isSelected || view.cardSize != shown.cardSize
-            || view.cornerRadius != shown.cornerRadius || view.applicationIcon !== shown.applicationIcon {
+        if view.content != shown.content || view.isSelected != shown.isSelected || view.metrics != shown.metrics
+            || view.headerTint != shown.headerTint || view.applicationIcon !== shown.applicationIcon {
             drawing.rootView = view
         }
     }
@@ -563,19 +581,18 @@ private final class StripFrameHost: NSView {
 
     override func accessibilityRole() -> NSAccessibility.Role? { .group }
 
-    /// "<kind>, from <App>, <time>: <title>", then the frame's marks. Without a known source app the
-    /// "from" part is left out.
+    /// "<kind>, <time>, from <App>, <footer>: <title>", then the frame's marks: the card's band and footer in the
+    /// order the card shows them, then what the clip holds. Without a known source app the "from" part is left out,
+    /// and the footer, such as "25 characters" or "2880 by 1800", until the details have arrived.
     override func accessibilityLabel() -> String? {
         guard let row else { return nil }
-        let source = [row.kind.accessibilityName, applicationName.map { "from \($0)" },
-                      QuickAccessRowContent.detail(for: row, applicationName: nil)].compactMap { $0 }
+        let card = [row.kind.accessibilityName, QuickAccessRowContent.time(of: row.date, spoken: true),
+                    applicationName.map { "from \($0)" }, drawing.rootView.content.info.map(ClipInfoFormatter.spoken)]
         let marks = [(row.savedAsMemo, "Saved as Memo"), (row.isPartiallyIndexed, "Partially indexed"),
                      (row.isTextUnavailable, "Text unavailable")].filter { $0.0 }.map { $0.1 }
-        return ([source.joined(separator: ", ") + ": " + row.displayTitle] + marks).joined(separator: ", ")
+        return ([card.compactMap { $0 }.joined(separator: ", ") + ": " + row.displayTitle] + marks)
+            .joined(separator: ", ")
     }
-
-    /// The frame's info line, such as "25 characters", once the details have arrived.
-    override func accessibilityValue() -> Any? { drawing.rootView.content.info }
 
     override func isAccessibilitySelected() -> Bool { drawing.rootView.isSelected }
 

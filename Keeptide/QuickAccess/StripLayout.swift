@@ -23,6 +23,10 @@ struct StripMetrics: Equatable {
 
     /// Distance between the left edges of neighbouring frames.
     var step: CGFloat { frameSize.width + gap }
+    /// The middle of a frame, between its colour band and its footer, where the clip itself is drawn.
+    var contentSize: CGSize {
+        CGSize(width: frameSize.width, height: max(0, frameSize.height - headerHeight - footerHeight))
+    }
 }
 
 /// Where the film of frames lies in the band, and which ends of the band have more content beyond them.
@@ -143,7 +147,7 @@ enum StripLayout {
     }
 
     /// A frame's size, the heights of its colour band and its footer, and the side of the app icon in the band.
-    private static func cardDimensions(
+    static func cardDimensions(
         for size: CardSize
     ) -> (frame: CGSize, header: CGFloat, footer: CGFloat, icon: CGFloat) {
         switch size {

@@ -67,6 +67,19 @@ enum ClipboardTextDecoder {
         return trimmed(fullText(representations))
     }
 
+    /// The title of the page a link was copied from, which a browser writes as `public.url-name` beside the URL,
+    /// decoded as any text is and without the whitespace around it. Nil when there is none or it is blank. It is not
+    /// a text type of its own, so titles and previews never read it.
+    nonisolated static func linkTitle(_ representations: [RepresentationValue]) -> String? {
+        for representation in representations where representation.typeIdentifier.lowercased() == "public.url-name" {
+            guard let bytes = representation.bytes,
+                  let decoded = decodeBytes(bytes, normalizedType: "public.url-name", maximumBytes: .max),
+                  let title = trimmed(sanitize(decoded.text)) else { continue }
+            return title
+        }
+        return nil
+    }
+
     nonisolated static func decodeText(
         _ bytes: Data,
         typeIdentifier: String,
@@ -89,7 +102,18 @@ enum ClipboardTextDecoder {
         maximumBytes: Int
     ) -> ClipTextPreview? {
         let normalizedType = typeIdentifier.lowercased()
-        guard supportedTypes.contains(normalizedType), !bytes.isEmpty else { return nil }
+        guard supportedTypes.contains(normalizedType) else { return nil }
+        return decodeBytes(bytes, normalizedType: normalizedType, maximumBytes: maximumBytes)
+    }
+
+    /// Decodes text of a known type: a byte order mark chooses UTF-16, the UTF-16 types are UTF-16 without one, and
+    /// everything else is UTF-8. A prefix cut inside a character is shortened until it decodes.
+    private nonisolated static func decodeBytes(
+        _ bytes: Data,
+        normalizedType: String,
+        maximumBytes: Int
+    ) -> ClipTextPreview? {
+        guard !bytes.isEmpty else { return nil }
 
         let encoding: String.Encoding
         let bomByteCount: Int

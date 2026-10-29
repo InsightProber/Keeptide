@@ -2,16 +2,27 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A small mark in the top right corner of a frame.
+/// A small mark after a card's time.
 enum StripMarker: Equatable {
     case savedAsMemo, partiallyIndexed
 }
 
-/// What one frame of the strip shows, decided apart from the drawing so that it can be tested.
+/// One piece of the line under a card's kind, in the colour band.
+enum StripHeaderItem: Equatable {
+    case time(String)
+    case marker(StripMarker)
+    /// How many more items than the shown one the clip holds.
+    case extraItems(Int)
+}
+
+/// What one card of the strip shows, decided apart from the drawing so that it can be tested.
 struct StripFrameContent: Equatable {
     enum Body: Equatable {
-        case text(AttributedString, size: CGFloat)
-        case link(host: String, rest: String)
+        /// Text at the style its length gives. A search's hits are in bold.
+        case text(AttributedString, style: StripTextStyle)
+        /// A link by its title: a saved link's own title, the title of the page it was copied from, or else its
+        /// decoded path. A search's hits are in bold.
+        case link(title: AttributedString)
         case image(CGImage, fills: Bool)
         case file(name: String, typeIdentifier: String?)
         /// The kind's symbol and the clip's title. It stands in until the details arrive (a text search
@@ -19,10 +30,16 @@ struct StripFrameContent: Equatable {
         case placeholder(symbol: String, title: String)
     }
 
+    /// What the colour band names the clip.
+    var kind: ContentKind
+    /// How long ago the clip was copied, as the colour band says it.
+    var time: String
+    /// The app the clip came from. Its icon gives the colour band its colour.
+    var sourceApp: String?
     /// A saved memo's own title, when its body does not already begin with it.
     var memoTitle: String?
     var body: Body
-    /// The caption at the frame's bottom edge.
+    /// The line in the card's footer: a text's length, a picture's size, a link's host, or what a file clip holds.
     var info: String?
     /// How many more items than the shown one the clip holds.
     var extraItems: Int
@@ -33,10 +50,17 @@ struct StripFrameContent: Equatable {
     /// shape from here and not from the thumbnail.
     var imageAspectRatio: CGFloat?
 
+    /// The colour band's second line, left to right: the time, the marks, and how many more items there are.
+    var headerLine: [StripHeaderItem] {
+        [.time(time)] + markers.map(StripHeaderItem.marker) + (extraItems > 0 ? [.extraItems(extraItems)] : [])
+    }
+
     /// `detail` is nil until the details have arrived, and when they could not be read. A text search
-    /// result already has its snippet, so it shows it without them and only its caption waits.
-    static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize) -> StripFrameContent {
+    /// result already has its snippet, so it shows it without them and only its caption waits. `now` is the
+    /// moment the time is told from.
+    static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize, now: Date = Date()) -> StripFrameContent {
         var content = StripFrameContent(
+            kind: row.kind, time: QuickAccessRowContent.time(of: row.date, relativeTo: now), sourceApp: row.sourceApp,
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
             extraItems: 0, markers: [], isTextUnavailable: row.isTextUnavailable
         )
@@ -57,8 +81,11 @@ struct StripFrameContent: Equatable {
         case .url:
             guard let address = detail.excerpt, !address.isEmpty else { break }
             if let (host, rest) = split(link: address) {
-                content.body = .link(host: host, rest: rest)
-                content.memoTitle = memoTitle(of: row, over: address)
+                let pageTitle = detail.linkTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = memoTitle(of: row, over: address)
+                    ?? pageTitle.flatMap { $0.isEmpty ? nil : $0 }
+                    ?? (rest.isEmpty ? host : rest)
+                content.body = .link(title: highlighted(title, like: row.snippet))
             } else {
                 content.setText(AttributedString(address), plain: address, for: row, cardSize: cardSize)
             }
@@ -83,8 +110,9 @@ struct StripFrameContent: Equatable {
         return content
     }
 
-    /// The text of the caption: a picture's size, a text's or link's length, what a file clip holds, or
-    /// how many items several are. Several items that are not files read as items whatever they are.
+    /// The text of the footer: a picture's size, a text's length, a link's host (or its length when it has no
+    /// host), what a file clip holds, or how many items several are. Several items that are not files read as items
+    /// whatever they are.
     private static func info(for kind: ContentKind, detail: ClipDetail) -> String? {
         if kind == .file {
             // A file whose name could not be read is still a file, so the names are made up to the items.
@@ -94,13 +122,17 @@ struct StripFrameContent: Equatable {
         if detail.itemCount > 1 { return ClipInfoFormatter.items(detail.itemCount) }
         switch kind {
         case .image: return detail.pixelSize.map(ClipInfoFormatter.pixels)
-        case .text, .url: return detail.characterCount.map { ClipInfoFormatter.characters($0) }
+        case .url:
+            if let host = detail.excerpt.flatMap(split(link:))?.host { return host }
+            return detail.characterCount.map { ClipInfoFormatter.characters($0) }
+        case .text: return detail.characterCount.map { ClipInfoFormatter.characters($0) }
         case .file, .other: return nil
         }
     }
 
-    /// Shows the snippet a text search result brings along, with its hits in bold. Only a text frame
-    /// does that; the other kinds look as they do for a recent clip. Returns whether there was one.
+    /// Shows the snippet a text search result brings along, with its hits in bold. Only a text card
+    /// does that; a link marks the hits in its title instead, and the other kinds look as they do for a
+    /// recent clip. Returns whether there was one.
     @discardableResult
     private mutating func showSnippet(of row: QuickAccessRow, cardSize: CardSize) -> Bool {
         guard row.kind == .text, let snippet = row.snippet, !snippet.text.isEmpty else { return false }
@@ -108,17 +140,11 @@ struct StripFrameContent: Equatable {
         return true
     }
 
-    /// Sets a text body at the size its length gives. Under a memo title it goes no larger than the
-    /// size after the title's, so that the title stands out.
+    /// Sets a text body at the style its length gives, with the memo title above it when it has one.
     private mutating func setText(_ text: AttributedString, plain: String, for row: QuickAccessRow,
                                   cardSize: CardSize) {
-        var size = StripTypography.bodySize(for: plain, cardSize: cardSize)
-        if let title = Self.memoTitle(of: row, over: plain) {
-            memoTitle = title
-            size = min(size, Self.nextSize(after: StripTypography.bodySize(for: title, cardSize: cardSize),
-                                           cardSize: cardSize))
-        }
-        body = .text(text, size: size)
+        memoTitle = Self.memoTitle(of: row, over: plain)
+        body = .text(text, style: StripTypography.bodyStyle(for: plain, cardSize: cardSize))
     }
 
     /// A memo's title earns a line of its own only when the body does not begin with it.
@@ -126,17 +152,34 @@ struct StripFrameContent: Equatable {
         row.savedAsMemo && !row.title.isEmpty && !body.hasPrefix(row.title) ? row.title : nil
     }
 
-    /// The next size down the table, or the same size at its end.
-    private static func nextSize(after size: CGFloat, cardSize: CardSize) -> CGFloat {
-        let tiers = StripTypography.type(for: cardSize).tiers
-        guard let index = tiers.firstIndex(of: size) else { return size }
-        return tiers[min(index + 1, tiers.count - 1)]
+    /// `text` with the words a search found set in bold: the ones its snippet marks, wherever they appear in `text`,
+    /// found the way the search finds them.
+    private static func highlighted(_ text: String, like snippet: SearchSnippet?) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard let snippet else { return attributed }
+        let source = snippet.text as NSString
+        let hits = Set(snippet.highlights.compactMap { range -> String? in
+            guard range.lowerBound >= 0, range.upperBound <= source.length, !range.isEmpty else { return nil }
+            return source.substring(with: NSRange(location: range.lowerBound, length: range.count))
+        })
+        for hit in hits.sorted() {
+            var start = text.startIndex
+            while start < text.endIndex,
+                  let found = text.range(of: hit, options: SearchService.snippetOptions, range: start..<text.endIndex) {
+                if let lower = AttributedString.Index(found.lowerBound, within: attributed),
+                   let upper = AttributedString.Index(found.upperBound, within: attributed), lower < upper {
+                    attributed[lower..<upper].inlinePresentationIntent = .stronglyEmphasized
+                }
+                start = found.upperBound
+            }
+        }
+        return attributed
     }
 
     /// The host, and everything after it: the port, then the path, query and fragment with their percent
     /// escapes decoded, so that `/wiki/%E4%B8%AD` reads `/wiki/中`. When an escape does not decode, they stay
     /// as written. A path that is only "/" says nothing and is left out. Nil when the text has no host to
-    /// split off. Only the frame shows the decoded text; the character count is of the link as stored.
+    /// split off. Only the card shows the decoded text; the character count is of the link as stored.
     private static func split(link text: String) -> (host: String, rest: String)? {
         guard let components = URLComponents(string: text), let host = components.host, !host.isEmpty else { return nil }
         var written = components.percentEncodedPath
@@ -149,7 +192,7 @@ struct StripFrameContent: Equatable {
 }
 
 extension ContentKind {
-    /// The word VoiceOver says for a frame.
+    /// The word a card's colour band shows, and VoiceOver says first.
     var accessibilityName: String {
         switch self {
         case .text: "Text"
@@ -161,135 +204,156 @@ extension ContentKind {
     }
 }
 
-/// One frame of the strip: an opaque sheet showing the clip itself, with a caption in its bottom edge.
-/// It fills the size it is given. A selected frame's ring is drawn outside that size, 3 pt from its
-/// edge and 2 pt wide (3 pt with Increase Contrast), so whatever hosts the frame must not clip it.
+/// One card of the strip: a band in the colour of the source app's icon, naming the kind of clip and how long ago
+/// it was copied, with the app's icon at its right; the clip itself, as large as the card allows; and a footer with
+/// its length, size, host or type. It is drawn at the size `metrics` gives. A selected card's ring is drawn outside
+/// that size, 3 pt from its edge and 3 pt wide (4 pt with Increase Contrast), and so is the card's shadow, so
+/// whatever hosts the card must not clip them.
 struct StripFrameView: View {
     let content: StripFrameContent
     let applicationIcon: NSImage
-    let cardSize: CardSize
-    let cornerRadius: CGFloat
+    let metrics: StripMetrics
+    /// The band's colour once it has been worked out from the source app's icon. Until then, and for a clip
+    /// without a source app, the band is neutral.
+    let headerTint: HeaderTint?
     let isSelected: Bool
 
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private static let selectionGap: CGFloat = 3
-    /// The black behind a picture's caption and corner marks. White text on it keeps a contrast of
-    /// 6:1 even over a white picture, where 4.5:1 is the least that is asked.
-    private static let scrim = Color.black.opacity(0.62)
+    /// The system draws an app's icon, and a document's, with a clear margin around it: of every 64 points the
+    /// icon itself fills 52 across, and a document's page 57 down. The icons are drawn that much larger, so that
+    /// what shows is the size the card asks for.
+    private static let appIconFill: CGFloat = 52.0 / 64.0
+    private static let documentIconFill: CGFloat = 57.0 / 64.0
 
-    private var type: StripType { StripTypography.type(for: cardSize) }
+    private var isDark: Bool { colorScheme == .dark }
+    private var increasedContrast: Bool { contrast == .increased }
+    /// A medium card's measures are scaled by this on the other card sizes, as its text is.
+    private var scale: CGFloat { StripTypography.scale(for: metrics.cardSize) }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous) }
+
+    private var tint: HeaderTint { headerTint ?? .neutral(dark: isDark) }
 
     var body: some View {
-        GeometryReader { proxy in
-            card(in: proxy.size)
+        VStack(spacing: 0) {
+            header
+                .frame(height: metrics.headerHeight)
+            middle
+                .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
+                .clipped()
+            footer
+                .frame(height: metrics.footerHeight)
         }
-    }
-
-    private func card(in size: CGSize) -> some View {
-        ZStack {
-            Color(nsColor: .textBackgroundColor)
-            if case .image(let image, true) = content.body {
-                filledImage(image, in: size)
-            } else {
-                paperLayout
-            }
+        .frame(width: metrics.frameSize.width, height: metrics.frameSize.height)
+        // The paper's hairline lies under the band, the picture and the text, as in the design.
+        .background {
+            shape.fill(Palette.paper(isDark))
+            shape.strokeBorder(Palette.hairline(isDark), lineWidth: 0.5)
         }
-        .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .clipShape(shape)
         .overlay {
             if let width = Self.paperStroke(reduceTransparency: reduceTransparency) {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: width)
+                shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: width)
             }
         }
-        .overlay { selectionRing(radius: cornerRadius) }
+        .background {
+            shape.fill(Palette.paper(isDark))
+                .shadow(color: Palette.shadow(isDark), radius: isDark ? 10 : 8, x: 0, y: isDark ? 8 : 6)
+        }
+        .overlay { selectionRing }
     }
 
-    /// The width of the hairline along a frame's edge, if it has one. With Reduce Transparency the band is
-    /// solid and can be the very color of the paper, so each frame draws a line of its own to show where it
-    /// ends; otherwise the glass behind it does that.
+    /// The width of the line drawn along a card's edge, if it has one. With Reduce Transparency the band is
+    /// solid and can be close to the paper's colour, so each card draws a firm line of its own to show where it
+    /// ends; otherwise the hairline under its content and its shadow do that.
     nonisolated static func paperStroke(reduceTransparency: Bool) -> CGFloat? {
         reduceTransparency ? 1 : nil
     }
 
-    // MARK: Layouts
+    // MARK: Colour band
 
-    /// The body on the paper, with the marks beside or above it and the caption below.
-    private var paperLayout: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            switch content.body {
-            case .file, .image:
-                // These sit in the middle, so the marks get a row of their own above them.
-                VStack(alignment: .trailing, spacing: 2) {
-                    if hasCornerMarks { cornerMarks(onImage: false) }
-                    bodyRegion
+    private var header: some View {
+        let tint = self.tint
+        let secondary = tint.secondaryText(increasedContrast: increasedContrast).color
+        return ZStack {
+            tint.background.color
+            VStack(alignment: .leading, spacing: 1) {
+                Text(content.kind.accessibilityName)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(tint.text.color)
+                    .frame(height: 19)
+                HStack(spacing: 4) {
+                    ForEach(Array(content.headerLine.enumerated()), id: \.offset) { _, item in
+                        headerItem(item, color: secondary)
+                    }
                 }
-            case .text, .link, .placeholder:
-                // These start in the corner, so the marks take a column beside them.
-                HStack(alignment: .top, spacing: 6) {
-                    bodyRegion
-                    if hasCornerMarks { cornerMarks(onImage: false) }
-                }
+                .frame(height: 16)
             }
-            caption(onImage: false)
-        }
-        .padding(type.padding)
-    }
-
-    /// Takes all the room the marks and the caption leave. What does not fit is cut off.
-    private var bodyRegion: some View {
-        GeometryReader { region in
-            bodyContent(in: region.size)
-                .frame(width: region.size.width, height: region.size.height, alignment: .topLeading)
-                .clipped()
+            .lineLimit(1)
+            .padding(.leading, 14)
+            // Clear of the icon, which stands 10 pt in from the right.
+            .padding(.trailing, 10 + metrics.iconSize + 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            appIcon
+                .padding(.trailing, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
     }
-
-    /// A picture covering the whole frame, with a dark fade at the bottom behind the caption.
-    private func filledImage(_ image: CGImage, in size: CGSize) -> some View {
-        let captionHeight = max(type.icon, type.info * 1.25)
-        let fade: CGFloat = 20
-        let scrimHeight = type.padding + captionHeight + fade
-        return ZStack(alignment: .bottom) {
-            Image(decorative: image, scale: 1)
-                .resizable()
-                .scaledToFill()
-                .frame(width: size.width, height: size.height)
-                .clipped()
-            // Fully dense from the top of the caption down, so white text reads over any picture.
-            LinearGradient(stops: [
-                .init(color: Self.scrim.opacity(0), location: 0),
-                .init(color: Self.scrim, location: fade / scrimHeight),
-            ], startPoint: .top, endPoint: .bottom)
-                .frame(height: scrimHeight)
-            caption(onImage: true).padding(type.padding)
-        }
-        .overlay(alignment: .topTrailing) {
-            if hasCornerMarks { cornerMarks(onImage: true).padding(type.padding) }
-        }
-    }
-
-    // MARK: Body
 
     @ViewBuilder
-    private func bodyContent(in region: CGSize) -> some View {
-        if showsUnavailableText {
-            VStack(alignment: .leading, spacing: 2) {
-                memoTitleLine
-                Text("Text unavailable")
-                    .font(.system(size: type.tiers[3]))
-                    .lineHeight(.exact(points: lineHeight(of: type.tiers[3])))
-                    .foregroundStyle(secondaryTextStyle())
+    private func headerItem(_ item: StripHeaderItem, color: Color) -> some View {
+        switch item {
+        case .time(let time):
+            Text(time)
+                .font(.system(size: 12))
+                .foregroundStyle(color)
+        case .marker(let marker):
+            let (symbol, name): (String, String) = switch marker {
+            case .savedAsMemo: ("bookmark.fill", "Saved as Memo")
+            case .partiallyIndexed: ("circle.lefthalf.filled", "Partially indexed")
             }
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(color)
+                .help(name)
+                .accessibilityLabel(name)
+        case .extraItems(let count):
+            Text("+\(count)")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(color)
+                .accessibilityHidden(true)
+        }
+    }
+
+    /// The source app's own icon, its visible square `iconSize` a side, with a slight shadow.
+    private var appIcon: some View {
+        let drawn = metrics.iconSize / Self.appIconFill
+        return Image(nsImage: applicationIcon)
+            .resizable()
+            .interpolation(.high)
+            .frame(width: drawn, height: drawn)
+            .shadow(color: .black.opacity(0.35), radius: 1.5, x: 0, y: 1)
+            .frame(width: metrics.iconSize, height: metrics.iconSize)
+            .accessibilityHidden(true)
+    }
+
+    // MARK: The clip
+
+    @ViewBuilder
+    private var middle: some View {
+        if showsUnavailableText {
+            unavailableBody
         } else {
             switch content.body {
-            case .text(let text, let size): textBody(text, size: size, in: region)
-            case .link(let host, let rest): linkBody(host: host, rest: rest, in: region)
-            case .image(let image, _): wholeImage(image)
+            case .text(let text, let style): textBody(text, style: style)
+            case .link(let title): linkBody(title)
+            case .image(let image, let fills):
+                if fills { filledImage(image) } else { wholeImage(image) }
             case .file(let name, let typeIdentifier): fileBody(name: name, typeIdentifier: typeIdentifier)
-            case .placeholder(let symbol, let title): placeholderBody(symbol: symbol, title: title, in: region)
+            case .placeholder(let symbol, let title): placeholderBody(symbol: symbol, title: title)
             }
         }
     }
@@ -304,203 +368,216 @@ struct StripFrameView: View {
         }
     }
 
-    private func textBody(_ text: AttributedString, size: CGFloat, in region: CGSize) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            memoTitleLine
-            Text(text)
-                .font(.system(size: size))
-                .lineHeight(.exact(points: lineHeight(of: size)))
-                .lineLimit(max(1, lines(in: region.height - memoTitleHeight, size: size)))
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+    /// Room for text in the middle, inside its padding.
+    private var textPadding: CGFloat { 14 * scale }
+
+    /// How many lines of `style` fit in `height`, at least one. Text is cut at the last line that fits, never set
+    /// smaller.
+    private func lines(in height: CGFloat, style: StripTextStyle) -> Int {
+        max(1, Int((height / style.lineHeight + 0.001).rounded(.down)))
     }
 
-    private func linkBody(host: String, rest: String, in region: CGSize) -> some View {
-        let used = memoTitleHeight + lineHeight(of: type.linkDomain).rounded(.up) + 2
-        let pathLines = lines(in: region.height - used, size: type.linkPath)
-        return VStack(alignment: .leading, spacing: 2) {
-            memoTitleLine
-            Text(host)
-                .font(.system(size: type.linkDomain, weight: .semibold))
-                .lineHeight(.exact(points: lineHeight(of: type.linkDomain)))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if !rest.isEmpty, pathLines > 0 {
-                Text(rest)
-                    .font(.system(size: type.linkPath))
-                    .foregroundStyle(secondaryTextStyle())
-                    .lineHeight(.exact(points: lineHeight(of: type.linkPath)))
-                    .lineLimit(pathLines)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+    /// The text from the top left, as many lines as fill the middle, with the memo title in bold on the first.
+    private func textBody(_ text: AttributedString, style: StripTextStyle) -> some View {
+        let room = metrics.contentSize.height - 2 * textPadding - (content.memoTitle == nil ? 0 : style.lineHeight)
+        return VStack(alignment: .leading, spacing: 0) {
+            if let title = content.memoTitle {
+                Text(title)
+                    .font(.system(size: style.size, weight: .semibold))
+                    .lineHeight(.exact(points: style.lineHeight))
+                    .lineLimit(1)
             }
+            Text(marked(text))
+                .font(.system(size: style.size))
+                .lineHeight(.exact(points: style.lineHeight))
+                .lineLimit(lines(in: room, style: style))
         }
+        .foregroundStyle(Palette.text(isDark))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(textPadding)
     }
 
-    /// A picture that is too wide or too tall to cover the frame sits whole on the paper above the caption.
+    /// A light tile with a globe, and the link's title under it, centred.
+    private func linkBody(_ title: AttributedString) -> some View {
+        let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
+        let (top, gap, bottom, tile) = (22 * scale, 14 * scale, 14 * scale, 48 * scale)
+        let room = metrics.contentSize.height - top - tile - gap - bottom
+        return VStack(spacing: gap) {
+            RoundedRectangle(cornerRadius: 12 * scale, style: .continuous)
+                .fill(Palette.globeTile)
+                .frame(width: tile, height: tile)
+                .overlay {
+                    Image(systemName: "globe")
+                        .font(.system(size: 21 * scale))
+                        .foregroundStyle(Palette.globe)
+                }
+                .accessibilityHidden(true)
+            Text(marked(title))
+                .font(.system(size: style.size, weight: .semibold))
+                .lineHeight(.exact(points: style.lineHeight))
+                .multilineTextAlignment(.center)
+                .lineLimit(min(3, lines(in: room, style: style)))
+                .foregroundStyle(Palette.text(isDark))
+        }
+        .padding(.top, top)
+        .padding(.horizontal, 16 * scale)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    /// A picture covering the middle, cut evenly at its edges.
+    private func filledImage(_ image: CGImage) -> some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .scaledToFill()
+            .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
+            .clipped()
+    }
+
+    /// A picture too wide or too tall to cover the middle, shown whole on the paper.
     private func wholeImage(_ image: CGImage) -> some View {
         let aspect = content.imageAspectRatio ?? CGFloat(image.width) / CGFloat(max(image.height, 1))
         return Image(decorative: image, scale: 1)
             .resizable()
             .aspectRatio(aspect, contentMode: .fit)
             .overlay(Rectangle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+            .padding(textPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// The icon of the file's type and its name under it, centred.
     private func fileBody(name: String, typeIdentifier: String?) -> some View {
-        let side: CGFloat = switch cardSize {
-        case .small: 28
-        case .medium: 32
-        case .large: 40
-        }
+        let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
+        let (top, gap, bottom, iconHeight) = (20 * scale, 12 * scale, 12 * scale, 60 * scale)
+        let room = metrics.contentSize.height - top - iconHeight - gap - bottom
         let icon = NSWorkspace.shared.icon(for: typeIdentifier.flatMap { UTType($0) } ?? .data)
-        return HStack(spacing: 8) {
+        return VStack(spacing: gap) {
             Image(nsImage: icon)
                 .resizable()
-                .frame(width: side, height: side)
+                .interpolation(.high)
+                .frame(width: iconHeight / Self.documentIconFill, height: iconHeight / Self.documentIconFill)
+                .frame(height: iconHeight)
                 .accessibilityHidden(true)
             Text(name)
-                .font(.system(size: type.tiers[2]))
-                .lineHeight(.exact(points: lineHeight(of: type.tiers[2])))
-                .lineLimit(2)
+                .font(.system(size: style.size, weight: .semibold))
+                .lineHeight(.exact(points: style.lineHeight))
+                .multilineTextAlignment(.center)
+                .lineLimit(min(2, lines(in: room, style: style)))
                 .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(Palette.text(isDark))
         }
-        .frame(maxHeight: .infinity)
+        .padding(.top, top)
+        .padding(.horizontal, 16 * scale)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    private func placeholderBody(symbol: String, title: String, in region: CGSize) -> some View {
-        let size = type.tiers[2]
-        // A symbol is about 1.3 times its point size tall; the title gets what is left under it.
-        let used = type.tiers[1] * 1.3 + 4
-        return VStack(alignment: .leading, spacing: 4) {
+    /// The kind's symbol and the clip's title, laid out as a file is, while there is nothing else to show.
+    private func placeholderBody(symbol: String, title: String) -> some View {
+        let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
+        let (top, gap, bottom, iconHeight) = (20 * scale, 12 * scale, 12 * scale, 60 * scale)
+        let room = metrics.contentSize.height - top - iconHeight - gap - bottom
+        return VStack(spacing: gap) {
             Image(systemName: symbol)
-                .font(.system(size: type.tiers[1]))
-                .foregroundStyle(.secondary)
+                .font(.system(size: iconHeight * 0.6, weight: .light))
+                .foregroundStyle(footerText)
+                .frame(height: iconHeight)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.system(size: size))
-                .lineHeight(.exact(points: lineHeight(of: size)))
-                .lineLimit(max(1, lines(in: region.height - used, size: size)))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .font(.system(size: style.size, weight: .semibold))
+                .lineHeight(.exact(points: style.lineHeight))
+                .multilineTextAlignment(.center)
+                .lineLimit(min(2, lines(in: room, style: style)))
+                .foregroundStyle(Palette.text(isDark))
         }
+        .padding(.top, top)
+        .padding(.horizontal, 16 * scale)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
-    // MARK: Memo title and line fitting
-
-    private var memoTitleSize: CGFloat? {
-        content.memoTitle.map { StripTypography.bodySize(for: $0, cardSize: cardSize) }
-    }
-
-    /// Room the memo title takes above the body, with the gap under it.
-    private var memoTitleHeight: CGFloat {
-        memoTitleSize.map { lineHeight(of: $0).rounded(.up) + 2 } ?? 0
-    }
-
-    @ViewBuilder
-    private var memoTitleLine: some View {
-        if let title = content.memoTitle, let size = memoTitleSize {
-            Text(title)
-                .font(.system(size: size, weight: .semibold))
-                .lineHeight(.exact(points: lineHeight(of: size)))
-                .lineLimit(1)
-        }
-    }
-
-    /// Lines are set 1.4 times the font size apart.
-    private func lineHeight(of size: CGFloat) -> CGFloat {
-        size * 1.4
-    }
-
-    /// How many lines of `size` fit in `height`, none when not even one does. Text is cut at the
-    /// frame's edge and never set smaller.
-    private func lines(in height: CGFloat, size: CGFloat) -> Int {
-        max(0, Int((height / lineHeight(of: size)).rounded(.down)))
-    }
-
-    // MARK: Caption and corner marks
-
-    private var increasedContrast: Bool { contrast == .increased }
-
-    /// The source app's icon on the left and the info on the right.
-    private func caption(onImage: Bool) -> some View {
-        HStack(spacing: 6) {
-            Image(nsImage: applicationIcon)
-                .resizable()
-                .interpolation(.high)
-                .frame(width: type.icon, height: type.icon)
-                .accessibilityHidden(true)
-            Spacer(minLength: 4)
-            if let info = content.info {
-                Text(info)
-                    .font(.system(size: type.info))
+    /// The memo title, if any, and a notice in place of the text that is gone.
+    private var unavailableBody: some View {
+        let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
+        return VStack(alignment: .leading, spacing: 0) {
+            if let title = content.memoTitle {
+                Text(title)
+                    .font(.system(size: style.size, weight: .semibold))
+                    .lineHeight(.exact(points: style.lineHeight))
                     .lineLimit(1)
-                    .foregroundStyle(secondaryTextStyle(onImage: onImage))
+                    .foregroundStyle(Palette.text(isDark))
             }
+            Text("Text unavailable")
+                .font(.system(size: style.size))
+                .lineHeight(.exact(points: style.lineHeight))
+                .foregroundStyle(footerText)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(textPadding)
     }
 
-    private var hasCornerMarks: Bool { content.extraItems > 0 || !content.markers.isEmpty }
+    /// A search's hits in bold, on the highlighter's yellow.
+    private func marked(_ text: AttributedString) -> AttributedString {
+        var marked = text
+        for run in text.runs where run.inlinePresentationIntent == .stronglyEmphasized {
+            marked[run.range].backgroundColor = Palette.hit(isDark)
+        }
+        return marked
+    }
 
-    private func cornerMarks(onImage: Bool) -> some View {
-        HStack(spacing: 4) {
-            if content.extraItems > 0 {
-                Text("+\(content.extraItems)")
-                    .font(.system(size: type.info, weight: .medium))
-                    .foregroundStyle(secondaryTextStyle(onImage: onImage))
-                    .padding(.horizontal, 6)
-                    .background(Capsule().fill(onImage ? Self.scrim : Color(nsColor: .quaternaryLabelColor)))
-                    .accessibilityHidden(true)
+    // MARK: Footer
+
+    private var footerText: Color { increasedContrast ? Palette.text(isDark) : Palette.footer(isDark) }
+
+    /// The length, size, host or type of the clip, centred under a hairline.
+    private var footer: some View {
+        Text(content.info ?? "")
+            .font(.system(size: 12))
+            .monospacedDigit()
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .foregroundStyle(footerText)
+            .padding(.horizontal, textPadding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(Palette.separator(isDark))
+                    .frame(height: 0.5)
             }
-            ForEach(Array(content.markers.enumerated()), id: \.offset) { _, marker in
-                markerGlyph(marker, onImage: onImage)
-            }
-        }
-    }
-
-    private func markerGlyph(_ marker: StripMarker, onImage: Bool) -> some View {
-        let (symbol, name): (String, String) = switch marker {
-        case .savedAsMemo: ("bookmark.fill", "Saved as Memo")
-        case .partiallyIndexed: ("circle.lefthalf.filled", "Partially indexed")
-        }
-        return Image(systemName: symbol)
-            .font(.system(size: type.info))
-            .foregroundStyle(symbolStyle(onImage: onImage))
-            .padding(onImage ? 4 : 0)
-            .background(Circle().fill(onImage ? Self.scrim : Color.clear))
-            .help(name)
-            .accessibilityLabel(name)
-    }
-
-    /// Text that is not a frame's main text: the caption, a link's path, the count and the notice. On
-    /// paper it is the primary color at 70 percent, which keeps text at 4.5:1 or better where the
-    /// system's secondary color does not (3.95:1 on light paper); with Increase Contrast it is the
-    /// primary color in full. On a picture it is white, on the dark fade.
-    private func secondaryTextStyle(onImage: Bool = false) -> AnyShapeStyle {
-        if onImage { return AnyShapeStyle(.white) }
-        return increasedContrast ? AnyShapeStyle(.primary) : AnyShapeStyle(Color.primary.opacity(0.7))
-    }
-
-    /// Symbols need 3:1 and not 4.5:1, so they keep the system's secondary color on paper, or the
-    /// primary color with Increase Contrast. White on a picture.
-    private func symbolStyle(onImage: Bool) -> AnyShapeStyle {
-        if onImage { return AnyShapeStyle(.white) }
-        return increasedContrast ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
     }
 
     // MARK: Selection
 
-    /// An accent ring outside the frame: 2 pt wide, 3 pt from the edge; 3 pt wide with Increase Contrast.
+    /// A ring in the system's accent colour outside the card: 3 pt wide, 3 pt from its edge; 4 pt wide with
+    /// Increase Contrast.
     @ViewBuilder
-    private func selectionRing(radius: CGFloat) -> some View {
+    private var selectionRing: some View {
         if isSelected {
-            let width: CGFloat = increasedContrast ? 3 : 2
+            let width: CGFloat = increasedContrast ? 4 : 3
             let offset = Self.selectionGap + width / 2
-            RoundedRectangle(cornerRadius: radius + offset, style: .continuous)
-                .stroke(Color.accentColor, lineWidth: width)
+            RoundedRectangle(cornerRadius: metrics.cornerRadius + offset, style: .continuous)
+                .stroke(Color(nsColor: .controlAccentColor), lineWidth: width)
                 .padding(-offset)
                 .allowsHitTesting(false)
         }
     }
+}
+
+/// The card's own colours, the same in every app: the design sets them for dark and light.
+private enum Palette {
+    static func paper(_ dark: Bool) -> Color { dark ? rgb(0x2C2C2E) : rgb(0xFFFFFF) }
+    static func text(_ dark: Bool) -> Color { dark ? rgb(0xF2F2F7) : rgb(0x1D1D1F) }
+    static func footer(_ dark: Bool) -> Color { dark ? rgb(0x98989D) : rgb(0x6E6E73) }
+    static func hairline(_ dark: Bool) -> Color { dark ? .white.opacity(0.08) : .black.opacity(0.08) }
+    static func separator(_ dark: Bool) -> Color { dark ? .white.opacity(0.07) : .black.opacity(0.07) }
+    static func shadow(_ dark: Bool) -> Color {
+        dark ? .black.opacity(0.35) : Color(.sRGB, red: 30 / 255, green: 30 / 255, blue: 40 / 255, opacity: 0.12)
+    }
+    static func hit(_ dark: Bool) -> Color {
+        dark ? Color(.sRGB, red: 1, green: 214 / 255, blue: 10 / 255, opacity: 0.38)
+            : Color(.sRGB, red: 1, green: 204 / 255, blue: 0, opacity: 0.45)
+    }
+    static let globeTile = rgb(0xF2F2F7)
+    static let globe = rgb(0x3A3A3C)
+
+    private static func rgb(_ hex: UInt32) -> Color { HeaderTint.RGB(hex: hex).color }
 }
 
 // MARK: Row text and source apps
@@ -525,17 +602,20 @@ extension ContentKind {
 /// in bold.
 @MainActor
 enum QuickAccessRowContent {
-    private static let relativeDates: RelativeDateTimeFormatter = {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter
-    }()
-
     /// "<App> · <time>", or the time alone when the source app is not known.
     static func detail(for row: QuickAccessRow, applicationName: String?) -> String {
-        [applicationName, relativeDates.localizedString(for: row.date, relativeTo: Date())]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        [applicationName, time(of: row.date)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// How long before `now` the clip was copied, as a card says it: "Just now" under a minute (and for a clip
+    /// from a clock that ran ahead), then "2 min. ago", "Yesterday" and so on. Spoken, the units are whole words:
+    /// "2 minutes ago".
+    nonisolated static func time(of date: Date, relativeTo now: Date = Date(), spoken: Bool = false,
+                                 locale: Locale = .current) -> String {
+        guard now.timeIntervalSince(date) >= 60 else { return "Just now" }
+        return Date.AnchoredRelativeFormatStyle(anchor: date, presentation: .named,
+                                                unitsStyle: spoken ? .wide : .abbreviated, locale: locale,
+                                                capitalizationContext: .beginningOfSentence).format(now)
     }
 
     /// Pure string work, so it is not tied to the main actor.
