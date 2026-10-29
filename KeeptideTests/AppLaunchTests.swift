@@ -737,18 +737,13 @@ final class AppLaunchTests: XCTestCase {
         window.contentView?.layoutSubtreeIfNeeded()
         settleLayout()
         let band = try bandRect(in: window)
-        let click = { (point: NSPoint) in
-            try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
-                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                             clickCount: 1, pressure: 1))
-        }
 
         // The band itself takes clicks as ever.
-        window.sendEvent(try click(NSPoint(x: band.minX + 40, y: band.maxY - 8)))
+        try click(at: NSPoint(x: band.minX + 40, y: band.maxY - 8), in: window)
         XCTAssertTrue(controller.isSessionOpen)
 
         // Below it the panel only holds the band's shadow: a click there is a click beside the panel, which closes.
-        window.sendEvent(try click(NSPoint(x: band.midX, y: band.minY - 10)))
+        try click(at: NSPoint(x: band.midX, y: band.minY - 10), in: window)
         XCTAssertFalse(controller.isSessionOpen)
     }
 
@@ -765,19 +760,14 @@ final class AppLaunchTests: XCTestCase {
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
         let card = text.convert(text.bounds, to: nil)
         XCTAssertGreaterThan(card.minY, band.maxY)
-        let click = { (point: NSPoint) in
-            try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: 0,
-                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                             clickCount: 1, pressure: 1))
-        }
 
         // The preview card is the panel's own: a click on it keeps the panel and the card open.
-        window.sendEvent(try click(NSPoint(x: card.midX, y: card.midY)))
+        try click(at: NSPoint(x: card.midX, y: card.midY), in: window)
         XCTAssertTrue(controller.isSessionOpen)
         XCTAssertTrue(controller.state.isPreviewExpanded)
 
         // The 16 pt between the card and the band holds only the band's shadow: a click there closes the panel.
-        window.sendEvent(try click(NSPoint(x: band.midX, y: band.maxY + StripLayout.previewGap / 2)))
+        try click(at: NSPoint(x: band.midX, y: band.maxY + StripLayout.previewGap / 2), in: window)
         XCTAssertFalse(controller.isSessionOpen)
     }
 
@@ -1604,16 +1594,17 @@ final class AppLaunchTests: XCTestCase {
                                preferences: try makePreferences(.medium), visibleFrame: visibleFrame)
     }
 
-    /// A left click at `point` in the window, as the event loop would hand it over: the button is down and comes up
-    /// again. The release waits at the front of the queue, for a control that follows the button until it comes up;
-    /// one nothing took is dropped afterwards.
+    /// A left click at `point` in the window. Every press these tests send through a window goes through here, since a
+    /// view may follow the button in a loop of its own until it comes up again, as a text view does on macOS 26: a press
+    /// with no release would hold the test there for good. So the release is posted to the application's queue first,
+    /// where such a loop finds it, and the press is sent after it. A release nothing took is dropped afterwards.
     private func click(at point: NSPoint, in window: NSWindow) throws {
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0,
                                              clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
         }
-        NSApp.postEvent(try event(.leftMouseUp), atStart: true)
+        NSApp.postEvent(try event(.leftMouseUp), atStart: false)
         window.sendEvent(try event(.leftMouseDown))
         NSApp.discardEvents(matching: .leftMouseUp, before: nil)
     }
