@@ -1266,6 +1266,68 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(left.line, left.lineBefore, accuracy: 0.5, "←: the divider")
     }
 
+    func testANewListShownFromTheSlotSpringsNoFrameOnItsOwn() throws {
+        // A new query, a type filter or Escape lists new rows and selects the first of them in the same turn, while the
+        // selection is gone and its slot stands between the wings. The slot belongs to the rows it opened in, so this
+        // closes none: no frame springs on its own, nor does the divider, whatever the film does.
+        let rows = makeWing(frequent: 3, recent: 20)
+        let cases: [(name: String, rows: [QuickAccessRow], selected: Int)] = [
+            // A query: its results alone, the first of them a clip framed before.
+            ("query", [rows[4]] + Array(rows[5...]) + [rows[3]], 0),
+            // A type filter: the same wing, and fewer recent rows after it, the first of them framed before.
+            ("filter", Array(rows[0..<3]) + [rows[5], rows[6], rows[8]] + Array(rows[10...]), 3),
+        ]
+        for (name, next, selected) in cases {
+            let strip = makeStrip(medium)
+            let content = try XCTUnwrap(strip.superview)
+            content.wantsLayer = true
+            strip.window?.orderFront(nil)
+            strip.show(rows, selection: nil, details: [:], metrics: medium, applicationNames: ApplicationNames())
+            CATransaction.flush()
+            // Time stands still from here, so any spring stays at its beginning.
+            content.layer?.speed = 0
+            strip.show(next, selection: next[selected].id, details: [:], metrics: medium,
+                       applicationNames: ApplicationNames())
+            CATransaction.flush()
+            let sprung = drawings(in: strip).filter { $0.superview?.layer?.animationKeys()?.isEmpty == false }
+            XCTAssertEqual(sprung.compactMap(title(of:)), [], name)
+            XCTAssertEqual(try XCTUnwrap(dividerView(in: strip).layer).animationKeys() ?? [], [], name)
+        }
+    }
+
+    func testLeavingTheSlotAgainstTheOldestEndKeepsTheIconsWithTheDivider() throws {
+        // Four frequent clips and two recent ones: the film rests against its oldest end with the slot and without it,
+        // so → leaves the newest clip where it stands and the film does not slide. The slot closes as the wing and the
+        // divider step right instead, each springing from where it was drawn, and the icons beside the divider spring
+        // with it.
+        let strip = makeStrip(medium)
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        strip.window?.orderFront(nil)
+        let frequentLabel = try sectionLabel("QuickAccessFrequentLabel", of: strip)
+        let recentLabel = try sectionLabel("QuickAccessRecentLabel", of: strip)
+        let rows = makeWing(frequent: 4, recent: 2)
+        strip.show(rows, selection: nil, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        let newest = try midX(of: "Row 0", in: strip)
+        XCTAssertEqual(try dividerRect(in: strip).midX, 599, accuracy: 0.5)
+
+        // Time stands still from here, so the springs stay at their beginning.
+        content.layer?.speed = 0
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        // The newest clip rests where it stood. The divider's place is a step right, at 841, but it is still drawn at
+        // 599, and each icon is drawn 8 from the line where the line is drawn.
+        XCTAssertEqual(try midX(of: "Row 0", in: strip), newest, accuracy: 0.5)
+        XCTAssertEqual(try dividerRect(in: strip).midX, 841, accuracy: 0.5)
+        let line = try drawnDividerMidX(in: strip)
+        XCTAssertEqual(line, 599, accuracy: 0.5)
+        XCTAssertFalse(frequentLabel.isHidden)
+        XCTAssertFalse(recentLabel.isHidden)
+        XCTAssertEqual(try drawnMinX(of: frequentLabel) + frequentLabel.frame.width, line - 8, accuracy: 0.5)
+        XCTAssertEqual(try drawnMinX(of: recentLabel), line + 8, accuracy: 0.5)
+    }
+
     func testFromTheSlotBesideTheDividerTheFingersStepIntoEitherWing() throws {
         // With the selection gone the fingers can carry it either way from the slot: toward newer clips into the
         // frequent wing, as well as toward older ones.

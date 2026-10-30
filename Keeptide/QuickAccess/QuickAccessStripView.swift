@@ -142,8 +142,10 @@ final class QuickAccessStripView: NSView {
         let running = drawnOffset
         let previousIndex = selectedIndex
         let labelsBefore = labelPlaces
-        // The row the empty slot of a vanished selection stood before, which goes once a row is chosen.
+        // The row the empty slot of a vanished selection stood before, which goes once a row is chosen among the rows
+        // it opened in.
         let closingSlot = previousIndex < 0 ? restingPlacement?.slotBefore : nil
+        let rowsBefore = previousIndex < 0 ? self.rows.map(\.id) : nil
         self.rows = rows
         frequentCount = rows.prefix { $0.isFrequent }.count
         self.selection = selection
@@ -197,24 +199,34 @@ final class QuickAccessStripView: NSView {
             }
             placeFrames()
         }
-        if slides, let closingSlot, closingSlot > 0 { closeSlot(before: closingSlot, selecting: index, metrics) }
-        placeSectionLabels(from: labelsBefore, sliding: displacement)
+        // New rows, such as a new query's, select their first row from scratch: the slot went with the rows it opened
+        // in, and nothing closes.
+        var dividerSpring: CGFloat = 0
+        if slides, let closingSlot, closingSlot > 0, rowsBefore == rows.map(\.id) {
+            dividerSpring = closeSlot(before: closingSlot, selecting: index, metrics)
+        }
+        // The icons beside the divider slide as far as it starts out from its place: with the film, and with its own
+        // spring as a slot closes.
+        placeSectionLabels(from: labelsBefore, sliding: displacement + dividerSpring)
         if selectionChanged { announceSelection() }
         reportFramedRows()
     }
 
-    /// The empty slot a vanished selection left between the wings goes as `index` is chosen: from `slot` on, the frames
-    /// close up a step within the film. The film slides with the chosen clip, so the frames on its side of the slot
-    /// slide with it from where they were drawn. Those on the other side, and the divider when it is one of them, would
-    /// then start a step off, so each springs that step back on its own, and starts out where it was drawn too.
-    private func closeSlot(before slot: Int, selecting index: Int, _ metrics: StripMetrics) {
+    /// The empty slot a vanished selection left between the wings goes as `index` is chosen among the same rows:
+    /// from `slot` on, the frames close up a step within the film. The film slides with the chosen clip, so the frames
+    /// on its side of the slot slide with it from where they were drawn. Those on the other side, and the divider when
+    /// it is one of them, would then start a step off, so each springs that step back on its own, and starts out where
+    /// it was drawn too. Returns how far the divider's own spring starts it from its place.
+    private func closeSlot(before slot: Int, selecting index: Int, _ metrics: StripMetrics) -> CGFloat {
         let chosenAfter = index >= slot
         let places = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
         for (id, host) in frames {
             guard let place = places[id], (place >= slot) != chosenAfter else { continue }
             springBack(host.layer, from: place >= slot ? metrics.step : -metrics.step)
         }
-        if chosenAfter { springBack(divider.layer, from: -metrics.step) }
+        guard chosenAfter else { return 0 }
+        springBack(divider.layer, from: -metrics.step)
+        return -metrics.step
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -391,12 +403,12 @@ final class QuickAccessStripView: NSView {
     /// Puts the section icons beside the divider where the film lies, the fingers' push included, or one of them at an
     /// end of the band once the divider has gone off that end; without a divider both are hidden. Each is centred
     /// between the band's bottom edge and the ring around a selected card. `shown` is where they stood before the film
-    /// moved. While the film slides from `slide` away, an icon still shown slides from where it is drawn with the
-    /// film's spring, and one that comes into view rides in with the film; one that stays where it was, such as one
-    /// resting at an end, does not move. Without a slide, and with Reduce Motion, they go straight there. While the
-    /// film is still sliding or springing back, an icon still shown is not hidden when the divider leaves its end of
-    /// the band: it stays beside the divider, with the film, until the motion has `settled` and each icon goes where
-    /// the divider puts it.
+    /// moved. While the divider slides from `slide` away, with the film or on its own as a vanished selection's slot
+    /// closes, an icon still shown slides from where it is drawn with the same spring, and one that comes into view
+    /// rides in with the divider; one that stays where it was, such as one resting at an end, does not move. Without a
+    /// slide, and with Reduce Motion, they go straight there. While the film is still sliding or springing back, an
+    /// icon still shown is not hidden when the divider leaves its end of the band: it stays beside the divider, with
+    /// the film, until the motion has `settled` and each icon goes where the divider puts it.
     private func placeSectionLabels(from shown: StripSectionLabels, sliding slide: CGFloat, settled: Bool = false) {
         var places = StripSectionLabels()
         if let metrics, let rest = restingPlacement, let line = StripLayout.dividerX(metrics, placement: rest) {

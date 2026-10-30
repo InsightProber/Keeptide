@@ -3484,13 +3484,13 @@ final class AppLaunchTests: XCTestCase {
         return try XCTUnwrap(toolbar)
     }
 
-    /// Where the frame of the clip with this title is drawn, in the strip's coordinates. Only frames on screen,
-    /// the ones VoiceOver reads, are looked at; of a clip shown in both wings, the leftmost.
     /// Whether a frame with this title is on screen, without failing the test when there is none: for a wait.
     private func hasFrame(titled title: String, in strip: QuickAccessStripView) -> Bool {
         framesOnScreen(in: strip).contains { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }
     }
 
+    /// Where the frame of the clip with this title is drawn, in the strip's coordinates. Only frames on screen,
+    /// the ones VoiceOver reads, are looked at; of a clip shown in both wings, the leftmost.
     private func frame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
         let frames = framesOnScreen(in: strip)
         let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
