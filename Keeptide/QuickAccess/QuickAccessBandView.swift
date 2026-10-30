@@ -41,9 +41,7 @@ struct QuickAccessBandView: View {
 
     private var metrics: StripMetrics { layout.metrics }
     private var hasFrames: Bool { !state.selection.rows.isEmpty }
-    private var selectedRow: QuickAccessRow? {
-        state.selection.selection.flatMap { selected in state.selection.rows.first { $0.ref == selected } }
-    }
+    private var selectedRow: QuickAccessRow? { state.selection.selectedRow }
 
     var body: some View {
         VStack(spacing: layout.previewGap) {

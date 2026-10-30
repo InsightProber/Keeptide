@@ -10,14 +10,15 @@ import SwiftUI
 /// The strip shows the selection it is given and nothing else. A click, a key or a swipe only asks for
 /// a change through `onSelect` or `onCommand`; the frames move when `show` brings the new selection.
 /// A selected frame's ring is drawn outside the frame, so nothing in the strip clips to its bounds.
+/// Each row has a frame of its own, so a clip listed in both wings has two, told apart by row ID.
 @MainActor
 final class QuickAccessStripView: NSView {
-    var onSelect: ((ContentRef) -> Void)?
+    var onSelect: ((QuickAccessRow.ID) -> Void)?
     var onCommand: ((QuickAccessCommand) -> Void)?
-    /// The rows that have a frame, the selected one first, and the last row on screen, which decides
-    /// when to load more. Called when either changes, and again while a framed row has no details.
+    /// The clips of the rows that have a frame, each once and the selected one first, and the last row on screen,
+    /// which decides when to load more. Called when either changes, and again while a framed row has no details.
     var onVisibleRefsChanged: (([ContentRef], Int) -> Void)?
-    var onContextMenu: ((ContentRef) -> NSMenu?)?
+    var onContextMenu: ((QuickAccessRow.ID) -> NSMenu?)?
     var haptics: any HapticPerforming = SystemHaptics()
     /// Whether the trackpad ticks for each step of the selection. The strip moves the same either way.
     var ticksEnabled = true
@@ -46,7 +47,7 @@ final class QuickAccessStripView: NSView {
     private static let slideBounce: CGFloat = 0.15
 
     private var rows: [QuickAccessRow] = []
-    private var selection: ContentRef?
+    private var selection: QuickAccessRow.ID?
     /// The selected row, or -1 when the selection vanished and its place at the dock stays empty.
     private var selectedIndex = -1
     /// Whether the last row is the oldest there is. Until it is, the film does not stop at its right end.
@@ -56,7 +57,7 @@ final class QuickAccessStripView: NSView {
     private var applicationNames: ApplicationNames?
     /// Holds the frames and moves them as one: it follows the fingers and carries each slide.
     private let film = NSView()
-    private var frames: [ContentRef: StripFrameHost] = [:]
+    private var frames: [QuickAccessRow.ID: StripFrameHost] = [:]
     private var scroller = DetentScroller()
     /// How far past the selected clip the fingers have carried the selection, as a share of a step.
     private var progress: CGFloat = 0
@@ -76,9 +77,9 @@ final class QuickAccessStripView: NSView {
     /// Springs get names so that `drawnOffset` can tell one is running, since a layer does not list nameless
     /// animations. Each name is new: a spring added under a running one's name would replace it.
     private var springCount = 0
-    private var hovered: ContentRef?
-    /// The clip chosen by the click that began the current run of clicks.
-    private var clickedRef: ContentRef?
+    private var hovered: QuickAccessRow.ID?
+    /// The row chosen by the click that began the current run of clicks.
+    private var clickedRow: QuickAccessRow.ID?
     private var reported: (refs: [ContentRef], lastOnScreen: Int)?
 
     override init(frame frameRect: NSRect) {
@@ -100,7 +101,7 @@ final class QuickAccessStripView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// `oldestIsLoaded` is false while more rows may follow the last one, so the film does not stop there.
-    func show(_ rows: [QuickAccessRow], selection: ContentRef?, details: [ContentRef: ClipDetail],
+    func show(_ rows: [QuickAccessRow], selection: QuickAccessRow.ID?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
@@ -115,7 +116,7 @@ final class QuickAccessStripView: NSView {
         self.metrics = metrics
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
-        let index = selection.flatMap { selected in rows.firstIndex { $0.ref == selected } } ?? -1
+        let index = selection.flatMap { selected in rows.firstIndex { $0.id == selected } } ?? -1
         if index != previousIndex {
             // The fingers carried the clip selected before; their next event measures from this one.
             progress = 0
@@ -247,7 +248,7 @@ final class QuickAccessStripView: NSView {
             let start = slideStart ?? rest.firstOrigin
             return framedRows(metrics, origins: min(start, rest.firstOrigin)...max(start, rest.firstOrigin))
         } ?? 0..<0
-        let wanted = Set(rows[indices].map(\.ref))
+        let wanted = Set(rows[indices].map(\.id))
         var spare = frames.filter { !wanted.contains($0.key) }.map(\.value)
         frames = frames.filter { wanted.contains($0.key) }
         let origins = rest.map { StripLayout.frameOrigins(metrics, count: indices.upperBound, placement: $0) } ?? []
@@ -259,12 +260,12 @@ final class QuickAccessStripView: NSView {
                 applicationIcon: icon, metrics: metrics,
                 // The band takes its colour from the very icon the frame shows, worked out with the app's first frame.
                 headerTint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
-                isSelected: row.ref == selection
+                isSelected: row.id == selection
             )
-            let host = frames[row.ref] ?? spare.popLast() ?? addFrame(view)
-            frames[row.ref] = host
+            let host = frames[row.id] ?? spare.popLast() ?? addFrame(view)
+            frames[row.id] = host
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
-                      isHovered: row.ref == hovered)
+                      isHovered: row.id == hovered)
             host.frame = frameRect(origin: origins[index], metrics)
         }
         spare.forEach { $0.removeFromSuperview() }
@@ -287,8 +288,11 @@ final class QuickAccessStripView: NSView {
         guard let metrics else { return }
         let rest = restingPlacement.map { $0.firstOrigin...$0.firstOrigin }
         let framed = rest.map { framedRows(metrics, origins: $0) } ?? 0..<0
-        // The selected clip first and then outward, so the details nearest it are read first.
-        let refs = framed.sorted { (abs($0 - selectedIndex), $0) < (abs($1 - selectedIndex), $1) }.map { rows[$0].ref }
+        // The selected clip first and then outward, so the details nearest it are read first. A clip framed in both
+        // wings is asked for once, where it is nearest.
+        var asked = Set<ContentRef>()
+        let refs = framed.sorted { (abs($0 - selectedIndex), $0) < (abs($1 - selectedIndex), $1) }
+            .map { rows[$0].ref }.filter { asked.insert($0).inserted }
         let lastOnScreen = rest.map { min(rows.count - 1, rowsOnScreen(metrics, origins: $0).last) } ?? -1
         if let reported, reported.refs == refs, reported.lastOnScreen == lastOnScreen,
            refs.allSatisfy({ details[$0] != nil }) { return }
@@ -413,34 +417,34 @@ final class QuickAccessStripView: NSView {
     override func mouseDown(with event: NSEvent) {
         // A double click is a click: it never copies, and its second click goes to the clip the first one
         // chose, even after the film has slid and another frame lies under the pointer.
-        if event.clickCount <= 1 { clickedRef = ref(at: event) }
-        guard let ref = clickedRef else { return super.mouseDown(with: event) }
-        onSelect?(ref)
+        if event.clickCount <= 1 { clickedRow = row(at: event) }
+        guard let row = clickedRow else { return super.mouseDown(with: event) }
+        onSelect?(row)
         window?.makeFirstResponder(self)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        ref(at: event).flatMap { onContextMenu?($0) }
+        row(at: event).flatMap { onContextMenu?($0) }
     }
 
-    override func mouseEntered(with event: NSEvent) { setHovered(ref(at: event)) }
+    override func mouseEntered(with event: NSEvent) { setHovered(row(at: event)) }
 
-    override func mouseMoved(with event: NSEvent) { setHovered(ref(at: event)) }
+    override func mouseMoved(with event: NSEvent) { setHovered(row(at: event)) }
 
     override func mouseExited(with event: NSEvent) { setHovered(nil) }
 
     /// The row whose frame is under the pointer where it is drawn at this moment, even in mid-slide.
-    private func ref(at event: NSEvent) -> ContentRef? {
+    private func row(at event: NSEvent) -> QuickAccessRow.ID? {
         var point = film.convert(event.locationInWindow, from: nil)
         point.x -= drawnOffset
         return frames.first { $0.value.frame.contains(point) }?.key
     }
 
     /// A faint wash on the frame under the pointer. It only shows the pointer; it never selects.
-    private func setHovered(_ ref: ContentRef?) {
-        guard ref != hovered else { return }
-        hovered = ref
-        for (row, host) in frames { host.isHovered = row == ref }
+    private func setHovered(_ row: QuickAccessRow.ID?) {
+        guard row != hovered else { return }
+        hovered = row
+        for (framed, host) in frames { host.isHovered = framed == row }
     }
 
     // MARK: Keys

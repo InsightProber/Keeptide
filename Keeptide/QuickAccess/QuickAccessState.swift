@@ -9,6 +9,13 @@ protocol QuickAccessSearch: Sendable {
 
 extension SearchService: QuickAccessSearch {}
 
+/// Where quick access reads how often clips were used: the local usage store, or a stand-in in tests.
+protocol QuickAccessUsage: Sendable {
+    func frequent(minimumCount: Int64, since: Date, limit: Int) async throws -> [UsageSummary]
+}
+
+extension LocalUsageStore: QuickAccessUsage {}
+
 /// The store-backed services quick access reads and acts through; nil while the
 /// library is not open.
 @MainActor
@@ -19,6 +26,8 @@ struct QuickAccessServices {
     /// What the strip frames and the image preview show comes from here; without it they show only what a
     /// row already knows.
     var preview: PreviewService? = nil
+    /// How often clips were used, for the frequent wing; without it there is no wing.
+    var usage: (any QuickAccessUsage)? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -67,6 +76,13 @@ final class QuickAccessState {
     /// copy reads through as well, so a copy made just after the panel opens waits behind these few reads and
     /// not behind one for every frame.
     static let detailReadLimit = 2
+    /// A clip joins the frequent wing once it was used this many times, the last time within `frequentWindow`.
+    static let frequentMinimumUses: Int64 = 2
+    static let frequentWindow: TimeInterval = 7_776_000      // 90 days
+    /// The frequent wing lists at most this many clips.
+    static let frequentLimit = 20
+    /// The frequent clips read as a session starts, so that a type filter can take its first twenty from them.
+    static let frequentCandidateLimit = 200
 
     private(set) var query = ""
     private(set) var kinds: Set<ContentKind> = []
@@ -127,6 +143,12 @@ final class QuickAccessState {
     /// Reads started and not yet returned. One that was cancelled still counts until it returns, since it
     /// keeps its place on the writer context until then.
     @ObservationIgnored private var detailReadsRunning = 0
+    /// How many cards the band showed whole as the panel opened, which the frequent wing leaves out of its clips; nil
+    /// lists no wing.
+    @ObservationIgnored private var frequentWingFirstScreen: Int?
+    /// The session's one read of the frequent wing's candidates, in rank order: each the row of its clip, or nil where
+    /// the clip cannot show. nil without a wing to read.
+    @ObservationIgnored private var frequentRead: Task<[QuickAccessRow?], Never>?
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -141,8 +163,11 @@ final class QuickAccessState {
     /// is folded again.
     var isSearchExpanded: Bool { !query.isEmpty || isSearchUnfolded }
 
-    /// A search has another page to fetch, so the last row listed is not the last there is.
-    var hasMoreRows: Bool { !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count }
+    /// A search has another page to fetch, so the last row listed is not the last there is. The frequent wing is no
+    /// page of the search, so only the rows after it count.
+    var hasMoreRows: Bool {
+        !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count - selection.frequentCount
+    }
 
     /// What the panel offers for the selected row.
     var actions: QuickAccessActions { actions(for: selection.selection) }
@@ -162,8 +187,11 @@ final class QuickAccessState {
     }
 
     /// Records the front app window as the target, before the panel takes the keys, and lists recent clips.
-    func open() {
+    /// `firstScreen` is how many cards the band shows whole (`StripLayout.firstScreenCount`). With it the frequent wing
+    /// leads the recent clips, without the clips among the first `firstScreen` of them; nil lists no wing.
+    func open(frequentWingFirstScreen firstScreen: Int? = nil) {
         isOpen = true
+        frequentWingFirstScreen = firstScreen
         query = ""
         kinds = []
         isSearchUnfolded = false
@@ -176,6 +204,8 @@ final class QuickAccessState {
     func close() {
         isOpen = false
         cancelLoads()
+        frequentRead?.cancel()
+        frequentRead = nil
         detailLoads.values.forEach { $0.cancel() }
         detailLoads = [:]
         waitingDetails = []
@@ -191,7 +221,8 @@ final class QuickAccessState {
     }
 
     /// The library opened or closed; an open panel reloads its current query. The new session keeps the target
-    /// recorded as the panel opened, and the front window is not read again (decision 1).
+    /// recorded as the panel opened, and the front window is not read again (decision 1). It reads the frequent wing
+    /// again, from the library it now has.
     func servicesDidChange() {
         guard isOpen else { return }
         startSession(recordingTarget: false)
@@ -272,8 +303,9 @@ final class QuickAccessState {
         }
     }
 
-    func select(_ ref: ContentRef) {
-        selection.select(ref)
+    /// Selects a listed row. A clip listed in both wings is two rows, and each is selected on its own.
+    func select(_ id: QuickAccessRow.ID) {
+        selection.select(id)
         selectionChanged()
     }
 
@@ -282,7 +314,7 @@ final class QuickAccessState {
         let move = selection.move(by: offset)
         guard move == .moved else { return move }
         selectionChanged()
-        if let selected = selection.selection, let index = selection.rows.firstIndex(where: { $0.ref == selected }) {
+        if let selected = selection.selectedID, let index = selection.rows.firstIndex(where: { $0.id == selected }) {
             loadMoreIfNeeded(visibleRow: index)
         }
         return move
@@ -367,8 +399,9 @@ final class QuickAccessState {
     func loadMoreIfNeeded(visibleRow index: Int) {
         guard hasMoreRows, loadingMore == nil, phase == .results, index >= selection.rows.count - 10,
               let search = services()?.search, let generation = currentGeneration else { return }
+        // The search's own rows follow the frequent wing, which is no page of it.
         let request = SearchRequest(query: query, kinds: kinds, generation: generation,
-                                    offset: selection.rows.count, limit: Self.pageSize)
+                                    offset: selection.rows.count - selection.frequentCount, limit: Self.pageSize)
         loadingMore = Task {
             defer { if self.currentGeneration == generation { self.loadingMore = nil } }
             do {
@@ -412,7 +445,30 @@ final class QuickAccessState {
             pasteTarget = nil
             directPaste = nil
         }
+        readFrequentWing()
         reload()
+    }
+
+    /// Starts the session's one read of the frequent wing's candidates, which every list of the session takes its wing
+    /// from: uses recorded while the panel is open show the next time it opens. A read that fails finds none, and the
+    /// recent clips are listed without a wing.
+    private func readFrequentWing() {
+        frequentRead?.cancel()
+        frequentRead = nil
+        guard frequentWingFirstScreen != nil, let services = services(), let usage = services.usage else { return }
+        let repository = services.repository
+        frequentRead = Task {
+            do {
+                let uses = try await usage.frequent(minimumCount: Self.frequentMinimumUses,
+                                                    since: Date(timeIntervalSinceNow: -Self.frequentWindow),
+                                                    limit: Self.frequentCandidateLimit)
+                try Task.checkCancellation()
+                let items = try await repository.summaries(for: uses.map(\.itemID))
+                return Self.frequentCandidates(uses, items)
+            } catch {
+                return []
+            }
+        }
     }
 
     private func reload() {
@@ -447,7 +503,8 @@ final class QuickAccessState {
         guard isCurrent(generation) else { return }
         // A refresh that fails keeps the clips already listed.
         if summaries == nil, isRefresh { return }
-        let rows = (summaries ?? []).compactMap { Self.row(from: $0) }
+        guard let rows = await ledByFrequentWing((summaries ?? []).compactMap { Self.row(from: $0) },
+                                                 generation: generation) else { return }
         applyRows(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
     }
@@ -460,17 +517,35 @@ final class QuickAccessState {
         }
         do {
             for try await page in search.search(request) {
-                guard isCurrent(generation) else { return }
-                applyRows(page.results.map { Self.row(from: $0) }, generation: generation,
-                          isComplete: page.isComplete, keepsChosenRow: true)
+                guard isCurrent(generation),
+                      let rows = await ledByFrequentWing(page.results.map { Self.row(from: $0) },
+                                                         generation: generation) else { return }
+                applyRows(rows, generation: generation, isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
-                phase = !page.results.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
+                phase = !rows.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
             }
         } catch {
             guard isCurrent(generation) else { return }
             showSearchUnavailable(generation)
         }
+    }
+
+    /// `rows` led by the frequent wing, once the session's read of it is done, so that the two show together and the
+    /// film does not jump. Without a filter the wing lists those of the first `frequentLimit` candidates that can show,
+    /// and leaves a rank that cannot show empty; with one, the first `frequentLimit` of every candidate that match it.
+    /// Either way it leaves out the clips among the first screen of `rows`. A query with words lists its results
+    /// alone, without waiting for the read, and there is no wing over no rows. nil once `generation` is not current.
+    private func ledByFrequentWing(_ rows: [QuickAccessRow], generation: UInt64) async -> [QuickAccessRow]? {
+        guard !rows.isEmpty, let firstScreen = frequentWingFirstScreen, let read = frequentRead,
+              ParsedQuery(query).isEmpty else { return rows }
+        let candidates = await read.value
+        guard isCurrent(generation) else { return nil }
+        let pool = kinds.isEmpty ? Array(candidates.prefix(Self.frequentLimit)) : candidates
+        let shown = pool.compactMap { $0 }.filter { kinds.isEmpty || kinds.contains($0.kind) }
+            .prefix(Self.frequentLimit)
+        let firstScreenClips = Set(rows.prefix(firstScreen).map(\.ref))
+        return shown.filter { !firstScreenClips.contains($0.ref) } + rows
     }
 
     private func showSearchUnavailable(_ generation: UInt64) {
@@ -596,6 +671,18 @@ final class QuickAccessState {
         case .rebuilding: .rebuilding
         case .unavailable: .searchUnavailable
         case .ready, .updating: nil
+        }
+    }
+
+    /// The frequent wing's candidates in rank order: each the row of its clip with its use count, or nil where the clip
+    /// cannot show, as when it was deleted or left the history. An item ranked twice keeps its first place.
+    private static func frequentCandidates(_ uses: [UsageSummary], _ items: [ItemSummary]) -> [QuickAccessRow?] {
+        let itemsByID = Dictionary(items.map { ($0.itemID, $0) }, uniquingKeysWith: { first, _ in first })
+        var ranked = Set<ItemID>()
+        return uses.filter { ranked.insert($0.itemID).inserted }.map { use in
+            guard var row = itemsByID[use.itemID].flatMap({ Self.row(from: $0) }) else { return nil }
+            row.frequentUses = use.useCount
+            return row
         }
     }
 

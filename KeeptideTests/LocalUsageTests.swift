@@ -129,6 +129,19 @@ final class LocalUsageTests: XCTestCase {
         }
     }
 
+    func testFrequentKeepsTheMostUsedWhenItStopsAtTheLimit() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let refs = (0..<4).map { _ in makeRef() }
+        // Written least used first, so a limit taken before the ranking would keep the least used.
+        for (ref, times) in zip(refs, [2, 3, 4, 5]) { try await use(ref, times: times, lastAt: 300, in: store) }
+
+        let frequent = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 2)
+
+        XCTAssertEqual(frequent.map(\.useCount), [5, 4])
+        XCTAssertEqual(frequent.map(\.itemID), [refs[3].itemID, refs[2].itemID])
+    }
+
     func testFrequentLeavesOutMemoUses() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)

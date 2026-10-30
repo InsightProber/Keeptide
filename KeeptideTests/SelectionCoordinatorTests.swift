@@ -55,7 +55,7 @@ final class SelectionCoordinatorTests: XCTestCase {
         progressive.beginGeneration(1)
         progressive.apply([a, b], generation: 1, isComplete: false)
         XCTAssertNil(progressive.executableSelection)
-        progressive.select(b.ref)
+        progressive.select(b.id)
         XCTAssertEqual(progressive.executableSelection, b.ref)
 
         var completed = SelectionCoordinator()
@@ -146,7 +146,7 @@ final class SelectionCoordinatorTests: XCTestCase {
         selection.beginGeneration(2)
 
         XCTAssertEqual(selection.move(by: 1), .unchanged)
-        selection.select(b.ref)
+        selection.select(b.id)
         selection.apply([fresh, c], generation: 2, isComplete: false)
 
         XCTAssertEqual(selection.selection, fresh.ref)
@@ -178,6 +178,91 @@ final class SelectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(selection.rows, [a, b, c])
         XCTAssertEqual(selection.selection, b.ref)
     }
+
+    // MARK: The frequent wing
+
+    func testTheFirstPageSelectsTheNewestRecentRowAfterTheWing() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 5), fb = frequent(b, uses: 3)
+
+        selection.apply([fa, fb, c, a], generation: 1, isComplete: true)
+
+        XCTAssertEqual(selection.selectedID, c.id)
+        XCTAssertEqual(selection.frequentCount, 2)
+        XCTAssertEqual(selection.move(by: -1), .moved)
+        XCTAssertEqual(selection.selectedID, fb.id)
+    }
+
+    func testTheSameClipInBothWingsIsTwoRows() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 2)
+        selection.apply([fa, c, a], generation: 1, isComplete: true)
+
+        selection.select(a.id)
+
+        XCTAssertEqual(selection.selection, a.ref)
+        XCTAssertEqual(selection.move(by: -1), .moved)
+        XCTAssertEqual(selection.selectedID, c.id)
+        XCTAssertEqual(selection.move(by: 1), .moved)
+        XCTAssertEqual(selection.selectedID, a.id, "The recent copy, not the frequent one")
+        XCTAssertEqual(selection.move(by: 1), .atBottom)
+    }
+
+    func testAPageAppendedAfterTheWingKeepsClipsAlsoInIt() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 2)
+        selection.apply([fa, b], generation: 1, isComplete: true)
+
+        selection.append([a, c], generation: 1)
+
+        XCTAssertEqual(selection.rows.map(\.id), [fa.id, b.id, a.id, c.id])
+    }
+
+    func testAVanishedSelectionLeavesItsSlotBeforeTheWing() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 3), fb = frequent(b, uses: 2)
+        selection.apply([fa, fb, c, fresh], generation: 1, isComplete: true)
+        XCTAssertEqual(selection.move(by: 1), .moved)
+        XCTAssertEqual(selection.selectedID, fresh.id)
+
+        // The chosen clip goes, and nothing is selected in its place.
+        selection.apply([fa, fb, c], generation: 1, isComplete: true)
+        XCTAssertNil(selection.selectedID)
+        XCTAssertTrue(selection.selectionLost)
+
+        // The empty slot lies before the whole film, the wing included: nothing is newer, and the next row is the first
+        // frequent one, not the first recent one.
+        XCTAssertEqual(selection.move(by: -1), .atTop)
+        XCTAssertNil(selection.selectedID)
+        XCTAssertEqual(selection.move(by: 1), .moved)
+        XCTAssertEqual(selection.selectedID, fa.id)
+    }
+
+    func testAFrequentCopyThatLeavesTheWingIsLostThoughItsClipStays() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 2)
+        selection.apply([fa, b, a], generation: 1, isComplete: true)
+        selection.select(fa.id)
+
+        // The clip is copied again and joins the first screen, so the wing no longer lists it.
+        selection.apply([a, b], generation: 1, isComplete: true)
+
+        XCTAssertNil(selection.selectedID)
+        XCTAssertNil(selection.selectedRow)
+        XCTAssertTrue(selection.selectionLost)
+    }
+}
+
+/// A copy of `row` listed in the frequent wing, used `uses` times.
+private func frequent(_ row: QuickAccessRow, uses: Int64) -> QuickAccessRow {
+    var copy = row
+    copy.frequentUses = uses
+    return copy
 }
 
 private func row(_ title: String) -> QuickAccessRow {
