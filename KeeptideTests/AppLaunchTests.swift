@@ -601,9 +601,11 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(toolbar.statusLabel.frame.maxX, toolbar.moreButton.frame.minX - 12, accuracy: 0.5)
         XCTAssertGreaterThan(toolbar.statusLabel.frame.minX, toolbar.filters.frame.maxX)
 
-        // Once the scan is done, Return's hint comes back.
+        // Once the scan is done, Return's hint comes back, as soon as the toolbar has followed the state.
         gate.open()
-        try await SearchTestSupport.waitUntil { controller.state.selection.isComplete }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.isComplete && toolbar.note == .action(title: "Copy", enabled: true, hint: nil)
+        }
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.note, .action(title: "Copy", enabled: true, hint: nil))
         XCTAssertFalse(toolbar.copyHint.isHidden)
@@ -615,7 +617,9 @@ final class AppLaunchTests: XCTestCase {
             controller.state.selection.rows.count == 4 && controller.state.selection.rows.first?.kind == .image
         }
         controller.perform(.plainText)
-        try await SearchTestSupport.waitUntil { controller.state.failure != nil }
+        try await SearchTestSupport.waitUntil {
+            controller.state.failure != nil && toolbar.note == .failure("This item has no plain text.")
+        }
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.note, .failure("This item has no plain text."))
         XCTAssertTrue(toolbar.copyHint.isHidden)
@@ -1669,6 +1673,72 @@ final class AppLaunchTests: XCTestCase {
         let band = try bandRect(in: window)
         XCTAssertEqual(band.height, 340)
         XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 22, accuracy: 0.5)
+    }
+
+    func testWithFrequentClipsOnButNoneUsedTwiceTheStripListsOnlyRecentClips() async throws {
+        // clip 9, off the first screen, was used once; a clip joins the wing once it was used twice.
+        let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: ["clip 9": 1])
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width, showsFrequentClips: true)
+        let left = strip.bounds.midX - metrics.bandWidth / 2
+
+        // No wing: the recent clips alone, the newest at the left dock, with no divider and no section icons, and the
+        // frames are the list's own children, in no groups.
+        XCTAssertEqual(state.selection.frequentCount, 0)
+        XCTAssertEqual(state.selection.rows.map(\.title), Array(Self.wingTitles.reversed()))
+        XCTAssertEqual(try frame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
+        let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
+        let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
+        let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
+        XCTAssertTrue(frequentIcon.isHidden && recentIcon.isHidden && divider.isHidden)
+        let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView], "The list's own children, in no groups")
+        XCTAssertFalse(frames.isEmpty)
+        // The setting is on, so the band keeps the room below the cards that the icons would have: 346 high, with 28
+        // below the cards.
+        window.contentView?.layoutSubtreeIfNeeded()
+        let band = try bandRect(in: window)
+        XCTAssertEqual(band.height, 346)
+        XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 28, accuracy: 0.5)
+    }
+
+    func testWithAFrequentWingSpaceOpensTheNewestClipsPreviewAboveTheBand() async throws {
+        let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        try await waitForWingFrames(in: strip)
+        // The band is 346 high, with the room below the cards for the section icons.
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width, showsFrequentClips: true)
+        let band = StripLayout.bandFrame(metrics, in: Self.wingScreen)
+        assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.firstResponder === strip)
+
+        // Space opens the preview of the selected clip, the newest, and not of the most used one, which leads the rows.
+        // The panel grows to hold the card above the band, and the band moves down since the card has no room there.
+        strip.keyDown(with: try key(kVK_Space, " "))
+        XCTAssertTrue(state.isPreviewExpanded)
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+        settleLayout()
+        let placed = StripLayout.previewLayout(band: band, in: Self.wingScreen)
+        XCTAssertLessThan(placed.band.minY, band.minY)
+        assertFrame(window.frame, places: StripLayout.panelFrame(band: placed.band, preview: placed.preview,
+                                                                 in: Self.wingScreen))
+        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        XCTAssertEqual(state.selection.rows.first?.title, "clip 11")
+        XCTAssertEqual(text.string, "clip 0")
+        XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
+        XCTAssertTrue(window.firstResponder === strip, "The strip keeps the keys")
+
+        // Escape closes the card and leaves the band as it was, the wing still before the newest clip.
+        strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
+        settleLayout()
+        XCTAssertFalse(state.isPreviewExpanded)
+        assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
+        XCTAssertEqual(state.selection.frequentCount, 3)
+        XCTAssertTrue(window.firstResponder === strip)
     }
 
     func testARightClickOnEitherCopyOfAClipActsOnTheCopyClicked() async throws {
