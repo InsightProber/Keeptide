@@ -82,6 +82,17 @@ final class StripTypographyTests: XCTestCase {
         XCTAssertEqual(ClipInfoFormatter.spoken("22 characters"), "22 characters")
     }
 
+    func testUsesAreCountedWithGroupedDigits() {
+        let en = Locale(identifier: "en_US")
+        XCTAssertEqual(ClipInfoFormatter.uses(2, locale: en), "Used 2 times")
+        XCTAssertEqual(ClipInfoFormatter.uses(1_234, locale: en), "Used 1,234 times")
+        XCTAssertEqual(ClipInfoFormatter.uses(12_345_678, locale: en), "Used 12,345,678 times")
+        // Spoken, it follows the kind after a comma, so it starts in lower case.
+        XCTAssertEqual(ClipInfoFormatter.uses(1_234, spoken: true, locale: en), "used 1,234 times")
+        // Only the grouping of digits follows the user's region; the words are the interface's English.
+        XCTAssertEqual(ClipInfoFormatter.uses(1_234, locale: Locale(identifier: "de_DE")), "Used 1.234 times")
+    }
+
     func testRelativeTimeOnTheCardAndSpoken() {
         let en = Locale(identifier: "en_US")
         let now = Date(timeIntervalSince1970: 1_800_000_000)

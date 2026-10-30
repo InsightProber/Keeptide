@@ -449,6 +449,97 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(drawings(in: strip).count, 11)
     }
 
+    func testTheTwoWingsReadAsTwoGroups() throws {
+        let strip = makeStrip()
+        let rows = [frequent(makeRow(title: "Freq 0"), uses: 12), frequent(makeRow(title: "Freq 1"), uses: 3)]
+            + makeRows(3)
+
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+
+        // The list reads the frequent clips and the recent ones as two groups, in the order they are shown.
+        let groups = try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+        XCTAssertEqual(groups.map { $0.accessibilityLabel() }, ["Frequent", "Recent"])
+        XCTAssertEqual(groups.map { $0.accessibilityRole() }, [.group, .group])
+        guard groups.count == 2 else { return XCTFail("Expected a group for each wing, got \(groups.count)") }
+        XCTAssertTrue(groups.allSatisfy { $0.isAccessibilityElement() })
+        XCTAssertTrue(groups.allSatisfy { ($0.accessibilityParent() as AnyObject?) === strip })
+        // A frequent clip says how often it was used in place of its time.
+        let frequent = try XCTUnwrap(groups[0].accessibilityChildren() as? [NSView])
+        XCTAssertEqual(frequent.map { $0.accessibilityLabel() },
+                       ["Text, used 12 times: Freq 0", "Text, used 3 times: Freq 1"])
+        XCTAssertTrue(frequent.allSatisfy { ($0.accessibilityParent() as AnyObject?) === groups[0] })
+        let recent = try XCTUnwrap(groups[1].accessibilityChildren() as? [NSView])
+        XCTAssertEqual(recent.compactMap { $0.accessibilityLabel()?.components(separatedBy: ": ").last },
+                       ["Row 0", "Row 1", "Row 2"])
+        XCTAssertTrue(recent.allSatisfy { ($0.accessibilityParent() as AnyObject?) === groups[1] })
+        // The list's selection is still the selected clip's frame.
+        XCTAssertEqual(strip.accessibilitySelectedChildren() as? [NSView], [recent[0]])
+        // Each group covers its frames: in the strip's coordinates, and on the screen where the strip is.
+        for (group, members) in [(groups[0], frequent), (groups[1], recent)] {
+            let covered = members.map { strip.convert($0.bounds, from: $0) }.reduce(NSRect.null) { $0.union($1) }
+            XCTAssertEqual(group.accessibilityFrameInParentSpace(), covered, group.accessibilityLabel() ?? "")
+            XCTAssertEqual(group.accessibilityFrame(), NSAccessibility.screenRect(fromView: strip, rect: covered),
+                           group.accessibilityLabel() ?? "")
+        }
+        // The two groups are made once: another selection is read through the same two.
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let again = try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+        XCTAssertTrue(again.elementsEqual(groups, by: ===))
+
+        // Without frequent rows the frames are the list's own children again, and the list is their parent.
+        let plain = makeRows(3)
+        strip.show(plain, selection: plain[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        XCTAssertEqual(frames.compactMap { $0.accessibilityLabel()?.components(separatedBy: ": ").last },
+                       ["Row 0", "Row 1", "Row 2"])
+        XCTAssertTrue(frames.allSatisfy { ($0.accessibilityParent() as AnyObject?) === strip })
+        // The groups let go of the frames they held.
+        XCTAssertEqual(groups.map { $0.accessibilityChildren()?.count ?? 0 }, [0, 0])
+    }
+
+    func testEachGroupHoldsItsWingsFramesOnScreenAsTheFilmMoves() throws {
+        let strip = makeStrip(medium)
+        let rows = makeWing(frequent: 3, recent: 20)
+        // Row 0 in the middle: Freq 0 ends where the band begins, so Freq 1 and Freq 2 are read with Row 0 … Row 3.
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        let groups = try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+        guard groups.count == 2 else { return XCTFail("Expected a group for each wing, got \(groups.count)") }
+        XCTAssertEqual(groups.map(titles(in:)), [["Freq 1", "Freq 2"], ["Row 0", "Row 1", "Row 2", "Row 3"]])
+        // The fingers carry the film four tenths of a step toward older clips, 96.8 left. Read again, each group covers
+        // its frames where the strip now has them: "Recent" starts at Row 0, 574 before the push.
+        strip.haptics = RecordingHaptics()
+        strip.scrollWheel(with: try swipe(dx: -12, phase: .began, at: 1.0))
+        XCTAssertTrue(try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+            .elementsEqual(groups, by: ===))
+        for group in groups {
+            let members = try XCTUnwrap(group.accessibilityChildren() as? [NSView])
+            let covered = members.map { strip.convert($0.bounds, from: $0) }.reduce(NSRect.null) { $0.union($1) }
+            XCTAssertEqual(group.accessibilityFrameInParentSpace(), covered, group.accessibilityLabel() ?? "")
+        }
+        XCTAssertEqual(groups[1].accessibilityFrameInParentSpace().minX, 574 - 96.8, accuracy: 0.5)
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+
+        // Row 10 in the middle: the frequent wing has gone off the left end. Each group already holds what is on screen
+        // before the list is read again, the frames that showed frequent clips now in "Recent", and the list reads
+        // "Recent" alone.
+        strip.show(rows, selection: rows[13].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        XCTAssertEqual(groups.map(titles(in:)), [[], (7...13).map { "Row \($0)" }])
+        let recent = try XCTUnwrap(groups[1].accessibilityChildren() as? [NSView])
+        XCTAssertTrue(recent.allSatisfy { ($0.accessibilityParent() as AnyObject?) === groups[1] })
+        XCTAssertTrue(try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+            .elementsEqual([groups[1]], by: ===))
+
+        // Twenty frequent clips with the most used selected: the recent clips are off the right end, and the list reads
+        // "Frequent" alone.
+        let wide = makeWing(frequent: 20, recent: 20)
+        strip.show(wide, selection: wide[0].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        XCTAssertEqual(groups.map(titles(in:)), [(0...5).map { "Freq \($0)" }, []])
+        let frequent = try XCTUnwrap(groups[0].accessibilityChildren() as? [NSView])
+        XCTAssertTrue(frequent.allSatisfy { ($0.accessibilityParent() as AnyObject?) === groups[0] })
+        XCTAssertTrue(try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+            .elementsEqual([groups[0]], by: ===))
+    }
+
     func testTheFirstShowOfAnAppAlreadyCarriesItsBandColour() throws {
         let strip = makeStrip()
         let names = ApplicationNames()
@@ -1122,14 +1213,14 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
         XCTAssertEqual(recentLabel.frame.minX, 537, accuracy: 0.5)
 
-        // Row 10 selected: the divider has gone off the left end, so "Recent" rests 40 in from the left end, clear of
+        // Row 10 selected: the divider has gone off the left end, so "Recent" rests 42 in from the left end, clear of
         // the band's rounded corner, and "Frequent" goes.
         strip.show(rows, selection: rows[13].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
         XCTAssertEqual(recentLabel.frame.minX, StripLayout.sectionLabelPinInset, accuracy: 0.5)
         XCTAssertFalse(recentLabel.isHidden)
         XCTAssertTrue(frequentLabel.isHidden)
 
-        // 20 frequent + 20 recent, Freq 0 selected: the divider is off the right end, so "Frequent" ends 40 in from the
+        // 20 frequent + 20 recent, Freq 0 selected: the divider is off the right end, so "Frequent" ends 42 in from the
         // right end and "Recent" goes.
         let wide = makeWing(frequent: 20, recent: 20)
         strip.show(wide, selection: wide[0].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
@@ -1221,7 +1312,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         let frequentLabel = try sectionLabel("QuickAccessFrequentLabel", of: strip)
         let recentLabel = try sectionLabel("QuickAccessRecentLabel", of: strip)
         let rows = makeWing(frequent: 3, recent: 20)
-        // Row 3 in the middle: the divider is at -197, off the left end, so "Recent" rests 40 in from the left end.
+        // Row 3 in the middle: the divider is at -197, off the left end, so "Recent" rests 42 in from the left end.
         strip.show(rows, selection: rows[6].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
         XCTAssertEqual(recentLabel.frame.minX, StripLayout.sectionLabelPinInset, accuracy: 0.5)
         XCTAssertTrue(frequentLabel.isHidden)
@@ -1515,9 +1606,12 @@ final class QuickAccessStripViewTests: XCTestCase {
         // Neither takes the keys.
         XCTAssertFalse(recent.acceptsFirstResponder)
         XCTAssertFalse(divider.acceptsFirstResponder)
-        // VoiceOver reads the frames alone; the labels have nothing for it.
+        // VoiceOver reads the frames alone, in the wings' two groups; the labels have nothing for it.
         XCTAssertEqual(labels.accessibilityChildren()?.count ?? 0, 0)
-        XCTAssertFalse((strip.accessibilityChildren() as? [NSView] ?? []).contains(divider))
+        let groups = try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
+        let read = groups.flatMap { $0.accessibilityChildren() as? [NSView] ?? [] }
+        XCTAssertEqual(read.count, 6)
+        XCTAssertFalse(read.contains(divider))
     }
 
     func testEachSectionIconNamesItsWingInItsHelpTagAndAccessibilityLabel() throws {
@@ -1627,6 +1721,13 @@ final class QuickAccessStripViewTests: XCTestCase {
     private func drawings(in view: NSView) -> [NSHostingView<StripFrameView>] {
         view.subviews.flatMap { subview in
             (subview as? NSHostingView<StripFrameView>).map { [$0] } ?? drawings(in: subview)
+        }
+    }
+
+    /// The titles of the frames a wing's group holds, left to right: what VoiceOver reads after the colon.
+    private func titles(in group: NSAccessibilityElement) -> [String] {
+        (group.accessibilityChildren() as? [NSView] ?? []).compactMap {
+            $0.accessibilityLabel()?.components(separatedBy: ": ").last
         }
     }
 

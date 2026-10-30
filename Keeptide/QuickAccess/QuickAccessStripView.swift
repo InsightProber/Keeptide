@@ -73,6 +73,9 @@ final class QuickAccessStripView: NSView {
     private let frequentLabel = StripSectionLabel.hosted("Frequent", symbol: "flame",
                                                          identifier: "QuickAccessFrequentLabel")
     private let recentLabel = StripSectionLabel.hosted("Recent", symbol: "clock", identifier: "QuickAccessRecentLabel")
+    /// The groups VoiceOver reads the two wings in, made once and kept.
+    private let frequentGroup = QuickAccessStripView.wingGroup("Frequent")
+    private let recentGroup = QuickAccessStripView.wingGroup("Recent")
     private var scroller = DetentScroller()
     /// How far past the selected clip the fingers have carried the selection, as a share of a step.
     private var progress: CGFloat = 0
@@ -117,6 +120,7 @@ final class QuickAccessStripView: NSView {
         setAccessibilityLabel("Clips")
         setAccessibilityIdentifier("QuickAccessStrip")
         setAccessibilityOrientation(.horizontal)
+        for group in [frequentGroup, recentGroup] { group.setAccessibilityParent(self) }
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(displayOptionsDidChange(_:)),
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
@@ -316,8 +320,11 @@ final class QuickAccessStripView: NSView {
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
                       isHovered: row.id == hovered)
             host.frame = frameRect(origin: origins[index], metrics)
+            // VoiceOver finds a frame in its wing's group, or in the list itself without a wing.
+            host.setAccessibilityParent(frequentCount == 0 ? self : row.isFrequent ? frequentGroup : recentGroup)
         }
         spare.forEach { $0.removeFromSuperview() }
+        fillWingGroups()
         placeDivider(metrics, at: rest)
         dimSideFrames()
     }
@@ -609,15 +616,46 @@ final class QuickAccessStripView: NSView {
 
     // MARK: Accessibility
 
+    /// The frames on screen, left to right, the frequent wing first and then the newest clip, or the best match. With a
+    /// frequent wing they are read in two groups, "Frequent" and "Recent", and a group without a frame on screen is
+    /// left out.
     override func accessibilityChildren() -> [Any]? {
-        // The spare frames beyond the ends of the band are not on screen, so they are not read. Left to right is the
-        // order of the rows: the frequent wing, when there is one, then the newest clip first.
+        frequentCount == 0 ? framesOnScreen.map(\.host) : fillWingGroups()
+    }
+
+    /// The frames VoiceOver reads, left to right, with the rows they show. The spare frames beyond the ends of the band
+    /// are not on screen, so they are not read.
+    private var framesOnScreen: [(row: QuickAccessRow.ID, host: StripFrameHost)] {
         guard let metrics else { return [] }
         let band = NSRect(x: bounds.midX - metrics.bandWidth / 2, y: bounds.minY, width: metrics.bandWidth,
                           height: bounds.height)
-        return frames.values
-            .filter { convert($0.frame, from: film).intersects(band) }
-            .sorted { $0.frame.minX < $1.frame.minX }
+        return frames.map { (row: $0.key, host: $0.value) }
+            .filter { convert($0.host.frame, from: film).intersects(band) }
+            .sorted { $0.host.frame.minX < $1.host.frame.minX }
+    }
+
+    /// A group VoiceOver reads one wing in, by the wing's name. The strip is its parent and gives it its frames.
+    private static func wingGroup(_ name: String) -> NSAccessibilityElement {
+        let group = NSAccessibilityElement()
+        group.setAccessibilityRole(.group)
+        group.setAccessibilityLabel(name)
+        return group
+    }
+
+    /// Gives each wing's group the wing's frames on screen and the room they take together in the strip, and returns
+    /// the groups that have any. Without a wing both are left empty. The frames are placed again after every change,
+    /// and the groups are filled again with them, so a group never holds a frame that has gone or now shows another
+    /// row; the film's push since then is caught up when the list is read.
+    @discardableResult
+    private func fillWingGroups() -> [Any] {
+        let onScreen = frequentCount == 0 ? [] : framesOnScreen
+        return [(frequentGroup, true), (recentGroup, false)].compactMap { group, frequent in
+            let hosts = onScreen.filter { $0.row.isFrequent == frequent }.map(\.host)
+            let rects = hosts.map { convert($0.frame, from: film) }
+            group.setAccessibilityChildren(hosts)
+            group.setAccessibilityFrameInParentSpace(rects.dropFirst().reduce(rects.first ?? .zero) { $0.union($1) })
+            return hosts.isEmpty ? nil : group
+        }
     }
 
     override func accessibilitySelectedChildren() -> [Any]? {
@@ -697,12 +735,15 @@ private final class StripFrameHost: NSView {
     /// "<kind>, <time>, from <App>, <footer>: <title>", then the frame's marks: the card's band and footer in the
     /// order the card shows them, then the title it shows, such as a link's page title rather than its address.
     /// Without a known source app the "from" part is left out, and the footer, such as "25 characters" or "2880 by
-    /// 1800", until the details have arrived.
+    /// 1800", until the details have arrived. A frequent clip says how often it was used in place of the time, as its
+    /// card does: "Text, used 12 times: <title>".
     override func accessibilityLabel() -> String? {
         guard let row else { return nil }
         let content = drawing.rootView.content
-        let card = [row.kind.accessibilityName, QuickAccessRowContent.time(of: row.date, spoken: true),
-                    applicationName.map { "from \($0)" }, content.info.map(ClipInfoFormatter.spoken)]
+        let when = row.frequentUses.map { ClipInfoFormatter.uses($0, spoken: true) }
+            ?? QuickAccessRowContent.time(of: row.date, spoken: true)
+        let card = [row.kind.accessibilityName, when, applicationName.map { "from \($0)" },
+                    content.info.map(ClipInfoFormatter.spoken)]
         let marks = [(row.savedAsMemo, "Saved as Memo"), (row.isPartiallyIndexed, "Partially indexed"),
                      (row.isTextUnavailable, "Text unavailable")].filter { $0.0 }.map { $0.1 }
         return ([card.compactMap { $0 }.joined(separator: ", ") + ": " + content.accessibilityTitle] + marks)

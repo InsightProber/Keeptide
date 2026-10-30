@@ -62,9 +62,11 @@ enum StripLayout {
     /// How far a section icon stands from the divider's line.
     static let sectionLabelGap: CGFloat = 8
     /// How far in from the band's end a section icon rests once the divider has gone off that end. The band's corners
-    /// are rounded over `cornerRadius`; this far in, the ink of either icon keeps at least 8 pt from the rounded
-    /// corner, where at the dock inset it came within 2 pt of it.
-    static let sectionLabelPinInset: CGFloat = 40
+    /// are rounded over `cornerRadius`; this far in, the ink of either icon keeps about 10 pt from the rounded corner,
+    /// 2 more than the 8 it needs, so a symbol drawn a little differently on another release of macOS still clears it.
+    /// At the dock inset it came within 2 pt of the corner, and at 40 pt the flame cleared 8 pt by less than half a
+    /// point.
+    static let sectionLabelPinInset: CGFloat = 42
     /// How far beyond a selected card the ring around it reaches: 6 pt, and 7 with Increase Contrast. The section icons
     /// below the cards are kept clear of the wider ring.
     static let selectionRingReach: CGFloat = 7

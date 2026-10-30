@@ -190,6 +190,33 @@ final class QuickAccessBandTests: XCTestCase {
         }
     }
 
+    func testAFrequentCardDrawsHowOftenItWasUsedAsATimeIsDrawn() throws {
+        // A frequent clip's card says "Used 1,234 times" where a recent clip's says how long ago it was copied, in the
+        // same face, size and colour: it is the very picture of a card whose time read those words. The clip's own
+        // recent card, with its time, is a different picture, so the comparison can tell them apart.
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
+        let icon = ApplicationNames().icon(for: nil)
+        func picture(_ content: StripFrameContent) throws -> Picture {
+            try Picture(StripFrameView(content: content, applicationIcon: icon, metrics: metrics, headerTint: nil,
+                                       isSelected: false))
+        }
+        func same(_ one: Picture, _ other: Picture) -> Bool {
+            one.width == other.width && one.height == other.height
+                && !(0..<one.height).contains { one.differs(from: other, inRow: $0) }
+        }
+        var row = makeRow()
+        row.frequentUses = 1_234
+        let frequent = StripFrameContent.make(row: row, detail: nil, cardSize: .medium)
+        var timed = frequent
+        timed.time = try XCTUnwrap(frequent.uses)
+        timed.uses = nil
+        row.frequentUses = nil
+        let recent = StripFrameContent.make(row: row, detail: nil, cardSize: .medium)
+
+        XCTAssertTrue(same(try picture(frequent), try picture(timed)))
+        XCTAssertFalse(same(try picture(frequent), try picture(recent)))
+    }
+
     // MARK: Helpers
 
     /// The band view with `metrics`, medium cards unless given others, and nothing in its state, in a window that is

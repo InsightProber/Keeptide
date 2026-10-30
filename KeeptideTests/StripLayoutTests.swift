@@ -240,20 +240,20 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testSectionLabelsSitBesideTheDividerAndStickAtTheEnds() {
-        // icons 70 and 60 wide here, so that their edges tell apart; a pinned one stands 40 in from the band's end
+        // icons 70 and 60 wide here, so that their edges tell apart; a pinned one stands 42 in from the band's end
         let cases: [(CGFloat, StripSectionLabels)] = [
-            (600, .init(frequent: 522, recent: 608)), (32, .init(frequent: -46, recent: 40)),
-            (31, .init(frequent: nil, recent: 40)), (-500, .init(frequent: nil, recent: 40)),
-            (1344, .init(frequent: 1266, recent: 1352)), (1345, .init(frequent: 1266, recent: nil)),
+            (600, .init(frequent: 522, recent: 608)), (34, .init(frequent: -44, recent: 42)),
+            (33, .init(frequent: nil, recent: 42)), (-500, .init(frequent: nil, recent: 42)),
+            (1342, .init(frequent: 1264, recent: 1350)), (1343, .init(frequent: 1264, recent: nil)),
         ]
         for (divider, expected) in cases {
             let origins = StripLayout.sectionLabelOrigins(medium, dividerX: divider, frequentWidth: 70, recentWidth: 60)
             XCTAssertEqual(origins, expected, "\(divider)")
         }
-        // They stick 40 in from the band's ends whatever the dock inset is: 24 in a band 1360 wide here.
+        // They stick 42 in from the band's ends whatever the dock inset is: 24 in a band 1360 wide here.
         let custom: [(CGFloat, StripSectionLabels)] = [
-            (31, .init(frequent: nil, recent: 40)), (32, .init(frequent: -46, recent: 40)),
-            (1328, .init(frequent: 1250, recent: 1336)), (1329, .init(frequent: 1250, recent: nil)),
+            (33, .init(frequent: nil, recent: 42)), (34, .init(frequent: -44, recent: 42)),
+            (1326, .init(frequent: 1248, recent: 1334)), (1327, .init(frequent: 1248, recent: nil)),
         ]
         for (divider, expected) in custom {
             let origins = StripLayout.sectionLabelOrigins(metrics, dividerX: divider, frequentWidth: 70,
