@@ -20,6 +20,9 @@ struct StripMetrics: Equatable {
     let footerHeight: CGFloat
     /// Side of the source app's icon in the colour band.
     let iconSize: CGFloat
+    /// From the toolbar's bottom edge to the cards: 20 pt, or 30 with the frequent wing turned on, so that its section
+    /// labels have room there.
+    let toolbarGap: CGFloat
 
     /// Distance between the left edges of neighbouring frames.
     var step: CGFloat { frameSize.width + gap }
@@ -49,19 +52,19 @@ struct StripSectionLabels: Equatable {
 /// Geometry of the quick access strip. The band is the bar holding the toolbar and the frames; the panel is the
 /// window around it. All values are in points.
 enum StripLayout {
-    /// From the band's top edge to its toolbar, and the toolbar's height.
+    /// From the band's top edge to its toolbar, and the toolbar's height. Below the toolbar, `StripMetrics.toolbarGap`
+    /// lies between it and the cards.
     static let toolbarTop: CGFloat = 16
     static let toolbarHeight: CGFloat = 32
-    /// From the toolbar's bottom edge to the cards, and from the cards to the band's bottom edge.
-    static let toolbarGap: CGFloat = 20
+    /// From the cards to the band's bottom edge.
     static let bottomPadding: CGFloat = 22
-    /// How far below the band's top edge the cards' top edges are.
-    static let cardTop = toolbarTop + toolbarHeight + toolbarGap
     static let cornerRadius: CGFloat = 36
     /// How far a section label stands from the divider's line.
     static let sectionLabelGap: CGFloat = 8
-    /// How far above the cards' top a section label ends, its descenders included. The ring around a selected card
-    /// reaches 6 pt above it, 7 with Increase Contrast, so every glyph of a label stays clear of it.
+    /// How far above the cards' top a section label ends, its descenders and its symbol included. The ring around a
+    /// selected card reaches 6 pt above it, 7 with Increase Contrast, so every glyph of a label stays clear of it. In
+    /// the frequent wing's 30 pt gap a 15 pt label then starts 7 pt below the toolbar's row, clear of the 3 pt ring
+    /// around the search while its field has the keys.
     static let sectionLabelClearance: CGFloat = 8
     /// The band stands this far in from each side of the screen's visible area. The panel reaches the edge, so its
     /// shadow has that room beside the band.
@@ -77,13 +80,16 @@ enum StripLayout {
     static let previewMinimumHeight: CGFloat = 160
 
     /// The frames are as large on every screen as the card size makes them; a narrow screen shows fewer of them.
-    /// The band is as wide as the visible area less the margin at each side.
-    static func metrics(for size: CardSize, visibleWidth: CGFloat) -> StripMetrics {
+    /// The band is as wide as the visible area less the margin at each side. With the frequent wing turned on, the gap
+    /// between the toolbar and the cards is 30 instead of 20, for the section labels in it, and the band is that much
+    /// taller. It stays so while the strip shows no wing, as for a search, so the band keeps its height while it is
+    /// open.
+    static func metrics(for size: CardSize, visibleWidth: CGFloat, showsFrequentClips: Bool = false) -> StripMetrics {
         let card = cardDimensions(for: size)
         return StripMetrics(
             cardSize: size, bandWidth: visibleWidth - 2 * sideMargin, frameSize: card.frame, gap: 14,
             cornerRadius: card.radius, dockInset: 20, headerHeight: card.header, footerHeight: card.footer,
-            iconSize: card.icon
+            iconSize: card.icon, toolbarGap: showsFrequentClips ? 30 : 20
         )
     }
 
@@ -93,9 +99,14 @@ enum StripLayout {
         max(0, Int(((m.bandWidth - 2 * m.dockInset + m.gap) / m.step).rounded(.down)))
     }
 
-    /// The toolbar, the cards and the room around them: 340 with medium cards.
+    /// How far below the band's top edge the cards' top edges are: 68, or 78 with the frequent wing.
+    static func cardTop(_ m: StripMetrics) -> CGFloat {
+        toolbarTop + toolbarHeight + m.toolbarGap
+    }
+
+    /// The toolbar, the cards and the room around them: 340 with medium cards, 350 with the frequent wing.
     static func bandHeight(_ m: StripMetrics) -> CGFloat {
-        cardTop + m.frameSize.height + bottomPadding
+        cardTop(m) + m.frameSize.height + bottomPadding
     }
 
     /// The band, centred in the screen's visible area. Its height is the same whatever the panel shows, so its top

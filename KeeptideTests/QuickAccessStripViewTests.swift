@@ -10,7 +10,7 @@ final class QuickAccessStripViewTests: XCTestCase {
     /// numbers below were worked out for. It is no card size's own.
     private var metrics: StripMetrics {
         StripMetrics(cardSize: .medium, bandWidth: 1360, frameSize: CGSize(width: 164, height: 109), gap: 12,
-                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40)
+                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 20)
     }
     private var centre: CGFloat { metrics.bandWidth / 2 }
     /// The middle of the frame resting at the left dock.
@@ -1411,17 +1411,35 @@ final class QuickAccessStripViewTests: XCTestCase {
         let rows = makeWing(frequent: 3, recent: 20)
         strip.show(rows, selection: rows[3].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
         let cardTop = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).maxY
-        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        let font = NSFont.systemFont(ofSize: 12, weight: .semibold)
 
         // The ring around a selected card reaches 6 pt above it, 7 with Increase Contrast. Each label's text ends, its
-        // descenders included, at least 8 pt above the cards, and so does all the rest of the label.
+        // descenders included, at least 8 pt above the cards, and so does all the rest of the label: its frame ends
+        // just that far above them. QuickAccessBandTests measures the ink the labels draw.
         for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
             let label = try sectionLabel(identifier, of: strip)
             XCTAssertFalse(label.isHidden, identifier)
             let frame = label.convert(label.bounds, to: nil)
             let textBottom = frame.minY + label.lastBaselineOffsetFromBottom + font.descender
             XCTAssertGreaterThanOrEqual(textBottom - cardTop, 8, identifier)
-            XCTAssertGreaterThanOrEqual(frame.minY - cardTop, 8, identifier)
+            XCTAssertEqual(frame.minY - cardTop, 8, accuracy: 0.01, identifier)
+        }
+    }
+
+    func testTheLabelsStayAboveTheCardsWhenTheBandResizesTheirView() throws {
+        // The band gives the labels' view the gap's height, 30 pt with the frequent wing turned on and 20 without, and
+        // may do so after the strip has placed them. Its bottom stays at the cards' top, and so do the labels' places.
+        let strip = makeStrip(medium)
+        let rows = makeWing(frequent: 3, recent: 20)
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        let cardTop = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).maxY
+        for height in [30, 20] as [CGFloat] {
+            strip.sectionLabels.setFrameSize(NSSize(width: medium.bandWidth, height: height))
+            for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
+                let label = try sectionLabel(identifier, of: strip)
+                XCTAssertEqual(label.convert(label.bounds, to: nil).minY - cardTop, 8, accuracy: 0.01,
+                               "\(identifier) in \(height) pt")
+            }
         }
     }
 
@@ -1551,7 +1569,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         content.addSubview(strip)
         // The labels' view ends at the cards' top, half the room the strip keeps around them below its own top.
         let cardTop = strip.frame.maxY - (strip.frame.height - metrics.frameSize.height) / 2
-        strip.sectionLabels.frame = NSRect(x: 0, y: cardTop, width: metrics.bandWidth, height: StripLayout.toolbarGap)
+        strip.sectionLabels.frame = NSRect(x: 0, y: cardTop, width: metrics.bandWidth, height: metrics.toolbarGap)
         content.addSubview(strip.sectionLabels)
         window.contentView = content
         addTeardownBlock { window.close() }

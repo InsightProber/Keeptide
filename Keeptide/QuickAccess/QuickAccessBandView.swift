@@ -63,7 +63,7 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: QuickAccessToolbar.height)
                 .padding(.top, StripLayout.toolbarTop - QuickAccessToolbar.focusRoom)
             stripRow
-                .padding(.top, StripLayout.toolbarGap - QuickAccessToolbar.focusRoom - Self.ringRoom)
+                .padding(.top, metrics.toolbarGap - QuickAccessToolbar.focusRoom - Self.ringRoom)
             Spacer(minLength: 0)
         }
         .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics), alignment: .top)
@@ -71,7 +71,7 @@ struct QuickAccessBandView: View {
         // so the toolbar and the strip beneath keep the pointer there, and VoiceOver does not read them.
         .overlay(alignment: .top) {
             HostedView(view: strip.sectionLabels)
-                .frame(width: metrics.bandWidth, height: StripLayout.toolbarGap)
+                .frame(width: metrics.bandWidth, height: metrics.toolbarGap)
                 .padding(.top, StripLayout.toolbarTop + StripLayout.toolbarHeight)
                 .accessibilityHidden(true)
         }

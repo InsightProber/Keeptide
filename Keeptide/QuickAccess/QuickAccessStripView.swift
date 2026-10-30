@@ -33,7 +33,7 @@ final class QuickAccessStripView: NSView {
     /// With Increase Contrast the divider between the wings is 2 pt wide instead of 1. Asked each time the frames are
     /// placed, and again when the system's display options change.
     var increasesContrast: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
-    /// The two section labels. The band places this view in the 20 pt between its toolbar and the cards, as wide as the
+    /// The two section labels. The band places this view in the gap between its toolbar and the cards, as wide as the
     /// band; it takes no clicks and VoiceOver does not read it.
     let sectionLabels: NSView = StripSectionLabelsView()
     /// While the preview is open, the frames beside the selected one step back to half strength.
@@ -746,17 +746,17 @@ private final class StripSectionLabelsView: NSView {
     override func accessibilityChildren() -> [Any]? { [] }
 }
 
-/// A section label over the strip: the wing's symbol and name in the toolbar's secondary colour, 11 pt semibold with a
-/// 10 pt symbol, small enough to stand clear of a selected card's ring in the 20 pt above the cards.
-private struct StripSectionLabel: View {
+/// A section label over the strip: the wing's symbol and name in the toolbar's secondary colour, 12 pt semibold with an
+/// 11 pt symbol. The tests measure the ink it draws, so it is not private.
+struct StripSectionLabel: View {
     let title: String
     let symbol: String
 
     var body: some View {
         Label {
-            Text(title).font(.system(size: 11, weight: .semibold))
+            Text(title).font(.system(size: 12, weight: .semibold))
         } icon: {
-            Image(systemName: symbol).font(.system(size: 10, weight: .semibold))
+            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
         }
         .labelStyle(.titleAndIcon)
         .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))

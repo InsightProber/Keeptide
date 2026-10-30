@@ -6,7 +6,7 @@ final class StripLayoutTests: XCTestCase {
     /// the placement numbers below were worked out for. It is no card size's own.
     private var metrics: StripMetrics {
         StripMetrics(cardSize: .medium, bandWidth: 1360, frameSize: CGSize(width: 164, height: 109), gap: 12,
-                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40)
+                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 20)
     }
 
     func testCardSizesMatchTheSpec() {
@@ -53,15 +53,34 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testTheBandIsTheToolbarTheCardsAndTheirPadding() {
-        // 16 above the toolbar, the toolbar's 32, 20 down to the cards, the cards, and 22 below them.
+        // 16 above the toolbar, the toolbar's 32, 20 down to the cards, the cards, and 22 below them. Without the
+        // frequent wing, which is how the metrics come unless asked, the band is as it always was.
         for (size, height) in [(CardSize.small, 310), (.medium, 340), (.large, 376)] as [(CardSize, CGFloat)] {
             let m = StripLayout.metrics(for: size, visibleWidth: 1440)
+            XCTAssertEqual(m, StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: false), "\(size)")
+            XCTAssertEqual(m.toolbarGap, 20, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
-            XCTAssertEqual(StripLayout.cardTop, 68)
-            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop - m.frameSize.height, 22, "\(size)")
+            XCTAssertEqual(StripLayout.cardTop(m), 68, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 22, "\(size)")
         }
         // Its corners are rounder than the cards'.
         XCTAssertEqual(StripLayout.cornerRadius, 36)
+    }
+
+    func testTheFrequentWingGivesItsLabelsThirtyPointsAboveTheCards() {
+        // With the frequent wing, the section labels stand in the gap between the toolbar and the cards, so the gap is
+        // 30 instead of 20: the cards start 78 below the band's top edge and the band is 10 taller. The cards and the
+        // band's width are the same.
+        for (size, height) in [(CardSize.small, 320), (.medium, 350), (.large, 386)] as [(CardSize, CGFloat)] {
+            let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true)
+            let plain = StripLayout.metrics(for: size, visibleWidth: 1440)
+            XCTAssertEqual(m.toolbarGap, 30, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
+            XCTAssertEqual(StripLayout.cardTop(m), 78, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 22, "\(size)")
+            XCTAssertEqual(m.frameSize, plain.frameSize, "\(size)")
+            XCTAssertEqual(m.bandWidth, plain.bandWidth, "\(size)")
+        }
     }
 
     func testOpenDocksTheNewestAtTheLeftEnd() {
@@ -243,19 +262,20 @@ final class StripLayoutTests: XCTestCase {
         for visible in [NSRect(x: 0, y: 25, width: 1280, height: 760), NSRect(x: 0, y: 0, width: 1100, height: 680),
                         NSRect(x: -1800, y: 30, width: 1600, height: 1000), NSRect(x: 0, y: 900, width: 400, height: 640),
                         NSRect(x: 0, y: 0, width: 1440, height: 875), NSRect(x: 0, y: 0, width: 2560, height: 1415)] {
-            for size in CardSize.allCases {
-                let m = StripLayout.metrics(for: size, visibleWidth: visible.width)
+            // The band the frequent wing makes taller stays inside as well.
+            for (size, wing) in CardSize.allCases.flatMap({ size in [(size, false), (size, true)] }) {
+                let m = StripLayout.metrics(for: size, visibleWidth: visible.width, showsFrequentClips: wing)
+                let label = "\(size) wing \(wing) \(visible)"
                 let band = StripLayout.bandFrame(m, in: visible)
-                XCTAssertEqual(band.midX, visible.midX, accuracy: 0.5, "\(size) \(visible)")
-                XCTAssertEqual(band.midY, visible.midY, accuracy: 0.5, "\(size) \(visible)")
-                XCTAssertEqual(band.size, NSSize(width: m.bandWidth, height: StripLayout.bandHeight(m)))
-                XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: band, preview: nil, in: visible)),
-                              "\(size) \(visible)")
+                XCTAssertEqual(band.midX, visible.midX, accuracy: 0.5, label)
+                XCTAssertEqual(band.midY, visible.midY, accuracy: 0.5, label)
+                XCTAssertEqual(band.size, NSSize(width: m.bandWidth, height: StripLayout.bandHeight(m)), label)
+                XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: band, preview: nil, in: visible)), label)
                 let (preview, moved) = StripLayout.previewLayout(band: band, in: visible)
                 XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: moved, preview: preview, in: visible)),
-                              "\(size) \(visible)")
+                              label)
                 // The card sits above the band.
-                XCTAssertGreaterThanOrEqual(preview.minY, moved.maxY + StripLayout.previewGap - 0.5, "\(size) \(visible)")
+                XCTAssertGreaterThanOrEqual(preview.minY, moved.maxY + StripLayout.previewGap - 0.5, label)
             }
         }
     }
