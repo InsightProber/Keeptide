@@ -33,7 +33,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The panel forgets them as it closes, since it no longer sees them come up.
     private var heldReturnKeys: Set<UInt16> = []
     /// Stands in `heldReturnKeys` for Return or keypad Enter when a menu item that pastes was chosen neither with the
-    /// pointer nor with either key: one of them may still be down. Either key coming up takes it away.
+    /// pointer nor with either key: one of them may still be down. It is a guess for that one choice. It goes when
+    /// either key comes up, when the action ends with the panel still open, when the pointer acts, and when the panel
+    /// opens a session; keys the panel saw go down stay.
     private static let returnMayBeDown = UInt16.max
     /// How long a paste waits for Return to come up before it copies instead.
     static let returnReleaseWait: Duration = .seconds(1)
@@ -146,6 +148,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         closingOnceReturnIsUp = nil
         let opening = !isSessionOpen
         if opening {
+            // A Return guessed down for the ended session's last choice is no guess for this one.
+            forgetGuessedReturn()
             searchField.stringValue = ""
             filterRow.cursor = 0
             // The app in front is recorded as the paste target before this panel shows (decision 1).
@@ -339,8 +343,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         QuickAccessBandView(
             layout: layout, state: state, toolbar: toolbar, strip: strip, applicationNames: applicationNames,
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
-                                                 confirmCommand: { [weak self] in self?.confirmCommand() },
-                                                 cancelCommandReview: { [weak self] in self?.cancelCommandReview() })
+                                                 confirmCommand: { [weak self] in self?.confirmFromCard() },
+                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() })
         )
     }
 
@@ -542,12 +546,18 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// one still down, the paste service copies instead (`.returnHeld`), and the panel stays until the key is up. A
     /// panel closed meanwhile does nothing; one shown again meanwhile has a session of its own, which the paste service
     /// refuses the old action for.
-    private func act(_ mode: PasteMode) {
+    ///
+    /// `guessesReturn` says that the menu choice that asks for the action may have left Return down unseen: the action
+    /// takes Return for down (`returnMayBeDown`) until the guess goes, at the latest when the action ends with the
+    /// panel still open, as when a review card shows, the clip is refused or the selection has moved on.
+    private func act(_ mode: PasteMode, guessesReturn: Bool = false) {
         guard state.commandReview == nil, let target = state.copyTarget else { return }
+        if guessesReturn { heldReturnKeys.insert(Self.returnMayBeDown) }
         let delivery = state.preferredDelivery
         Task {
             if delivery == .paste, !heldReturnKeys.isEmpty, await returnKeysComeUp() == nil { return }
             await state.act(on: target, mode: mode, delivery: delivery)
+            if guessesReturn, isSessionOpen { forgetGuessedReturn() }
         }
     }
 
@@ -575,6 +585,18 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         state.cancelCommandReview()
     }
 
+    /// The review card's Confirm and Cancel, pressed with the pointer or by VoiceOver. A Return only guessed down
+    /// holds them back no longer; ⌘Return still waits for a Return the panel saw go down.
+    private func confirmFromCard() {
+        forgetGuessedReturn()
+        confirmCommand()
+    }
+
+    private func cancelFromCard() {
+        forgetGuessedReturn()
+        cancelCommandReview()
+    }
+
     /// Whether Return and keypad Enter are up within `returnReleaseWait`: true once they are, false when one is still
     /// down then, and nil once the panel has closed meanwhile.
     private func returnKeysComeUp() async -> Bool? {
@@ -590,7 +612,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// other key, is left alone; only a key event has a key code to read. Either key coming up also ends a Return that
     /// was only taken for down, and once none is left down, a panel that waits for that after its action closes.
     private func followReturnKey(_ event: NSEvent) {
-        guard event.type == .keyDown || event.type == .keyUp, Self.isReturnOrEnter(event) else { return }
+        guard Self.isReturnOrEnter(event) else { return }
         guard event.type == .keyUp else {
             heldReturnKeys.insert(event.keyCode)
             return
@@ -600,12 +622,22 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if heldReturnKeys.isEmpty, closingOnceReturnIsUp != nil { close() }
     }
 
+    /// Whether `event` is Return or keypad Enter going down or coming up. Only a key event has a key code to read.
     private static func isReturnOrEnter(_ event: NSEvent) -> Bool {
-        [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode))
+        [.keyDown, .keyUp].contains(event.type) && [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode))
     }
 
-    /// The toolbar's "⏎ Copy" or "⏎ Paste into …", for the pointer.
+    /// Return or keypad Enter was only guessed down, and the guess no longer applies: it goes, while keys the panel saw
+    /// go down stay. A panel that waits after its action for nothing but the guess closes.
+    private func forgetGuessedReturn() {
+        guard heldReturnKeys.remove(Self.returnMayBeDown) != nil else { return }
+        if heldReturnKeys.isEmpty, closingOnceReturnIsUp != nil { close() }
+    }
+
+    /// The toolbar's "⏎ Copy" or "⏎ Paste into …", for the pointer and VoiceOver. A Return only guessed down holds it
+    /// back no longer.
     @objc private func copyFromToolbar() {
+        forgetGuessedReturn()
         perform(.primary)
     }
 
@@ -688,15 +720,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
             guard let self else { return }
-            followMenuChoice(of: command)
+            let returnMayBeDown = followMenuChoice()
             if let ref, ref != state.selection.selection {
                 state.select(ref)
                 update()
                 guard state.selection.selection == ref else { return }
             }
             switch command {
-            case .primary: perform(.primary)
-            case .plainText: perform(.plainText)
+            case .primary: act(.original, guessesReturn: returnMayBeDown)
+            case .plainText: act(.plainText, guessesReturn: returnMayBeDown)
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
             case .enableDirectPaste: enableDirectPaste()
@@ -704,23 +736,22 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// An item chosen with Return or keypad Enter acts while the key is still down: the menu took its key-down, which
-    /// the panel notes here, so that what the item does waits for the key to come up as it would for a key pressed in
-    /// the panel. The key-up comes to the panel, which still has the keys. Chosen with the pointer, an item acts at
-    /// once. An item that pastes, or that leads to an alert Return would press, and that was chosen any other way may
-    /// still have Return down: the panel takes it that one of the keys is down until one comes up.
-    private func followMenuChoice(of command: ActionMenuCommand) {
-        let event = currentEvent()
-        if let event, event.type == .keyDown, Self.isReturnOrEnter(event) { return followReturnKey(event) }
-        switch command {
-        case .primary, .plainText, .enableDirectPaste:
-            guard let event, Self.pointerEvents.contains(event.type) else {
-                heldReturnKeys.insert(Self.returnMayBeDown)
-                return
-            }
-        case .copyOnly, .togglePreview:
-            break
+    /// How the menu item was chosen, as far as Return goes; true when Return may still be down from choosing it.
+    /// - With Return or keypad Enter going down, the item acts while the key is still down: the menu took its key-down,
+    ///   which the panel notes here, so that what the item does waits for the key to come up as it would for a key
+    ///   pressed in the panel. The key-up comes to the panel, which still has the keys.
+    /// - With the pointer, or as Return or keypad Enter came up, Return is up: a guess that it was down goes.
+    /// - Any other way, or with no event to tell, Return may still be down. An item that pastes then takes it for
+    ///   down; Enable Direct Paste… does not, so that VoiceOver can turn direct paste on.
+    private func followMenuChoice() -> Bool {
+        guard let event = currentEvent() else { return true }
+        if Self.isReturnOrEnter(event), event.type == .keyDown {
+            followReturnKey(event)
+            return false
         }
+        guard Self.pointerEvents.contains(event.type) || Self.isReturnOrEnter(event) else { return true }
+        forgetGuessedReturn()
+        return false
     }
 
     /// The events that choose a menu item with the pointer.
@@ -731,9 +762,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     /// Enable Direct Paste…: the panel closes, and the app takes it from there. With Return still down, from choosing
     /// the item, the panel first waits for it to come up: held, its repeats would press the alert's default button.
-    /// Still down after `returnReleaseWait`, nothing happens.
+    /// Still down after `returnReleaseWait`, nothing happens. Only a key the panel saw go down holds it back, never one
+    /// only guessed down: at worst a held key's repeats press Open System Settings, which is what was asked for.
     private func enableDirectPaste() {
-        guard !heldReturnKeys.isEmpty else { return handOverEnableDirectPaste() }
+        guard heldReturnKeys.contains(where: { $0 != Self.returnMayBeDown }) else { return handOverEnableDirectPaste() }
         Task {
             guard await returnKeysComeUp() == true else { return }
             // The alert runs a loop of its own, so it starts on a turn of its own rather than inside this task.
