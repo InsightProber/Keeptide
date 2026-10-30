@@ -1448,13 +1448,15 @@ final class AppLaunchTests: XCTestCase {
         ))
 
         // The clip leaves the results while its menu is open: Copy then copies nothing, least of all the selected
-        // clip.
+        // clip. Chosen with no event to tell how, it takes no Return for down either, since nothing acts.
         let stale = try XCTUnwrap(strip.menu(for: rightClick))
         editor.insertText("newer", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
             controller.state.phase == .results && controller.state.selection.rows.map(\.title) == ["newer"]
         }
+        controller.currentEvent = { nil }
         stale.performActionForItem(at: 0)
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertNil(board.string(forType: .string))
 
@@ -2076,6 +2078,108 @@ final class AppLaunchTests: XCTestCase {
         window.sendEvent(try keyUp(kVK_ANSI_KeypadEnter, "\u{3}", windowNumber: window.windowNumber))
         XCTAssertFalse(window.isVisible)
         XCTAssertEqual(toastMessage(of: controller), "Return was held — copied instead. Press ⌘V to paste.")
+
+        // Chosen as Return came up, the item knows Return is up: it pastes at once.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        let returnUp = try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber)
+        controller.currentEvent = { returnUp }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await SearchTestSupport.waitUntil(timeout: .milliseconds(700)) { fake.sent == [9, 9] }
+        XCTAssertEqual(fake.sent, [9, 9])
+    }
+
+    func testAGuessedReturnGoesWithTheMenuChoiceItWasGuessedFor() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older"], into: harness)
+        try await insertDocumentClip(into: harness)
+        try await harness.consumer.synchronize()
+        let fake = FakeDirectPasteSystem()
+        let controller = try makePanel(over: harness, pasteboard: board, system: fake.system)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
+        _ = try searchEditor(in: controller)
+        XCTAssertEqual(controller.state.selection.rows.first?.kind, .other)
+
+        // Chosen with no event to tell how, a paste item takes Return for down, and waits for it; then the document,
+        // which has no plain text, is refused. The guess was for that choice alone, and goes with it.
+        controller.currentEvent = { nil }
+        let menu = try actionMenu(of: controller)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Paste as Plain Text" }))
+        try await SearchTestSupport.waitUntil(timeout: .seconds(3)) { controller.state.failure == .noPlainText }
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(fake.sent, [])
+
+        // The toolbar's button then pastes the text clip at once: nobody pressed Return.
+        controller.perform(.move(1))
+        let toolbar = try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil),
+                                              in: controller)
+        toolbar.copyHint.performClick(nil)
+        try await SearchTestSupport.waitUntil(timeout: .milliseconds(700)) { fake.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "older")
+
+        // A click on the button is the pointer's, so it drops a guess made for a menu choice that is still waiting:
+        // one paste goes at once.
+        try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        controller.perform(.move(1))
+        controller.currentEvent = { nil }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(fake.sent, [9], "The menu's paste waits")
+        try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil), in: controller)
+            .copyHint.performClick(nil)
+        try await SearchTestSupport.waitUntil(timeout: .milliseconds(500)) { fake.sent == [9, 9] }
+        try await Task.sleep(for: .milliseconds(1_100))
+        XCTAssertEqual(fake.sent, [9, 9], "One paste")
+
+        // So does a menu item chosen with the pointer, whatever it does: the waiting paste goes at once.
+        try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
+        controller.show()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        controller.perform(.move(1))
+        controller.currentEvent = { nil }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(fake.sent, [9, 9], "The menu's paste waits")
+        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                     clickCount: 1, pressure: 0))
+        controller.currentEvent = { click }
+        let pointerMenu = try actionMenu(of: controller)
+        pointerMenu.performActionForItem(at: try XCTUnwrap(pointerMenu.items.firstIndex { $0.title == "Show Preview" }))
+        try await SearchTestSupport.waitUntil(timeout: .milliseconds(500)) { fake.sent == [9, 9, 9] }
+        XCTAssertEqual(fake.sent, [9, 9, 9])
+    }
+
+    func testAReviewFromAGuessedReturnConfirmsAtOnceWithTheCardsButton() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let (controller, board) = try await makePanelWithClips(
+            ["older", "gamma"], bodies: ["gamma": Self.multiLineCommand], shown: true, system: fake.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+
+        // Chosen with no event to tell how, as VoiceOver may choose it, Paste Command waits for a Return it cannot see,
+        // and then opens the review. The guess was for that choice, and goes as the card shows.
+        controller.currentEvent = { nil }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await waitForReview(Self.reviewedCommand, in: window)
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+
+        // The card's Confirm button, pressed by VoiceOver or the pointer, confirms at once: one ⌘V.
+        try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.actions.confirmCommand()
+        try await SearchTestSupport.waitUntil(timeout: .milliseconds(700)) { fake.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "set -e\necho synthetic-gamma")
     }
 
     func testAnActionThatEndsWithReturnDownKeepsThePanelUntilReturnIsUp() async throws {
@@ -2133,6 +2237,19 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(window.isVisible)
         XCTAssertTrue(controller.toast.isVisible)
         XCTAssertEqual(toastMessage(of: controller), "Copied — press ⌘V to paste")
+
+        // A copy chosen from the menu with no event to tell how waits for a Return that may be down. Shown again
+        // meanwhile, the panel opens a session that does not take Return for down.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        controller.currentEvent = { nil }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
+        XCTAssertTrue(window.isVisible, "Return may be down")
+        controller.show()
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
     }
 
     func testFinderInFrontIsNoTargetAndOnlyCopies() async throws {
@@ -2507,15 +2624,12 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(activations, 3)
         XCTAssertEqual(fake.accessRequests, 1)
 
-        // Chosen neither with the pointer nor with Return, the item takes Return for down all the same, and waits for
-        // it to come up.
+        // Chosen neither with the pointer nor with Return, as VoiceOver chooses it, the item waits for no key the panel
+        // did not see go down: VoiceOver can turn direct paste on. At worst a held Return's repeats press the alert's
+        // default button, which opens the settings asked for.
         panel.currentEvent = { nil }
         try await chooseEnableDirectPaste()
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertEqual(alerts.count, 3)
-        XCTAssertTrue(panel.isSessionOpen)
-        window.sendEvent(returnUp)
-        try await SearchTestSupport.waitUntil { alerts.count == 4 }
+        XCTAssertEqual(alerts.count, 4)
         XCTAssertFalse(panel.isSessionOpen)
         XCTAssertEqual(activations, 4)
         XCTAssertEqual(fake.accessRequests, 1)
@@ -2653,6 +2767,14 @@ final class AppLaunchTests: XCTestCase {
             .representation(using: .png, properties: [:]))
         let capture = try ContentStoreFixtures.capture([[("public.png", png)]])
         let item = ItemValue(title: "Picture", captureID: capture.id, historyEligible: true,
+                             lastCopiedAt: Date(timeIntervalSince1970: 2_000), copyCount: 1)
+        try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+    }
+
+    /// Stores a synthetic PDF, a clip with no text, as the newest clip.
+    private func insertDocumentClip(into harness: SearchHarness) async throws {
+        let capture = try ContentStoreFixtures.capture([[("com.adobe.pdf", Data("%PDF-1.7 synthetic".utf8))]])
+        let item = ItemValue(title: "Synthetic document", captureID: capture.id, historyEligible: true,
                              lastCopiedAt: Date(timeIntervalSince1970: 2_000), copyCount: 1)
         try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
     }
