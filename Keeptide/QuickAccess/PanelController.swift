@@ -701,7 +701,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// ⌘K: the selected clip's actions, beside it where it rests; with the selection vanished, beside the empty slot
-    /// just before the newest clip; with no clips, beside the middle of the strip.
+    /// just before the first card, the most used frequent clip or, without a frequent wing, the newest clip; with no
+    /// clips, beside the middle of the strip.
     func openActions() {
         let size = metrics.frameSize
         let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,

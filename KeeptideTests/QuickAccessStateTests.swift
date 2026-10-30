@@ -1141,8 +1141,8 @@ final class QuickAccessStateTests: XCTestCase {
 
         state.open(frequentWingFirstScreen: 2)
         try await SearchTestSupport.waitUntil { await usage.calls == 1 }
-        // The recent clips are read on the store's one queue, so a read made after them returns after them. The first
-        // page still waits for the wing, so the two show together.
+        // A store read made now returns after any the opening's load has asked for, on the store's one queue. The first
+        // page waits for the wing, so the two show together.
         _ = try await fixture.services.repository.recent(limit: 1)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(state.selection.rows, [])
@@ -1178,6 +1178,37 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { await usage.returned == 3 }
         cancelled = await usage.returnedCancelled
         XCTAssertEqual(cancelled, 2)
+    }
+
+    func testAClipThatArrivesWhileTheWingIsReadIsListedAndSelected() async throws {
+        let usage = HeldUsage(holding: [1])
+        let fixture = try makeFixture(usage: usage)
+        var clips: [ItemValue] = []
+        for index in 0..<5 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        await usage.reply([[UsageSummary(itemID: clips[0].id, facet: .history, lastUsedAt: Date(), useCount: 5)]])
+        let state = QuickAccessState(services: { fixture.services })
+
+        // The panel opens, and its read of the wing is held. A store read made now returns after any the opening's
+        // load has asked for, on the store's one queue.
+        state.open(frequentWingFirstScreen: 2)
+        try await SearchTestSupport.waitUntil { await usage.calls == 1 }
+        _ = try await fixture.services.repository.recent(limit: 1)
+        try await Task.sleep(for: .milliseconds(50))
+        // A clip arrives meanwhile, and the list refreshes before its first page has shown.
+        try await insert("c5", at: 5, into: fixture)
+        state.recentClipsChanged()
+        _ = try await fixture.services.repository.recent(limit: 1)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Once the wing is read, the opening's page and the refresh both apply, in the order they read the clips, so
+        // the last to apply has the new clip.
+        await usage.release(1)
+        try await settled(state)
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(state.selection.rows.map(\.title), ["c0", "c5", "c4", "c3", "c2", "c1", "c0"])
+        XCTAssertEqual(state.selection.selectedRow?.title, "c5")
+        XCTAssertFalse(state.selection.selectionLost)
     }
 
     func testAServicesChangeReadsTheWingAgain() async throws {

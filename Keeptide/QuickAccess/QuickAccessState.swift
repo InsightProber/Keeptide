@@ -499,12 +499,15 @@ final class QuickAccessState {
     }
 
     private func loadRecent(_ repository: ContentRepository, generation: UInt64, isRefresh: Bool) async {
+        // The wing's candidates come before the clips are read, and nothing waits between a read and its page: an
+        // opening's first page and a refresh started while it waits then apply in the order they read the clips, so
+        // the later read, which has the newer clips, applies last.
+        let candidates = await frequentCandidates()
         let summaries = try? await repository.recent(limit: Self.recentLimit)
         guard isCurrent(generation) else { return }
         // A refresh that fails keeps the clips already listed.
         if summaries == nil, isRefresh { return }
-        guard let rows = await ledByFrequentWing((summaries ?? []).compactMap { Self.row(from: $0) },
-                                                 generation: generation) else { return }
+        let rows = ledByFrequentWing((summaries ?? []).compactMap { Self.row(from: $0) }, candidates: candidates)
         applyRows(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
     }
@@ -515,11 +518,11 @@ final class QuickAccessState {
             if isCurrent(generation) { showSearchUnavailable(generation) }
             return
         }
+        let candidates = await frequentCandidates()
         do {
             for try await page in search.search(request) {
-                guard isCurrent(generation),
-                      let rows = await ledByFrequentWing(page.results.map { Self.row(from: $0) },
-                                                         generation: generation) else { return }
+                guard isCurrent(generation) else { return }
+                let rows = ledByFrequentWing(page.results.map { Self.row(from: $0) }, candidates: candidates)
                 applyRows(rows, generation: generation, isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
@@ -531,16 +534,21 @@ final class QuickAccessState {
         }
     }
 
-    /// `rows` led by the frequent wing, once the session's read of it is done, so that the two show together and the
-    /// film does not jump. Without a filter the wing lists those of the first `frequentLimit` candidates that can show,
-    /// and leaves a rank that cannot show empty; with one, the first `frequentLimit` of every candidate that match it.
-    /// Either way it leaves out the clips among the first screen of `rows`. A query with words lists its results
-    /// alone, without waiting for the read, and there is no wing over no rows. nil once `generation` is not current.
-    private func ledByFrequentWing(_ rows: [QuickAccessRow], generation: UInt64) async -> [QuickAccessRow]? {
-        guard !rows.isEmpty, let firstScreen = frequentWingFirstScreen, let read = frequentRead,
-              ParsedQuery(query).isEmpty else { return rows }
-        let candidates = await read.value
-        guard isCurrent(generation) else { return nil }
+    /// The session's frequent candidates, once its one read of them is done, for a list that has a frequent wing. A
+    /// list loads them before its rows, so that the two show together and the film does not jump. nil, without
+    /// waiting, when the list has no wing: a query with words lists its results alone, and a session without a first
+    /// screen or without usage reads none.
+    private func frequentCandidates() async -> [QuickAccessRow?]? {
+        guard let read = frequentRead, ParsedQuery(query).isEmpty else { return nil }
+        return await read.value
+    }
+
+    /// `rows` led by the frequent wing drawn from `candidates`. Without a filter the wing lists those of the first
+    /// `frequentLimit` candidates that can show, and leaves a rank that cannot show empty; with one, the first
+    /// `frequentLimit` of every candidate that match it. Either way it leaves out the clips among the first screen of
+    /// `rows`. There is no wing without candidates, nor over no rows.
+    private func ledByFrequentWing(_ rows: [QuickAccessRow], candidates: [QuickAccessRow?]?) -> [QuickAccessRow] {
+        guard let candidates, let firstScreen = frequentWingFirstScreen, !rows.isEmpty else { return rows }
         let pool = kinds.isEmpty ? Array(candidates.prefix(Self.frequentLimit)) : candidates
         let shown = pool.compactMap { $0 }.filter { kinds.isEmpty || kinds.contains($0.kind) }
             .prefix(Self.frequentLimit)
@@ -594,9 +602,10 @@ final class QuickAccessState {
         onCommandReviewChanged?()
     }
 
-    /// Keeps what the panel shows for a row on the selected row. A command review of another row, or of a row that
-    /// is gone, is dropped. An open preview never shows another row's content, and it collapses when the selected
-    /// row is gone.
+    /// Keeps what the panel shows for a row on the selected row. A command review of another clip, or of a clip that
+    /// is gone, is dropped; a clip listed in both wings keeps its review from one copy to the other, since both hold
+    /// the same content. An open preview never shows another clip's content, and it collapses when the selected row is
+    /// gone.
     private func followSelection() {
         if let reviewedAction, selection.selection != reviewedAction.target.ref { dropCommandReview() }
         guard isPreviewExpanded else { return }

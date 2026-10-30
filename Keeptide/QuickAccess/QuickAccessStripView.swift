@@ -33,7 +33,7 @@ final class QuickAccessStripView: NSView {
     }
     /// Where ⌘K's menu is anchored, in the strip's coordinates: the selected clip's frame where it rests, even in
     /// mid-slide, since the menu does not follow the film. With the selection vanished it is the empty slot just before
-    /// the newest clip; nil without clips.
+    /// the first card, the most used frequent clip or, without a frequent wing, the newest clip; nil without clips.
     var selectionAnchorFrame: NSRect? {
         guard let metrics, let rest = restingPlacement else { return nil }
         let origin = rest.firstOrigin + CGFloat(selectedIndex) * metrics.step
