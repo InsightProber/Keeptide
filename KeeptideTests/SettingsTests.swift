@@ -132,8 +132,8 @@ final class SettingsTests: XCTestCase {
         let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
                                                    kAXRoleAttribute as CFString, &applicationRole)
         let title = "Show frequent clips in the strip"
-        let explanation = "Clips you've copied or pasted more than once, and used in the last 90 days, appear to the "
-            + "left of the newest clip."
+        let explanation = "Clips you've copied or pasted from Keeptide more than once, and used in the last 90 days, "
+            + "appear to the left of the newest clip."
         // The switches, in the order the form shows them. A switch reads as a checkbox. Its name is its label, or where
         // it has none, as here, the text that titles it; the explanation is a text of its own.
         func switches() -> [NSObject] { accessibilityElements(in: hosting).filter { role(of: $0) == .checkBox } }

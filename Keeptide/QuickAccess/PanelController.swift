@@ -153,14 +153,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             searchField.stringValue = ""
             filterRow.cursor = 0
             // Settle the screen before this panel takes keyboard focus, and take the settings as they are now. They
-            // come before the session opens: the frequent wing leaves out the clips the band shows whole as it opens.
+            // come before the session opens: the frequent wing leaves out the newest clips the band shows whole beside
+            // it as it opens.
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
-            // The app in front is recorded as the paste target before this panel shows (decision 1). The first screen
-            // is held at zero or more, since the session takes that many of the newest clips.
+            // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
+            // newest clips the band shows whole depends on how many frequent clips stand before them.
+            let metrics = metrics
             state.open(frequentWingFirstScreen: preferences.showsFrequentClips
-                ? max(0, StripLayout.firstScreenCount(metrics)) : nil)
+                ? { StripLayout.recentShownWhole(metrics, frequentCount: $0) } : nil)
             update()
             isSessionOpen = true
         }
@@ -711,8 +713,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// ⌘K: the selected clip's actions, beside it where it rests; with the selection vanished, beside the empty slot
-    /// just before the first card, the most used frequent clip or, without a frequent wing, the newest clip; with no
-    /// clips, beside the middle of the strip.
+    /// where the newest clip rests as the strip opens, past the divider or, without a frequent wing, at the left dock;
+    /// with no clips, beside the middle of the strip.
     func openActions() {
         let size = metrics.frameSize
         let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,

@@ -19,7 +19,8 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     }
 
     func testArrowsStepTheStripFromAnEmptySearchField() {
-        // Right is older, left is newer: the strip puts the newest clip at the left.
+        // Right is the next card and left the one before it: older clips stand right of the newest, and the frequent
+        // clips left of it.
         XCTAssertEqual(command(.right, in: .searchField), .move(1))
         XCTAssertEqual(command(.left, in: .searchField), .move(-1))
         // An input that says nothing about the query counts as an empty one.

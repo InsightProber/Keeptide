@@ -7,13 +7,13 @@ copying, and a quick-access panel. The panel shows clips as a row of large cards
 in a wide band, in small, medium or large sizes as set in a minimal Settings
 window, and steps through them with the arrow keys or a trackpad swipe, one clip
 per detent with a haptic tick on a Force Touch trackpad. Clips copied or pasted
-more than once, and used in the last 90 days, appear to the left of the newest
-one, apart from the recent clips; Settings can turn this off. It searches all
-content with a local full-text index from a search that folds into an icon until
-you type, filters by type, previews text and images, and can paste the selected
-clip directly into the app window it was opened from. Other capabilities,
-including editable snippets and iCloud saving, remain planned. There is no
-application release yet.
+from Keeptide more than once, and used in the last 90 days, appear to the left
+of the newest one, apart from the recent clips; Settings can turn this off. The
+panel searches all content with a local full-text index from a search that
+folds into an icon until you type, filters by type, previews text and images,
+and can paste the selected clip directly into the app window it was opened
+from. Other capabilities, including editable snippets and iCloud saving, remain
+planned. There is no application release yet.
 
 ## First release
 

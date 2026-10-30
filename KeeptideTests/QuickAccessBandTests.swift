@@ -159,7 +159,8 @@ final class QuickAccessBandTests: XCTestCase {
         // ink came within 2 pt of the corner.
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
         // Three frequent clips and Row 10 selected: the divider is off the left end, and the clock rests there. Twenty
-        // frequent clips and the most used one selected: the divider is off the right end, and the flame rests there.
+        // frequent clips and the least used one selected, at the wing's left end: the divider is off the right end, and
+        // the flame rests there.
         let cases = [(frequent: 3, selected: 13, pinned: "QuickAccessRecentLabel", gone: "QuickAccessFrequentLabel"),
                      (frequent: 20, selected: 0, pinned: "QuickAccessFrequentLabel", gone: "QuickAccessRecentLabel")]
         for (frequent, selected, pinned, gone) in cases {
@@ -187,6 +188,74 @@ final class QuickAccessBandTests: XCTestCase {
             }.min() ?? 0
             // From the nearest pixel's edge rather than its middle.
             XCTAssertGreaterThanOrEqual(nearest - 0.5 / Picture.scale, 8, pinned)
+        }
+    }
+
+    func testEveryIconAtRestKeepsEightPointsFromTheBandsRoundedCorners() throws {
+        // Where the film came to rest with the divider 34 to 66 pt from an end of the band, the icon beside the
+        // divider stood in the band's rounded corner: 2.6 pt from it at 1440 with medium cards. An icon now follows
+        // the divider until it is 42 pt from the end, stays there, and goes once the divider passes it. Every place
+        // the film rests in, with twenty frequent clips and thirty recent ones, on the screens and card sizes where
+        // that happened and on the medium ones named with them: each icon shown keeps 8 pt from the corner, measured
+        // by its ink as in the test above, 42 pt or more from either end, and on its own wing's side of the divider,
+        // so the two never meet.
+        let reported: [(width: CGFloat, size: CardSize)] = [(1440, .medium), (1920, .medium), (1280, .small),
+                                                            (1600, .large), (1710, .small), (2560, .small)]
+        let named: [(width: CGFloat, size: CardSize)] = [(1280, .medium), (1600, .medium), (1710, .medium)]
+        for (width, size) in reported + named {
+            let name = "\(Int(width)) \(size)"
+            let metrics = StripLayout.metrics(for: size, visibleWidth: width, showsFrequentClips: true)
+            let strip = QuickAccessStripView()
+            let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
+                                              strip: strip)
+            settle(window)
+            let band = backdrop.convert(backdrop.bandRect, to: nil)
+            let radius = StripLayout.cornerRadius
+            let lowCorners = outline(of: band).filter { $0.y <= band.minY + radius }
+            let corners = (left: lowCorners.filter { $0.x <= band.minX + radius },
+                           right: lowCorners.filter { $0.x >= band.maxX - radius })
+            XCTAssertFalse(corners.left.isEmpty || corners.right.isEmpty, name)
+            let icons = try ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"].map {
+                try sectionLabel($0, of: strip)
+            }
+            // Each icon's ink, in its own coordinates; it is the same wherever the icon stands.
+            let inks = try icons.map { try inkPoints(of: $0) }
+            let divider = try XCTUnwrap(dividerView(in: strip), name)
+            let rows = makeWing(frequent: 20, recent: 30)
+            var nearAnEnd = 0
+            for index in rows.indices {
+                strip.show(rows, selection: rows[index].id, details: [:], metrics: metrics,
+                           applicationNames: ApplicationNames())
+                let rest = "\(name), row \(index)"
+                let line = divider.convert(divider.bounds, to: nil).midX
+                if [line - band.minX, band.maxX - line].contains(where: { (34...66).contains($0) }) { nearAnEnd += 1 }
+                var shown: [NSRect] = []
+                for (icon, ink) in zip(icons, inks) where !icon.isHidden {
+                    let frame = icon.convert(icon.bounds, to: nil)
+                    shown.append(frame)
+                    XCTAssertGreaterThanOrEqual(frame.minX - band.minX, StripLayout.sectionLabelPinInset - 0.5, rest)
+                    XCTAssertGreaterThanOrEqual(band.maxX - frame.maxX, StripLayout.sectionLabelPinInset - 0.5, rest)
+                    if icon === icons[0] {
+                        XCTAssertLessThanOrEqual(frame.maxX, line + 0.5, rest)
+                    } else {
+                        XCTAssertGreaterThanOrEqual(frame.minX, line - 0.5, rest)
+                    }
+                    // Only an icon this close to an end comes anywhere near its corner.
+                    let corner = frame.midX < band.midX ? corners.left : corners.right
+                    guard frame.minX - band.minX < 70 || band.maxX - frame.maxX < 70 else { continue }
+                    let nearest = ink.map { icon.convert($0, to: nil) }.map { pixel in
+                        corner.map { hypot($0.x - pixel.x, $0.y - pixel.y) }.min() ?? 0
+                    }.min() ?? 0
+                    // From the nearest pixel's edge rather than its middle.
+                    XCTAssertGreaterThanOrEqual(nearest - 0.5 / Picture.scale, 8, rest)
+                }
+                XCTAssertFalse(shown.isEmpty, rest)
+                if shown.count == 2 { XCTAssertFalse(shown[0].intersects(shown[1]), rest) }
+            }
+            // Where it happened, the film does rest with the divider that close to an end.
+            if reported.contains(where: { $0.width == width && $0.size == size }) {
+                XCTAssertGreaterThan(nearAnEnd, 0, name)
+            }
         }
     }
 
@@ -263,13 +332,20 @@ final class QuickAccessBandTests: XCTestCase {
         ((view as? QuickAccessBandBackdrop).map { [$0] } ?? []) + view.subviews.flatMap { backdrops(in: $0) }
     }
 
-    /// `frequent` rows of the frequent wing, the most used first, then `recent` rows; every clip made up here.
+    /// `frequent` rows of the frequent wing, then `recent` rows; every clip made up here. As the state lists the wing,
+    /// the least used comes first and the most used stands last, beside the newest clip.
     private func makeWing(frequent: Int, recent: Int) -> [QuickAccessRow] {
         (0..<frequent).map { index in
             var row = makeRow()
-            row.frequentUses = Int64(100 - index)
+            row.frequentUses = Int64(2 + index)
             return row
         } + (0..<recent).map { _ in makeRow() }
+    }
+
+    /// The line between the wings, found by its identifier.
+    private func dividerView(in view: NSView) -> NSView? {
+        view.accessibilityIdentifier() == "QuickAccessDivider" ? view
+            : view.subviews.lazy.compactMap { self.dividerView(in: $0) }.first
     }
 
     private func makeRow() -> QuickAccessRow {
@@ -307,6 +383,17 @@ final class QuickAccessBandTests: XCTestCase {
         // From the picture's top left corner to the icon's own coordinates, then to the window's.
         return label.convert(label.isFlipped ? rect : NSRect(x: rect.minX, y: size.height - rect.maxY,
                                                             width: rect.width, height: rect.height), to: nil)
+    }
+
+    /// The middle of each pixel a section icon inks, as SwiftUI draws the icon's view in a frame as large as the icon,
+    /// in the icon's own coordinates.
+    private func inkPoints(of label: NSHostingView<StripSectionLabel>) throws -> [NSPoint] {
+        let size = label.bounds.size
+        let picture = try Picture(label.rootView.frame(width: size.width, height: size.height))
+        return picture.inkPixels.map { pixel in
+            let x = (CGFloat(pixel.x) + 0.5) / Picture.scale, y = (CGFloat(pixel.y) + 0.5) / Picture.scale
+            return NSPoint(x: x, y: label.isFlipped ? y : size.height - y)
+        }
     }
 
     /// The middle of each pixel a section icon inks, as SwiftUI draws the icon's view in a frame as large as the icon,

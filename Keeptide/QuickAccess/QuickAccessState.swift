@@ -143,9 +143,9 @@ final class QuickAccessState {
     /// Reads started and not yet returned. One that was cancelled still counts until it returns, since it
     /// keeps its place on the writer context until then.
     @ObservationIgnored private var detailReadsRunning = 0
-    /// How many cards the band showed whole as the panel opened, which the frequent wing leaves out of its clips; nil
-    /// lists no wing.
-    @ObservationIgnored private var frequentWingFirstScreen: Int?
+    /// How many of the newest clips the band shows whole as the panel opens, for a frequent wing of so many clips
+    /// before them: the wing leaves those clips out. nil lists no wing.
+    @ObservationIgnored private var frequentWingFirstScreen: ((Int) -> Int)?
     /// The session's one read of the frequent wing's candidates, in rank order: each the row of its clip, or nil where
     /// the clip cannot show. nil without a wing to read.
     @ObservationIgnored private var frequentRead: Task<[QuickAccessRow?], Never>?
@@ -187,9 +187,10 @@ final class QuickAccessState {
     }
 
     /// Records the front app window as the target, before the panel takes the keys, and lists recent clips.
-    /// `firstScreen` is how many cards the band shows whole (`StripLayout.firstScreenCount`). With it the frequent wing
-    /// leads the recent clips, without the clips among the first `firstScreen` of them; nil lists no wing.
-    func open(frequentWingFirstScreen firstScreen: Int? = nil) {
+    /// `firstScreen` says how many of the newest clips the band shows whole as it opens with a frequent wing of so
+    /// many clips before them (`StripLayout.recentShownWhole`). With it the frequent wing leads the recent clips,
+    /// without the clips the band shows whole; nil lists no wing.
+    func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         isOpen = true
         frequentWingFirstScreen = firstScreen
         query = ""
@@ -545,15 +546,29 @@ final class QuickAccessState {
 
     /// `rows` led by the frequent wing drawn from `candidates`. Without a filter the wing lists those of the first
     /// `frequentLimit` candidates that can show, and leaves a rank that cannot show empty; with one, the first
-    /// `frequentLimit` of every candidate that match it. Either way it leaves out the clips among the first screen of
-    /// `rows`. There is no wing without candidates, nor over no rows.
+    /// `frequentLimit` of every candidate that match it. Either way it leaves out the clips among the first of `rows`
+    /// that the band shows whole as it opens beside the wing. It lists them from the least used to the most used, which
+    /// stands beside the newest clip. There is no wing without candidates, nor over no rows.
     private func ledByFrequentWing(_ rows: [QuickAccessRow], candidates: [QuickAccessRow?]?) -> [QuickAccessRow] {
-        guard let candidates, let firstScreen = frequentWingFirstScreen, !rows.isEmpty else { return rows }
+        guard let candidates, let shownWhole = frequentWingFirstScreen, !rows.isEmpty else { return rows }
         let pool = kinds.isEmpty ? Array(candidates.prefix(Self.frequentLimit)) : candidates
-        let shown = pool.compactMap { $0 }.filter { kinds.isEmpty || kinds.contains($0.kind) }
+        let ranked = pool.compactMap { $0 }.filter { kinds.isEmpty || kinds.contains($0.kind) }
             .prefix(Self.frequentLimit)
-        let firstScreenClips = Set(rows.prefix(firstScreen).map(\.ref))
-        return shown.filter { !firstScreenClips.contains($0.ref) } + rows
+        // How many of the newest clips the band shows whole depends on the wing before them: a wing that reaches the
+        // middle puts the newest clip there, and a shorter one leaves it further left, with more of them whole. So the
+        // wing is first taken without as many as the band shows beside every ranked clip, the fewest, and taken again
+        // without as many as its own length leaves whole while those are more. A wing that shrinks never shows fewer,
+        // so this ends, within a round for each length the wing can have.
+        var firstScreen = -1
+        var wing: [QuickAccessRow] = []
+        var shown = max(0, shownWhole(ranked.count))
+        while shown > firstScreen {
+            firstScreen = shown
+            let firstScreenClips = Set(rows.prefix(firstScreen).map(\.ref))
+            wing = ranked.filter { !firstScreenClips.contains($0.ref) }
+            shown = max(0, shownWhole(wing.count))
+        }
+        return wing.reversed() + rows
     }
 
     private func showSearchUnavailable(_ generation: UInt64) {

@@ -842,16 +842,21 @@ final class QuickAccessStateTests: XCTestCase {
         state.open(frequentWingFirstScreen: 3)
         try await settled(state)
 
-        // c7 is used most, but it is among the first three recent clips; c3 was used once, and c4 not for 91 days.
-        XCTAssertEqual(state.selection.rows.map(\.title), ["c0", "c1", "c2", "c7", "c6", "c5", "c4", "c3", "c2", "c1", "c0"])
-        XCTAssertEqual(state.selection.rows.prefix(3).map(\.frequentUses), [5, 3, 3])
+        // c7 is used most, but it is among the first three recent clips; c3 was used once, and c4 not for 91 days. The
+        // wing runs from the least used to the most used, which stands beside the newest clip.
+        XCTAssertEqual(state.selection.rows.map(\.title),
+                       ["c2", "c1", "c0", "c7", "c6", "c5", "c4", "c3", "c2", "c1", "c0"])
+        XCTAssertEqual(state.selection.rows.prefix(3).map(\.frequentUses), [3, 3, 5])
         XCTAssertEqual(state.selection.frequentCount, 3)
         // The newest recent clip is selected, after the wing.
         XCTAssertEqual(state.selection.selectedRow?.title, "c7")
         XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
         XCTAssertEqual(state.selection.executableSelection, state.selection.rows[3].ref)
+        // ← reaches the most used clip.
         XCTAssertEqual(state.moveSelection(by: -1), .moved)
         XCTAssertEqual(state.selection.selectedID, state.selection.rows[2].id)
+        XCTAssertEqual(state.selection.selectedRow?.title, "c0")
+        XCTAssertEqual(state.selection.selectedRow?.frequentUses, 5)
     }
 
     func testTheWingTakesTwentyAndSkipsWhatCannotShowWithoutRefilling() async throws {
@@ -873,13 +878,14 @@ final class QuickAccessStateTests: XCTestCase {
         state.open(frequentWingFirstScreen: 5)
         try await settled(state)
 
-        // The first twenty ranks, without f3, which cannot show; f20 does not take its place.
-        XCTAssertEqual(wing(state), (0..<20).filter { $0 != 3 }.map { "f\($0)" })
+        // The first twenty ranks, without f3, which cannot show; f20 does not take its place. The most used, f0, stands
+        // last, beside the newest clip.
+        XCTAssertEqual(wing(state), (0..<20).filter { $0 != 3 }.reversed().map { "f\($0)" })
 
         // A type filter takes twenty again, from every candidate that matches it: f20 comes in, f21 and f22 do not.
         state.toggleKind(.text)
         try await settled(state)
-        XCTAssertEqual(wing(state), (0...20).filter { $0 != 3 }.map { "f\($0)" })
+        XCTAssertEqual(wing(state), (0...20).filter { $0 != 3 }.reversed().map { "f\($0)" })
     }
 
     func testATypeFilterFiltersBothWingsAndTakesTwentyAgain() async throws {
@@ -907,14 +913,14 @@ final class QuickAccessStateTests: XCTestCase {
         let state = QuickAccessState(services: { fixture.services })
         state.open(frequentWingFirstScreen: 5)
         try await settled(state)
-        XCTAssertEqual(wing(state), (0..<20).map { "t\($0)" })
+        XCTAssertEqual(wing(state), (0..<20).reversed().map { "t\($0)" })
 
         state.toggleKind(.url)
         try await settled(state)
 
-        // l0 and l1 rank 21st and 22nd, so only a filter brings them into the wing. Neither is among the first five
-        // links, so each is listed in both wings.
-        XCTAssertEqual(state.selection.rows.map(\.title), ["l0", "l1", "m4", "m3", "m2", "m1", "m0", "l1", "l0"])
+        // l0 and l1 rank 21st and 22nd, so only a filter brings them into the wing, l0 beside the newest link. Neither
+        // is among the first five links, so each is listed in both wings.
+        XCTAssertEqual(state.selection.rows.map(\.title), ["l1", "l0", "m4", "m3", "m2", "m1", "m0", "l1", "l0"])
         XCTAssertEqual(state.selection.selectedRow?.title, "m4")
     }
 
@@ -1079,8 +1085,8 @@ final class QuickAccessStateTests: XCTestCase {
         state.recentClipsChanged()
         try await SearchTestSupport.waitUntil { state.selection.rows.contains { $0.title == "n2" } }
 
-        XCTAssertEqual(wing(state), ["c0", "c3"])
-        XCTAssertEqual(state.selection.rows.prefix(2).map(\.frequentUses), [3, 2])
+        XCTAssertEqual(wing(state), ["c3", "c0"])
+        XCTAssertEqual(state.selection.rows.prefix(2).map(\.frequentUses), [2, 3])
         // The refresh keeps the clip selected as the panel opened.
         XCTAssertEqual(state.selection.selectedRow?.title, "c5")
         XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
@@ -1232,7 +1238,69 @@ final class QuickAccessStateTests: XCTestCase {
         try await use(clips[1], times: 3, lastAt: Date(), in: fixture)
         state.servicesDidChange()
         try await settled(state)
-        XCTAssertEqual(wing(state), ["c1", "c0"])
+        XCTAssertEqual(wing(state), ["c0", "c1"])
+    }
+
+    func testTheWingLeavesOutTheNewestClipsTheBandShowsWholeBesideIt() async throws {
+        // As medium cards on a screen 1440 pt wide: the band shows the five newest clips whole without a wing, four
+        // beside a wing of one, which rests at the left end, and three beside a wing long enough to put the newest clip
+        // in the middle. Eight clips, c7 the newest, and the wing each set of uses lists.
+        let shownWhole = { (wing: Int) in wing == 0 ? 5 : wing == 1 ? 4 : 3 }
+        func wingFor(_ uses: [(index: Int, times: Int)]) async throws -> [String] {
+            let fixture = try makeFixture()
+            var clips: [ItemValue] = []
+            for index in 0..<8 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+            for use in uses { try await self.use(clips[use.index], times: use.times, lastAt: Date(), in: fixture) }
+            let state = QuickAccessState(services: { fixture.services })
+            state.open(frequentWingFirstScreen: shownWhole)
+            try await settled(state)
+            XCTAssertEqual(state.selection.rows.count, 8 + state.selection.frequentCount)
+            XCTAssertEqual(state.selection.selectedRow?.title, "c7")
+            let listed = wing(state)
+            state.close()
+            return listed
+        }
+
+        // c3 and c2, the fifth and sixth newest: with both, the wing puts the newest clip in the middle, where only the
+        // three newest are whole, so neither is left out. c3, the more used, stands beside the newest.
+        let reachesTheMiddle = try await wingFor([(3, 3), (2, 2)])
+        XCTAssertEqual(reachesTheMiddle, ["c2", "c3"])
+        // c3 alone: a wing of one rests at the left end, where the four newest are whole, and c3 is not among them.
+        let alone = try await wingFor([(3, 2)])
+        XCTAssertEqual(alone, ["c3"])
+        // c6 and c4, the second and fourth newest. Beside a wing that reaches the middle c6 is whole, which leaves c4
+        // alone, and alone it rests at the left end, where c4 is whole too: there is no wing.
+        let shortened = try await wingFor([(6, 3), (4, 2)])
+        XCTAssertEqual(shortened, [])
+    }
+
+    func testARefreshThatTakesTheSelectedClipOutOfTheWingKeepsItSelectedInItsRecentRow() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<6 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        try await use(clips[0], times: 3, lastAt: Date(), in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+        state.select(try XCTUnwrap(state.selection.rows.first).id)
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, true)
+
+        // c0 is copied again, which makes it the newest clip: on the first screen, so the wing no longer lists it.
+        var copied = clips[0]
+        copied.lastCopiedAt = Date(timeIntervalSince1970: 1_000 + 10)
+        try await fixture.harness.update(.item(copied.id), to: .item(copied))
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil {
+            state.selection.rows.first { !$0.isFrequent }?.title == "c0"
+        }
+
+        // Its recent row holds the same clip, so the selection is there, ready to act on.
+        XCTAssertEqual(state.selection.frequentCount, 0)
+        XCTAssertEqual(state.selection.selectedRow?.title, "c0")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        XCTAssertFalse(state.selection.selectionLost)
+        XCTAssertEqual(state.copyTarget?.ref, state.selection.rows.first?.ref)
     }
 
     // MARK: Direct paste
@@ -1768,6 +1836,13 @@ final class QuickAccessStateTests: XCTestCase {
     private func searchesFinished(in fixture: Fixture) async throws {
         await Task.yield()
         _ = try await fixture.harness.search("settle")
+    }
+}
+
+private extension QuickAccessState {
+    /// Opens with a first screen of `count` clips, however long the frequent wing is.
+    func open(frequentWingFirstScreen count: Int) {
+        open(frequentWingFirstScreen: { _ in count })
     }
 }
 

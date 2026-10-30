@@ -181,17 +181,21 @@ final class SelectionCoordinatorTests: XCTestCase {
 
     // MARK: The frequent wing
 
+    // The state lists the wing the least used first, so the most used stands beside the newest recent clip.
+
     func testTheFirstPageSelectsTheNewestRecentRowAfterTheWing() {
         var selection = SelectionCoordinator()
         selection.beginGeneration(1)
-        let fa = frequent(a, uses: 5), fb = frequent(b, uses: 3)
+        let fb = frequent(b, uses: 3), fa = frequent(a, uses: 5)
 
-        selection.apply([fa, fb, c, a], generation: 1, isComplete: true)
+        selection.apply([fb, fa, c, a], generation: 1, isComplete: true)
 
         XCTAssertEqual(selection.selectedID, c.id)
         XCTAssertEqual(selection.frequentCount, 2)
+        // ← from the newest clip reaches the most used one, across the divider.
         XCTAssertEqual(selection.move(by: -1), .moved)
-        XCTAssertEqual(selection.selectedID, fb.id)
+        XCTAssertEqual(selection.selectedID, fa.id)
+        XCTAssertEqual(selection.selectedRow?.frequentUses, 5)
     }
 
     func testTheSameClipInBothWingsIsTwoRows() {
@@ -221,40 +225,98 @@ final class SelectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(selection.rows.map(\.id), [fa.id, b.id, a.id, c.id])
     }
 
-    func testAVanishedSelectionLeavesItsSlotBeforeTheWing() {
-        var selection = SelectionCoordinator()
-        selection.beginGeneration(1)
-        let fa = frequent(a, uses: 3), fb = frequent(b, uses: 2)
-        selection.apply([fa, fb, c, fresh], generation: 1, isComplete: true)
-        XCTAssertEqual(selection.move(by: 1), .moved)
-        XCTAssertEqual(selection.selectedID, fresh.id)
+    func testAVanishedSelectionLeavesItsSlotAtTheDivider() {
+        let fb = frequent(b, uses: 2), fa = frequent(a, uses: 3)
+        // The same rows each time, with the chosen recent clip gone: rows [fb, fa, c] with the selection lost, fa the
+        // most used.
+        func lost() -> SelectionCoordinator {
+            var selection = SelectionCoordinator()
+            selection.beginGeneration(1)
+            selection.apply([fb, fa, c, fresh], generation: 1, isComplete: true)
+            XCTAssertEqual(selection.move(by: 1), .moved)
+            XCTAssertEqual(selection.selectedID, fresh.id)
+            // The chosen clip goes, and nothing is selected in its place.
+            selection.apply([fb, fa, c], generation: 1, isComplete: true)
+            XCTAssertNil(selection.selectedID)
+            XCTAssertTrue(selection.selectionLost)
+            return selection
+        }
 
-        // The chosen clip goes, and nothing is selected in its place.
-        selection.apply([fa, fb, c], generation: 1, isComplete: true)
-        XCTAssertNil(selection.selectedID)
-        XCTAssertTrue(selection.selectionLost)
-
-        // The empty slot lies before the whole film, the wing included: nothing is newer, and the next row is the first
-        // frequent one, not the first recent one.
-        XCTAssertEqual(selection.move(by: -1), .atTop)
-        XCTAssertNil(selection.selectedID)
-        XCTAssertEqual(selection.move(by: 1), .moved)
-        XCTAssertEqual(selection.selectedID, fa.id)
+        // The empty slot lies at the divider, just before the newest recent clip: → selects that clip, and ← the most
+        // used one, across the divider.
+        var right = lost()
+        XCTAssertEqual(right.move(by: 1), .moved)
+        XCTAssertEqual(right.selectedID, c.id)
+        XCTAssertFalse(right.selectionLost)
+        var left = lost()
+        XCTAssertEqual(left.move(by: -1), .moved)
+        XCTAssertEqual(left.selectedID, fa.id)
+        XCTAssertFalse(left.selectionLost)
+        // A step of no length goes nowhere.
+        var still = lost()
+        XCTAssertEqual(still.move(by: 0), .unchanged)
+        XCTAssertNil(still.selectedID)
     }
 
-    func testAFrequentCopyThatLeavesTheWingIsLostThoughItsClipStays() {
+    func testAFrequentCopyThatLeavesTheWingHandsTheSelectionToItsRecentRow() {
         var selection = SelectionCoordinator()
         selection.beginGeneration(1)
         let fa = frequent(a, uses: 2)
         selection.apply([fa, b, a], generation: 1, isComplete: true)
         selection.select(fa.id)
 
-        // The clip is copied again and joins the first screen, so the wing no longer lists it.
+        // The clip is copied again and joins the first screen, so the wing no longer lists it. Its recent row holds the
+        // same content, so the selection stays on the clip, in that row.
         selection.apply([a, b], generation: 1, isComplete: true)
 
+        XCTAssertEqual(selection.selectedID, a.id)
+        XCTAssertEqual(selection.selectedRow, a)
+        XCTAssertFalse(selection.selectionLost)
+        XCTAssertEqual(selection.executableSelection, a.ref)
+        // From there the keys go on as from any recent row.
+        XCTAssertEqual(selection.move(by: 1), .moved)
+        XCTAssertEqual(selection.selectedID, b.id)
+    }
+
+    func testARecentRowThatGoesIsLostThoughTheWingStillListsItsClip() {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 2)
+        selection.apply([fa, b, a], generation: 1, isComplete: true)
+        selection.select(a.id)
+
+        // The recent clips no longer list the clip, as when it left the history: the wing's row was read as the panel
+        // opened and may be all that is left of it, so the selection does not go there.
+        selection.apply([fa, b], generation: 1, isComplete: true)
+
         XCTAssertNil(selection.selectedID)
-        XCTAssertNil(selection.selectedRow)
         XCTAssertTrue(selection.selectionLost)
+    }
+
+    func testAChosenRowKeptThroughReRankingStaysInItsOwnWing() {
+        // A frequent row chosen at the wing's right end, beside the divider, while the next page lists a shorter wing:
+        // it goes back no further right than the wing reaches, never among the recent rows.
+        var frequentChosen = SelectionCoordinator()
+        frequentChosen.beginGeneration(1)
+        let fc = frequent(c, uses: 2), fb = frequent(b, uses: 3), fa = frequent(a, uses: 4)
+        frequentChosen.apply([fc, fb, fa, fresh], generation: 1, isComplete: false, keepsChosenRow: true)
+        frequentChosen.select(fa.id)
+        frequentChosen.apply([fc, fresh, a, b], generation: 1, isComplete: true, keepsChosenRow: true)
+        XCTAssertEqual(frequentChosen.rows.map(\.id), [fc.id, fa.id, fresh.id, a.id, b.id])
+        XCTAssertEqual(frequentChosen.frequentCount, 2)
+        XCTAssertEqual(frequentChosen.selectedID, fa.id)
+        XCTAssertFalse(frequentChosen.selectionLost)
+
+        // A recent row chosen just after a wing that the next page lists longer: it goes back no further left than the
+        // wing reaches, never into it.
+        var recentChosen = SelectionCoordinator()
+        recentChosen.beginGeneration(1)
+        recentChosen.apply([fa, fresh, b, c], generation: 1, isComplete: false, keepsChosenRow: true)
+        recentChosen.select(fresh.id)
+        recentChosen.apply([fc, fb, fa, b, c], generation: 1, isComplete: true, keepsChosenRow: true)
+        XCTAssertEqual(recentChosen.rows.map(\.id), [fc.id, fb.id, fa.id, fresh.id, b.id, c.id])
+        XCTAssertEqual(recentChosen.frequentCount, 3)
+        XCTAssertEqual(recentChosen.selectedID, fresh.id)
     }
 }
 

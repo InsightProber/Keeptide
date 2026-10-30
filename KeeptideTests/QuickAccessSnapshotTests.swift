@@ -226,7 +226,8 @@ final class QuickAccessSnapshotTests: XCTestCase {
         let now = Date()
         try await seedPanelClips(into: harness, now: now)
         // How often clips were used, as copies and pastes record it. The command is used often too, but it is among the
-        // five newest, which medium cards show whole as the band opens, so the wing leaves it out.
+        // three newest, which medium cards show whole beside a wing that puts the newest in the middle, so the wing
+        // leaves it out.
         for (title, times) in [("Rebase checklist", 12), ("Thursday", 5), ("git-rebase", 3),
                                ("git rebase origin/main", 9)] {
             try await recordUses(of: title, times: times, in: harness, now: now)
@@ -244,27 +245,27 @@ final class QuickAccessSnapshotTests: XCTestCase {
         let preferences = QuickAccessPreferences(defaults: defaults)
         preferences.showsFrequentClips = true
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
-        // A panel with `cardSize` cards, its session opened as the shortcut opens it: the wing leaves out the clips the
-        // band shows whole.
-        func openPanel(_ cardSize: CardSize) -> PanelController {
+        // A panel with `cardSize` cards, its session opened as the shortcut opens it: the wing leaves out the newest
+        // clips the band shows whole beside it.
+        func openPanel(_ cardSize: CardSize, over services: QuickAccessServices) -> PanelController {
             preferences.cardSize = cardSize
             let panel = PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
                                         visibleFrame: screen)
             let metrics = StripLayout.metrics(for: cardSize, visibleWidth: screen.width, showsFrequentClips: true)
-            panel.state.open(frequentWingFirstScreen: StripLayout.firstScreenCount(metrics))
+            panel.state.open(frequentWingFirstScreen: { StripLayout.recentShownWhole(metrics, frequentCount: $0) })
             return panel
         }
 
-        // As it opens: the three clips used most, the most used at the left, then the divider and the newest clip,
-        // selected in the middle of the band.
-        let controller = openPanel(.medium)
+        // As it opens: the three clips used most, from the least used to the most used, then the divider and the newest
+        // clip, selected in the middle of the band, with the most used beside it.
+        let controller = openPanel(.medium, over: services)
         addTeardownBlock { controller.state.close() }
         let state = controller.state
         let window = try XCTUnwrap(controller.window)
         try await waitForDetails(of: controller, rows: 11)
         XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.title),
-                       ["Rebase checklist", "Thursday", "git-rebase"])
-        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.frequentUses), [12, 5, 3])
+                       ["git-rebase", "Thursday", "Rebase checklist"])
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.frequentUses), [3, 5, 12])
         XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
         try await write(window, as: "panel-frequent-open", into: output)
 
@@ -291,17 +292,67 @@ final class QuickAccessSnapshotTests: XCTestCase {
         XCTAssertEqual(clock.frame.minX, StripLayout.sectionLabelPinInset, accuracy: 0.5)
         try await write(window, as: "panel-frequent-scrolled", into: output)
 
-        // Small cards show six whole, Thursday among them, so the wing holds two, too few to reach the middle: the film
-        // rests at the band's left end.
+        // Small cards: three frequent cards reach the middle, where the band shows the three newest whole, so the wing
+        // holds the same three and the newest clip is in the middle.
         controller.state.close()
-        let small = openPanel(.small)
+        let small = openPanel(.small, over: services)
         addTeardownBlock { small.state.close() }
-        try await waitForDetails(of: small, rows: 10)
+        try await waitForDetails(of: small, rows: 11)
         XCTAssertEqual(small.state.selection.rows.prefix { $0.isFrequent }.map(\.title),
-                       ["Rebase checklist", "git-rebase"])
+                       ["git-rebase", "Thursday", "Rebase checklist"])
         try await write(try XCTUnwrap(small.window), as: "panel-frequent-open", cardSize: .small, into: output)
+        small.state.close()
+
+        // A wing of twenty, in a library of its own: twenty more clips, older than the boards' and each used a
+        // different number of times. The most used, F1, and the next, F2, stand just left of the newest clip.
+        let twentyHarness = try SearchHarness.make(in: self)
+        try await seedPanelClips(into: twentyHarness, now: now)
+        let used = Self.twentyFrequent
+        for (rank, text) in used.enumerated() {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(text.utf8))]])
+            let item = ItemValue(sourceApp: [App.notes, App.terminal, App.mail][rank % 3], title: text,
+                                 captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: now.addingTimeInterval(-Double(4 * 24 * 60 + rank) * 60), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: twentyHarness.controller)
+        }
+        for (rank, text) in used.enumerated() {
+            try await recordUses(of: text, times: 2 * (used.count - rank), in: twentyHarness, now: now)
+        }
+        try await twentyHarness.consumer.synchronize()
+        let twentyRepository = ContentRepository(controller: twentyHarness.controller)
+        let twentyServices = QuickAccessServices(
+            repository: twentyRepository, search: twentyHarness.service,
+            paste: PasteService(pasteboard: board, read: { try await twentyRepository.read($0) }, recordUse: { _ in },
+                                didWrite: { _ in }),
+            preview: PreviewService(read: { try await twentyRepository.read($0) }),
+            usage: LocalUsageStore(controller: twentyHarness.controller))
+        let twenty = openPanel(.medium, over: twentyServices)
+        addTeardownBlock { twenty.state.close() }
+        let twentyState = twenty.state
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let rows = twentyState.selection.rows
+            // The cards on the band: the three frequent ones nearest the divider and the newest four.
+            return twentyState.phase == .results && rows.count == 48
+                && rows[17..<24].allSatisfy { twentyState.details[$0.ref] != nil }
+        }
+        let wing = twentyState.selection.rows.prefix { $0.isFrequent }
+        XCTAssertEqual(wing.count, 20)
+        XCTAssertEqual(wing.map(\.title), used.reversed())
+        XCTAssertEqual(wing.suffix(2).map(\.frequentUses), [38, 40])
+        XCTAssertEqual(twentyState.selection.selectedRow?.title, "Screenshot")
+        try await write(try XCTUnwrap(twenty.window), as: "panel-frequent-twenty", into: output)
         print("Frequent wing snapshots written to \(output.directory.path)")
     }
+
+    /// Twenty made-up clips for a wing of twenty, the most used first.
+    private static let twentyFrequent = [
+        "git status --short", "Thanks, talk soon!", "ssh deploy@staging.example.com", "npm run build -- --watch",
+        "See you at 10 in the small room.", "rg --files | wc -l", "Best regards, Sam", "docker compose up -d",
+        "https://example.com/handbook", "SELECT * FROM orders LIMIT 20;", "Out of office until Monday.",
+        "make test", "Room 4B, second floor", "xcodebuild -list", "Can we move this to Thursday?",
+        "brew upgrade --cask", "Invoice #2027-114", "kubectl get pods -A", "Let me check and get back to you.",
+        "swift test --parallel",
+    ]
 
     // MARK: The clips
 

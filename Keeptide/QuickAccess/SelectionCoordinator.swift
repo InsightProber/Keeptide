@@ -37,8 +37,10 @@ enum SelectionMove: Equatable {
 /// clip; incomplete pages keep following it until the user chooses a row. After that,
 /// pages of the same search keep the chosen row even when late ranking pushes it out of
 /// the window, and a re-read that no longer contains the selection clears it rather than
-/// moving to a neighbour the user never saw. Rows are told apart by their `id`, so a clip
-/// listed in both wings is two rows; actions take the selected row's clip.
+/// moving to a neighbour the user never saw; a frequent row it no longer lists hands the
+/// selection to its clip's recent row instead, which holds the same content. Rows are told
+/// apart by their `id`, so a clip listed in both wings is two rows; actions take the
+/// selected row's clip.
 struct SelectionCoordinator: Equatable {
     private(set) var generation: UInt64 = 0
     private(set) var rows: [QuickAccessRow] = []
@@ -85,8 +87,17 @@ struct SelectionCoordinator: Equatable {
             selectedID = (rows.first { !$0.isFrequent } ?? rows.first)?.id
         } else if let selectedID, !rows.contains(where: { $0.id == selectedID }) {
             if keepsChosenRow, let index = previousRows.firstIndex(where: { $0.id == selectedID }) {
-                // One search reads one snapshot, so the row was re-ranked, not removed.
-                self.rows.insert(previousRows[index], at: min(index, self.rows.count))
+                // One search reads one snapshot, so the row was re-ranked, not removed. It goes back where it was, but
+                // within its own wing: a frequent row no further right than the wing reaches, a recent one no further
+                // left.
+                let wing = frequentCount
+                let place = selectedID.isFrequent ? min(index, wing) : min(max(index, wing), self.rows.count)
+                self.rows.insert(previousRows[index], at: place)
+            } else if selectedID.isFrequent,
+                      let recent = rows.first(where: { !$0.isFrequent && $0.ref == selectedID.ref }) {
+                // The wing let the clip go, as when a refresh brings it to the first screen. Its recent row holds the
+                // same content, read just now, so the selection stays with the clip there.
+                self.selectedID = recent.id
             } else {
                 self.selectedID = nil
                 selectionLost = true
@@ -110,9 +121,14 @@ struct SelectionCoordinator: Equatable {
         guard hasPage else { return .unchanged }
         guard !rows.isEmpty else { return offset < 0 ? .atTop : .unchanged }
         guard let selectedID, let index = rows.firstIndex(where: { $0.id == selectedID }) else {
-            // A vanished selection leaves its slot before the whole list, the frequent wing included.
-            guard offset > 0 else { return .atTop }
-            choose(rows[0].id)
+            // A vanished selection leaves its slot where the newest clip rests as the strip opens: just past the
+            // divider, or before the first row without a frequent wing. → selects the newest clip after it, and ← the
+            // most used frequent clip before it.
+            let slot = frequentCount < rows.count ? frequentCount : 0
+            guard offset != 0 else { return .unchanged }
+            let target = offset > 0 ? slot : slot - 1
+            guard target >= 0 else { return .atTop }
+            choose(rows[target].id)
             return .moved
         }
         let target = index + offset

@@ -16,7 +16,7 @@ struct SettingsView: View {
                 StripPreview()
                 Toggle(isOn: $preferences.showsFrequentClips) {
                     Text("Show frequent clips in the strip")
-                    Text("Clips you've copied or pasted more than once, and used in the last 90 days, appear to the left of the newest clip.")
+                    Text("Clips you've copied or pasted from Keeptide more than once, and used in the last 90 days, appear to the left of the newest clip.")
                 }
                 .controlSize(.mini)
                 Toggle("Tick on the trackpad as each clip passes", isOn: $preferences.trackpadTicks)

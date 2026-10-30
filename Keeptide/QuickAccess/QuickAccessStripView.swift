@@ -4,11 +4,11 @@ import SwiftUI
 
 /// The strip of clips in the quick access panel. AppKit lays the frames out and owns focus, keys,
 /// scrolling, clicks and what VoiceOver reads; SwiftUI draws each frame. Index 0 is at the left and the rest
-/// run to its right: with a frequent wing, index 0 is the most used frequent clip and the newest clip follows the
-/// wing; without one, index 0 is the newest clip (or the best match). Older clips run to the newest one's right. A
-/// divider stands in the wider gap after the wing, and below the cards a section icon marks each wing beside it. The
-/// film of frames keeps the selected clip in the middle of the band, but near either end of the clips it stops at the
-/// band's end and the selection walks along it instead.
+/// run to its right: with a frequent wing, the wing runs from the least used frequent clip to the most used, and the
+/// newest clip follows it, beside the most used; without one, index 0 is the newest clip (or the best match). Older
+/// clips run to the newest one's right. A divider stands in the wider gap after the wing, and below the cards a section
+/// icon marks each wing beside it. The film of frames keeps the selected clip in the middle of the band, but near
+/// either end of the clips it stops at the band's end and the selection walks along it instead.
 ///
 /// The strip shows the selection it is given and nothing else. A click, a key or a swipe only asks for
 /// a change through `onSelect` or `onCommand`; the frames move when `show` brings the new selection.
@@ -41,8 +41,9 @@ final class QuickAccessStripView: NSView {
         didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
     }
     /// Where ⌘K's menu is anchored, in the strip's coordinates: the selected clip's frame where it rests, even in
-    /// mid-slide, since the menu does not follow the film. With the selection vanished it is the empty slot just before
-    /// the first card, the most used frequent clip or, without a frequent wing, the newest clip; nil without clips.
+    /// mid-slide, since the menu does not follow the film. With the selection vanished it is the empty slot where the
+    /// newest clip rests as the strip opens: past the divider, just before the newest clip, or before it at the left
+    /// dock without a frequent wing. nil without clips.
     var selectionAnchorFrame: NSRect? {
         guard let metrics, let rest = restingPlacement else { return nil }
         return convert(frameRect(origin: origin(of: selectedIndex, metrics, in: rest), metrics), from: film)
@@ -58,7 +59,8 @@ final class QuickAccessStripView: NSView {
     /// How many rows lead the list as the frequent wing.
     private var frequentCount = 0
     private var selection: QuickAccessRow.ID?
-    /// The selected row, or -1 when the selection vanished and its place at the dock stays empty.
+    /// The selected row, or -1 when the selection vanished and its place stays empty: beside the divider, or at the
+    /// dock without a frequent wing.
     private var selectedIndex = -1
     /// Whether the last row is the oldest there is. Until it is, the film does not stop at its right end.
     private var oldestIsLoaded = true
@@ -140,6 +142,8 @@ final class QuickAccessStripView: NSView {
         let running = drawnOffset
         let previousIndex = selectedIndex
         let labelsBefore = labelPlaces
+        // The row the empty slot of a vanished selection stood before, which goes once a row is chosen.
+        let closingSlot = previousIndex < 0 ? restingPlacement?.slotBefore : nil
         self.rows = rows
         frequentCount = rows.prefix { $0.isFrequent }.count
         self.selection = selection
@@ -168,7 +172,9 @@ final class QuickAccessStripView: NSView {
         // the fingers take follows them instead, except one that leaves the empty dock, whose slot goes at once; the
         // springs add up, so the step stays smooth.
         var displacement: CGFloat = 0
+        var slides = false
         if let rest, let start, index >= 0, slidesAreShown, !(fingersDown && showingScrollStep) || previousIndex < 0 {
+            slides = true
             displacement = start - pushed - frameRect(origin: origin(of: index, metrics, in: rest), metrics).midX
         }
         if displacement != 0, let rest {
@@ -191,9 +197,24 @@ final class QuickAccessStripView: NSView {
             }
             placeFrames()
         }
+        if slides, let closingSlot, closingSlot > 0 { closeSlot(before: closingSlot, selecting: index, metrics) }
         placeSectionLabels(from: labelsBefore, sliding: displacement)
         if selectionChanged { announceSelection() }
         reportFramedRows()
+    }
+
+    /// The empty slot a vanished selection left between the wings goes as `index` is chosen: from `slot` on, the frames
+    /// close up a step within the film. The film slides with the chosen clip, so the frames on its side of the slot
+    /// slide with it from where they were drawn. Those on the other side, and the divider when it is one of them, would
+    /// then start a step off, so each springs that step back on its own, and starts out where it was drawn too.
+    private func closeSlot(before slot: Int, selecting index: Int, _ metrics: StripMetrics) {
+        let chosenAfter = index >= slot
+        let places = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
+        for (id, host) in frames {
+            guard let place = places[id], (place >= slot) != chosenAfter else { continue }
+            springBack(host.layer, from: place >= slot ? metrics.step : -metrics.step)
+        }
+        if chosenAfter { springBack(divider.layer, from: -metrics.step) }
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -251,9 +272,11 @@ final class QuickAccessStripView: NSView {
     }
 
     /// The left edge within the band of the frame at `index` where the film lies at `placement`, the divider's room
-    /// included. The empty slot of a vanished selection, index -1, is a step before index 0.
+    /// included. Index -1 is the empty slot of a vanished selection.
     private func origin(of index: Int, _ metrics: StripMetrics, in placement: StripPlacement) -> CGFloat {
-        guard index >= 0 else { return placement.firstOrigin - metrics.step }
+        guard index >= 0 else {
+            return StripLayout.slotOrigin(metrics, placement: placement) ?? placement.firstOrigin - metrics.step
+        }
         return StripLayout.frameOrigins(metrics, count: index + 1, placement: placement)[index]
     }
 
@@ -272,11 +295,14 @@ final class QuickAccessStripView: NSView {
 
     /// The first and the last index whose frames reach into the band while index 0's frame starts anywhere in
     /// `origins`, which are measured from the band's left end. Either index may lie beyond the rows there are. The
-    /// frames from the divider on stand `dividerExtra` further right, which is less than a step, so both are reckoned
-    /// at even steps: the last as if no frame stood further right, and the first as if every frame did. Either may
-    /// then take in one row more than the band shows, never one less, so the spare beyond each end stays spare.
+    /// frames from the divider on stand `dividerExtra` further right, and those from a vanished selection's slot
+    /// between the wings on a step further still, so both are reckoned at even steps: the last as if no frame stood
+    /// further right, and the first as if every frame did. Either may then take in a row or two more than the band
+    /// shows, never fewer, so the spare beyond each end stays spare.
     private func rowsOnScreen(_ metrics: StripMetrics, origins: ClosedRange<CGFloat>) -> (first: Int, last: Int) {
-        let extra = restingPlacement?.dividerBefore == nil ? 0 : metrics.dividerExtra
+        let rest = restingPlacement
+        let extra = (rest?.dividerBefore == nil ? 0 : metrics.dividerExtra)
+            + ((rest?.slotBefore ?? 0) > 0 ? metrics.step : 0)
         // A frame is on screen while its right edge is past the band's left end and its left edge short of the right.
         return (Int(((-origins.upperBound - extra - metrics.frameSize.width) / metrics.step).rounded(.down)) + 1,
                 Int(((metrics.bandWidth - origins.lowerBound) / metrics.step).rounded(.up)) - 1)
@@ -315,7 +341,16 @@ final class QuickAccessStripView: NSView {
                 headerTint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
                 isSelected: row.id == selection
             )
-            let host = frames[row.id] ?? spare.popLast() ?? addFrame(view)
+            let host: StripFrameHost
+            if let kept = frames[row.id] {
+                host = kept
+            } else if let reused = spare.popLast() {
+                // A frame that takes another row lets go of any spring it ran for the one before.
+                reused.layer?.removeAllAnimations()
+                host = reused
+            } else {
+                host = addFrame(view)
+            }
             frames[row.id] = host
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
                       isHovered: row.id == hovered)
@@ -406,10 +441,11 @@ final class QuickAccessStripView: NSView {
         guard let metrics else { return }
         let rest = restingPlacement.map { $0.firstOrigin...$0.firstOrigin }
         let framed = rest.map { framedRows(metrics, origins: $0) } ?? 0..<0
-        // The selected clip first and then outward, so the details nearest it are read first. A clip framed in both
-        // wings is asked for once, where it is nearest.
+        // The selected clip first and then outward, so the details nearest it are read first; with the selection
+        // gone, the clips nearest its empty slot. A clip framed in both wings is asked for once, where it is nearest.
         var asked = Set<ContentRef>()
-        let refs = framed.sorted { (abs($0 - selectedIndex), $0) < (abs($1 - selectedIndex), $1) }
+        let centre = selectedIndex >= 0 ? selectedIndex : restingPlacement?.slotBefore ?? 0
+        let refs = framed.sorted { (abs($0 - centre), $0) < (abs($1 - centre), $1) }
             .map { rows[$0].ref }.filter { asked.insert($0).inserted }
         let lastOnScreen = rest.map { min(rows.count - 1, rowsOnScreen(metrics, origins: $0).last) } ?? -1
         if let reported, reported.refs == refs, reported.lastOnScreen == lastOnScreen,
@@ -431,16 +467,18 @@ final class QuickAccessStripView: NSView {
     /// How far the springs still running draw the film from its place. The presentation layer shows the film as of
     /// the start of the current transaction, so a spring added earlier in the same transaction is missing, and a move
     /// of the film's place made in it is included.
-    private var drawnOffset: CGFloat {
-        guard let layer = film.layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() else {
-            return 0
-        }
+    private var drawnOffset: CGFloat { drawnShift(of: film.layer) }
+
+    /// How far the springs still running on `layer`, the film's or a frame's own, draw it from its place.
+    private func drawnShift(of layer: CALayer?) -> CGFloat {
+        guard let layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() else { return 0 }
         return drawn.position.x - layer.position.x
     }
 
-    /// Starts `layer`, the film's or a section label's, `displacement` away from where it now belongs and lets it
-    /// spring into place. Each spring adds to those still running, so a new target takes over at once from wherever
-    /// the layer is drawn, without a jump and without waiting for the last one. Returns how long it runs.
+    /// Starts `layer` `displacement` away from where it now belongs and lets it spring into place: the film's, a
+    /// section label's, or that of a frame or of the divider closing a vanished selection's slot. Each spring adds to
+    /// those still running, so a new target takes over at once from wherever the layer is drawn, without a jump and
+    /// without waiting for the last one. Returns how long it runs.
     @discardableResult
     private func springBack(_ layer: CALayer?, from displacement: CGFloat) -> CFTimeInterval {
         guard displacement != 0, let layer else { return 0 }
@@ -508,11 +546,13 @@ final class QuickAccessStripView: NSView {
         case .ended, .cancelled: fingersDown = false
         case .none: break
         }
-        // The scroller counts toward older clips, which lie to the right: content moving left brings them in.
+        // The scroller counts toward older clips, which lie to the right: content moving left brings them in. From a
+        // vanished selection's slot, the rows before it are the newer ones.
+        let slot = selectedIndex < 0 ? restingPlacement?.slotBefore ?? 0 : nil
         let output = scroller.handle(DetentInput(
             deltaX: -event.scrollingDeltaX, deltaY: event.scrollingDeltaY, isPrecise: event.hasPreciseScrollingDeltas,
             phase: phase, isMomentum: !event.momentumPhase.isEmpty, time: event.timestamp
-        ), olderRoom: rows.count - 1 - selectedIndex, newerRoom: max(0, selectedIndex))
+        ), olderRoom: rows.count - (slot ?? selectedIndex + 1), newerRoom: slot ?? selectedIndex)
         if output.steps != 0 {
             showingScrollStep = true
             onCommand?(.move(output.steps))
@@ -561,11 +601,12 @@ final class QuickAccessStripView: NSView {
 
     override func mouseExited(with event: NSEvent) { setHovered(nil) }
 
-    /// The row whose frame is under the pointer where it is drawn at this moment, even in mid-slide.
+    /// The row whose frame is under the pointer where it is drawn at this moment, even in mid-slide, and even while a
+    /// frame closing a vanished selection's slot runs a spring of its own.
     private func row(at event: NSEvent) -> QuickAccessRow.ID? {
         var point = film.convert(event.locationInWindow, from: nil)
         point.x -= drawnOffset
-        return frames.first { $0.value.frame.contains(point) }?.key
+        return frames.first { $0.value.frame.offsetBy(dx: drawnShift(of: $0.value.layer), dy: 0).contains(point) }?.key
     }
 
     /// A faint wash on the frame under the pointer. It only shows the pointer; it never selects.
@@ -618,9 +659,9 @@ final class QuickAccessStripView: NSView {
 
     // MARK: Accessibility
 
-    /// The frames on screen, left to right, the frequent wing first and then the newest clip, or the best match. With a
-    /// frequent wing they are read in two groups, "Frequent" and "Recent", and a group without a frame on screen is
-    /// left out.
+    /// The frames on screen, left to right: the frequent wing first, from the least used clip to the most used, and
+    /// then the newest clip, or the best match. With a frequent wing they are read in two groups, "Frequent" and
+    /// "Recent", and a group without a frame on screen is left out.
     override func accessibilityChildren() -> [Any]? {
         frequentCount == 0 ? framesOnScreen.map(\.host) : fillWingGroups()
     }
