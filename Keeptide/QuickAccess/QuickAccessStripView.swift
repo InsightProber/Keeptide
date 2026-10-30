@@ -347,16 +347,26 @@ final class QuickAccessStripView: NSView {
     }
 
     /// Puts the section labels beside the divider where the film lies, the fingers' push included, or one of them at a
-    /// dock once the divider has gone off that end; without a divider both are hidden. `shown` is where they stood
-    /// before the film moved. While the film slides from `slide` away, a label still shown slides from where it is
-    /// drawn with the film's spring, and one that comes into view rides in with the film; one that stays where it was,
-    /// such as one resting at a dock, does not move. Without a slide, and with Reduce Motion, they go straight there.
-    private func placeSectionLabels(from shown: StripSectionLabels, sliding slide: CGFloat) {
+    /// dock once the divider has gone off that end; without a divider both are hidden. Each ends
+    /// `sectionLabelClearance` above the cards. `shown` is where they stood before the film moved. While the film
+    /// slides from `slide` away, a label still shown slides from where it is drawn with the film's spring, and one that
+    /// comes into view rides in with the film; one that stays where it was, such as one resting at a dock, does not
+    /// move. Without a slide, and with Reduce Motion, they go straight there. While the film is still sliding or
+    /// springing back, a label still shown is not hidden when the divider leaves its end of the band: it stays beside
+    /// the divider, with the film, until the motion has `settled` and each label goes where the divider puts it.
+    private func placeSectionLabels(from shown: StripSectionLabels, sliding slide: CGFloat, settled: Bool = false) {
         var places = StripSectionLabels()
         if let metrics, let rest = restingPlacement, let line = StripLayout.dividerX(metrics, placement: rest) {
-            places = StripLayout.sectionLabelOrigins(metrics, dividerX: line + pushed,
+            let divider = line + pushed
+            places = StripLayout.sectionLabelOrigins(metrics, dividerX: divider,
                                                      frequentWidth: frequentLabel.frame.width,
                                                      recentWidth: recentLabel.frame.width)
+            if !settled, filmIsSliding {
+                let beside = StripLayout.sectionLabelsBeside(dividerX: divider,
+                                                             frequentWidth: frequentLabel.frame.width)
+                if shown.frequent != nil, places.frequent == nil { places.frequent = beside.frequent }
+                if shown.recent != nil, places.recent == nil { places.recent = beside.recent }
+            }
         }
         for (label, stood, place) in [(frequentLabel, shown.frequent, places.frequent),
                                       (recentLabel, shown.recent, places.recent)] {
@@ -364,8 +374,7 @@ final class QuickAccessStripView: NSView {
             guard let place else { continue }
             let size = label.frame.size
             label.frame = sectionLabels.backingAlignedRect(
-                NSRect(x: place, y: (sectionLabels.bounds.height - size.height) / 2, width: size.width,
-                       height: size.height),
+                NSRect(x: place, y: StripLayout.sectionLabelClearance, width: size.width, height: size.height),
                 options: [.alignMinXNearest, .alignWidthNearest, .alignMinYNearest, .alignHeightNearest]
             )
             if slide != 0 { springBack(label.layer, from: stood.map { $0 - label.frame.minX } ?? slide) }
@@ -407,6 +416,9 @@ final class QuickAccessStripView: NSView {
         window?.isVisible == true && !reducesMotion()
     }
 
+    /// Whether a slide or a spring back is still moving the film.
+    private var filmIsSliding: Bool { film.layer?.animationKeys()?.isEmpty == false }
+
     /// How far the springs still running draw the film from its place. The presentation layer shows the film as of
     /// the start of the current transaction, so a spring added earlier in the same transaction is missing, and a move
     /// of the film's place made in it is included.
@@ -434,7 +446,8 @@ final class QuickAccessStripView: NSView {
         return spring.duration
     }
 
-    /// Once a slide has come to rest, the frames kept around where it started go.
+    /// Once a slide or a spring back has come to rest, the frames kept around where it started go, and so does a label
+    /// kept beside the divider after the divider left the band.
     private func settle(after delay: CFTimeInterval) {
         settling?.cancel()
         settling = Task { [weak self] in
@@ -442,6 +455,7 @@ final class QuickAccessStripView: NSView {
             guard !Task.isCancelled, let self else { return }
             self.slideStart = nil
             self.placeFrames()
+            self.placeSectionLabels(from: self.labelPlaces, sliding: 0, settled: true)
         }
     }
 
@@ -455,7 +469,7 @@ final class QuickAccessStripView: NSView {
         setHovered(nil)
         film.frame = bounds.offsetBy(dx: offset, dy: 0)
         let slide = springing && slidesAreShown ? previous - offset : 0
-        springBack(film.layer, from: slide)
+        if slide != 0 { settle(after: springBack(film.layer, from: slide)) }
         placeSectionLabels(from: labels, sliding: slide)
     }
 
@@ -732,30 +746,34 @@ private final class StripSectionLabelsView: NSView {
     override func accessibilityChildren() -> [Any]? { [] }
 }
 
-/// A section label over the strip: the wing's symbol and name, 12 pt semibold, in the toolbar's secondary colour.
+/// A section label over the strip: the wing's symbol and name in the toolbar's secondary colour, 11 pt semibold with a
+/// 10 pt symbol, small enough to stand clear of a selected card's ring in the 20 pt above the cards.
 private struct StripSectionLabel: View {
     let title: String
     let symbol: String
 
     var body: some View {
-        Label(title, systemImage: symbol)
-            .labelStyle(.titleAndIcon)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
-            .fixedSize()
-            // The label is for the eye alone.
-            .accessibilityHidden(true)
+        Label {
+            Text(title).font(.system(size: 11, weight: .semibold))
+        } icon: {
+            Image(systemName: symbol).font(.system(size: 10, weight: .semibold))
+        }
+        .labelStyle(.titleAndIcon)
+        .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+        .fixedSize()
+        // The label is for the eye alone.
+        .accessibilityHidden(true)
     }
 
-    /// The label hosted for AppKit, hidden until it is placed: as wide as its text in whole points, and kept level
-    /// with the middle of the view holding it as that view is sized.
+    /// The label hosted for AppKit, hidden until it is placed: as wide and as high as its text in whole points, and
+    /// kept as far above the bottom of the view holding it as it is put, whatever height that view is given.
     static func hosted(_ title: String, symbol: String, identifier: String) -> NSHostingView<StripSectionLabel> {
         let label = NSHostingView(rootView: StripSectionLabel(title: title, symbol: symbol))
         let size = label.fittingSize
         label.sizingOptions = []
         label.wantsLayer = true
         label.frame.size = NSSize(width: size.width.rounded(.up), height: size.height.rounded(.up))
-        label.autoresizingMask = [.minYMargin, .maxYMargin]
+        label.autoresizingMask = [.maxYMargin]
         label.isHidden = true
         label.setAccessibilityIdentifier(identifier)
         return label

@@ -1113,7 +1113,6 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(frequentLabel.frame.maxX, 521, accuracy: 0.5)
         XCTAssertEqual(recentLabel.frame.minX, 537, accuracy: 0.5)
         XCTAssertGreaterThan(frequentLabel.frame.width, 0)
-        XCTAssertEqual(recentLabel.frame.midY, strip.sectionLabels.bounds.midY, accuracy: 0.5)
         // The fingers carry them as they carry the film: four tenths of a step toward older clips moves both 96.8 left,
         // and lifting brings them back.
         strip.scrollWheel(with: try swipe(dx: -12, phase: .began, at: 1.0))
@@ -1163,7 +1162,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertFalse(frequent.animationKeys()?.isEmpty ?? true)
         XCTAssertFalse(recent.animationKeys()?.isEmpty ?? true)
 
-        // Row 10 → Row 11 (fresh strip): the film slides; "Recent", resting at the left dock, does not.
+        // Row 10 → Row 11 (fresh strip): the film slides; "Recent", resting at the left dock, does not, and "Frequent",
+        // hidden before the slide, stays hidden through it.
         let pinned = makeStrip(medium)
         pinned.window?.orderFront(nil)
         let pinnedLabel = try sectionLabel("QuickAccessRecentLabel", of: pinned)
@@ -1172,6 +1172,21 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(pinned.subviews.first?.layer).animationKeys()?.isEmpty ?? true)
         XCTAssertEqual(try XCTUnwrap(pinnedLabel.layer).animationKeys() ?? [], [])
         XCTAssertEqual(pinnedLabel.frame.minX, medium.dockInset, accuracy: 0.5)
+        XCTAssertTrue(try sectionLabel("QuickAccessFrequentLabel", of: pinned).isHidden)
+        // The same at the right end (fresh strip, 20 frequent clips, Freq 5 → Freq 6): the film slides; "Frequent",
+        // resting at the right dock, does not, and "Recent", hidden before the slide, stays hidden through it.
+        let wide = makeWing(frequent: 20, recent: 20)
+        let right = makeStrip(medium)
+        right.window?.orderFront(nil)
+        let rightLabel = try sectionLabel("QuickAccessFrequentLabel", of: right)
+        for index in [5, 6] {
+            right.show(wide, selection: wide[index].id, details: [:], metrics: medium,
+                       applicationNames: ApplicationNames())
+        }
+        XCTAssertFalse(try XCTUnwrap(right.subviews.first?.layer).animationKeys()?.isEmpty ?? true)
+        XCTAssertEqual(try XCTUnwrap(rightLabel.layer).animationKeys() ?? [], [])
+        XCTAssertEqual(rightLabel.frame.maxX, medium.bandWidth - medium.dockInset, accuracy: 0.5)
+        XCTAssertTrue(try sectionLabel("QuickAccessRecentLabel", of: right).isHidden)
         // A step from Row 3 to Row 2 brings the divider back into the band, and the label leaves the dock, sliding.
         // (Row 3 is too far from Row 11 to slide to, so nothing moves on the way there.)
         select(pinned, 6)
@@ -1274,6 +1289,140 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(recentLabel.frame.minX, 295, accuracy: 0.5)
         XCTAssertEqual(try drawnMinX(of: recentLabel), pushed, accuracy: 0.5)
         strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+    }
+
+    func testAStepTheFingersCompleteAsTheyLiftKeepsTheLabelsWithTheFilm() throws {
+        // The fingers carry the film six tenths of a step and lift, which completes the step: the panel shows it in the
+        // same turn, while their push is still on the film, and the push then springs back. Returns the label's place
+        // and where it is drawn as they lift, with time standing still, and where it was drawn before.
+        func lift(frequent: Int, from start: Int, dx: Int32, label identifier: String) throws
+            -> (place: NSRect, drawn: CGFloat, before: CGFloat, hidden: Bool) {
+            let strip = makeStrip(medium)
+            let content = try XCTUnwrap(strip.superview)
+            content.wantsLayer = true
+            // Labels slide only where they can be seen.
+            strip.window?.orderFront(nil)
+            strip.haptics = RecordingHaptics()
+            let label = try sectionLabel(identifier, of: strip)
+            let rows = makeWing(frequent: frequent, recent: 20)
+            var selected = start
+            strip.onCommand = { [unowned strip, medium = self.medium] command in
+                guard case .move(let offset) = command else { return }
+                selected += offset
+                strip.show(rows, selection: rows[selected].id, details: [:], metrics: medium,
+                           applicationNames: ApplicationNames())
+            }
+            strip.show(rows, selection: rows[start].id, details: [:], metrics: medium,
+                       applicationNames: ApplicationNames())
+            strip.scrollWheel(with: try swipe(dx: dx, phase: .began, at: 1.0))
+            let before = try drawnMinX(of: label)
+            // Time stands still from here, so the slide stays at its beginning.
+            content.layer?.speed = 0
+            strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+            CATransaction.flush()
+            XCTAssertEqual(selected, start + (dx < 0 ? 1 : -1))
+            return (label.frame, try drawnMinX(of: label), before, label.isHidden)
+        }
+
+        // Row 1 in the middle, the divider at 287, and a push toward older clips: the step to Row 2 rests the divider
+        // at 45. "Frequent" is bound for its place 8 short of it, and is still drawn where it was: no jump of a step.
+        let frequent = try lift(frequent: 3, from: 4, dx: -18, label: "QuickAccessFrequentLabel")
+        XCTAssertFalse(frequent.hidden)
+        XCTAssertEqual(frequent.place.maxX, 37, accuracy: 0.5)
+        XCTAssertEqual(frequent.drawn, frequent.before, accuracy: 0.5)
+        // The mirror at the right end: Freq 4 of six in the middle, the divider at 1089, and a push toward newer clips:
+        // the step to Freq 3 rests the divider at 1331, and "Recent" is bound for 1339, still drawn where it was.
+        let recent = try lift(frequent: 6, from: 4, dx: 18, label: "QuickAccessRecentLabel")
+        XCTAssertFalse(recent.hidden)
+        XCTAssertEqual(recent.place.minX, 1339, accuracy: 0.5)
+        XCTAssertEqual(recent.drawn, recent.before, accuracy: 0.5)
+    }
+
+    func testALabelLeavingWithTheFilmGoesOnlyOnceTheSlideSettles() async throws {
+        // A key chooses the clip at `end` on a strip on screen, with time standing still from then on, so the slide
+        // stays at its beginning. Returns the label and where it was drawn before.
+        func press(frequent: Int, from start: Int, to end: Int, label identifier: String) throws
+            -> (label: NSView, before: CGFloat) {
+            let strip = makeStrip(medium)
+            let content = try XCTUnwrap(strip.superview)
+            content.wantsLayer = true
+            strip.window?.orderFront(nil)
+            let label = try sectionLabel(identifier, of: strip)
+            let rows = makeWing(frequent: frequent, recent: 20)
+            strip.show(rows, selection: rows[start].id, details: [:], metrics: medium,
+                       applicationNames: ApplicationNames())
+            XCTAssertFalse(label.isHidden, identifier)
+            let before = try drawnMinX(of: label)
+            content.layer?.speed = 0
+            strip.show(rows, selection: rows[end].id, details: [:], metrics: medium,
+                       applicationNames: ApplicationNames())
+            CATransaction.flush()
+            return (label, before)
+        }
+
+        // Row 2 → Row 3 takes the divider from 45 to -197, off the left end, where "Frequent" has no place. While the
+        // film is still drawn where it was, the label stays with it, bound for its place 8 short of the divider.
+        let frequent = try press(frequent: 3, from: 5, to: 6, label: "QuickAccessFrequentLabel")
+        XCTAssertFalse(frequent.label.isHidden)
+        XCTAssertEqual(frequent.label.frame.maxX, -197 - 8, accuracy: 0.5)
+        XCTAssertEqual(try drawnMinX(of: frequent.label), frequent.before, accuracy: 0.5)
+        // The mirror at the right end: Freq 3 → Freq 2 of six takes the divider from 1331 to 1503, off the right end,
+        // and "Recent" stays with the film, bound for its place 8 past the divider.
+        let recent = try press(frequent: 6, from: 3, to: 2, label: "QuickAccessRecentLabel")
+        XCTAssertFalse(recent.label.isHidden)
+        XCTAssertEqual(recent.label.frame.minX, 1503 + 8, accuracy: 0.5)
+        XCTAssertEqual(try drawnMinX(of: recent.label), recent.before, accuracy: 0.5)
+        // Once the slides have settled, both go.
+        try await waitUntil { frequent.label.isHidden && recent.label.isHidden }
+    }
+
+    func testALabelKeptThroughASpringBackGoesOnceItSettles() async throws {
+        let large = StripLayout.metrics(for: .large, visibleWidth: 1440)
+        let strip = makeStrip(large)
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        // Labels slide only where they can be seen.
+        strip.window?.orderFront(nil)
+        strip.haptics = RecordingHaptics()
+        let frequentLabel = try sectionLabel("QuickAccessFrequentLabel", of: strip)
+        let rows = makeWing(frequent: 3, recent: 20)
+        // Large cards with Row 2 in the middle: the divider rests at -40.5, off the left end, so "Frequent" is hidden.
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: large, applicationNames: ApplicationNames())
+        XCTAssertTrue(frequentLabel.isHidden)
+        // The fingers carry the film just short of half a step toward newer clips, which brings the divider and the
+        // label in.
+        strip.scrollWheel(with: try swipe(dx: 14, phase: .began, at: 1.0))
+        XCTAssertFalse(frequentLabel.isHidden)
+        let before = try drawnMinX(of: frequentLabel)
+
+        // Time stands still from here, so the spring back stays at its beginning.
+        content.layer?.speed = 0
+        // They lift short of half a step: the film springs back, and the label stays with it, still drawn where it was.
+        strip.scrollWheel(with: try swipe(dx: 0, phase: .ended, at: 1.1))
+        CATransaction.flush()
+        XCTAssertFalse(frequentLabel.isHidden)
+        XCTAssertEqual(try drawnMinX(of: frequentLabel), before, accuracy: 0.5)
+        // Once the spring back has settled, it goes.
+        try await waitUntil { frequentLabel.isHidden }
+    }
+
+    func testTheSectionLabelsClearTheSelectionRing() throws {
+        let strip = makeStrip(medium)
+        let rows = makeWing(frequent: 3, recent: 20)
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: medium, applicationNames: ApplicationNames())
+        let cardTop = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).maxY
+        let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+
+        // The ring around a selected card reaches 6 pt above it, 7 with Increase Contrast. Each label's text ends, its
+        // descenders included, at least 8 pt above the cards, and so does all the rest of the label.
+        for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
+            let label = try sectionLabel(identifier, of: strip)
+            XCTAssertFalse(label.isHidden, identifier)
+            let frame = label.convert(label.bounds, to: nil)
+            let textBottom = frame.minY + label.lastBaselineOffsetFromBottom + font.descender
+            XCTAssertGreaterThanOrEqual(textBottom - cardTop, 8, identifier)
+            XCTAssertGreaterThanOrEqual(frame.minY - cardTop, 8, identifier)
+        }
     }
 
     func testAPushTowardNewerClipsFindsAFrameForEveryClipItBringsIn() throws {
@@ -1385,8 +1534,9 @@ final class QuickAccessStripViewTests: XCTestCase {
     private var medium: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
 
     /// A strip one band wide in a window that is never shown, so frames go straight to their places, with its section
-    /// labels above it as the band places them. A test that shows the window sees the frames slide, whatever Reduce
-    /// Motion is set to on the Mac that runs it; the divider is as wide as without Increase Contrast either way.
+    /// labels in the gap above the cards as the band places them. A test that shows the window sees the frames slide,
+    /// whatever Reduce Motion is set to on the Mac that runs it; the divider is as wide as without Increase Contrast
+    /// either way.
     private func makeStrip(_ metrics: StripMetrics? = nil) -> QuickAccessStripView {
         let metrics = metrics ?? self.metrics
         let size = NSSize(width: metrics.bandWidth, height: 300)
@@ -1399,8 +1549,9 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.reducesMotion = { false }
         strip.increasesContrast = { false }
         content.addSubview(strip)
-        strip.sectionLabels.frame = NSRect(x: 0, y: strip.frame.maxY, width: metrics.bandWidth,
-                                           height: StripLayout.toolbarGap)
+        // The labels' view ends at the cards' top, half the room the strip keeps around them below its own top.
+        let cardTop = strip.frame.maxY - (strip.frame.height - metrics.frameSize.height) / 2
+        strip.sectionLabels.frame = NSRect(x: 0, y: cardTop, width: metrics.bandWidth, height: StripLayout.toolbarGap)
         content.addSubview(strip.sectionLabels)
         window.contentView = content
         addTeardownBlock { window.close() }

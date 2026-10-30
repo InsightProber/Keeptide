@@ -67,7 +67,8 @@ enum QuickAccessKeyRouter {
             return .focusSearchField
         case (.down, .filters):
             return .focusResults
-        // Strip: newest at the left, so → is one clip older.
+        // Strip: the rows run left to right, the most used frequent clip first and then the newest clip, so → is the
+        // next row: a clip used less often, or one older.
         case (.left, .results):
             return .move(-1)
         case (.right, .results):

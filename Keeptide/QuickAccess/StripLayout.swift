@@ -60,6 +60,9 @@ enum StripLayout {
     static let cornerRadius: CGFloat = 36
     /// How far a section label stands from the divider's line.
     static let sectionLabelGap: CGFloat = 8
+    /// How far above the cards' top a section label ends, its descenders included. The ring around a selected card
+    /// reaches 6 pt above it, 7 with Increase Contrast, so every glyph of a label stays clear of it.
+    static let sectionLabelClearance: CGFloat = 8
     /// The band stands this far in from each side of the screen's visible area. The panel reaches the edge, so its
     /// shadow has that room beside the band.
     static let sideMargin: CGFloat = 32
@@ -163,8 +166,13 @@ enum StripLayout {
         if dividerX - sectionLabelGap > m.bandWidth - m.dockInset {
             return StripSectionLabels(frequent: m.bandWidth - m.dockInset - frequentWidth)
         }
-        return StripSectionLabels(frequent: dividerX - sectionLabelGap - frequentWidth,
-                                  recent: dividerX + sectionLabelGap)
+        return sectionLabelsBeside(dividerX: dividerX, frequentWidth: frequentWidth)
+    }
+
+    /// Where the section labels stand beside the divider's line at `dividerX`, resting at neither dock: "Frequent" ends
+    /// `sectionLabelGap` short of the line and "Recent" starts as far past it.
+    static func sectionLabelsBeside(dividerX: CGFloat, frequentWidth: CGFloat) -> StripSectionLabels {
+        StripSectionLabels(frequent: dividerX - sectionLabelGap - frequentWidth, recent: dividerX + sectionLabelGap)
     }
 
     /// The card goes above the band, which stays where it is. Where the card has no room above it, the
