@@ -45,16 +45,34 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertFalse(backdrop.surface.isSolid)
     }
 
+    func testTheSectionLabelsLieInTheGapBetweenTheToolbarAndTheCards() throws {
+        let strip = QuickAccessStripView()
+        let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, strip: strip)
+
+        // As wide as the band, in the 20 pt between the toolbar and the cards.
+        let band = backdrop.convert(backdrop.bandRect, to: nil)
+        let labels = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
+        XCTAssertEqual(labels.minX, band.minX, accuracy: 0.5)
+        XCTAssertEqual(labels.width, band.width, accuracy: 0.5)
+        XCTAssertEqual(labels.height, StripLayout.toolbarGap, accuracy: 0.5)
+        XCTAssertEqual(band.maxY - labels.maxY, StripLayout.toolbarTop + StripLayout.toolbarHeight, accuracy: 0.5)
+        // They take no clicks: just above the cards the pointer finds the strip beneath them.
+        let aboveTheCards = NSPoint(x: band.midX, y: band.maxY - StripLayout.cardTop + 4)
+        XCTAssertTrue(labels.contains(aboveTheCards))
+        XCTAssertTrue(window.contentView?.hitTest(aboveTheCards) === strip)
+    }
+
     /// The band view with medium cards and nothing to show, in a window that is never shown, with the two settings
     /// given through SwiftUI's environment as the system would give them; and the backdrop it made.
-    private func host(reducesTransparency: Bool,
-                      increasedContrast: Bool) throws -> (NSWindow, QuickAccessBandBackdrop) {
+    private func host(
+        reducesTransparency: Bool, increasedContrast: Bool, strip: QuickAccessStripView = QuickAccessStripView()
+    ) throws -> (NSWindow, QuickAccessBandBackdrop) {
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
         let band = QuickAccessBandView(
             layout: QuickAccessBandView.Layout(metrics: metrics, previewSize: nil,
                                                roomBelow: StripLayout.shadowRoom.below),
             state: QuickAccessState(services: { nil }), toolbar: QuickAccessToolbar(field: QuickAccessSearchField()),
-            strip: QuickAccessStripView(), applicationNames: ApplicationNames(),
+            strip: strip, applicationNames: ApplicationNames(),
             actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {})
         )
         let root = band

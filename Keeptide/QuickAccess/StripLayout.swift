@@ -23,6 +23,8 @@ struct StripMetrics: Equatable {
 
     /// Distance between the left edges of neighbouring frames.
     var step: CGFloat { frameSize.width + gap }
+    /// What the divider adds to the gap after the frequent wing: a third of a card, rounded (67 / 76 / 87).
+    var dividerExtra: CGFloat { (frameSize.width / 3).rounded() }
     /// The middle of a frame, between its colour band and its footer, where the clip itself is drawn.
     var contentSize: CGSize {
         CGSize(width: frameSize.width, height: max(0, frameSize.height - headerHeight - footerHeight))
@@ -33,6 +35,15 @@ struct StripMetrics: Equatable {
 struct StripPlacement: Equatable {
     /// The left edge of index 0's frame within the band.
     let firstOrigin: CGFloat
+    /// The first recent row's index when the frequent wing comes before it; from there each frame stands
+    /// `dividerExtra` further right. nil without a divider.
+    var dividerBefore: Int? = nil
+}
+
+/// Where the section labels lie in the band: their left edges, and nil for a label that is hidden.
+struct StripSectionLabels: Equatable {
+    var frequent: CGFloat? = nil
+    var recent: CGFloat? = nil
 }
 
 /// Geometry of the quick access strip. The band is the bar holding the toolbar and the frames; the panel is the
@@ -47,6 +58,8 @@ enum StripLayout {
     /// How far below the band's top edge the cards' top edges are.
     static let cardTop = toolbarTop + toolbarHeight + toolbarGap
     static let cornerRadius: CGFloat = 36
+    /// How far a section label stands from the divider's line.
+    static let sectionLabelGap: CGFloat = 8
     /// The band stands this far in from each side of the screen's visible area. The panel reaches the edge, so its
     /// shadow has that room beside the band.
     static let sideMargin: CGFloat = 32
@@ -71,6 +84,12 @@ enum StripLayout {
         )
     }
 
+    /// Cards the band shows whole between its docks: floor((bandWidth − 2·dockInset + gap) / step). A band too narrow
+    /// for one shows none, never fewer.
+    static func firstScreenCount(_ m: StripMetrics) -> Int {
+        max(0, Int(((m.bandWidth - 2 * m.dockInset + m.gap) / m.step).rounded(.down)))
+    }
+
     /// The toolbar, the cards and the room around them: 340 with medium cards.
     static func bandHeight(_ m: StripMetrics) -> CGFloat {
         cardTop + m.frameSize.height + bottomPadding
@@ -84,34 +103,68 @@ enum StripLayout {
                       height: height)
     }
 
-    /// Where the film lies when the clip at `position` is selected; `position` is fractional while the fingers
-    /// follow. Index 0 is the newest (or best match) and sits at the left, older clips to its right. The film
-    /// moves to keep the selection in the middle of the band, but stops with its first frame `dockInset` from
-    /// the band's left end, so the selection then walks along the film instead. The right end stops the same
-    /// way once `oldestIsLoaded`; before that more clips may follow, so the film goes on moving. A loaded film
-    /// that fits between the docks is centred as a group. A negative `position` (-1) stands for a
-    /// selection that vanished: the film lies as if a selected empty slot came before index 0, and index 0
+    /// Where the film lies when the row at `position` is selected; `position` is fractional while the fingers
+    /// follow. Index 0 sits at the left and the rest run to its right: with `frequentCount` frequent rows leading,
+    /// index 0 is the most used frequent clip; without them it is the newest clip (or the best match). When recent
+    /// rows follow the frequent ones, a divider makes the gap between the two wings `dividerExtra` wider, and the film
+    /// is that much wider too. The film moves to keep the selection in the middle of the band, but stops with its
+    /// first frame `dockInset` from the band's left end, so the selection then walks along the film instead. The
+    /// right end stops the same way once `oldestIsLoaded`; before that more clips may follow, so the film goes on
+    /// moving. A loaded film that fits between the docks is centred as a group. A negative `position` (-1) stands for
+    /// a selection that vanished: the film lies as if a selected empty slot came before index 0, and index 0
     /// sits one step to the right of that slot. Going from a negative position to 0, the slot goes and the film
     /// steps left at once; that step is deliberate, since the slot belongs to no clip.
-    static func placement(_ m: StripMetrics, count: Int, position: CGFloat, oldestIsLoaded: Bool) -> StripPlacement {
+    static func placement(_ m: StripMetrics, count: Int, position: CGFloat, oldestIsLoaded: Bool,
+                          frequentCount: Int = 0) -> StripPlacement {
         let vanished = position < 0
         let slots = CGFloat(vanished ? count + 1 : count)
-        let selected = vanished ? 0 : position
-        let filmWidth = slots * m.step - m.gap
+        let dividerBefore = frequentCount > 0 && frequentCount < count ? frequentCount : nil
+        let extra = dividerBefore == nil ? 0 : m.dividerExtra
+        let filmWidth = slots * m.step - m.gap + extra
+        // How far along the film the selected frame's left edge lies. Past the divider it is `extra` further; carried
+        // across the divider's gap by the fingers, it takes its share of the extra, so the film moves without a jump.
+        let selected = vanished ? 0
+            : position * m.step + extra * min(1, max(0, position - CGFloat(frequentCount - 1)))
         let slotOrigin: CGFloat
         if oldestIsLoaded && filmWidth <= m.bandWidth - 2 * m.dockInset {
             slotOrigin = (m.bandWidth - filmWidth) / 2
         } else {
-            let centred = m.bandWidth / 2 - m.frameSize.width / 2 - selected * m.step
+            let centred = m.bandWidth / 2 - m.frameSize.width / 2 - selected
             let lowest = oldestIsLoaded ? m.bandWidth - m.dockInset - filmWidth : -.infinity
             slotOrigin = min(m.dockInset, max(lowest, centred))
         }
-        return StripPlacement(firstOrigin: vanished ? slotOrigin + m.step : slotOrigin)
+        return StripPlacement(firstOrigin: vanished ? slotOrigin + m.step : slotOrigin, dividerBefore: dividerBefore)
     }
 
-    /// The left edge of each frame within the band, one step apart from index 0 at `placement.firstOrigin` on.
+    /// The left edge of each frame within the band, one step apart from index 0 at `placement.firstOrigin` on, and
+    /// `dividerExtra` further right from the divider on.
     static func frameOrigins(_ m: StripMetrics, count: Int, placement: StripPlacement) -> [CGFloat] {
-        (0..<count).map { placement.firstOrigin + CGFloat($0) * m.step }
+        let divider = placement.dividerBefore ?? count
+        return (0..<count).map { placement.firstOrigin + CGFloat($0) * m.step + ($0 < divider ? 0 : m.dividerExtra) }
+    }
+
+    /// The middle of the divider's line within the band, halfway between the last frequent frame and the first recent
+    /// one: firstOrigin + k·step + (dividerExtra − gap) / 2. nil without a divider.
+    static func dividerX(_ m: StripMetrics, placement: StripPlacement) -> CGFloat? {
+        placement.dividerBefore.map { placement.firstOrigin + CGFloat($0) * m.step + (m.dividerExtra - m.gap) / 2 }
+    }
+
+    /// Where the section labels go with the divider's line at `dividerX` within the band. "Frequent" ends
+    /// `sectionLabelGap` short of the line and "Recent" starts as far past it, so the two never meet. Where that would
+    /// take "Recent" past the left dock, the frequent wing has gone off the band's left end: "Recent" rests at
+    /// `dockInset` and "Frequent" is hidden. Where it would take "Frequent" past the right dock, the recent clips have
+    /// gone off the right end: "Frequent" ends `dockInset` from it and "Recent" is hidden. "Recent" is placed by its
+    /// left edge alone, so `recentWidth` changes neither.
+    static func sectionLabelOrigins(_ m: StripMetrics, dividerX: CGFloat, frequentWidth: CGFloat,
+                                    recentWidth: CGFloat) -> StripSectionLabels {
+        if dividerX + sectionLabelGap < m.dockInset {
+            return StripSectionLabels(recent: m.dockInset)
+        }
+        if dividerX - sectionLabelGap > m.bandWidth - m.dockInset {
+            return StripSectionLabels(frequent: m.bandWidth - m.dockInset - frequentWidth)
+        }
+        return StripSectionLabels(frequent: dividerX - sectionLabelGap - frequentWidth,
+                                  recent: dividerX + sectionLabelGap)
     }
 
     /// The card goes above the band, which stays where it is. Where the card has no room above it, the

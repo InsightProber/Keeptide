@@ -753,7 +753,7 @@ final class QuickAccessMoreButton: NSButton {
 }
 
 /// The toolbar's colours, as the design gives them in dark and in light. With Increase Contrast every translucent
-/// colour among them is half again as strong.
+/// colour among them but the divider is half again as strong.
 enum ToolbarPalette {
     static let foldedSearchFill = colour(dark: (255, 255, 255, 0.10), light: (0, 0, 0, 0.06))
     static let openSearchFill = colour(dark: (255, 255, 255, 0.12), light: (0, 0, 0, 0.06))
@@ -769,6 +769,12 @@ enum ToolbarPalette {
     static let placeholder = colour(dark: (235, 235, 245, 0.5), light: (60, 60, 67, 0.5))
     static let clearFill = colour(dark: (235, 235, 245, 0.35), light: (60, 60, 67, 0.35))
     static let clearCross = colour(dark: (0x1C, 0x1C, 0x1E, 1), light: (255, 255, 255, 1))
+    /// The divider between the frequent wing and the recent clips: the line over each card's footer, white at 7 percent
+    /// in dark mode and black at 7 percent in light. Increase Contrast widens the divider instead of strengthening it.
+    static let divider = NSColor(name: nil) { appearance in
+        isDark(appearance) ? NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 0.07)
+            : NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 0.07)
+    }
     /// Why a copy failed: the system's red in dark mode, and in light mode a deeper red, which reads at 4.5:1 on the
     /// light band as the system's red does not.
     static let failure = NSColor(name: nil) { appearance in
