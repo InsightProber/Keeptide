@@ -4,8 +4,8 @@ import XCTest
 @testable import Keeptide
 
 /// What the band stands on, as the band view sets it up from SwiftUI's environment: the material in each appearance,
-/// and what Reduce Transparency and Increase Contrast make of it. And the strip's section labels in the gap between the
-/// toolbar and the cards, measured by the ink SwiftUI draws for them.
+/// and what Reduce Transparency and Increase Contrast make of it. And the strip's section icons below the cards,
+/// measured by the ink SwiftUI draws for them.
 @MainActor
 final class QuickAccessBandTests: XCTestCase {
     func testTheBackdropTakesTheSwitchersMaterialInEachAppearance() throws {
@@ -46,11 +46,12 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertFalse(backdrop.surface.isSolid)
     }
 
-    // MARK: Section labels
+    // MARK: Section icons
 
-    func testTheSectionLabelsLieInTheGapBetweenTheToolbarAndTheCards() throws {
-        // Without the frequent wing the gap is 20 and the band 340 tall, as they always were; with it, 30 and 350.
-        for (wing, gap, height) in [(false, 20, 340), (true, 30, 350)] as [(Bool, CGFloat, CGFloat)] {
+    func testTheSectionIconsLieBelowTheCards() throws {
+        // Without the frequent wing the band is 340 tall with 22 below the cards, as it always was; with it, 346 with
+        // 28 below them. Either way the cards start 68 below the band's top edge, 20 below the toolbar's row.
+        for (wing, room, height) in [(false, 22, 340), (true, 28, 346)] as [(Bool, CGFloat, CGFloat)] {
             let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: wing)
             let strip = QuickAccessStripView()
             let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
@@ -61,92 +62,131 @@ final class QuickAccessBandTests: XCTestCase {
             settle(window)
 
             let band = backdrop.convert(backdrop.bandRect, to: nil)
-            XCTAssertEqual(band.height, height, "wing \(wing)")
-            // The labels' view is as wide as the band, from the toolbar's row down to the cards.
-            let labels = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
             let card = try selectedCard(in: strip)
-            XCTAssertEqual(labels.minX, band.minX, accuracy: 0.5, "wing \(wing)")
-            XCTAssertEqual(labels.width, band.width, accuracy: 0.5, "wing \(wing)")
-            XCTAssertEqual(labels.height, gap, accuracy: 0.5, "wing \(wing)")
-            XCTAssertEqual(band.maxY - labels.maxY, StripLayout.toolbarTop + StripLayout.toolbarHeight, accuracy: 0.5,
-                           "wing \(wing)")
-            XCTAssertEqual(band.maxY - card.maxY, 48 + gap, accuracy: 0.5, "wing \(wing)")
-            XCTAssertEqual(labels.minY, card.maxY, accuracy: 0.5, "wing \(wing)")
-            // They take no clicks: just above the cards the pointer finds the strip beneath them.
-            let aboveTheCards = NSPoint(x: band.midX, y: card.maxY + 4)
-            XCTAssertTrue(labels.contains(aboveTheCards), "wing \(wing)")
-            XCTAssertTrue(window.contentView?.hitTest(aboveTheCards) === strip, "wing \(wing)")
+            XCTAssertEqual(band.height, height, "wing \(wing)")
+            XCTAssertEqual(band.maxY - card.maxY, 68, accuracy: 0.5, "wing \(wing)")
+            XCTAssertEqual(card.minY - band.minY, room, accuracy: 0.5, "wing \(wing)")
+            // The icons' view is as wide as the band, from the cards' bottom edge down to the band's.
+            let icons = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
+            XCTAssertEqual(icons.minX, band.minX, accuracy: 0.5, "wing \(wing)")
+            XCTAssertEqual(icons.width, band.width, accuracy: 0.5, "wing \(wing)")
+            XCTAssertEqual(icons.maxY, card.minY, accuracy: 0.5, "wing \(wing)")
+            XCTAssertEqual(icons.minY, band.minY, accuracy: 0.5, "wing \(wing)")
+            // It takes no clicks: just below the cards the pointer finds the strip beneath it.
+            let belowTheCards = NSPoint(x: band.midX, y: card.minY - 4)
+            XCTAssertTrue(icons.contains(belowTheCards), "wing \(wing)")
+            XCTAssertTrue(window.contentView?.hitTest(belowTheCards) === strip, "wing \(wing)")
+            guard wing else { continue }
+            // A click on an icon goes where it would go without the icons: to the band beneath them.
+            for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
+                let label = try sectionLabel(identifier, of: strip)
+                XCTAssertFalse(label.isHidden, identifier)
+                let frame = label.convert(label.bounds, to: nil)
+                let middle = NSPoint(x: frame.midX, y: frame.midY)
+                let hit = try XCTUnwrap(window.contentView?.hitTest(middle), identifier)
+                XCTAssertFalse(hit.isDescendant(of: strip.sectionLabels), identifier)
+                strip.sectionLabels.isHidden = true
+                XCTAssertTrue(window.contentView?.hitTest(middle) === hit, identifier)
+                strip.sectionLabels.isHidden = false
+            }
         }
     }
 
-    func testTheSectionLabelsStandClearOfTheToolbarAboveAndTheRingBelow() throws {
-        // The ink each label draws, its symbol's included, stays at least 8 pt above the cards and so above the ring
-        // around a selected card, at least 6 pt below the toolbar's row, and at least 3 pt below the 3 pt ring around
-        // the search, open or folded, while its field has the keys. The labels move with the cards, so either may pass
-        // under the search: what counts is how far apart they are from top to bottom. All of it holds with Increase
-        // Contrast, which draws the selection ring wider.
+    func testTheSectionIconsStandClearOfTheRingAndTheBandsBottomEdge() throws {
+        // The ring around a selected card reaches 6 pt below it, and 7 with Increase Contrast. Each icon is centred
+        // between the wider ring's lowest reach and the band's bottom edge, and the ink it draws, measured as SwiftUI
+        // draws it, keeps at least 3 pt from both, the two gaps differing by less than a point. The icons are the same
+        // with Increase Contrast or without.
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
+        XCTAssertEqual(try ringReach(increasedContrast: false, below: true), 6, accuracy: 0.5)
+        let reach = try ringReach(increasedContrast: true, below: true)
+        XCTAssertEqual(reach, 7, accuracy: 0.5)
         for increasedContrast in [false, true] {
             let strip = QuickAccessStripView()
             strip.increasesContrast = { increasedContrast }
-            let toolbar = QuickAccessToolbar(field: QuickAccessSearchField())
-            let (window, _) = try host(reducesTransparency: false, increasedContrast: increasedContrast,
-                                       metrics: metrics, strip: strip, toolbar: toolbar)
+            let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: increasedContrast,
+                                              metrics: metrics, strip: strip)
             let rows = makeWing(frequent: 3, recent: 20)
             strip.show(rows, selection: rows[3].id, details: [:], metrics: metrics,
                        applicationNames: ApplicationNames())
             settle(window)
-            let card = try selectedCard(in: strip)
-            let row = toolbar.convert(toolbar.rowFrame, to: nil)
-            // The cards in the strip are drawn with the system's setting, so the ring is measured on a card drawn
-            // with Increase Contrast given to it.
-            let ring = try ringReach(increasedContrast: increasedContrast)
-            XCTAssertEqual(ring, increasedContrast ? 7 : 6, accuracy: 0.5)
-
-            var searchRings: [NSRect] = []
-            for expanded in [false, true] {
-                toolbar.setSearchExpanded(expanded)
-                toolbar.ringsFoldedSearch = !expanded
-                toolbar.showsSearchFocus = true
-                toolbar.layoutSubtreeIfNeeded()
-                XCTAssertFalse(toolbar.focusHalo.isHidden, "expanded \(expanded)")
-                searchRings.append(toolbar.convert(toolbar.focusHalo.frame, to: nil))
-            }
+            let band = backdrop.convert(backdrop.bandRect, to: nil)
+            let ring = try selectedCard(in: strip).minY - reach
             for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
                 let name = "\(identifier), Increase Contrast \(increasedContrast)"
                 let label = try sectionLabel(identifier, of: strip)
                 XCTAssertFalse(label.isHidden, name)
-                // The label's frame ends 8 pt above the cards.
                 let frame = label.convert(label.bounds, to: nil)
-                XCTAssertEqual(frame.minY - card.maxY, 8, accuracy: 0.01, name)
-                let parts = try ink(of: label)
-                let ink = parts.symbol.union(parts.title)
-                XCTAssertGreaterThanOrEqual(ink.minY - card.maxY, 8, name)
-                XCTAssertGreaterThan(ink.minY - card.maxY, ring, name)
-                XCTAssertGreaterThanOrEqual(row.minY - ink.maxY, 6, name)
-                for searchRing in searchRings {
-                    XCTAssertGreaterThanOrEqual(searchRing.minY - ink.maxY, 3, name)
-                }
+                XCTAssertEqual(frame.midY, (ring + band.minY) / 2, accuracy: 0.5, name)
+                let ink = try ink(of: label)
+                XCTAssertGreaterThanOrEqual(ring - ink.maxY, 3, name)
+                XCTAssertGreaterThanOrEqual(ink.minY - band.minY, 3, name)
+                XCTAssertLessThan(abs((ring - ink.maxY) - (ink.minY - band.minY)), 1, name)
             }
         }
     }
 
-    func testTheSectionLabelsAreTwelvePointSemiboldWithElevenPointSymbols() throws {
-        // Each label's title draws the ink 12 pt semibold system text draws, and its symbol the ink of the SF Symbol at
-        // 11 pt semibold, as SwiftUI draws each alone. A point more or less makes either at least 0.75 pt wider or
-        // narrower, or taller or shorter, which is more than the 0.5 pt the comparison allows.
+    func testTheSectionIconsAreTwelvePointSemiboldSymbolsWithoutWords() throws {
+        // Each icon draws the ink of its SF Symbol at 12 pt semibold, as SwiftUI draws the symbol alone, and nothing
+        // else: one run of ink, no gap in it wider than 2 pt, as wide and as tall as the symbol's own, and as heavy. No
+        // "Frequent" or "Recent" is drawn beside it. A point more or less makes the symbol at least 0.75 pt wider or
+        // narrower, or taller or shorter, which is more than the 0.5 pt the comparison allows; medium or bold strokes
+        // cover at least 8 percent less or more, against the 4 percent allowed.
         let strip = QuickAccessStripView()
-        for (identifier, title, symbol) in [("QuickAccessFrequentLabel", "Frequent", "flame"),
-                                            ("QuickAccessRecentLabel", "Recent", "clock")] {
-            let drawn = try ink(of: try sectionLabel(identifier, of: strip))
-            let text = try XCTUnwrap(try Picture(Text(title).font(.system(size: 12, weight: .semibold)).fixedSize())
-                .ink(in: nil))
-            let image = try XCTUnwrap(try Picture(Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
-                .fixedSize()).ink(in: nil))
-            XCTAssertEqual(drawn.title.width, text.width, accuracy: 0.5, title)
-            XCTAssertEqual(drawn.title.height, text.height, accuracy: 0.5, title)
-            XCTAssertEqual(drawn.symbol.width, image.width, accuracy: 0.5, symbol)
-            XCTAssertEqual(drawn.symbol.height, image.height, accuracy: 0.5, symbol)
+        for (identifier, symbol) in [("QuickAccessFrequentLabel", "flame"), ("QuickAccessRecentLabel", "clock")] {
+            let label = try sectionLabel(identifier, of: strip)
+            let size = label.bounds.size
+            let picture = try Picture(label.rootView.frame(width: size.width, height: size.height))
+            let columns = picture.inkColumns
+            XCTAssertFalse(columns.isEmpty, symbol)
+            XCTAssertNil(zip(columns, columns.dropFirst()).first { $1 - $0 > Int(2 * Picture.scale) },
+                         "\(symbol): something is drawn beside the symbol")
+            let drawn = try XCTUnwrap(picture.ink(in: nil), symbol)
+            let reference = try Picture(Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
+                .fixedSize())
+            let alone = try XCTUnwrap(reference.ink(in: nil), symbol)
+            XCTAssertEqual(drawn.width, alone.width, accuracy: 0.5, symbol)
+            XCTAssertEqual(drawn.height, alone.height, accuracy: 0.5, symbol)
+            XCTAssertEqual(picture.inkArea, reference.inkArea, accuracy: reference.inkArea * 0.04, symbol)
+        }
+    }
+
+    func testAPinnedIconKeepsEightPointsFromTheBandsRoundedCorner() throws {
+        // Once the divider has gone off an end, the icon of the wing still on screen rests at that end, and its ink
+        // keeps at least 8 pt from the band's rounded corner there: the outline as the band draws it, where it lies
+        // within the corner's radius, 36 pt, of that end and of the bottom edge. Further along the outline runs within
+        // 0.35 pt of the straight bottom edge, which the icons keep 3 pt from. Resting at the dock inset, 20 pt, the
+        // ink came within 2 pt of the corner.
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
+        // Three frequent clips and Row 10 selected: the divider is off the left end, and the clock rests there. Twenty
+        // frequent clips and the most used one selected: the divider is off the right end, and the flame rests there.
+        let cases = [(frequent: 3, selected: 13, pinned: "QuickAccessRecentLabel", gone: "QuickAccessFrequentLabel"),
+                     (frequent: 20, selected: 0, pinned: "QuickAccessFrequentLabel", gone: "QuickAccessRecentLabel")]
+        for (frequent, selected, pinned, gone) in cases {
+            let strip = QuickAccessStripView()
+            let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
+                                              strip: strip)
+            let rows = makeWing(frequent: frequent, recent: 20)
+            strip.show(rows, selection: rows[selected].id, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+            settle(window)
+            let band = backdrop.convert(backdrop.bandRect, to: nil)
+            let label = try sectionLabel(pinned, of: strip)
+            XCTAssertFalse(label.isHidden, pinned)
+            XCTAssertTrue(try sectionLabel(gone, of: strip).isHidden, gone)
+            let left = label.convert(label.bounds, to: nil).midX < band.midX
+            let radius = StripLayout.cornerRadius
+            let corner = outline(of: band).filter { point in
+                point.y <= band.minY + radius && (left ? point.x <= band.minX + radius : point.x >= band.maxX - radius)
+            }
+            XCTAssertFalse(corner.isEmpty, pinned)
+            let ink = try inkPixels(of: label)
+            XCTAssertFalse(ink.isEmpty, pinned)
+            let nearest = ink.map { pixel in
+                corner.map { hypot($0.x - pixel.x, $0.y - pixel.y) }.min() ?? 0
+            }.min() ?? 0
+            // From the nearest pixel's edge rather than its middle.
+            XCTAssertGreaterThanOrEqual(nearest - 0.5 / Picture.scale, 8, pinned)
         }
     }
 
@@ -224,36 +264,87 @@ final class QuickAccessBandTests: XCTestCase {
         return card.convert(card.bounds, to: nil)
     }
 
-    /// One of the two section labels, found by its identifier.
+    /// One of the two section icons, found by its identifier.
     private func sectionLabel(_ identifier: String,
                               of strip: QuickAccessStripView) throws -> NSHostingView<StripSectionLabel> {
         let label = strip.sectionLabels.subviews.first { $0.accessibilityIdentifier() == identifier }
         return try XCTUnwrap(label as? NSHostingView<StripSectionLabel>, identifier)
     }
 
-    /// The ink a section label draws, as SwiftUI draws the label's view in a frame as large as the label: its symbol's,
-    /// up to the first gap wider than 2 pt, and its title's, after it; each in window coordinates.
-    private func ink(of label: NSHostingView<StripSectionLabel>) throws -> (symbol: NSRect, title: NSRect) {
+    /// The rectangle around the ink a section icon draws, as SwiftUI draws the icon's view in a frame as large as the
+    /// icon, in window coordinates.
+    private func ink(of label: NSHostingView<StripSectionLabel>) throws -> NSRect {
         let size = label.bounds.size
         let picture = try Picture(label.rootView.frame(width: size.width, height: size.height))
-        let columns = picture.inkColumns
-        let first = try XCTUnwrap(columns.first, "no ink"), last = try XCTUnwrap(columns.last, "no ink")
-        let gap = try XCTUnwrap(zip(columns, columns.dropFirst()).first { $1 - $0 > Int(2 * Picture.scale) },
-                                "no gap between the symbol and the title")
-        let symbol = try XCTUnwrap(picture.ink(in: first...gap.0))
-        let title = try XCTUnwrap(picture.ink(in: gap.1...last))
-        // From the picture's top left corner to the label's own coordinates, then to the window's.
-        func inWindow(_ rect: NSRect) -> NSRect {
-            label.convert(label.isFlipped ? rect : NSRect(x: rect.minX, y: size.height - rect.maxY, width: rect.width,
-                                                         height: rect.height), to: nil)
-        }
-        return (inWindow(symbol), inWindow(title))
+        let rect = try XCTUnwrap(picture.ink(in: nil), "no ink")
+        // From the picture's top left corner to the icon's own coordinates, then to the window's.
+        return label.convert(label.isFlipped ? rect : NSRect(x: rect.minX, y: size.height - rect.maxY,
+                                                            width: rect.width, height: rect.height), to: nil)
     }
 
-    /// How far above a selected medium card its ring reaches, as SwiftUI draws the card with Increase Contrast or
-    /// without: from the card's top edge up to the highest row in which the card's picture differs from the picture of
-    /// the same card unselected. Its shadow is the same in both.
-    private func ringReach(increasedContrast: Bool) throws -> CGFloat {
+    /// The middle of each pixel a section icon inks, as SwiftUI draws the icon's view in a frame as large as the icon,
+    /// in window coordinates.
+    private func inkPixels(of label: NSHostingView<StripSectionLabel>) throws -> [NSPoint] {
+        let size = label.bounds.size
+        let picture = try Picture(label.rootView.frame(width: size.width, height: size.height))
+        return picture.inkPixels.map { pixel in
+            let x = (CGFloat(pixel.x) + 0.5) / Picture.scale, y = (CGFloat(pixel.y) + 0.5) / Picture.scale
+            return label.convert(NSPoint(x: x, y: label.isFlipped ? y : size.height - y), to: nil)
+        }
+    }
+
+    /// Points along the band's outline as the band draws it around `band`, its curves included, no more than a
+    /// quarter point apart.
+    private func outline(of band: NSRect) -> [CGPoint] {
+        var points: [CGPoint] = []
+        var current = CGPoint.zero, start = CGPoint.zero
+        func follow(to end: CGPoint, steps: Int, _ point: (CGFloat) -> CGPoint) {
+            points += (1...steps).map { point(CGFloat($0) / CGFloat(steps)) }
+            current = end
+        }
+        func line(to end: CGPoint) {
+            let from = current
+            follow(to: end, steps: max(1, Int((hypot(end.x - from.x, end.y - from.y) * 4).rounded(.up)))) { t in
+                CGPoint(x: from.x + (end.x - from.x) * t, y: from.y + (end.y - from.y) * t)
+            }
+        }
+        QuickAccessBandBackdrop.outline(in: band).applyWithBlock { pointer in
+            let element = pointer.pointee
+            switch element.type {
+            case .moveToPoint:
+                current = element.points[0]
+                start = current
+                points.append(current)
+            case .addLineToPoint:
+                line(to: element.points[0])
+            case .addQuadCurveToPoint:
+                let from = current, control = element.points[0], end = element.points[1]
+                follow(to: end, steps: 256) { t in
+                    let u = 1 - t
+                    return CGPoint(x: u * u * from.x + 2 * u * t * control.x + t * t * end.x,
+                                   y: u * u * from.y + 2 * u * t * control.y + t * t * end.y)
+                }
+            case .addCurveToPoint:
+                let from = current, first = element.points[0], second = element.points[1], end = element.points[2]
+                follow(to: end, steps: 256) { t in
+                    let u = 1 - t
+                    let (a, b, c, d) = (u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t)
+                    return CGPoint(x: a * from.x + b * first.x + c * second.x + d * end.x,
+                                   y: a * from.y + b * first.y + c * second.y + d * end.y)
+                }
+            case .closeSubpath:
+                line(to: start)
+            @unknown default:
+                break
+            }
+        }
+        return points
+    }
+
+    /// How far beyond a selected medium card its ring reaches, above it or `below` it, as SwiftUI draws the card with
+    /// Increase Contrast or without: from the card's edge out to the outermost row in which the card's picture differs
+    /// from the picture of the same card unselected. Its shadow is the same in both.
+    private func ringReach(increasedContrast: Bool, below: Bool = false) throws -> CGFloat {
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
         let row = makeRow()
         let room: CGFloat = 20
@@ -267,9 +358,11 @@ final class QuickAccessBandTests: XCTestCase {
         let plain = try picture(selected: false), ringed = try picture(selected: true)
         XCTAssertEqual([ringed.width, ringed.height], [plain.width, plain.height], "The ring changes no size")
         guard ringed.width == plain.width, ringed.height == plain.height else { return 0 }
-        let top = try XCTUnwrap((0..<Int(room * Picture.scale)).first { ringed.differs(from: plain, inRow: $0) },
-                                "no ring above the card")
-        return room - CGFloat(top) / Picture.scale
+        // Rows counted in from the picture's top edge, or from its bottom edge below the card.
+        let outermost = try XCTUnwrap((0..<Int(room * Picture.scale)).first {
+            ringed.differs(from: plain, inRow: below ? ringed.height - 1 - $0 : $0)
+        }, "no ring \(below ? "below" : "above") the card")
+        return room - CGFloat(outermost) / Picture.scale
     }
 }
 
@@ -309,6 +402,22 @@ private struct Picture {
     /// The columns, from the left, with ink in them.
     var inkColumns: [Int] {
         (0..<width).filter { x in (0..<height).contains { hasInk(x, $0) } }
+    }
+
+    /// Every pixel with ink in it, by its column from the left and its row from the top.
+    var inkPixels: [(x: Int, y: Int)] {
+        (0..<height).flatMap { y in (0..<width).filter { hasInk($0, y) }.map { (x: $0, y: y) } }
+    }
+
+    /// How much the ink covers, in square points, as if it were drawn opaque: each pixel's alpha over the strongest
+    /// pixel's, so the colour it is drawn in does not count.
+    var inkArea: CGFloat {
+        var total = 0, peak: UInt8 = 0
+        for index in stride(from: 3, to: bytes.count, by: 4) {
+            total += Int(bytes[index])
+            peak = max(peak, bytes[index])
+        }
+        return peak == 0 ? 0 : CGFloat(total) / CGFloat(peak) / (Self.scale * Self.scale)
     }
 
     /// The rectangle around the ink in `columns`, or in every column when it is nil, in points from the picture's top

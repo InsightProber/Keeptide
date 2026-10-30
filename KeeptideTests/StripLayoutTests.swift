@@ -6,7 +6,8 @@ final class StripLayoutTests: XCTestCase {
     /// the placement numbers below were worked out for. It is no card size's own.
     private var metrics: StripMetrics {
         StripMetrics(cardSize: .medium, bandWidth: 1360, frameSize: CGSize(width: 164, height: 109), gap: 12,
-                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 20)
+                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 20,
+                     bottomPadding: 22)
     }
 
     func testCardSizesMatchTheSpec() {
@@ -59,6 +60,7 @@ final class StripLayoutTests: XCTestCase {
             let m = StripLayout.metrics(for: size, visibleWidth: 1440)
             XCTAssertEqual(m, StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: false), "\(size)")
             XCTAssertEqual(m.toolbarGap, 20, "\(size)")
+            XCTAssertEqual(m.bottomPadding, 22, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
             XCTAssertEqual(StripLayout.cardTop(m), 68, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 22, "\(size)")
@@ -67,17 +69,19 @@ final class StripLayoutTests: XCTestCase {
         XCTAssertEqual(StripLayout.cornerRadius, 36)
     }
 
-    func testTheFrequentWingGivesItsLabelsThirtyPointsAboveTheCards() {
-        // With the frequent wing, the section labels stand in the gap between the toolbar and the cards, so the gap is
-        // 30 instead of 20: the cards start 78 below the band's top edge and the band is 10 taller. The cards and the
-        // band's width are the same.
-        for (size, height) in [(CardSize.small, 320), (.medium, 350), (.large, 386)] as [(CardSize, CGFloat)] {
+    func testTheFrequentWingMakesRoomForItsIconsBelowTheCards() {
+        // With the frequent wing, the section icons lie below the cards, so the room there is 28 instead of 22 and the
+        // band is 6 taller. The gap between the toolbar and the cards stays 20, so the cards start 68 below the band's
+        // top edge, as without the wing. The cards and the band's width are the same.
+        for (size, height) in [(CardSize.small, 316), (.medium, 346), (.large, 382)] as [(CardSize, CGFloat)] {
             let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true)
             let plain = StripLayout.metrics(for: size, visibleWidth: 1440)
-            XCTAssertEqual(m.toolbarGap, 30, "\(size)")
+            XCTAssertEqual(m.toolbarGap, 20, "\(size)")
+            XCTAssertEqual(m.bottomPadding, 28, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
-            XCTAssertEqual(StripLayout.cardTop(m), 78, "\(size)")
-            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 22, "\(size)")
+            XCTAssertEqual(StripLayout.cardTop(m), 68, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 28, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.bandHeight(plain), 6, "\(size)")
             XCTAssertEqual(m.frameSize, plain.frameSize, "\(size)")
             XCTAssertEqual(m.bandWidth, plain.bandWidth, "\(size)")
         }
@@ -236,20 +240,20 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testSectionLabelsSitBesideTheDividerAndStickAtTheEnds() {
-        // labels 70 and 60 wide
+        // icons 70 and 60 wide here, so that their edges tell apart; a pinned one stands 40 in from the band's end
         let cases: [(CGFloat, StripSectionLabels)] = [
-            (600, .init(frequent: 522, recent: 608)), (12, .init(frequent: -66, recent: 20)),
-            (11, .init(frequent: nil, recent: 20)), (-500, .init(frequent: nil, recent: 20)),
-            (1364, .init(frequent: 1286, recent: 1372)), (1365, .init(frequent: 1286, recent: nil)),
+            (600, .init(frequent: 522, recent: 608)), (32, .init(frequent: -46, recent: 40)),
+            (31, .init(frequent: nil, recent: 40)), (-500, .init(frequent: nil, recent: 40)),
+            (1344, .init(frequent: 1266, recent: 1352)), (1345, .init(frequent: 1266, recent: nil)),
         ]
         for (divider, expected) in cases {
             let origins = StripLayout.sectionLabelOrigins(medium, dividerX: divider, frequentWidth: 70, recentWidth: 60)
             XCTAssertEqual(origins, expected, "\(divider)")
         }
-        // The labels stick at the dock inset, whatever it is: 24 in a band 1360 wide here.
+        // They stick 40 in from the band's ends whatever the dock inset is: 24 in a band 1360 wide here.
         let custom: [(CGFloat, StripSectionLabels)] = [
-            (15, .init(frequent: nil, recent: 24)), (16, .init(frequent: -62, recent: 24)),
-            (1344, .init(frequent: 1266, recent: 1352)), (1345, .init(frequent: 1266, recent: nil)),
+            (31, .init(frequent: nil, recent: 40)), (32, .init(frequent: -46, recent: 40)),
+            (1328, .init(frequent: 1250, recent: 1336)), (1329, .init(frequent: 1250, recent: nil)),
         ]
         for (divider, expected) in custom {
             let origins = StripLayout.sectionLabelOrigins(metrics, dividerX: divider, frequentWidth: 70,

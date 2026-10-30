@@ -6,8 +6,8 @@ import SwiftUI
 /// scrolling, clicks and what VoiceOver reads; SwiftUI draws each frame. Index 0 is at the left and the rest
 /// run to its right: with a frequent wing, index 0 is the most used frequent clip and the newest clip follows the
 /// wing; without one, index 0 is the newest clip (or the best match). Older clips run to the newest one's right. A
-/// divider stands in the wider gap after the wing, and the section labels name the two wings beside it. The film of
-/// frames keeps the selected clip in the middle of the band, but near either end of the clips it stops at the
+/// divider stands in the wider gap after the wing, and below the cards a section icon marks each wing beside it. The
+/// film of frames keeps the selected clip in the middle of the band, but near either end of the clips it stops at the
 /// band's end and the selection walks along it instead.
 ///
 /// The strip shows the selection it is given and nothing else. A click, a key or a swipe only asks for
@@ -33,8 +33,8 @@ final class QuickAccessStripView: NSView {
     /// With Increase Contrast the divider between the wings is 2 pt wide instead of 1. Asked each time the frames are
     /// placed, and again when the system's display options change.
     var increasesContrast: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
-    /// The two section labels. The band places this view in the gap between its toolbar and the cards, as wide as the
-    /// band; it takes no clicks and VoiceOver does not read it.
+    /// The two section icons. The band places this view below the cards, as wide as the band and reaching down to its
+    /// bottom edge; it takes no clicks and VoiceOver does not read it.
     let sectionLabels: NSView = StripSectionLabelsView()
     /// While the preview is open, the frames beside the selected one step back to half strength.
     var dimsSideFrames = false {
@@ -346,14 +346,15 @@ final class QuickAccessStripView: NSView {
                            recent: recentLabel.isHidden ? nil : recentLabel.frame.minX)
     }
 
-    /// Puts the section labels beside the divider where the film lies, the fingers' push included, or one of them at a
-    /// dock once the divider has gone off that end; without a divider both are hidden. Each ends
-    /// `sectionLabelClearance` above the cards. `shown` is where they stood before the film moved. While the film
-    /// slides from `slide` away, a label still shown slides from where it is drawn with the film's spring, and one that
-    /// comes into view rides in with the film; one that stays where it was, such as one resting at a dock, does not
-    /// move. Without a slide, and with Reduce Motion, they go straight there. While the film is still sliding or
-    /// springing back, a label still shown is not hidden when the divider leaves its end of the band: it stays beside
-    /// the divider, with the film, until the motion has `settled` and each label goes where the divider puts it.
+    /// Puts the section icons beside the divider where the film lies, the fingers' push included, or one of them at an
+    /// end of the band once the divider has gone off that end; without a divider both are hidden. Each is centred
+    /// between the band's bottom edge and the ring around a selected card. `shown` is where they stood before the film
+    /// moved. While the film slides from `slide` away, an icon still shown slides from where it is drawn with the
+    /// film's spring, and one that comes into view rides in with the film; one that stays where it was, such as one
+    /// resting at an end, does not move. Without a slide, and with Reduce Motion, they go straight there. While the
+    /// film is still sliding or springing back, an icon still shown is not hidden when the divider leaves its end of
+    /// the band: it stays beside the divider, with the film, until the motion has `settled` and each icon goes where
+    /// the divider puts it.
     private func placeSectionLabels(from shown: StripSectionLabels, sliding slide: CGFloat, settled: Bool = false) {
         var places = StripSectionLabels()
         if let metrics, let rest = restingPlacement, let line = StripLayout.dividerX(metrics, placement: rest) {
@@ -371,10 +372,11 @@ final class QuickAccessStripView: NSView {
         for (label, stood, place) in [(frequentLabel, shown.frequent, places.frequent),
                                       (recentLabel, shown.recent, places.recent)] {
             label.isHidden = place == nil
-            guard let place else { continue }
+            guard let place, let metrics else { continue }
             let size = label.frame.size
             label.frame = sectionLabels.backingAlignedRect(
-                NSRect(x: place, y: StripLayout.sectionLabelClearance, width: size.width, height: size.height),
+                NSRect(x: place, y: StripLayout.sectionLabelBottom(metrics, height: size.height), width: size.width,
+                       height: size.height),
                 options: [.alignMinXNearest, .alignWidthNearest, .alignMinYNearest, .alignHeightNearest]
             )
             if slide != 0 { springBack(label.layer, from: stood.map { $0 - label.frame.minX } ?? slide) }
@@ -732,7 +734,8 @@ private final class StripDivider: NSView {
     }
 }
 
-/// Holds the section labels where the band places it. It takes no clicks, and VoiceOver reads none of it.
+/// Holds the section icons where the band places it. It takes no clicks, and VoiceOver reads none of it. AppKit shows
+/// an icon's help tag all the same, since it finds help tags by where the pointer rests, not by hit-testing.
 private final class StripSectionLabelsView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -746,35 +749,34 @@ private final class StripSectionLabelsView: NSView {
     override func accessibilityChildren() -> [Any]? { [] }
 }
 
-/// A section label over the strip: the wing's symbol and name in the toolbar's secondary colour, 12 pt semibold with an
-/// 11 pt symbol. The tests measure the ink it draws, so it is not private.
+/// A section icon below the strip: the wing's symbol alone, 12 pt semibold in the toolbar's secondary colour. No name
+/// is drawn beside it; its help tag and its accessibility label give the name. The tests measure the ink it draws, so
+/// it is not private.
 struct StripSectionLabel: View {
-    let title: String
     let symbol: String
 
     var body: some View {
-        Label {
-            Text(title).font(.system(size: 12, weight: .semibold))
-        } icon: {
-            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
-        }
-        .labelStyle(.titleAndIcon)
-        .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
-        .fixedSize()
-        // The label is for the eye alone.
-        .accessibilityHidden(true)
+        Image(systemName: symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+            .fixedSize()
+            // The hosting view carries the wing's name; the symbol itself is for the eye alone.
+            .accessibilityHidden(true)
     }
 
-    /// The label hosted for AppKit, hidden until it is placed: as wide and as high as its text in whole points, and
-    /// kept as far above the bottom of the view holding it as it is put, whatever height that view is given.
+    /// The icon hosted for AppKit, hidden until it is placed: as wide and as high as its symbol in whole points, and
+    /// kept as far above the bottom of the view holding it as it is put, whatever height that view is given. `title`,
+    /// the wing's name, is its help tag and its accessibility label.
     static func hosted(_ title: String, symbol: String, identifier: String) -> NSHostingView<StripSectionLabel> {
-        let label = NSHostingView(rootView: StripSectionLabel(title: title, symbol: symbol))
+        let label = NSHostingView(rootView: StripSectionLabel(symbol: symbol))
         let size = label.fittingSize
         label.sizingOptions = []
         label.wantsLayer = true
         label.frame.size = NSSize(width: size.width.rounded(.up), height: size.height.rounded(.up))
         label.autoresizingMask = [.maxYMargin]
         label.isHidden = true
+        label.toolTip = title
+        label.setAccessibilityLabel(title)
         label.setAccessibilityIdentifier(identifier)
         return label
     }

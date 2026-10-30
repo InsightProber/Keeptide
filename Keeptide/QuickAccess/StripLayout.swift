@@ -20,9 +20,11 @@ struct StripMetrics: Equatable {
     let footerHeight: CGFloat
     /// Side of the source app's icon in the colour band.
     let iconSize: CGFloat
-    /// From the toolbar's bottom edge to the cards: 20 pt, or 30 with the frequent wing turned on, so that its section
-    /// labels have room there.
+    /// From the toolbar's bottom edge to the cards: 20 pt.
     let toolbarGap: CGFloat
+    /// From the cards to the band's bottom edge: 22 pt, or 28 with the frequent wing turned on, so that its section
+    /// icons have room there below the ring around a selected card.
+    let bottomPadding: CGFloat
 
     /// Distance between the left edges of neighbouring frames.
     var step: CGFloat { frameSize.width + gap }
@@ -43,7 +45,7 @@ struct StripPlacement: Equatable {
     var dividerBefore: Int? = nil
 }
 
-/// Where the section labels lie in the band: their left edges, and nil for a label that is hidden.
+/// Where the section icons lie in the band: their left edges, and nil for an icon that is hidden.
 struct StripSectionLabels: Equatable {
     var frequent: CGFloat? = nil
     var recent: CGFloat? = nil
@@ -53,19 +55,19 @@ struct StripSectionLabels: Equatable {
 /// window around it. All values are in points.
 enum StripLayout {
     /// From the band's top edge to its toolbar, and the toolbar's height. Below the toolbar, `StripMetrics.toolbarGap`
-    /// lies between it and the cards.
+    /// lies between it and the cards, and below the cards `StripMetrics.bottomPadding`.
     static let toolbarTop: CGFloat = 16
     static let toolbarHeight: CGFloat = 32
-    /// From the cards to the band's bottom edge.
-    static let bottomPadding: CGFloat = 22
     static let cornerRadius: CGFloat = 36
-    /// How far a section label stands from the divider's line.
+    /// How far a section icon stands from the divider's line.
     static let sectionLabelGap: CGFloat = 8
-    /// How far above the cards' top a section label ends, its descenders and its symbol included. The ring around a
-    /// selected card reaches 6 pt above it, 7 with Increase Contrast, so every glyph of a label stays clear of it. In
-    /// the frequent wing's 30 pt gap a 15 pt label then starts 7 pt below the toolbar's row, clear of the 3 pt ring
-    /// around the search while its field has the keys.
-    static let sectionLabelClearance: CGFloat = 8
+    /// How far in from the band's end a section icon rests once the divider has gone off that end. The band's corners
+    /// are rounded over `cornerRadius`; this far in, the ink of either icon keeps at least 8 pt from the rounded
+    /// corner, where at the dock inset it came within 2 pt of it.
+    static let sectionLabelPinInset: CGFloat = 40
+    /// How far beyond a selected card the ring around it reaches: 6 pt, and 7 with Increase Contrast. The section icons
+    /// below the cards are kept clear of the wider ring.
+    static let selectionRingReach: CGFloat = 7
     /// The band stands this far in from each side of the screen's visible area. The panel reaches the edge, so its
     /// shadow has that room beside the band.
     static let sideMargin: CGFloat = 32
@@ -80,16 +82,15 @@ enum StripLayout {
     static let previewMinimumHeight: CGFloat = 160
 
     /// The frames are as large on every screen as the card size makes them; a narrow screen shows fewer of them.
-    /// The band is as wide as the visible area less the margin at each side. With the frequent wing turned on, the gap
-    /// between the toolbar and the cards is 30 instead of 20, for the section labels in it, and the band is that much
-    /// taller. It stays so while the strip shows no wing, as for a search, so the band keeps its height while it is
-    /// open.
+    /// The band is as wide as the visible area less the margin at each side. With the frequent wing turned on, the room
+    /// below the cards is 28 instead of 22, for the section icons in it, and the band is that much taller. It stays so
+    /// while the strip shows no wing, as for a search, so the band keeps its height while it is open.
     static func metrics(for size: CardSize, visibleWidth: CGFloat, showsFrequentClips: Bool = false) -> StripMetrics {
         let card = cardDimensions(for: size)
         return StripMetrics(
             cardSize: size, bandWidth: visibleWidth - 2 * sideMargin, frameSize: card.frame, gap: 14,
             cornerRadius: card.radius, dockInset: 20, headerHeight: card.header, footerHeight: card.footer,
-            iconSize: card.icon, toolbarGap: showsFrequentClips ? 30 : 20
+            iconSize: card.icon, toolbarGap: 20, bottomPadding: showsFrequentClips ? 28 : 22
         )
     }
 
@@ -99,14 +100,21 @@ enum StripLayout {
         max(0, Int(((m.bandWidth - 2 * m.dockInset + m.gap) / m.step).rounded(.down)))
     }
 
-    /// How far below the band's top edge the cards' top edges are: 68, or 78 with the frequent wing.
+    /// How far below the band's top edge the cards' top edges are: 68.
     static func cardTop(_ m: StripMetrics) -> CGFloat {
         toolbarTop + toolbarHeight + m.toolbarGap
     }
 
-    /// The toolbar, the cards and the room around them: 340 with medium cards, 350 with the frequent wing.
+    /// The toolbar, the cards and the room around them: 340 with medium cards, 346 with the frequent wing.
     static func bandHeight(_ m: StripMetrics) -> CGFloat {
-        cardTop(m) + m.frameSize.height + bottomPadding
+        cardTop(m) + m.frameSize.height + m.bottomPadding
+    }
+
+    /// How far above the band's bottom edge a section icon `height` tall starts: centred between that edge and the
+    /// lowest reach of the ring around a selected card, `selectionRingReach` below the cards. A 15 pt icon starts 3
+    /// above the edge in the frequent wing's 28 pt below the cards.
+    static func sectionLabelBottom(_ m: StripMetrics, height: CGFloat) -> CGFloat {
+        (m.bottomPadding - selectionRingReach - height) / 2
     }
 
     /// The band, centred in the screen's visible area. Its height is the same whatever the panel shows, so its top
@@ -163,24 +171,24 @@ enum StripLayout {
         placement.dividerBefore.map { placement.firstOrigin + CGFloat($0) * m.step + (m.dividerExtra - m.gap) / 2 }
     }
 
-    /// Where the section labels go with the divider's line at `dividerX` within the band. "Frequent" ends
+    /// Where the section icons go with the divider's line at `dividerX` within the band. "Frequent" ends
     /// `sectionLabelGap` short of the line and "Recent" starts as far past it, so the two never meet. Where that would
-    /// take "Recent" past the left dock, the frequent wing has gone off the band's left end: "Recent" rests at
-    /// `dockInset` and "Frequent" is hidden. Where it would take "Frequent" past the right dock, the recent clips have
-    /// gone off the right end: "Frequent" ends `dockInset` from it and "Recent" is hidden. "Recent" is placed by its
-    /// left edge alone, so `recentWidth` changes neither.
+    /// take "Recent" closer to the band's left end than `sectionLabelPinInset`, the frequent wing has gone off that
+    /// end: "Recent" rests there and "Frequent" is hidden. Where it would take "Frequent" as close to the right end,
+    /// the recent clips have gone off it: "Frequent" ends `sectionLabelPinInset` from it and "Recent" is hidden.
+    /// "Recent" is placed by its left edge alone, so `recentWidth` changes neither.
     static func sectionLabelOrigins(_ m: StripMetrics, dividerX: CGFloat, frequentWidth: CGFloat,
                                     recentWidth: CGFloat) -> StripSectionLabels {
-        if dividerX + sectionLabelGap < m.dockInset {
-            return StripSectionLabels(recent: m.dockInset)
+        if dividerX + sectionLabelGap < sectionLabelPinInset {
+            return StripSectionLabels(recent: sectionLabelPinInset)
         }
-        if dividerX - sectionLabelGap > m.bandWidth - m.dockInset {
-            return StripSectionLabels(frequent: m.bandWidth - m.dockInset - frequentWidth)
+        if dividerX - sectionLabelGap > m.bandWidth - sectionLabelPinInset {
+            return StripSectionLabels(frequent: m.bandWidth - sectionLabelPinInset - frequentWidth)
         }
         return sectionLabelsBeside(dividerX: dividerX, frequentWidth: frequentWidth)
     }
 
-    /// Where the section labels stand beside the divider's line at `dividerX`, resting at neither dock: "Frequent" ends
+    /// Where the section icons stand beside the divider's line at `dividerX`, resting at neither end: "Frequent" ends
     /// `sectionLabelGap` short of the line and "Recent" starts as far past it.
     static func sectionLabelsBeside(dividerX: CGFloat, frequentWidth: CGFloat) -> StripSectionLabels {
         StripSectionLabels(frequent: dividerX - sectionLabelGap - frequentWidth, recent: dividerX + sectionLabelGap)
