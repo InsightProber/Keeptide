@@ -2086,7 +2086,8 @@ final class AppLaunchTests: XCTestCase {
         let returnUp = try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber)
         controller.currentEvent = { returnUp }
         try actionMenu(of: controller).performActionForItem(at: 0)
-        try await SearchTestSupport.waitUntil(timeout: .milliseconds(700)) { fake.sent == [9, 9] }
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+        try await SearchTestSupport.waitUntil { fake.sent == [9, 9] }
         XCTAssertEqual(fake.sent, [9, 9])
     }
 
@@ -2120,7 +2121,8 @@ final class AppLaunchTests: XCTestCase {
         let toolbar = try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil),
                                               in: controller)
         toolbar.copyHint.performClick(nil)
-        try await SearchTestSupport.waitUntil(timeout: .milliseconds(700)) { fake.sent == [9] }
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+        try await SearchTestSupport.waitUntil { fake.sent == [9] }
         XCTAssertEqual(board.string(forType: .string), "older")
 
         // A click on the button is the pointer's, so it drops a guess made for a menu choice that is still waiting:
@@ -2130,13 +2132,15 @@ final class AppLaunchTests: XCTestCase {
         _ = try searchEditor(in: controller)
         try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
         controller.perform(.move(1))
+        let shownToolbar = try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil),
+                                                   in: controller)
         controller.currentEvent = { nil }
         try actionMenu(of: controller).performActionForItem(at: 0)
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(fake.sent, [9], "The menu's paste waits")
-        try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil), in: controller)
-            .copyHint.performClick(nil)
-        try await SearchTestSupport.waitUntil(timeout: .milliseconds(500)) { fake.sent == [9, 9] }
+        shownToolbar.copyHint.performClick(nil)
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+        try await SearchTestSupport.waitUntil { fake.sent == [9, 9] }
         try await Task.sleep(for: .milliseconds(1_100))
         XCTAssertEqual(fake.sent, [9, 9], "One paste")
 
@@ -2147,17 +2151,19 @@ final class AppLaunchTests: XCTestCase {
         _ = try searchEditor(in: controller)
         try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
         controller.perform(.move(1))
+        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
+                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                     clickCount: 1, pressure: 0))
+        let pointerMenu = try actionMenu(of: controller)
+        let showPreview = try XCTUnwrap(pointerMenu.items.firstIndex { $0.title == "Show Preview" })
         controller.currentEvent = { nil }
         try actionMenu(of: controller).performActionForItem(at: 0)
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(fake.sent, [9, 9], "The menu's paste waits")
-        let click = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
-                                                     windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                                     clickCount: 1, pressure: 0))
         controller.currentEvent = { click }
-        let pointerMenu = try actionMenu(of: controller)
-        pointerMenu.performActionForItem(at: try XCTUnwrap(pointerMenu.items.firstIndex { $0.title == "Show Preview" }))
-        try await SearchTestSupport.waitUntil(timeout: .milliseconds(500)) { fake.sent == [9, 9, 9] }
+        pointerMenu.performActionForItem(at: showPreview)
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+        try await SearchTestSupport.waitUntil { fake.sent == [9, 9, 9] }
         XCTAssertEqual(fake.sent, [9, 9, 9])
     }
 
@@ -2178,8 +2184,49 @@ final class AppLaunchTests: XCTestCase {
 
         // The card's Confirm button, pressed by VoiceOver or the pointer, confirms at once: one ⌘V.
         try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.actions.confirmCommand()
-        try await SearchTestSupport.waitUntil(timeout: .milliseconds(700)) { fake.sent == [9] }
+        XCTAssertEqual(controller.state.returnIsDown?(), false)
+        try await SearchTestSupport.waitUntil { fake.sent == [9] }
         XCTAssertEqual(board.string(forType: .string), "set -e\necho synthetic-gamma")
+    }
+
+    func testAClickEndsAWaitOnlyAGuessedReturnHeldUp() async throws {
+        // Without direct paste, Copy copies at once.
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let toolbar = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
+
+        // Chosen with no event to tell how, Copy copies, and the panel waits for a Return that may be down. A click on
+        // the toolbar's button is the pointer's, so Return is taken for up after all: the panel closes and says what it
+        // did.
+        controller.currentEvent = { nil }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
+        XCTAssertEqual(board.string(forType: .string), "newer")
+        XCTAssertTrue(window.isVisible, "Return may be down")
+        toolbar.copyHint.performClick(nil)
+        XCTAssertFalse(window.isVisible)
+        XCTAssertTrue(controller.toast.isVisible)
+        XCTAssertEqual(toastMessage(of: controller), "Copied — press ⌘V to paste")
+
+        // With Return also down where the panel saw it go down, the click leaves the panel waiting for that key.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        let shownToolbar = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
+        let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
+        controller.currentEvent = { returnDown }
+        let previewMenu = try actionMenu(of: controller)
+        previewMenu.performActionForItem(at: try XCTUnwrap(previewMenu.items.firstIndex { $0.title == "Show Preview" }))
+        controller.currentEvent = { nil }
+        try actionMenu(of: controller).performActionForItem(at: 0)
+        try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
+        shownToolbar.copyHint.performClick(nil)
+        XCTAssertTrue(window.isVisible, "Return is still down")
+        XCTAssertEqual(controller.state.returnIsDown?(), true)
+        window.sendEvent(try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber))
+        XCTAssertFalse(window.isVisible)
+        XCTAssertEqual(toastMessage(of: controller), "Copied — press ⌘V to paste")
     }
 
     func testAnActionThatEndsWithReturnDownKeepsThePanelUntilReturnIsUp() async throws {
