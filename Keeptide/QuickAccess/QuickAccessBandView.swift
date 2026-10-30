@@ -3,9 +3,9 @@ import SwiftUI
 
 /// The quick access band, backed as the app switcher is: the system's material in a rounded rectangle with a hairline
 /// edge and a soft shadow. Along its top the toolbar, below it the strip of clips, which the band's rounded edge cuts
-/// off where it goes on beyond either end; and a card above it: the preview while it is open, and in its place the
-/// review of a command that waits for one. The panel owns the AppKit views placed in it, keeps them up to date and lays
-/// the band out; the band reads the rest from the state.
+/// off where it goes on beyond either end, with the strip's section icons below the cards; and a card above it: the
+/// preview while it is open, and in its place the review of a command that waits for one. The panel owns the
+/// AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
     struct Layout: Equatable {
@@ -41,9 +41,7 @@ struct QuickAccessBandView: View {
 
     private var metrics: StripMetrics { layout.metrics }
     private var hasFrames: Bool { !state.selection.rows.isEmpty }
-    private var selectedRow: QuickAccessRow? {
-        state.selection.selection.flatMap { selected in state.selection.rows.first { $0.ref == selected } }
-    }
+    private var selectedRow: QuickAccessRow? { state.selection.selectedRow }
 
     var body: some View {
         VStack(spacing: layout.previewGap) {
@@ -65,10 +63,17 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: QuickAccessToolbar.height)
                 .padding(.top, StripLayout.toolbarTop - QuickAccessToolbar.focusRoom)
             stripRow
-                .padding(.top, StripLayout.toolbarGap - QuickAccessToolbar.focusRoom - Self.ringRoom)
+                .padding(.top, metrics.toolbarGap - QuickAccessToolbar.focusRoom - Self.ringRoom)
             Spacer(minLength: 0)
         }
         .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics), alignment: .top)
+        // The strip places its section icons in the room below the cards. Their view takes no clicks, so the strip and
+        // the band beneath keep the pointer there, and VoiceOver does not read them; each icon's help tag still shows.
+        .overlay(alignment: .bottom) {
+            HostedView(view: strip.sectionLabels)
+                .frame(width: metrics.bandWidth, height: metrics.bottomPadding)
+                .accessibilityHidden(true)
+        }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {

@@ -28,6 +28,14 @@ enum ClipInfoFormatter {
         count == 1 ? "1 item" : "\(count) items"
     }
 
+    /// How often a frequent clip was used: "Used 1,234 times" in its colour band, and "used 1,234 times" spoken, where
+    /// it follows the kind after a comma. Digits are grouped for `locale`. The frequent wing lists only clips used at
+    /// least twice; one use would read "Used 1 time".
+    static func uses(_ count: Int64, spoken: Bool = false, locale: Locale = .current) -> String {
+        let number = count.formatted(.number.grouping(.automatic).locale(locale))
+        return "\(spoken ? "used" : "Used") \(number) \(count == 1 ? "time" : "times")"
+    }
+
     /// The caption as VoiceOver says it: a picture's size reads "2880 by 1800".
     static func spoken(_ info: String) -> String {
         info.replacingOccurrences(of: " × ", with: " by ")

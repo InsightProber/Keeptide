@@ -61,6 +61,29 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertNil(plain.sourceApp)
     }
 
+    func testAFrequentCardSaysHowOftenItWasUsedInPlaceOfItsTime() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let row = makeRow(date: now.addingTimeInterval(-120), savedAsMemo: true)
+        var frequentRow = row
+        frequentRow.frequentUses = 1_234
+
+        let content = StripFrameContent.make(row: frequentRow, detail: nil, cardSize: .medium, now: now)
+
+        // How often the clip was used takes the time's place on the second line, and the marks follow it as usual.
+        XCTAssertEqual(content.uses, ClipInfoFormatter.uses(1_234))
+        XCTAssertEqual(content.headerLine, [.uses(ClipInfoFormatter.uses(1_234)), .marker(.savedAsMemo)])
+        // With the details, how many more items there are still comes last.
+        let detailed = StripFrameContent.make(
+            row: frequentRow, detail: ClipDetail(excerpt: "Standup", characterCount: 7, itemCount: 3),
+            cardSize: .medium, now: now)
+        XCTAssertEqual(detailed.headerLine,
+                       [.uses(ClipInfoFormatter.uses(1_234)), .marker(.savedAsMemo), .extraItems(2)])
+        // The same clip among the recent ones keeps its time.
+        let recentContent = StripFrameContent.make(row: row, detail: nil, cardSize: .medium, now: now)
+        XCTAssertNil(recentContent.uses)
+        XCTAssertEqual(recentContent.headerLine.first, .time(QuickAccessRowContent.time(of: row.date, relativeTo: now)))
+    }
+
     func testTextFramesUseTheExcerptAndSizeByLength() {
         let color = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "#E2462A", characterCount: 7),
                                            cardSize: .medium)

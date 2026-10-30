@@ -55,6 +55,149 @@ final class LocalUsageTests: XCTestCase {
         XCTAssertEqual(summaries.map(\.useCount), [1, 2])
     }
 
+    func testFrequentListsClipsUsedAtLeastTwiceMostUsedFirst() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let a = makeRef()
+        let b = makeRef()
+        let c = makeRef()
+        // `b` was used more recently than `a`, so only the count can put `a` first.
+        try await use(a, times: 3, lastAt: 300, in: store)
+        try await use(b, times: 2, lastAt: 400, in: store)
+        try await use(c, times: 1, lastAt: 500, in: store)
+
+        let frequent = try await store.frequent(minimumCount: 2, since: Date(timeIntervalSince1970: 0), limit: 20)
+
+        XCTAssertEqual(frequent.map(\.itemID), [a.itemID, b.itemID])
+        XCTAssertEqual(frequent.map(\.useCount), [3, 2])
+    }
+
+    func testFrequentBreaksTiesByLastUseThenByItem() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let id1 = ItemID(rawValue: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000001")))
+        let id2 = ItemID(rawValue: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000002")))
+        let id3 = ItemID(rawValue: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000003")))
+        // Written highest id first, so a missing item tie-break would hand the tied pair back in the order written.
+        try await use(makeRef(itemID: id3), times: 2, lastAt: 500, in: store)
+        try await use(makeRef(itemID: id2), times: 2, lastAt: 400, in: store)
+        try await use(makeRef(itemID: id1), times: 2, lastAt: 400, in: store)
+
+        let frequent = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 20)
+
+        XCTAssertEqual(frequent.map(\.itemID), [id3, id1, id2])
+    }
+
+    func testFrequentKeepsOnlyClipsUsedSinceTheWindowStart() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let a = makeRef()
+        let b = makeRef()
+        try await use(a, times: 2, lastAt: 1_000, in: store)
+        try await use(b, times: 2, lastAt: 999, in: store)
+
+        let frequent = try await store.frequent(minimumCount: 2, since: Date(timeIntervalSince1970: 1_000), limit: 20)
+
+        XCTAssertEqual(frequent.map(\.itemID), [a.itemID])
+    }
+
+    func testFrequentStopsAtTheLimitAndRejectsBadArguments() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        for _ in 0..<5 { try await use(makeRef(), times: 2, lastAt: 300, in: store) }
+
+        let three = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 3)
+        let none = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 0)
+        let most = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 1_000)
+
+        XCTAssertEqual(three.count, 3)
+        XCTAssertEqual(none, [])
+        XCTAssertEqual(most.count, 5)
+        for (limit, since) in [
+            (-1, Date.distantPast),
+            (1_001, .distantPast),
+            (3, Date(timeIntervalSinceReferenceDate: .infinity)),
+            (3, Date(timeIntervalSinceReferenceDate: -.infinity)),
+            (3, Date(timeIntervalSinceReferenceDate: .nan)),
+        ] {
+            do {
+                _ = try await store.frequent(minimumCount: 2, since: since, limit: limit)
+                XCTFail("Accepted limit \(limit) with since \(since)")
+            } catch {
+                XCTAssertEqual(error as? StoreError, .invalidTransaction)
+            }
+        }
+    }
+
+    func testFrequentKeepsTheMostUsedWhenItStopsAtTheLimit() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let refs = (0..<4).map { _ in makeRef() }
+        // Written least used first, so a limit taken before the ranking would keep the least used.
+        for (ref, times) in zip(refs, [2, 3, 4, 5]) { try await use(ref, times: times, lastAt: 300, in: store) }
+
+        let frequent = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 2)
+
+        XCTAssertEqual(frequent.map(\.useCount), [5, 4])
+        XCTAssertEqual(frequent.map(\.itemID), [refs[3].itemID, refs[2].itemID])
+    }
+
+    func testFrequentLeavesOutMemoUses() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        try await use(makeRef(facet: .memo), times: 3, lastAt: 300, in: store)
+        try await use(makeRef(facet: .history), times: 2, lastAt: 300, in: store)
+
+        let frequent = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 20)
+
+        XCTAssertEqual(frequent.map(\.facet), [.history])
+    }
+
+    func testFrequentReadsTheSameAfterReopening() async throws {
+        let directory = try makeStoreDirectory()
+        addTeardownBlock { try FileManager.default.removeItem(at: directory) }
+        let a = makeRef()
+        let expected = [
+            UsageSummary(itemID: a.itemID, facet: .history, lastUsedAt: Date(timeIntervalSince1970: 300), useCount: 2)
+        ]
+
+        let initial = try PersistenceController(directory: directory)
+        addTeardownBlock { try await initial.close() }
+        let initialStore = LocalUsageStore(controller: initial)
+        try await use(a, times: 2, lastAt: 300, in: initialStore)
+        let before = try await initialStore.frequent(minimumCount: 2, since: .distantPast, limit: 20)
+        try await initial.close()
+
+        let reopened = try PersistenceController(directory: directory)
+        addTeardownBlock { try await reopened.close() }
+        let after = try await LocalUsageStore(controller: reopened)
+            .frequent(minimumCount: 2, since: .distantPast, limit: 20)
+
+        XCTAssertEqual(before, expected)
+        XCTAssertEqual(after, expected)
+        try await reopened.close()
+    }
+
+    func testFrequentReportsARowThatLostItsItemAsCorrupt() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        try await controller.perform { context in
+            let row = NSEntityDescription.insertNewObject(forEntityName: "UsageSummary", into: context)
+            row.setValue(UUID(), forKey: "id")
+            row.setValue(ContentFacet.history.rawValue, forKey: "facet")
+            row.setValue(Date(timeIntervalSince1970: 300), forKey: "lastUsedAt")
+            row.setValue(Int64(2), forKey: "useCount")
+            try context.save()
+        }
+
+        do {
+            _ = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 20)
+            XCTFail("A summary without an item was listed")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .corruptStore)
+        }
+    }
+
     func testConcurrentDuplicateExecutionCountsExactlyOnce() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
@@ -424,13 +567,25 @@ final class LocalUsageTests: XCTestCase {
         try await controller.close()
     }
 
-    private func makeRef() -> ContentRef {
+    private func makeRef(itemID: ItemID = ItemID(rawValue: UUID()), facet: ContentFacet = .history) -> ContentRef {
         ContentRef(
-            itemID: ItemID(rawValue: UUID()),
-            facet: .history,
+            itemID: itemID,
+            facet: facet,
             version: ContentVersion(rawValue: UUID()),
             digest: Data([0xaa, 0xbb])
         )
+    }
+
+    /// Records `times` successful uses of `ref`: the last at `lastAt` seconds since 1970, and each earlier one a second
+    /// before the one that follows it.
+    private func use(_ ref: ContentRef, times: Int, lastAt: TimeInterval, in store: LocalUsageStore) async throws {
+        for secondsBeforeLast in (0..<times).reversed() {
+            try await store.record(UseReceipt(
+                ref: ref,
+                occurredAt: Date(timeIntervalSince1970: lastAt - TimeInterval(secondsBeforeLast)),
+                outcome: .success
+            ))
+        }
     }
 
     private func makeReceipt(id: UUID = UUID(), ref: ContentRef) -> UseReceipt {

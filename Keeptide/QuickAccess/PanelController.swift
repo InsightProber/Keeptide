@@ -91,7 +91,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         fixedVisibleFrame = visibleFrame
         self.visibleFrame = visibleFrame ?? Self.workingScreen()?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: self.visibleFrame.width)
+        metrics = Self.metrics(for: preferences, visibleWidth: self.visibleFrame.width)
         let panel = QuickAccessPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
         super.init(window: panel)
@@ -152,12 +152,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             forgetGuessedReturn()
             searchField.stringValue = ""
             filterRow.cursor = 0
-            // The app in front is recorded as the paste target before this panel shows (decision 1).
-            state.open()
-            // Settle the screen before this panel takes keyboard focus, and take the settings as they are now.
+            // Settle the screen before this panel takes keyboard focus, and take the settings as they are now. They
+            // come before the session opens: the frequent wing leaves out the newest clips the band shows whole beside
+            // it as it opens.
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
-            metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleFrame.width)
+            metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
+            // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
+            // newest clips the band shows whole depends on how many frequent clips stand before them.
+            let metrics = metrics
+            state.open(frequentWingFirstScreen: preferences.showsFrequentClips
+                ? { StripLayout.recentShownWhole(metrics, frequentCount: $0) } : nil)
             update()
             isSessionOpen = true
         }
@@ -202,6 +207,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
         (client as? QuickAccessSearchField) === searchField ? fieldEditor : nil
+    }
+
+    /// The frame sizes for the card size Settings chose on a screen `visibleWidth` wide, with room below the cards for
+    /// the frequent wing's icons while Settings shows the frequent clips.
+    private static func metrics(for preferences: QuickAccessPreferences, visibleWidth: CGFloat) -> StripMetrics {
+        StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleWidth,
+                            showsFrequentClips: preferences.showsFrequentClips)
     }
 
     /// The main screen, or the one under the pointer when there is none.
@@ -283,7 +295,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.queryIsEmpty = state.query.isEmpty
         strip.dimsSideFrames = hasCard
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
-        strip.show(state.selection.rows, selection: state.selection.selection, details: state.details,
+        strip.show(state.selection.rows, selection: state.selection.selectedID, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded)
     }
 
@@ -701,30 +713,32 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// ⌘K: the selected clip's actions, beside it where it rests; with the selection vanished, beside the empty slot
-    /// just before the newest clip; with no clips, beside the middle of the strip.
+    /// where the newest clip rests as the strip opens, past the divider or, without a frequent wing, at the left dock;
+    /// with no clips, beside the middle of the strip.
     func openActions() {
         let size = metrics.frameSize
         let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,
                             width: size.width, height: size.height)
-        presentActionMenu(actionMenu(for: state.selection.selection),
+        presentActionMenu(actionMenu(for: state.selection.selectedID),
                           ActionMenu.anchor(beside: strip.selectionAnchorFrame ?? centre, in: strip), strip)
     }
 
-    /// The actions for one clip: the selected one for ⌘K, the one under the pointer for a right-click, named for that
-    /// clip. A clip other than the selected one is selected before its action runs, so the action is for the clip
-    /// clicked; one that left the list while the menu was open gets no action at all, never another clip's.
-    private func actionMenu(for ref: ContentRef?) -> NSMenu {
-        let row = ref.flatMap { ref in state.selection.rows.first { $0.ref == ref } }
-        return ActionMenu.make(actions: state.actions(for: ref), row: row,
+    /// The actions for one row: the selected one for ⌘K, the one under the pointer for a right-click, named for its
+    /// clip. A row other than the selected one is selected before its action runs, so the action is for the row
+    /// clicked; one that left the list while the menu was open gets no action at all, never another row's. A clip
+    /// listed in both wings is two rows, and the menu is for the one it was opened on.
+    private func actionMenu(for id: QuickAccessRow.ID?) -> NSMenu {
+        let row = id.flatMap { id in state.selection.rows.first { $0.id == id } }
+        return ActionMenu.make(actions: state.actions(for: id?.ref), row: row,
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
-            if let ref, ref != state.selection.selection {
-                state.select(ref)
+            if let id, id != state.selection.selectedID {
+                state.select(id)
                 update()
-                guard state.selection.selection == ref else { return }
+                guard state.selection.selectedID == id else { return }
             }
             switch command {
             case .primary: act(.original, guessesReturn: returnMayBeDown)

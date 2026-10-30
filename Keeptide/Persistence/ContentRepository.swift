@@ -33,6 +33,15 @@ struct ContentRepository: Sendable {
         }
     }
 
+    /// The items asked for, in the order asked and each once. Unknown and deleted items, and items with neither a
+    /// history nor a memo facet to show, are left out.
+    func summaries(for itemIDs: [ItemID]) async throws -> [ItemSummary] {
+        try await controller.perform { context in
+            context.reset()
+            return try StoredRecords.summaries(itemIDs: itemIDs, in: context)
+        }
+    }
+
     func recordState(_ key: RecordKey) async throws -> RecordState {
         try await controller.perform { context in
             context.reset()
