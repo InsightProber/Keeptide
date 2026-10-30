@@ -36,33 +36,83 @@ final class CaptureSession {
     @ObservationIgnored private(set) var searchService: SearchService?
     @ObservationIgnored private var searchIndex: SQLiteSearchIndex?
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
+    /// What direct paste asks of the system. Every paste service this session makes uses it.
+    @ObservationIgnored private let directPaste: DirectPasteSystem
+    #if DEBUG
+    /// The manual paste QA run's throwaway library and preferences, removed at shutdown.
+    @ObservationIgnored private var manualPasteQASession: ManualPasteQASession?
+    #endif
 
-    var status: String { monitor?.status ?? message ?? "Not recording" }
+    var status: String {
+        #if DEBUG
+        // Wherever recording shows, so that the QA session is never taken for the user's own.
+        if manualPasteQASession != nil { return "Manual paste QA — not recording" }
+        #endif
+        return monitor?.status ?? message ?? "Not recording"
+    }
     var isPausing: Bool { monitor?.isPausing ?? false }
     var isRecording: Bool { isReady && (monitor?.isRecording ?? false) }
+    /// Whether recording can be started or paused now. The manual paste QA session never records.
+    var canToggleRecording: Bool {
+        #if DEBUG
+        if manualPasteQASession != nil { return false }
+        #endif
+        return isReady && !isPausing
+    }
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
 
+    /// `directPaste` stays `.unavailable` everywhere but in the app delegate: tests use a fake.
     init(readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
-         pasteboard: NSPasteboard? = nil) {
+         pasteboard: NSPasteboard? = nil,
+         directPaste: DirectPasteSystem = .unavailable) {
         self.readContent = readContent
         self.pasteboard = pasteboard
+        self.directPaste = directPaste
         if let readContent, let pasteboard {
-            pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in }, didWrite: { _ in })
+            pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in },
+                                        didWrite: { _ in }, system: directPaste)
             previewService = PreviewService(read: readContent)
         }
     }
 
+    /// Opens the library that the launch chooses (`CaptureLibrary.choose`).
     func initialize(testSessionID: UUID? = nil, cleanupTestSession: Bool = false,
-                    seedSyntheticClips: Bool = false) async {
+                    seedSyntheticClips: Bool = false, manualPasteQA: Bool = false) async {
+        guard !isReady, !initializing else { return }
+        let library: CaptureLibrary?
+        do {
+            library = try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
+                                                userLibrary: CaptureLibrary.userLibraryDirectory())
+        } catch {
+            message = "The local library could not be opened. Recording is unavailable."
+            return
+        }
+        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens.
+        guard let library else { return }
+        await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips)
+    }
+
+    #if DEBUG
+    /// Opens a manual paste QA library without choosing from launch flags, as a test does. It is the only library a
+    /// test can open directly: the user's library records the general clipboard. It copies to the clipboard the
+    /// session was made with, if any, which a test gives it, and otherwise to the general one.
+    func open(manualPasteQA session: ManualPasteQASession) async {
+        await open(.manualPasteQA(session))
+    }
+    #endif
+
+    /// Opens `library`: its store, search index and paste service, and the recording of the clipboard where the
+    /// library records.
+    private func open(_ library: CaptureLibrary, cleanupTestSession: Bool = false,
+                      seedSyntheticClips: Bool = false) async {
         guard !isReady, !initializing else { return }
         initializing = true
         defer { initializing = false }
         do {
-            let directory: URL
+            let directory = library.directory
             let board: NSPasteboard
-            if let testSessionID {
-                let configuration = CaptureTestConfiguration(id: testSessionID)
-                directory = configuration.directory
+            switch library {
+            case .test(let configuration):
                 let defaults = UserDefaults(suiteName: configuration.preferencesSuite)!
                 board = NSPasteboard(name: .init(configuration.pasteboardName))
                 if cleanupTestSession {
@@ -73,10 +123,16 @@ final class CaptureSession {
                     return
                 }
                 preferences = CapturePreferences(defaults: defaults)
-            } else {
-                let support = try FileManager.default.url(for: .applicationSupportDirectory,
-                    in: .userDomainMask, appropriateFor: nil, create: true)
-                directory = support.appendingPathComponent("Keeptide/Library")
+            #if DEBUG
+            case .manualPasteQA(let qa):
+                // Its own library and preferences, never the user's. Pastes go to the general clipboard, where the
+                // app in front reads them; nothing records it in this session. A test gives the session a clipboard
+                // of its own when it makes it.
+                manualPasteQASession = qa
+                preferences = CapturePreferences(defaults: UserDefaults(suiteName: qa.preferencesSuite)!)
+                board = pasteboard ?? .general
+            #endif
+            case .user:
                 board = .general
             }
             let store = try await Task.detached(priority: .userInitiated) {
@@ -89,7 +145,11 @@ final class CaptureSession {
                 return
             }
             #if DEBUG
-            if seedSyntheticClips, testSessionID != nil { try await SyntheticClipSeeder.seed(into: store) }
+            switch library {
+            case .test where seedSyntheticClips: try await SyntheticClipSeeder.seed(into: store)
+            case .manualPasteQA: try await SyntheticClipSeeder.seed(ManualPasteQASession.clips(), into: store)
+            default: break
+            }
             #endif
             controller = store
             let read: @Sendable (ContentRef) async throws -> ResolvedContent = { ref in
@@ -98,29 +158,33 @@ final class CaptureSession {
             }
             readContent = read
             pasteboard = board
-            let monitor = PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
+            let monitor = library.recordsClipboard ? PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
                 service: CaptureService(controller: store), preferences: preferences,
                 sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
-                matchesOwnWrite: { $0.matches(pasteboard: board) })
-            monitor.onCapture = { [weak self] in await self?.refresh() }
-            monitor.onUnavailable = { [weak self] in self?.isReady = false }
-            foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
-                forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-            ) { [weak monitor] notification in
-                let identifier = (notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
-                MainActor.assumeIsolated { monitor?.foregroundApplicationChanged(to: identifier) }
+                matchesOwnWrite: { $0.matches(pasteboard: board) }) : nil
+            monitor?.onCapture = { [weak self] in await self?.refresh() }
+            monitor?.onUnavailable = { [weak self] in self?.isReady = false }
+            if let monitor {
+                foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                    forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+                ) { [weak monitor] notification in
+                    let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                    let identifier = application?.bundleIdentifier
+                    MainActor.assumeIsolated { monitor?.foregroundApplicationChanged(to: identifier) }
+                }
             }
             self.monitor = monitor
             let usage = LocalUsageStore(controller: store)
             usageStore = usage
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
-                                        didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) })
+                                        didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) },
+                                        system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo)
             previewService = PreviewService(read: read)
             await startSearch(store: store, directory: directory)
             isReady = true
             message = nil
             await refresh()
-            monitor.start()
+            monitor?.start()
             onServicesChanged?()
         } catch {
             message = "The local library could not be opened. Recording is unavailable."
@@ -196,14 +260,17 @@ final class CaptureSession {
 
     func copy(_ ref: ContentRef) async {
         guard let pasteService else { return }
-        let session = librarySession ?? pasteService.beginSession()
+        // The library window only copies, so its session has no target and the front window is not probed.
+        let session = librarySession ?? pasteService.beginSession(target: nil)
         librarySession = session
         let generation = session.advanceQueryGeneration()
         actionMessage = nil
         switch await pasteService.execute(PasteRequest(ref: ref, queryGeneration: generation, mode: .original,
                                                        session: session)) {
-        case .copied:
+        case .copied, .copiedInstead:
             actionMessage = "Copied"
+        case .dispatched, .needsConfirmation:
+            break // A copy without a target never pastes and never makes a command to review.
         case .refused(.stale):
             break // A newer selection or copy owns the message.
         case .refused:
@@ -231,6 +298,11 @@ final class CaptureSession {
         controller = nil
         searchIndex?.close()
         searchIndex = nil
+        #if DEBUG
+        // Only once its store and search index are closed.
+        manualPasteQASession?.remove()
+        manualPasteQASession = nil
+        #endif
         searchService = nil
         readContent = nil
         pasteService = nil
@@ -238,5 +310,73 @@ final class CaptureSession {
         usageStore = nil
         isReady = false
         onServicesChanged?()
+    }
+}
+
+/// The library a capture session opens: the user's own, a UI test session's, or in a Debug build the manual paste QA
+/// session's. Choosing one opens nothing.
+enum CaptureLibrary {
+    case user(directory: URL)
+    case test(CaptureTestConfiguration)
+    #if DEBUG
+    case manualPasteQA(ManualPasteQASession)
+    #endif
+
+    /// A test session wins over the manual paste QA session, which is chosen only when asked for. `userLibrary` is
+    /// looked up only when neither is chosen. A Release build has no QA session: asked for one, it chooses nothing
+    /// (nil), so nothing opens; it never falls back to the user's library.
+    static func choose(testSessionID: UUID?, manualPasteQA: Bool,
+                       userLibrary: @autoclosure () throws -> URL) rethrows -> CaptureLibrary? {
+        if let testSessionID { return .test(CaptureTestConfiguration(id: testSessionID)) }
+        if manualPasteQA {
+            #if DEBUG
+            return .manualPasteQA(ManualPasteQASession(id: UUID()))
+            #else
+            return nil
+            #endif
+        }
+        return .user(directory: try userLibrary())
+    }
+
+    /// Application Support/Keeptide/Library. Looking it up creates Application Support when it is missing.
+    static func userLibraryDirectory() throws -> URL {
+        try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil,
+                                    create: true).appendingPathComponent("Keeptide/Library")
+    }
+
+    var directory: URL {
+        switch self {
+        case .user(let directory): return directory
+        case .test(let configuration): return configuration.directory
+        #if DEBUG
+        case .manualPasteQA(let session): return session.directory
+        #endif
+        }
+    }
+
+    /// nil is the standard defaults, the user's own.
+    var preferencesSuite: String? {
+        switch self {
+        case .user: return nil
+        case .test(let configuration): return configuration.preferencesSuite
+        #if DEBUG
+        case .manualPasteQA(let session): return session.preferencesSuite
+        #endif
+        }
+    }
+
+    /// The manual paste QA session never records the clipboard.
+    var recordsClipboard: Bool {
+        #if DEBUG
+        if case .manualPasteQA = self { return false }
+        #endif
+        return true
+    }
+
+    /// The one app that direct paste may reach, if any. A test session pastes only into the system test host: any
+    /// other app would paste from the general clipboard, not from the session's.
+    var directPasteOnlyTo: String? {
+        if case .test = self { return CaptureTestConfiguration.systemTestHostBundleIdentifier }
+        return nil
     }
 }

@@ -8,7 +8,7 @@ import XCTest
 final class QuickAccessToolbarTests: XCTestCase {
     func testTheRowIsLaidOutAsTheDesignHasIt() throws {
         let toolbar = makeToolbar(width: 1376)
-        toolbar.note = .copy(enabled: true)
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
         toolbar.layoutSubtreeIfNeeded()
         let row = toolbar.rowFrame
         XCTAssertEqual(row.height, 32)
@@ -68,11 +68,12 @@ final class QuickAccessToolbarTests: XCTestCase {
 
     func testANarrowRowDropsTheHintsWordBeforeAnythingMeets() throws {
         // Wide enough, the hint says "⏎ Copy". Narrower, it keeps only the key cap, and narrower still it goes, while
-        // the ⋯ button stays. At no width does the right end reach the filters.
+        // the ⋯ button stays. At no width does the right end reach the filters. The search moves aside for the hint's
+        // word first, so the hint goes only on rows narrower than 716 pt.
         var seen: Set<String> = []
-        for width in stride(from: 1376, through: 720, by: -8) {
+        for width in stride(from: 1376, through: 704, by: -8) {
             let toolbar = makeToolbar(width: CGFloat(width))
-            toolbar.note = .copy(enabled: true)
+            toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
             toolbar.setSearchExpanded(true)
             toolbar.layoutSubtreeIfNeeded()
             let hint = toolbar.copyHint
@@ -128,7 +129,7 @@ final class QuickAccessToolbarTests: XCTestCase {
             XCTAssertEqual(filters.minX - search.maxX, 12, "\(width)")
 
             // With Return's hint in its place again they are centred again.
-            toolbar.note = .copy(enabled: true)
+            toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
             toolbar.layoutSubtreeIfNeeded()
             let centre = (toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2
             XCTAssertEqual(centre, toolbar.bounds.midX, accuracy: 0.5, "\(width)")
@@ -143,6 +144,103 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertFalse(isCut(toolbar.statusLabel))
     }
 
+    func testALongPrimaryTitleIsCutBeforeTheKeycapGoes() throws {
+        // "Paste into " and a 30-character app name need more than a 960 pt row has with the search open, even once the
+        // search and the filters have moved as far left as they go. The word is cut at its tail, whole in its help tag
+        // and for VoiceOver, and takes all the room there is.
+        let title = "Paste into Synthetic Application Named Xy"
+        XCTAssertEqual(title.count, "Paste into ".count + 30)
+        let toolbar = makeToolbar(width: 960)
+        toolbar.setSearchExpanded(true)
+        toolbar.note = .action(title: title, enabled: true, hint: nil)
+        toolbar.layoutSubtreeIfNeeded()
+        let action = toolbar.copyHint
+        XCTAssertEqual(toolbar.search.frame.minX, 16, "The search moved aside first")
+        XCTAssertFalse(action.isHidden)
+        XCTAssertTrue(action.showsTitle)
+        XCTAssertLessThan(action.frame.width, action.fullWidth, "Cut")
+        XCTAssertEqual(action.frame.minX, toolbar.filters.frame.maxX + 12, accuracy: 0.5)
+        XCTAssertEqual(action.frame.maxX, toolbar.moreButton.frame.minX - 12)
+        XCTAssertEqual(action.toolTip, title)
+        XCTAssertEqual(action.accessibilityLabel(), title)
+
+        // Narrower, the cut word gives way to the key cap alone, its help tag still the whole title, and then that goes.
+        // The right end never reaches the filters, and the search never goes past the row's left inset.
+        var seen: [String] = []
+        for width in stride(from: 960, through: 680, by: -4) {
+            let toolbar = makeToolbar(width: CGFloat(width))
+            toolbar.setSearchExpanded(true)
+            toolbar.note = .action(title: title, enabled: true, hint: nil)
+            toolbar.layoutSubtreeIfNeeded()
+            let action = toolbar.copyHint
+            let shown = action.isHidden ? "none" : (action.showsTitle ? "cut word" : "keycap")
+            if seen.last != shown { seen.append(shown) }
+            XCTAssertGreaterThanOrEqual(toolbar.search.frame.minX, 16, "\(width)")
+            guard !action.isHidden else { continue }
+            XCTAssertGreaterThanOrEqual(action.frame.minX, toolbar.filters.frame.maxX + 12, "\(width)")
+            XCTAssertEqual(action.frame.maxX, toolbar.moreButton.frame.minX - 12, "\(width)")
+            XCTAssertEqual(action.toolTip, title, "\(width)")
+            XCTAssertEqual(action.accessibilityLabel(), title, "\(width)")
+            if action.showsTitle {
+                // A word cut shorter than a status may be says nothing, so the key cap is left alone first.
+                XCTAssertGreaterThanOrEqual(action.frame.width - action.compactWidth - QuickAccessCopyHint.spacing, 24,
+                                            "\(width)")
+            } else {
+                XCTAssertEqual(action.frame.width, action.compactWidth, "\(width)")
+            }
+        }
+        XCTAssertEqual(seen, ["cut word", "keycap", "none"])
+    }
+
+    func testTheReasonHintGivesWayBeforeThePrimaryAction() throws {
+        // A terminal's command, copied because secure input is on, says why left of "⏎ Copy Command". As the row
+        // narrows, the reason is cut and then goes before the command's word is cut, and the word goes before the key cap.
+        let reason = "Secure input is on"
+        var seen: [String] = []
+        for width in stride(from: 1376, through: 640, by: -4) {
+            let toolbar = makeToolbar(width: CGFloat(width))
+            toolbar.setSearchExpanded(true)
+            toolbar.note = .action(title: "Copy Command", enabled: true, hint: reason)
+            toolbar.layoutSubtreeIfNeeded()
+            let hint = toolbar.directPasteHint
+            let action = toolbar.copyHint
+            let hintShown = hint.isHidden ? "none" : (isCut(hint) ? "cut" : "full")
+            let actionShown = action.isHidden ? "none"
+                : (!action.showsTitle ? "keycap" : (action.frame.width < action.fullWidth ? "cut" : "full"))
+            let state = "reason \(hintShown), action \(actionShown)"
+            if seen.last != state { seen.append(state) }
+            guard !hint.isHidden else { continue }
+            XCTAssertEqual(actionShown, "full", "\(width): the reason gives way first")
+            XCTAssertEqual(hint.accessibilityIdentifier(), "QuickAccessDirectPasteHint")
+            XCTAssertEqual(hint.accessibilityValue(), reason, "\(width): read whole")
+            XCTAssertEqual(hint.toolTip, hintShown == "cut" ? reason : nil, "\(width)")
+            XCTAssertEqual(hint.textColor, ToolbarPalette.secondary)
+            XCTAssertEqual(hint.lineBreakMode, .byTruncatingTail)
+            XCTAssertGreaterThanOrEqual(hint.frame.width, 24, "\(width)")
+            XCTAssertEqual(hint.frame.maxX, action.frame.minX - 12, "\(width)")
+            XCTAssertGreaterThanOrEqual(hint.frame.minX, toolbar.filters.frame.maxX + 12, "\(width)")
+            XCTAssertEqual(hint.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, "\(width)")
+        }
+        XCTAssertEqual(seen, ["reason full, action full", "reason cut, action full", "reason none, action full",
+                              "reason none, action cut", "reason none, action keycap", "reason none, action none"])
+
+        // As for a status, the search and the filters move left to make room for the action and its reason in full:
+        // on a 960 pt row, where centred they would leave too little, both read whole.
+        let toolbar = makeToolbar(width: 960)
+        toolbar.setSearchExpanded(true)
+        toolbar.note = .action(title: "Copy Command", enabled: true, hint: reason)
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertLessThan((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX - 1)
+        XCTAssertFalse(toolbar.directPasteHint.isHidden)
+        XCTAssertFalse(isCut(toolbar.directPasteHint))
+        XCTAssertEqual(toolbar.copyHint.frame.width, toolbar.copyHint.fullWidth)
+        // Without a reason nothing shows there, and the search stays centred.
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(toolbar.directPasteHint.isHidden)
+        XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
+    }
+
     func testTheRebuildNoticeTakesTheRowsLeftEnd() throws {
         // While there are clips and the index rebuilds, the row's left end says so: 16 pt in, level with the row, in a
         // status's type and colour, and at least the right end's 12 pt gap clear of the search's ring, folded or open.
@@ -150,7 +248,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         for expanded in [false, true] {
             let toolbar = makeToolbar(width: 1376)
             toolbar.setSearchExpanded(expanded)
-            toolbar.note = .copy(enabled: true)
+            toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
             toolbar.hasClips = true
             toolbar.indexNotice = .rebuilding
             toolbar.layoutSubtreeIfNeeded()
@@ -180,7 +278,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         // moves the search a little to the left, the notice is cut short, its whole text in its help tag and read whole.
         // A failure that moves the search as far left as it goes leaves it no room, and it is not shown.
         let cases: [(note: QuickAccessToolbar.Note, shown: Bool)] = [
-            (.copy(enabled: true), true), (.failure("This item has no plain text."), true),
+            (.action(title: "Copy", enabled: true, hint: nil), true), (.failure("This item has no plain text."), true),
             (.failure("This item changed or is no longer available."), false),
         ]
         for (note, shown) in cases {
@@ -201,7 +299,7 @@ final class QuickAccessToolbarTests: XCTestCase {
             XCTAssertTrue(isCut(notice), "\(note): cut short")
             XCTAssertEqual(notice.lineBreakMode, .byTruncatingTail)
             XCTAssertEqual(notice.toolTip, "Index is rebuilding — results may be incomplete", "\(note)")
-            XCTAssertEqual(notice.accessibilityValue() as? String, "Index is rebuilding — results may be incomplete",
+            XCTAssertEqual(notice.accessibilityValue(), "Index is rebuilding — results may be incomplete",
                            "\(note): read whole")
         }
     }
@@ -210,7 +308,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         // With no clips the empty state says the index is rebuilding, and an index that is ready, or one that is
         // unavailable, has nothing to say here.
         let toolbar = makeToolbar(width: 1376)
-        toolbar.note = .copy(enabled: true)
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
         // In this order each step changes one input at a time where it can, so either alone brings the notice or takes it.
         let cases: [(hasClips: Bool, notice: IndexNotice?, shown: Bool)] = [
             (true, .rebuilding, true), (false, .rebuilding, false), (true, .rebuilding, true), (true, nil, false),

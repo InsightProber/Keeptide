@@ -2,10 +2,10 @@
 import AppKit
 import Foundation
 
-/// Fixed synthetic clips for UI tests in an isolated capture test session.
-/// Never reads or writes a pasteboard.
+/// Fixed synthetic clips for UI tests in an isolated capture test session, and the seeding of an isolated library
+/// with them or with other clips. Never reads or writes a pasteboard.
 enum SyntheticClipSeeder {
-    static let sourceApp = "io.github.insightprober.Keeptide.SystemTestHost"
+    static let sourceApp = CaptureTestConfiguration.systemTestHostBundleIdentifier
 
     /// Oldest first, so the last clip is the newest recent clip.
     static func clips() -> [[(String, Data)]] {
@@ -22,9 +22,10 @@ enum SyntheticClipSeeder {
         ]
     }
 
-    static func seed(into controller: PersistenceController, now: Date = Date()) async throws {
+    /// Captures `clips`, oldest first, each a second before the next and the last a second before `now`.
+    static func seed(_ clips: [[(String, Data)]] = clips(), into controller: PersistenceController,
+                     now: Date = Date()) async throws {
         let service = CaptureService(controller: controller)
-        let clips = clips()
         for (offset, representations) in clips.enumerated() {
             let snapshot = CaptureSnapshotValue(
                 items: [CapturedPasteboardItem(representations: representations.map {

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 
 struct OwnWriteToken: Equatable, Sendable {
     static let typeIdentifier = CaptureWire.ownWriteTypeIdentifier
@@ -30,6 +31,11 @@ enum PasteboardWriterError: Error, Equatable {
     case cannotPrepareRepresentation(itemIndex: Int, representationIndex: Int)
     case writeFailed
     case noPlainText
+    /// `prepareWithoutText` found no image or file reference to keep.
+    case noImageOrFileReference
+    /// `prepareWithoutText` kept a file reference whose path a terminal must not take, or that cannot be read.
+    case unsafeFileReference
+    case commandTooLong
 }
 
 struct PreparedPasteboardContent: Sendable {
@@ -111,10 +117,76 @@ final class PasteboardWriter {
         return PreparedPasteboardContent(representations: ordered)
     }
 
+    /// What a terminal gets from a clip that is not text: `prepare`, keeping only images, file URLs and the legacy
+    /// list of file paths. Everything else is left out, whatever it is: a terminal can make text out of more formats
+    /// than a list of text formats names, such as rich text with attachments, web archives and old text flavours.
+    /// The order is kept, and an item left with nothing is dropped. Throws `.noImageOrFileReference` when nothing is
+    /// left, and `.unsafeFileReference` when a file reference kept names a path that a terminal could act on: the
+    /// terminal can take none of the clip, so only Copy As-Is copies it.
+    nonisolated static func prepareWithoutText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        var kept: [RepresentationValue] = []
+        var lastSourceItem: Int?
+        for var representation in try prepare(content).representations
+        where isImageOrFileReference(representation.typeIdentifier) {
+            // Numbered again from zero, as the write expects: dropped items and representations leave no gap.
+            if representation.itemIndex == lastSourceItem, let previous = kept.last {
+                representation.itemIndex = previous.itemIndex
+                representation.representationIndex = previous.representationIndex + 1
+            } else {
+                lastSourceItem = representation.itemIndex
+                representation.itemIndex = (kept.last?.itemIndex ?? -1) + 1
+                representation.representationIndex = 0
+            }
+            kept.append(representation)
+        }
+        guard !kept.isEmpty else { throw PasteboardWriterError.noImageOrFileReference }
+        // A terminal pastes a file reference as its path.
+        guard kept.allSatisfy(namesPathsATerminalCanTake) else { throw PasteboardWriterError.unsafeFileReference }
+        return PreparedPasteboardContent(representations: kept)
+    }
+
+    /// The formats `prepareWithoutText` keeps: a type that conforms to `public.image` and is not text as well, unlike
+    /// SVG, which is XML; `public.file-url`; and NSFilenamesPboardType under its legacy name or the dynamic identifiers
+    /// an item's types give it. Identifiers are compared without regard to case.
+    private nonisolated static func isImageOrFileReference(_ typeIdentifier: String) -> Bool {
+        let lowered = typeIdentifier.lowercased()
+        return lowered == "public.file-url" || SystemFileReferenceClassifier.filenamesListIdentifiers.contains(lowered)
+            || (UTType(typeIdentifier)?.conforms(to: .image) == true && !ContentKind.isText(typeIdentifier))
+    }
+
+    /// Whether a representation `prepareWithoutText` keeps names only paths a terminal can take, by the rule a command
+    /// is reviewed by: no line break, and no control or invisible character other than a tab, in the path of a
+    /// `public.file-url` with its percent escapes decoded or in any path of a list of file paths. A path with one could
+    /// run a command or hide what it is. A reference that cannot be read as text, or as a list of paths, names nothing
+    /// that can be checked and fails. An image names no path.
+    private nonisolated static func namesPathsATerminalCanTake(_ representation: RepresentationValue) -> Bool {
+        let lowered = representation.typeIdentifier.lowercased()
+        let paths: [String]?
+        if lowered == "public.file-url" {
+            paths = representation.bytes.flatMap { String(data: $0, encoding: .utf8) }?.removingPercentEncoding
+                .map { [$0] }
+        } else if SystemFileReferenceClassifier.filenamesListIdentifiers.contains(lowered) {
+            paths = representation.bytes.flatMap {
+                try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String]
+            }
+        } else {
+            return true
+        }
+        guard let paths else { return false }
+        return !paths.contains(where: TerminalCommand.needsReview)
+    }
+
     /// Plain text built like the search body: each item's first cleanly decodable text,
     /// preferring text over a link, joined by line breaks and written as the only
     /// representation in UTF-8.
     nonisolated static func preparePlainText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
+        try utf8PlainText(plainText(content), of: content)
+    }
+
+    /// The text `preparePlainText` writes, under the same rules and errors: each item's first cleanly
+    /// decodable text, preferring text over a link, joined by line breaks. Throws `.noPlainText` when no
+    /// item has any.
+    nonisolated static func plainText(_ content: ResolvedContent) throws -> String {
         guard content.isActionable else { throw PasteboardWriterError.nonActionableContent }
         let items = Dictionary(grouping: content.representations, by: \.itemIndex)
         var texts: [String] = []
@@ -139,10 +211,32 @@ final class PasteboardWriter {
                 break
             }
         }
-        guard let snapshotID = content.representations.first?.snapshotID, !texts.isEmpty else {
+        guard !texts.isEmpty else { throw PasteboardWriterError.noPlainText }
+        return texts.joined(separator: "\n")
+    }
+
+    /// One `public.utf8-plain-text` representation holding `command.text`; the clip's other formats are not
+    /// written. Throws `.noPlainText` when there is no text, or nothing is left after removing the line break, and
+    /// `.commandTooLong` when the command's text has more than `maximumByteCount` UTF-8 bytes. A command that long
+    /// is never made, shown or encoded.
+    nonisolated static func prepareCommand(_ content: ResolvedContent, maximumByteCount: Int) throws
+        -> (PreparedPasteboardContent, TerminalCommand) {
+        let text = try plainText(content)
+        guard TerminalCommand.commandText(in: text).utf8.count <= maximumByteCount else {
+            throw PasteboardWriterError.commandTooLong
+        }
+        let command = TerminalCommand(plainText: text)
+        guard !command.text.isEmpty else { throw PasteboardWriterError.noPlainText }
+        return (try utf8PlainText(command.text, of: content), command)
+    }
+
+    /// The one representation that `preparePlainText` and `prepareCommand` write.
+    private nonisolated static func utf8PlainText(_ text: String, of content: ResolvedContent) throws
+        -> PreparedPasteboardContent {
+        guard let snapshotID = content.representations.first?.snapshotID else {
             throw PasteboardWriterError.noPlainText
         }
-        let utf8 = Data(texts.joined(separator: "\n").utf8)
+        let utf8 = Data(text.utf8)
         return PreparedPasteboardContent(representations: [RepresentationValue(
             snapshotID: snapshotID, itemIndex: 0, representationIndex: 0,
             typeIdentifier: "public.utf8-plain-text", storage: .portable,
