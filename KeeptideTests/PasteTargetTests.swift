@@ -4,20 +4,24 @@ import XCTest
 
 final class PasteTargetTests: XCTestCase {
     func testFrontmostNormalWindowOfTheAppIsChosen() {
-        let list = [window(pid: 7, layer: 25, number: 90), window(pid: 9, layer: 0, number: 12),
-                    window(pid: 7, layer: 0, number: 41), window(pid: 7, layer: 0, number: 40)]
-        XCTAssertEqual(PasteTarget.frontmostWindow(in: list, processIdentifier: 7), 41)
+        // A raised window of its own, such as a menu, sits above the app's normal windows and is not the target.
+        let list = [window(pid: 7, layer: 25, number: 90), window(pid: 7, layer: 0, number: 41),
+                    window(pid: 7, layer: 0, number: 40), window(pid: 9, layer: 0, number: 12)]
+        XCTAssertEqual(targetWindow(in: list), 41)
     }
 
     func testFrontAppWithoutAnOnScreenNormalWindowHasNoTarget() {
-        let raisedOnly = [window(pid: 7, layer: 25, number: 90), window(pid: 9, layer: 0, number: 12),
-                          window(pid: 7, layer: 3, number: 91)]
-        XCTAssertNil(PasteTarget.frontmostWindow(in: raisedOnly, processIdentifier: 7))
-        XCTAssertNil(PasteTarget.frontmostWindow(in: [], processIdentifier: 7))
+        // Only raised windows of its own, as a menu bar app has, whether or not another app's window is on screen.
+        let raisedOnly = [window(pid: 7, layer: 25, number: 90), window(pid: 7, layer: 3, number: 91)]
+        XCTAssertNil(targetWindow(in: raisedOnly))
+        XCTAssertNil(targetWindow(in: [window(pid: 7, layer: 25, number: 90), window(pid: 9, layer: 0, number: 12),
+                                       window(pid: 7, layer: 3, number: 91)]))
+        // No window of its own on screen, as when they are all minimized: only another app's.
+        XCTAssertNil(targetWindow(in: [window(pid: 9, layer: 0, number: 12)]))
+        XCTAssertNil(targetWindow(in: []))
         let unnumbered = window(pid: 7, layer: 0, number: nil)
-        XCTAssertNil(PasteTarget.frontmostWindow(in: [unnumbered], processIdentifier: 7))
-        XCTAssertEqual(PasteTarget.frontmostWindow(in: [unnumbered, window(pid: 7, layer: 0, number: 41)],
-                                                   processIdentifier: 7), 41)
+        XCTAssertNil(targetWindow(in: [unnumbered]))
+        XCTAssertEqual(targetWindow(in: [unnumbered, window(pid: 7, layer: 0, number: 41)]), 41)
     }
 
     func testAnotherAppsWindowOnTopMeansNoTarget() {
@@ -44,7 +48,8 @@ final class PasteTargetTests: XCTestCase {
 
     func testKnownTerminalsCoverTheDesignList() {
         for identifier in ["com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "net.kovidgoyal.kitty",
-                           "org.alacritty", "io.alacritty", "com.github.wez.wezterm", "com.mitchellh.ghostty"] {
+                           "org.alacritty", "io.alacritty", "com.github.wez.wezterm", "com.mitchellh.ghostty",
+                           "co.zeit.hyper", "org.tabby", "com.raphaelamorim.rio", "dev.warp.Warp-Preview"] {
             XCTAssertTrue(KnownTerminals.contains(identifier), identifier)
         }
         XCTAssertTrue(KnownTerminals.contains("com.googlecode.iTerm2"))
@@ -67,6 +72,11 @@ final class PasteTargetTests: XCTestCase {
         }
         XCTAssertEqual(keystroke.source.getLocalEventsFilterDuringSuppressionState(.eventSuppressionStateSuppressionInterval),
                        [.permitLocalMouseEvents, .permitSystemDefinedEvents])
+    }
+
+    /// The window to paste into with process 7 in front, as Keeptide, process 3, reads the list.
+    private func targetWindow(in list: [[String: Any]]) -> Int? {
+        PasteTarget.targetWindow(in: list, frontProcessIdentifier: 7, ownProcessIdentifier: 3)
     }
 
     /// One CGWindowListCopyWindowInfo entry as Swift receives it: the CFNumber values arrive as NSNumbers.

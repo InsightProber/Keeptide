@@ -134,6 +134,7 @@ final class QuickAccessActionsTests: XCTestCase {
             (.copiedInstead(.secureInput), "Secure input is on — copied instead. Press ⌘V to paste."),
             (.copiedInstead(.cannotSendKeystroke), "Couldn't send ⌘V — copied instead. Press ⌘V to paste."),
             (.copiedInstead(.testSessionTarget), "Test sessions paste only into the system test host — copied instead."),
+            (.copiedInstead(.returnHeld), "Return was held — copied instead. Press ⌘V to paste."),
             // The panel asks for a paste only with a target, so a copy without one has only the copy to tell.
             (.copiedInstead(.noTarget), "Copied — press ⌘V to paste"),
             // ⌘V does not prove that the target pasted, so nothing is said.

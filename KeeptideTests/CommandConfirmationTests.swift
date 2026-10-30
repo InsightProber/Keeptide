@@ -430,6 +430,86 @@ final class CommandConfirmationTests: XCTestCase {
         XCTAssertEqual(fake.sent, [9, 9])
     }
 
+    func testAFileReferenceWhosePathBreaksTheLineOrHidesCharactersStaysOutOfATerminal() async throws {
+        let fixture = try PasteFixture(self)
+        let pathsType = "dyn.ah62d4rv4gu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn"
+        func url(_ string: String) -> (String, Data) { ("public.file-url", Data(string.utf8)) }
+        // Binary, since XML has no way to hold most control characters.
+        func list(_ paths: [String]) throws -> (String, Data) {
+            (pathsType, try PropertyListSerialization.data(fromPropertyList: paths, format: .binary, options: 0))
+        }
+        let name = ("public.utf8-plain-text", Data("synthetic.txt\n".utf8))
+        let fake = terminal()
+        let paste = fixture.service(system: fake.system)
+        let session = paste.beginSession()
+        let before = fixture.board.changeCount
+
+        // A terminal pastes a file reference as its path. A path that breaks the line, or holds a control or invisible
+        // character, could run or hide something there, so the terminal can take none of the clip.
+        let unsafe: [(String, [(String, Data)])] = [
+            ("a line break, percent-escaped", [url("file:///tmp/synthetic%0Aecho%20synthetic.txt"), name]),
+            ("a line break, as it is", [url("file:///tmp/synthetic\necho-synthetic.txt"), name]),
+            ("a line break in the list", [try list(["/tmp/synthetic\necho synthetic.txt"]), name]),
+            ("a clean URL, and ESC in the list", [url("file:///tmp/synthetic.txt"),
+                                                   try list(["/tmp/synthetic\u{1B}[2K.txt"])]),
+            ("a bidirectional override", [url("file:///tmp/synthetic%E2%80%AEtxt.sh"), name]),
+            ("an escape that does not decode", [url("file:///tmp/synthetic%ZZ.txt"), name]),
+        ]
+        var refused: [ContentRef] = []
+        for (reason, representations) in unsafe {
+            let file = try await capture(representations, into: fixture)
+            let outcome = await paste.execute(request(file, session))
+            XCTAssertEqual(outcome, .refused(.terminalCannotTake), reason)
+            refused.append(file)
+        }
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [])
+
+        // A tab breaks no line, and a path with one still pastes.
+        let tabbed = try await capture([url("file:///tmp/synthetic%09tab.txt"), name], into: fixture)
+        let pastedTabbed = await paste.execute(request(tabbed, session))
+        XCTAssertEqual(pastedTabbed, .dispatched(.terminal))
+        XCTAssertEqual(fake.sent, [9])
+
+        // Copy As-Is still copies a refused one, as captured.
+        let crafted = try XCTUnwrap(refused.first)
+        let copied = await paste.execute(request(crafted, session, mode: .asIs))
+        XCTAssertEqual(copied, .copied)
+        XCTAssertEqual(fixture.board.data(forType: .fileURL),
+                       Data("file:///tmp/synthetic%0Aecho%20synthetic.txt".utf8))
+        XCTAssertEqual(fake.sent, [9])
+    }
+
+    func testAnImageThatIsAlsoTextStaysOutOfATerminal() async throws {
+        let fixture = try PasteFixture(self)
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        let svg = Data(#"<svg xmlns="http://www.w3.org/2000/svg"><text>synthetic</text></svg>"#.utf8)
+        let svgType = NSPasteboard.PasteboardType("public.svg-image")
+        let fake = terminal()
+        let paste = fixture.service(system: fake.system)
+        let session = paste.beginSession()
+
+        // SVG is an image, and XML too: a terminal could take it as text. Beside a PNG, only the PNG goes.
+        let both = try await fixture.insert([[("public.png", png), ("public.svg-image", svg)]])
+        let pastedBoth = await paste.execute(request(both, session))
+        XCTAssertEqual(pastedBoth, .dispatched(.terminal))
+        XCTAssertEqual(fixture.board.data(forType: .png), png)
+        XCTAssertNil(fixture.board.data(forType: svgType))
+        XCTAssertEqual(textLikeTypes(on: fixture.board), [])
+        XCTAssertEqual(fake.sent, [9])
+
+        // Alone, it leaves the terminal nothing it can take, and Copy As-Is copies it as captured.
+        let alone = try await fixture.insert([[("public.svg-image", svg)]])
+        let before = fixture.board.changeCount
+        let refused = await paste.execute(request(alone, session))
+        XCTAssertEqual(refused, .refused(.terminalCannotTake))
+        XCTAssertEqual(fixture.board.changeCount, before)
+        XCTAssertEqual(fake.sent, [9])
+        let copied = await paste.execute(request(alone, session, mode: .asIs))
+        XCTAssertEqual(copied, .copied)
+        XCTAssertEqual(fixture.board.data(forType: svgType), svg)
+    }
+
     func testOtherDataInATerminalIsRefused() async throws {
         let fixture = try PasteFixture(self)
         let pdf = Data("%PDF-1.7 synthetic".utf8)

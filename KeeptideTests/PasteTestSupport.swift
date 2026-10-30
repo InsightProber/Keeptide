@@ -98,6 +98,9 @@ extension PasteTarget {
                                    name: "Notes", windowNumber: 21)
     static let terminal = PasteTarget(processIdentifier: 503, bundleIdentifier: "com.apple.Terminal",
                                       name: "Terminal", windowNumber: 31)
+    /// Finder with one of its windows on top, as the window check sees its desktop too.
+    static let finder = PasteTarget(processIdentifier: 506, bundleIdentifier: "com.apple.finder", name: "Finder",
+                                    windowNumber: 61)
     /// The system test host as the system reports it. Its identifier is spelled out rather than taken from
     /// `CaptureTestConfiguration.systemTestHostBundleIdentifier`, so that a wrong constant fails the tests.
     static let testHost = PasteTarget(processIdentifier: 504,

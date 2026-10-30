@@ -75,7 +75,7 @@ struct QuickAccessActions: Equatable {
         case .cannotSendKeystroke: "⌘V isn't on this keyboard layout"
         case .testSessionTarget: "Test sessions paste only into the system test host"
         case .notPermitted: accessRequested ? "Reopen Keeptide to finish turning on direct paste" : nil
-        case .targetChanged, .noTarget: nil
+        case .targetChanged, .noTarget, .returnHeld: nil
         }
     }
 }
@@ -97,6 +97,8 @@ enum QuickAccessCompletion: Equatable {
             case .secureInput: "Secure input is on — copied instead. Press ⌘V to paste."
             case .cannotSendKeystroke: "Couldn't send ⌘V — copied instead. Press ⌘V to paste."
             case .testSessionTarget: "Test sessions paste only into the system test host — copied instead."
+            // Stub for the tests that land first.
+            case .returnHeld: "Copied — press ⌘V to paste"
             // The panel asks for a paste only with a target, so without one the copy is all there is to tell.
             case .noTarget: "Copied — press ⌘V to paste"
             }

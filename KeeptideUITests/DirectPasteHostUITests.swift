@@ -36,6 +36,8 @@ final class DirectPasteHostUITests: XCTestCase {
         let (app, host, primaryAction) = openPanelOverHost()
         guard primaryAction.hasPrefix("Paste into") else { throw XCTSkip(Self.notAuthorized) }
 
+        // The panel is still open over the host as Return goes down.
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].exists, app.debugDescription)
         typeThroughHost(.return)
 
         assertOneCommandVReachedTheReceiver(app: app, host: host)
@@ -46,7 +48,8 @@ final class DirectPasteHostUITests: XCTestCase {
         guard primaryAction.hasPrefix("Paste into") else { throw XCTSkip(Self.notAuthorized) }
 
         // ⇧Return pastes the plain text, and ⌘V still goes with ⌘ alone: ⇧⌘V is Keeptide's own hot key and, in many
-        // apps, Paste and Match Style.
+        // apps, Paste and Match Style. The panel is still open over the host as Return goes down.
+        XCTAssertTrue(app.dialogs["KeeptideQuickAccessPanel"].exists, app.debugDescription)
         typeThroughHost(.return, modifierFlags: .shift)
 
         assertOneCommandVReachedTheReceiver(app: app, host: host)
@@ -68,6 +71,8 @@ final class DirectPasteHostUITests: XCTestCase {
         paste.isInverted = true
         waitForExpectations(timeout: 2)
         XCTAssertEqual(text(of: count), "0")
+        // Copying activated nothing: the host is still in front before the Inspect click, which would bring it there.
+        XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier, Self.hostBundleIdentifier)
         XCTAssertEqual(copiedText(host: host), "Synthetic alpha note")
     }
 
@@ -113,10 +118,13 @@ final class DirectPasteHostUITests: XCTestCase {
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(newest.waitForExistence(timeout: 10), app.debugDescription)
-        // The button shows only while a clip is selected, and then says what Return does.
+        // The button shows only while a clip is selected, and then says what Return does. The result says which case
+        // this run covers, whether it goes on or skips.
         let primaryAction = app.buttons["QuickAccessCopyButton"]
         XCTAssertTrue(primaryAction.waitForExistence(timeout: 5), app.debugDescription)
-        return (app, host, primaryAction.label)
+        let label = primaryAction.label
+        XCTContext.runActivity(named: "Return does: \(label)") { _ in }
+        return (app, host, label)
     }
 
     /// Types a key with the host in front, as the user would with the panel open over it.

@@ -41,6 +41,48 @@ final class PasteGuardTests: XCTestCase {
         XCTAssertEqual(log.dismissals, 1)
     }
 
+    func testReturnDownJustBeforeThePanelHidesCopiesInstead() async throws {
+        let (fixture, ref) = try await makeFixture()
+        let fake = FakeDirectPasteSystem()
+        let repository = ContentRepository(controller: fixture.controller)
+        let gate = PasteReadGate()
+        let started = expectation(description: "Read started")
+        // The second request reads through the open gate.
+        started.assertForOverFulfill = false
+        let paste = fixture.service(system: fake.system, read: { ref in
+            started.fulfill()
+            await gate.wait()
+            return try await repository.read(ref)
+        })
+        let session = paste.beginSession()
+        let log = PasteLog()
+
+        // Return goes down again while the clip is read. Hidden then, the panel would leave the key's repeats to the
+        // target, where a terminal would run what it holds: the clip is copied as usual, and nothing is hidden or sent.
+        let pending = Task {
+            await paste.execute(self.request(ref, session, dismiss: { log.dismissals += 1 },
+                                             returnIsDown: { log.returnIsDown }))
+        }
+        await fulfillment(of: [started], timeout: 3)
+        log.returnIsDown = true
+        await gate.open()
+        let outcome = await pending.value
+
+        XCTAssertEqual(outcome, .copiedInstead(.returnHeld))
+        XCTAssertEqual(fixture.board.string(forType: .string), clip)
+        XCTAssertEqual(log.dismissals, 0)
+        XCTAssertEqual(fake.sent, [])
+        try await SearchTestSupport.waitUntil { try await fixture.useCount(ref) == 1 }
+
+        // With Return up, the same request hides the panel and sends ⌘V.
+        log.returnIsDown = false
+        let pasted = await paste.execute(request(ref, session, dismiss: { log.dismissals += 1 },
+                                                 returnIsDown: { log.returnIsDown }))
+        XCTAssertEqual(pasted, .dispatched(.textEdit))
+        XCTAssertEqual(log.dismissals, 1)
+        XCTAssertEqual(fake.sent, [9])
+    }
+
     func testCopyDeliveryNeverSends() async throws {
         let (fixture, ref) = try await makeFixture()
         let fake = FakeDirectPasteSystem()
@@ -470,9 +512,10 @@ final class PasteGuardTests: XCTestCase {
     /// Every request can hide the panel, as the panel's are: a paste request without `dismiss` is a programming
     /// error, which `testAPasteRequestThatCannotHideThePanelOnlyCopies` covers.
     private func request(_ ref: ContentRef, _ session: PasteSession, delivery: PasteDelivery = .paste,
-                         dismiss: @escaping @MainActor () -> Void = {}) -> PasteRequest {
+                         dismiss: @escaping @MainActor () -> Void = {},
+                         returnIsDown: (@MainActor () -> Bool)? = nil) -> PasteRequest {
         PasteRequest(ref: ref, queryGeneration: session.queryGeneration, mode: .original, session: session,
-                     delivery: delivery, dismiss: dismiss)
+                     delivery: delivery, dismiss: dismiss, returnIsDown: returnIsDown)
     }
 }
 
@@ -480,6 +523,8 @@ final class PasteGuardTests: XCTestCase {
 @MainActor
 private final class PasteLog {
     var dismissals = 0
+    /// What the panel answers when the paste asks whether Return or keypad Enter is down.
+    var returnIsDown = false
     var boardAtDismiss: String?
     var boardAtSend: String?
     var dismissalsAtSend: Int?

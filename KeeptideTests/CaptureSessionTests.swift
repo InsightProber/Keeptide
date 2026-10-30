@@ -227,9 +227,11 @@ final class CaptureSessionTests: XCTestCase {
     func testTheManualPasteQASessionSaysSoInTheMenuAndCannotRecord() async throws {
         let qa = ManualPasteQASession(id: UUID())
         addTeardownBlock { qa.remove() }
-        // Opened as the QA library directly, never chosen from launch flags. Nothing here copies: this session's
-        // clipboard is the general one.
-        let session = CaptureSession()
+        // Opened as the QA library directly, never chosen from launch flags, on a clipboard of the test's own: the QA
+        // session the app opens uses the general one.
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let session = CaptureSession(pasteboard: board)
         await session.open(manualPasteQA: qa)
         let configuration = try makeIsolatedSession()
         let recording = CaptureSession()

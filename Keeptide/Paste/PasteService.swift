@@ -49,6 +49,8 @@ enum PasteDelivery: Equatable, Sendable {
 /// Why a paste that was asked for became a copy.
 enum DirectPasteFallback: Equatable, Sendable {
     case noTarget, testSessionTarget, notPermitted, targetChanged, secureInput, cannotSendKeystroke
+    /// Stub for the tests that land first: nothing reports it yet.
+    case returnHeld
 }
 
 enum DirectPasteAvailability: Equatable, Sendable {
@@ -116,6 +118,8 @@ struct PasteRequest {
     /// Hides the panel for a paste. Called once, after the clipboard is written and before the last check.
     /// It hides the panel before the keystroke without ending the session, which the last check still needs.
     var dismiss: (@MainActor () -> Void)? = nil
+    /// Stub for the tests that land first: nothing asks it yet.
+    var returnIsDown: (@MainActor () -> Bool)? = nil
     /// The confirmation from the review of this command, once the user confirms it.
     var confirmation: CommandConfirmation? = nil
 }
