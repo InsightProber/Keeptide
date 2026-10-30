@@ -1052,7 +1052,7 @@ final class AppLaunchTests: XCTestCase {
         }
 
         // Its place at the dock stays empty, without a ring, and the clips left start one step to its right.
-        let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        let frames = framesOnScreen(in: strip)
         XCTAssertFalse(frames.isEmpty)
         XCTAssertFalse(frames.contains { strip.convert($0.bounds, from: $0).intersects(dock) })
         XCTAssertFalse(frames.contains { $0.isAccessibilitySelected() })
@@ -1181,7 +1181,7 @@ final class AppLaunchTests: XCTestCase {
         editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
             controller.state.query == "ab" && controller.state.phase == .results
-                && strip.accessibilityChildren()?.count == 2
+                && self.framesOnScreen(in: strip).count == 2
         }
         XCTAssertFalse(controller.state.selection.isComplete)
         XCTAssertEqual(controller.state.selection.rows.count, 2)
@@ -1194,7 +1194,7 @@ final class AppLaunchTests: XCTestCase {
         // The finished scan is all there is, and three clips fit: they are centred as a group.
         gate.open()
         try await SearchTestSupport.waitUntil {
-            controller.state.selection.isComplete && strip.accessibilityChildren()?.count == 3
+            controller.state.selection.isComplete && self.framesOnScreen(in: strip).count == 3
         }
         let film = 3 * metrics.step - metrics.gap
         let newest = try frame(of: controller.state.selection.rows[0].title, in: strip)
@@ -1463,7 +1463,7 @@ final class AppLaunchTests: XCTestCase {
         // Back among the recent clips, the menu selects the clip it was opened on and copies it.
         try XCTUnwrap(controller.window?.firstResponder as? NSTextView)
             .doCommand(by: #selector(NSResponder.cancelOperation(_:)))
-        try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.count == 2 }
+        try await SearchTestSupport.waitUntil { self.framesOnScreen(in: strip).count == 2 }
         try XCTUnwrap(strip.menu(for: rightClick)).performActionForItem(at: 0)
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.last?.ref)
         try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
@@ -1491,7 +1491,7 @@ final class AppLaunchTests: XCTestCase {
             return try self.contrast(in: window, at: middle) > 0.3
         }
         let (strip, middle) = try XCTUnwrap(copyArea)
-        XCTAssertEqual(strip.accessibilityChildren()?.count ?? 0, 0)
+        XCTAssertEqual(framesOnScreen(in: strip).count, 0)
         XCTAssertTrue(views(NSHostingView<StripFrameView>.self, in: strip).isEmpty)
         XCTAssertGreaterThan(try contrast(in: window, at: middle), 0.3, "The copy is drawn where the clips would be")
         XCTAssertLessThan(try contrast(in: window, at: middle.offsetBy(dx: -0.3 * strip.bounds.width, dy: 0)), 0.05,
@@ -1511,9 +1511,9 @@ final class AppLaunchTests: XCTestCase {
         // The strip follows the state a moment after the clip arrives.
         try await SearchTestSupport.waitUntil {
             window.contentView?.layoutSubtreeIfNeeded()
-            return controller.state.selection.rows.count == 1 && strip.accessibilityChildren()?.count == 1
+            return controller.state.selection.rows.count == 1 && self.framesOnScreen(in: strip).count == 1
         }
-        XCTAssertEqual(strip.accessibilityChildren()?.count, 1)
+        XCTAssertEqual(framesOnScreen(in: strip).count, 1)
         controller.perform(.move(1))
         window.contentView?.layoutSubtreeIfNeeded()
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
@@ -1521,6 +1521,277 @@ final class AppLaunchTests: XCTestCase {
         let keycap = try XCTUnwrap(visibleKeycaps(in: window).first)
         XCTAssertTrue(try bandRect(in: window).contains(keycap.convert(keycap.bounds, to: nil)))
         controller.state.close()
+    }
+
+    // MARK: The frequent wing
+
+    /// clip 11, the oldest, to clip 0, the newest.
+    private static let wingTitles = (0..<12).reversed().map { "clip \($0)" }
+    /// How often four of them were used. clip 1 is used most, but it is among the five newest, which medium cards show
+    /// whole on `wingScreen`, so the wing leaves it out.
+    private static let wingUses = ["clip 11": 4, "clip 10": 3, "clip 9": 2, "clip 1": 5]
+
+    func testOpeningWithFrequentClipsCentresTheNewestClip() async throws {
+        let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width)
+
+        // The wing lists the clips used most, the most used first, without clip 1, which is on the first screen. The
+        // newest clip is selected, a recent row and not a frequent one.
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.title), ["clip 11", "clip 10", "clip 9"])
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.frequentUses), [4, 3, 2])
+        XCTAssertEqual(state.selection.selectedRow?.title, "clip 0")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+
+        // VoiceOver reads the two wings as two groups. The newest clip is in the middle of the band, the divider's
+        // wider gap before it.
+        try await waitForWingFrames(in: strip)
+        let wings = try groups(in: strip)
+        XCTAssertEqual(wings.map(\.name), ["Frequent", "Recent"])
+        let newest = try XCTUnwrap(wings.last?.frames.first)
+        let lastFrequent = try XCTUnwrap(wings.first?.frames.last)
+        XCTAssertTrue(newest.accessibilityLabel()?.hasSuffix(": clip 0") == true, newest.accessibilityLabel() ?? "")
+        XCTAssertTrue(lastFrequent.accessibilityLabel()?.hasSuffix(": clip 9") == true,
+                      lastFrequent.accessibilityLabel() ?? "")
+        let newestFrame = strip.convert(newest.bounds, from: newest)
+        let lastFrequentFrame = strip.convert(lastFrequent.bounds, from: lastFrequent)
+        XCTAssertEqual(newestFrame.midX, strip.bounds.midX, accuracy: 0.5)
+        XCTAssertEqual(newestFrame.minX - lastFrequentFrame.maxX, metrics.gap + metrics.dividerExtra, accuracy: 1)
+
+        // The band has room below the cards for the section icons: 28 instead of 22, so it is 346 high. Both icons
+        // show there, below the cards and inside the band, the flame left of the divider and the clock right of it.
+        window.contentView?.layoutSubtreeIfNeeded()
+        let band = try bandRect(in: window)
+        let card = strip.convert(newestFrame, to: nil)
+        XCTAssertEqual(band.height, 346)
+        XCTAssertEqual(card.minY - band.minY, 28, accuracy: 0.5)
+        let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
+        XCTAssertFalse(divider.isHidden)
+        let line = divider.convert(divider.bounds, to: nil)
+        for (identifier, isLeftOfTheLine) in [("QuickAccessFrequentLabel", true), ("QuickAccessRecentLabel", false)] {
+            let icon = try view(identifiedAs: identifier, in: window)
+            XCTAssertFalse(icon.isHidden, identifier)
+            let drawn = icon.convert(icon.bounds, to: nil)
+            XCTAssertLessThanOrEqual(drawn.maxY, card.minY + 0.5, "\(identifier) below the cards")
+            XCTAssertGreaterThanOrEqual(drawn.minY, band.minY - 0.5, "\(identifier) inside the band")
+            if isLeftOfTheLine {
+                XCTAssertLessThan(drawn.maxX, line.minX, identifier)
+            } else {
+                XCTAssertGreaterThan(drawn.minX, line.maxX, identifier)
+            }
+        }
+    }
+
+    func testLeftFromTheNewestClipStepsIntoTheFrequentWing() async throws {
+        let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+
+        // ← from the newest clip crosses the divider to the least used frequent clip, which VoiceOver reads with how
+        // often it was used, inside the "Frequent" group. The keys stay with the field.
+        editor.doCommand(by: #selector(NSResponder.moveLeft(_:)))
+        XCTAssertEqual(state.selection.selectedRow?.title, "clip 9")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, true)
+        let label = selectedClipLabel(in: strip)
+        XCTAssertTrue(label?.contains("used 2 times") == true, label ?? "")
+        let selected = try XCTUnwrap(strip.accessibilitySelectedChildren()?.first as? NSView)
+        let frequent = try XCTUnwrap(groups(in: strip).first { $0.name == "Frequent" })
+        XCTAssertTrue(frequent.frames.contains { $0 === selected })
+        XCTAssertTrue(isEditing(field, in: window))
+
+        // → comes back to the newest clip.
+        editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
+        XCTAssertEqual(state.selection.selectedRow?.title, "clip 0")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+    }
+
+    func testASearchHidesTheFrequentWingUntilItIsCleared() async throws {
+        let (controller, harness, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        try await waitForWingFrames(in: strip)
+        let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
+        let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
+        let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
+
+        // A query lists its results alone: no frequent rows, no divider and no section icons, and the frames are the
+        // list's own children again.
+        editor.insertText("clip 1", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            state.query == "clip 1" && state.phase == .results && state.selection.isComplete
+                && (strip.accessibilityChildren() as? [NSView])?.isEmpty == false
+        }
+        XCTAssertFalse(state.selection.rows.isEmpty)
+        XCTAssertFalse(state.selection.rows.contains { $0.isFrequent })
+        XCTAssertTrue(frequentIcon.isHidden && recentIcon.isHidden && divider.isHidden)
+        XCTAssertNotNil(strip.accessibilityChildren() as? [NSView])
+
+        // clip 8, off the first screen, is used six times while the panel is open. Escape clears the query, and the
+        // same wing comes back: uses recorded while the panel is open show the next time it opens.
+        try await recordUses(of: "clip 8", times: 6, in: harness)
+        try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        try await SearchTestSupport.waitUntil {
+            state.query.isEmpty && state.phase == .results
+                && state.selection.rows.filter { !$0.isFrequent }.count == Self.wingTitles.count
+        }
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.title), ["clip 11", "clip 10", "clip 9"])
+        try await waitForWingFrames(in: strip)
+        XCTAssertFalse(divider.isHidden)
+    }
+
+    func testTurningFrequentClipsOffLeavesTheStripAsItWas() async throws {
+        let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses,
+                                                                      showsFrequent: false)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width)
+        let left = strip.bounds.midX - metrics.bandWidth / 2
+
+        // The same uses, and no wing: the newest clip rests at the left dock, with no divider and no section icons,
+        // and the frames are the list's own children.
+        XCTAssertEqual(state.selection.frequentCount, 0)
+        XCTAssertEqual(state.selection.rows.map(\.title), Array(Self.wingTitles.reversed()))
+        XCTAssertEqual(try frame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
+        let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
+        let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
+        let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
+        XCTAssertTrue(frequentIcon.isHidden && recentIcon.isHidden && divider.isHidden)
+        XCTAssertNotNil(strip.accessibilityChildren() as? [NSView])
+        // The band is 340 high, as it was, with 22 below the cards.
+        window.contentView?.layoutSubtreeIfNeeded()
+        let band = try bandRect(in: window)
+        XCTAssertEqual(band.height, 340)
+        XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 22, accuracy: 0.5)
+    }
+
+    func testARightClickOnEitherCopyOfAClipActsOnTheCopyClicked() async throws {
+        let (controller, _, board) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        // Frames go straight to their places, so a click lands where a frame rests.
+        strip.reducesMotion = { true }
+        try await waitForWingFrames(in: strip)
+        // clip 9 is listed twice: last in the wing, and among the recent clips, off the band to the right.
+        let wingCopy = try XCTUnwrap(state.selection.rows.first { $0.isFrequent && $0.title == "clip 9" })
+        let recentCopy = try XCTUnwrap(state.selection.rows.first { !$0.isFrequent && $0.title == "clip 9" })
+        XCTAssertEqual(wingCopy.ref, recentCopy.ref)
+        func rightClick(on frame: NSView) throws -> NSEvent {
+            let rect = strip.convert(frame.bounds, from: frame)
+            return try XCTUnwrap(NSEvent.mouseEvent(
+                with: .rightMouseDown, location: strip.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 1, pressure: 1
+            ))
+        }
+
+        // With the newest clip selected, Copy in the menu of the wing's copy selects that copy and copies the clip.
+        let wingFrame = try XCTUnwrap(groups(in: strip).first { $0.name == "Frequent" }?.frames.last)
+        XCTAssertTrue(wingFrame.accessibilityLabel()?.hasSuffix(": clip 9") == true,
+                      wingFrame.accessibilityLabel() ?? "")
+        let atWing = try rightClick(on: wingFrame)
+        controller.currentEvent = { atWing }
+        try XCTUnwrap(strip.menu(for: atWing)).performActionForItem(at: 0)
+        XCTAssertEqual(state.selection.selectedID, wingCopy.id)
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "clip 9")
+
+        // Opened again with clip 8 selected among the recent clips, clip 9's recent copy is on the band beside it and
+        // the wing's copy is not. Copy in the recent copy's menu selects that copy, not the wing's.
+        board.clearContents()
+        controller.show()
+        try await SearchTestSupport.waitUntil {
+            state.selection.rows.filter { !$0.isFrequent }.count == Self.wingTitles.count
+        }
+        controller.perform(.move(8))
+        XCTAssertEqual(state.selection.selectedRow?.title, "clip 8")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        let recentFrame = try XCTUnwrap(framesOnScreen(in: strip).first {
+            $0.accessibilityLabel()?.hasSuffix(": clip 9") == true
+        })
+        XCTAssertEqual(try groups(in: strip).map(\.name), ["Recent"], "The wing is off the band")
+        let recent = try XCTUnwrap(groups(in: strip).first { $0.name == "Recent" })
+        XCTAssertTrue(recent.frames.contains { $0 === recentFrame })
+        let atRecent = try rightClick(on: recentFrame)
+        controller.currentEvent = { atRecent }
+        try XCTUnwrap(strip.menu(for: atRecent)).performActionForItem(at: 0)
+        XCTAssertEqual(state.selection.selectedID, recentCopy.id)
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "clip 9")
+    }
+
+    func testTheFirstScreenIsCountedForTheCardSizeTheStripOpensWith() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(Self.wingTitles, into: harness)
+        // clip 4, the fifth newest, is used twice. On `wingScreen` large cards show four whole, medium five, small six.
+        try await recordUses(of: "clip 4", times: 2, in: harness)
+        let preferences = try makePreferences(.medium, showsFrequent: true)
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: Self.wingScreen,
+                                       usage: LocalUsageStore(controller: harness.controller), preferences: preferences)
+        addTeardownBlock { controller.close() }
+        let state = controller.state
+
+        // Settings changes the card size before the strip opens. It opens with large cards: clip 4 is off their first
+        // screen, so it is in the wing.
+        preferences.cardSize = .large
+        controller.show()
+        try await SearchTestSupport.waitUntil {
+            state.selection.rows.filter { !$0.isFrequent }.count == Self.wingTitles.count
+        }
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.title), ["clip 4"])
+
+        // Opened again with small cards, clip 4 is on the first screen, and the wing leaves it out.
+        controller.close()
+        preferences.cardSize = .small
+        controller.show()
+        try await SearchTestSupport.waitUntil {
+            state.selection.rows.filter { !$0.isFrequent }.count == Self.wingTitles.count
+        }
+        XCTAssertEqual(state.selection.frequentCount, 0)
+    }
+
+    func testAPanelMadeWithFrequentClipsOnHasRoomForTheirIconsBeforeItOpens() throws {
+        // The panel lays the band out for its settings as it is made, so a session opened on it at once, without the
+        // shortcut, also has the room below the cards for the section icons: 346 high, not 340.
+        let controller = PanelController(preferences: try makePreferences(.medium, showsFrequent: true),
+                                         visibleFrame: Self.wingScreen)
+        let window = try XCTUnwrap(controller.window)
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width, showsFrequentClips: true)
+        XCTAssertEqual(try bandRect(in: window).height, 346)
+        let band = StripLayout.bandFrame(metrics, in: Self.wingScreen)
+        assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
+    }
+
+    func testABandTooNarrowForACardLeavesNoRecentClipOutOfTheWing() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["clip 1", "clip 0"], into: harness)
+        try await recordUses(of: "clip 0", times: 3, in: harness)
+        try await recordUses(of: "clip 1", times: 2, in: harness)
+        // A visible area 80 pt wide leaves a band 16 pt wide, which shows no card whole: the first screen holds none.
+        let narrow = NSRect(x: 0, y: 0, width: 80, height: 900)
+        XCTAssertEqual(StripLayout.firstScreenCount(StripLayout.metrics(for: .medium, visibleWidth: narrow.width,
+                                                                        showsFrequentClips: true)), 0)
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: narrow,
+                                       usage: LocalUsageStore(controller: harness.controller),
+                                       preferences: try makePreferences(.medium, showsFrequent: true))
+        addTeardownBlock { controller.close() }
+
+        // So the wing leaves no recent clip out: both clips are in it, and among the recent clips after it.
+        controller.show()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 4 }
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["clip 0", "clip 1", "clip 0", "clip 1"])
+        XCTAssertEqual(controller.state.selection.frequentCount, 2)
     }
 
     // MARK: Direct paste
@@ -2855,17 +3126,60 @@ final class AppLaunchTests: XCTestCase {
 
     /// `search` stands in for the harness's own search service when given, and `visibleFrame` for the screen's visible
     /// area. `system` is what direct paste asks of the system; never the live one, which could paste the general
-    /// clipboard into the app in front.
+    /// clipboard into the app in front. The panel reads how often clips were used from `usage`, and without it lists no
+    /// frequent wing. `preferences` are medium cards with the frequent clips turned off unless given.
     private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard, search: SearchService? = nil,
-                           visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable) throws -> PanelController {
+                           visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
+                           usage: (any QuickAccessUsage)? = nil,
+                           preferences: QuickAccessPreferences? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in }, system: system)
         // A paste the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
-        let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste)
+        let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
+                                           usage: usage)
         return PanelController(state: QuickAccessState(services: { services }),
-                               preferences: try makePreferences(.medium), visibleFrame: visibleFrame)
+                               preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
+    }
+
+    /// A screen whose visible area medium cards fill five whole cards wide.
+    private static let wingScreen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+    /// A shown panel over a real temporary store holding one text clip per title, the last the newest, in which the
+    /// clips `uses` names were each used that many times, the last a minute ago. It opens as the shortcut opens it, on
+    /// `wingScreen`, and reads the uses from the store, unless Settings turned the frequent clips off. It returns once
+    /// the recent clips are listed; a frequent wing is listed with them, never after them.
+    private func showPanelWithFrequentClips(_ titles: [String], uses: [String: Int], showsFrequent: Bool = true)
+        async throws -> (controller: PanelController, harness: SearchHarness, board: NSPasteboard) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(titles, into: harness)
+        for (title, times) in uses { try await recordUses(of: title, times: times, in: harness) }
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: Self.wingScreen,
+                                       usage: LocalUsageStore(controller: harness.controller),
+                                       preferences: try makePreferences(.medium, showsFrequent: showsFrequent))
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.filter { !$0.isFrequent }.count == titles.count
+        }
+        return (controller, harness, board)
+    }
+
+    /// Records `times` successful uses of the clip with this title in the harness's store, a second apart, the last a
+    /// minute ago, as copies and pastes record them.
+    private func recordUses(of title: String, times: Int, in harness: SearchHarness) async throws {
+        let listed = try await ContentRepository(controller: harness.controller).recent(limit: 1000)
+        let ref = try XCTUnwrap(listed.first { $0.title == title }?.history, "\(title) is not listed")
+        let usage = LocalUsageStore(controller: harness.controller)
+        let last = Date(timeIntervalSinceNow: -60)
+        for secondsBefore in (0..<times).reversed() {
+            try await usage.record(UseReceipt(ref: ref, occurredAt: last - TimeInterval(secondsBefore),
+                                              outcome: .success))
+        }
     }
 
     /// A left click at `point` in the window. Every press these tests send through a window goes through here, since a
@@ -2883,13 +3197,15 @@ final class AppLaunchTests: XCTestCase {
         NSApp.discardEvents(matching: .leftMouseUp, before: nil)
     }
 
-    /// Settings of the panel's own, so its card size does not depend on this machine's.
-    private func makePreferences(_ cardSize: CardSize) throws -> QuickAccessPreferences {
+    /// Settings of the panel's own, so its card size does not depend on this machine's. The frequent clips are off
+    /// unless asked for, so that the band is as it was before they came, with no room below the cards for their icons.
+    private func makePreferences(_ cardSize: CardSize, showsFrequent: Bool = false) throws -> QuickAccessPreferences {
         let suiteName = "AppLaunchTests.quickAccess.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
         let preferences = QuickAccessPreferences(defaults: defaults)
         preferences.cardSize = cardSize
+        preferences.showsFrequentClips = showsFrequent
         return preferences
     }
 
@@ -2939,8 +3255,39 @@ final class AppLaunchTests: XCTestCase {
     /// the clips arrive.
     private func clipStrip(in window: NSWindow) async throws -> QuickAccessStripView {
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
-        try await SearchTestSupport.waitUntil { strip.accessibilityChildren()?.isEmpty == false }
+        try await SearchTestSupport.waitUntil { !self.framesOnScreen(in: strip).isEmpty }
         return strip
+    }
+
+    /// The frames VoiceOver reads, left to right: the list's own children, or with a frequent wing the frames in its
+    /// two groups, one after the other.
+    private func framesOnScreen(in strip: QuickAccessStripView) -> [NSView] {
+        (strip.accessibilityChildren() ?? []).flatMap { child -> [NSView] in
+            if let frame = child as? NSView { return [frame] }
+            return ((child as? NSAccessibilityElement)?.accessibilityChildren() ?? []).compactMap { $0 as? NSView }
+        }
+    }
+
+    /// The groups VoiceOver reads a frequent wing's strip in, by name, each with its frames on screen left to right.
+    /// Without a wing there are none, and the test fails.
+    private func groups(in strip: QuickAccessStripView) throws -> [(name: String, frames: [NSView])] {
+        try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement]).map {
+            ($0.accessibilityLabel() ?? "", ($0.accessibilityChildren() ?? []).compactMap { $0 as? NSView })
+        }
+    }
+
+    /// Waits until the strip shows the frequent wing beside the recent clips: both groups, with frames on screen.
+    private func waitForWingFrames(in strip: QuickAccessStripView) async throws {
+        try await SearchTestSupport.waitUntil {
+            (strip.accessibilityChildren() as? [NSAccessibilityElement])?.map { $0.accessibilityLabel() }
+                == ["Frequent", "Recent"]
+        }
+    }
+
+    /// The view in the window with this accessibility identifier: the divider or a section icon.
+    private func view(identifiedAs identifier: String, in window: NSWindow) throws -> NSView {
+        try XCTUnwrap(views(NSView.self, in: window.contentView).first { $0.accessibilityIdentifier() == identifier },
+                      identifier)
     }
 
     /// The band's toolbar, once the band has laid it out, with its ⋯ button in place at the right end.
@@ -2955,9 +3302,9 @@ final class AppLaunchTests: XCTestCase {
     }
 
     /// Where the frame of the clip with this title is drawn, in the strip's coordinates. Only frames on screen,
-    /// the ones VoiceOver reads, are looked at.
+    /// the ones VoiceOver reads, are looked at; of a clip shown in both wings, the leftmost.
     private func frame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
-        let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        let frames = framesOnScreen(in: strip)
         let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
         return strip.convert(frame.bounds, from: frame)
     }

@@ -91,6 +91,9 @@ final class StripTypographyTests: XCTestCase {
         XCTAssertEqual(ClipInfoFormatter.uses(1_234, spoken: true, locale: en), "used 1,234 times")
         // Only the grouping of digits follows the user's region; the words are the interface's English.
         XCTAssertEqual(ClipInfoFormatter.uses(1_234, locale: Locale(identifier: "de_DE")), "Used 1.234 times")
+        // The wing lists no clip used only once, but one use would still read in the singular.
+        XCTAssertEqual(ClipInfoFormatter.uses(1, locale: en), "Used 1 time")
+        XCTAssertEqual(ClipInfoFormatter.uses(1, spoken: true, locale: en), "used 1 time")
     }
 
     func testRelativeTimeOnTheCardAndSpoken() {

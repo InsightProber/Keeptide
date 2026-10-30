@@ -91,7 +91,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         fixedVisibleFrame = visibleFrame
         self.visibleFrame = visibleFrame ?? Self.workingScreen()?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: self.visibleFrame.width)
+        metrics = Self.metrics(for: preferences, visibleWidth: self.visibleFrame.width)
         let panel = QuickAccessPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
         super.init(window: panel)
@@ -152,12 +152,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             forgetGuessedReturn()
             searchField.stringValue = ""
             filterRow.cursor = 0
-            // The app in front is recorded as the paste target before this panel shows (decision 1).
-            state.open()
-            // Settle the screen before this panel takes keyboard focus, and take the settings as they are now.
+            // Settle the screen before this panel takes keyboard focus, and take the settings as they are now. They
+            // come before the session opens: the frequent wing leaves out the clips the band shows whole as it opens.
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
-            metrics = StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleFrame.width)
+            metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
+            // The app in front is recorded as the paste target before this panel shows (decision 1). The first screen
+            // is held at zero or more, since the session takes that many of the newest clips.
+            state.open(frequentWingFirstScreen: preferences.showsFrequentClips
+                ? max(0, StripLayout.firstScreenCount(metrics)) : nil)
             update()
             isSessionOpen = true
         }
@@ -202,6 +205,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     func windowWillReturnFieldEditor(_ sender: NSWindow, to client: Any?) -> Any? {
         (client as? QuickAccessSearchField) === searchField ? fieldEditor : nil
+    }
+
+    /// The frame sizes for the card size Settings chose on a screen `visibleWidth` wide, with room below the cards for
+    /// the frequent wing's icons while Settings shows the frequent clips.
+    private static func metrics(for preferences: QuickAccessPreferences, visibleWidth: CGFloat) -> StripMetrics {
+        StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleWidth,
+                            showsFrequentClips: preferences.showsFrequentClips)
     }
 
     /// The main screen, or the one under the pointer when there is none.

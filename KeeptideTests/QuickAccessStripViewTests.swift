@@ -460,6 +460,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         let groups = try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
         XCTAssertEqual(groups.map { $0.accessibilityLabel() }, ["Frequent", "Recent"])
         XCTAssertEqual(groups.map { $0.accessibilityRole() }, [.group, .group])
+        XCTAssertEqual(groups.map { $0.accessibilityIdentifier() },
+                       ["QuickAccessFrequentGroup", "QuickAccessRecentGroup"])
         guard groups.count == 2 else { return XCTFail("Expected a group for each wing, got \(groups.count)") }
         XCTAssertTrue(groups.allSatisfy { $0.isAccessibilityElement() })
         XCTAssertTrue(groups.allSatisfy { ($0.accessibilityParent() as AnyObject?) === strip })
@@ -485,6 +487,11 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         let again = try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
         XCTAssertTrue(again.elementsEqual(groups, by: ===))
+        // With the most used clip selected, the list's selection is its frame, the first in the "Frequent" group.
+        let selected = try XCTUnwrap(strip.accessibilitySelectedChildren() as? [NSView])
+        XCTAssertEqual(selected.map { $0.accessibilityLabel() }, ["Text, used 12 times: Freq 0"])
+        XCTAssertTrue(selected.first === (groups[0].accessibilityChildren()?.first as? NSView))
+        XCTAssertTrue((selected.first?.accessibilityParent() as AnyObject?) === groups[0])
 
         // Without frequent rows the frames are the list's own children again, and the list is their parent.
         let plain = makeRows(3)
@@ -509,6 +516,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         // its frames where the strip now has them: "Recent" starts at Row 0, 574 before the push.
         strip.haptics = RecordingHaptics()
         strip.scrollWheel(with: try swipe(dx: -12, phase: .began, at: 1.0))
+        // Each group follows the push as it happens, before the list is read again.
+        XCTAssertEqual(groups[1].accessibilityFrameInParentSpace().minX, 574 - 96.8, accuracy: 0.5)
         XCTAssertTrue(try XCTUnwrap(strip.accessibilityChildren() as? [NSAccessibilityElement])
             .elementsEqual(groups, by: ===))
         for group in groups {

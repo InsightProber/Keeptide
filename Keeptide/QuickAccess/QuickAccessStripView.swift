@@ -74,8 +74,8 @@ final class QuickAccessStripView: NSView {
                                                          identifier: "QuickAccessFrequentLabel")
     private let recentLabel = StripSectionLabel.hosted("Recent", symbol: "clock", identifier: "QuickAccessRecentLabel")
     /// The groups VoiceOver reads the two wings in, made once and kept.
-    private let frequentGroup = QuickAccessStripView.wingGroup("Frequent")
-    private let recentGroup = QuickAccessStripView.wingGroup("Recent")
+    private let frequentGroup = QuickAccessStripView.wingGroup("Frequent", identifier: "QuickAccessFrequentGroup")
+    private let recentGroup = QuickAccessStripView.wingGroup("Recent", identifier: "QuickAccessRecentGroup")
     private var scroller = DetentScroller()
     /// How far past the selected clip the fingers have carried the selection, as a share of a step.
     private var progress: CGFloat = 0
@@ -469,7 +469,8 @@ final class QuickAccessStripView: NSView {
     }
 
     /// Moves the frames off their places by what the fingers have pushed, and the section labels with them. When the
-    /// fingers lift, the frames and the labels spring back instead of jumping.
+    /// fingers lift, the frames and the labels spring back instead of jumping. The wings' groups follow the frames, so
+    /// VoiceOver finds each group where its frames now are.
     private func push(to offset: CGFloat, springing: Bool) {
         guard offset != pushed else { return }
         let previous = pushed
@@ -480,6 +481,7 @@ final class QuickAccessStripView: NSView {
         let slide = springing && slidesAreShown ? previous - offset : 0
         if slide != 0 { settle(after: springBack(film.layer, from: slide)) }
         placeSectionLabels(from: labels, sliding: slide)
+        fillWingGroups()
     }
 
     /// The fingers have carried the selection `progress` of a step past the selected clip and stretched an end by
@@ -634,18 +636,20 @@ final class QuickAccessStripView: NSView {
             .sorted { $0.host.frame.minX < $1.host.frame.minX }
     }
 
-    /// A group VoiceOver reads one wing in, by the wing's name. The strip is its parent and gives it its frames.
-    private static func wingGroup(_ name: String) -> NSAccessibilityElement {
+    /// A group VoiceOver reads one wing in, by the wing's name; UI tests find it by `identifier`. The strip is its
+    /// parent and gives it its frames.
+    private static func wingGroup(_ name: String, identifier: String) -> NSAccessibilityElement {
         let group = NSAccessibilityElement()
         group.setAccessibilityRole(.group)
         group.setAccessibilityLabel(name)
+        group.setAccessibilityIdentifier(identifier)
         return group
     }
 
     /// Gives each wing's group the wing's frames on screen and the room they take together in the strip, and returns
-    /// the groups that have any. Without a wing both are left empty. The frames are placed again after every change,
-    /// and the groups are filled again with them, so a group never holds a frame that has gone or now shows another
-    /// row; the film's push since then is caught up when the list is read.
+    /// the groups that have any. Without a wing both are left empty. The groups are filled again each time the frames
+    /// are placed or pushed, so a group never holds a frame that has gone or now shows another row, and covers its
+    /// frames where the fingers have carried them.
     @discardableResult
     private func fillWingGroups() -> [Any] {
         let onScreen = frequentCount == 0 ? [] : framesOnScreen
