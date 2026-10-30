@@ -169,6 +169,106 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(waitUntil { isOn() == 0 }, "\(String(describing: isOn()))")
     }
 
+    func testTheSelectedCardIsEnlargedByDefaultAndTheChoiceStaysInRange() throws {
+        let defaults = try makeDefaults()
+        // Absent means 1.12, the standard enlargement, and reading it stores nothing.
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, 1.12, accuracy: 0.0001)
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).stripStyle, .standard)
+        XCTAssertNil(defaults.object(forKey: "quickAccess.selectedCardScale"))
+
+        // Stored values are not trusted: a number is kept between 1.00 and 1.25 and to hundredths, and one that is not
+        // finite reads as the default.
+        let numbers: [(stored: Double, read: Double)] = [(1.2, 1.2), (1.234, 1.23), (2, 1.25), (0.5, 1.0),
+                                                         (Double.nan, 1.12)]
+        for (stored, read) in numbers {
+            defaults.set(stored, forKey: "quickAccess.selectedCardScale")
+            XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, read, accuracy: 0.0001,
+                           "\(stored)")
+        }
+        // Nor is anything that is not a number: text, data, or a flag, which would otherwise read as 1.
+        for stored in ["1.2", true, Data([1])] as [Any] {
+            defaults.set(stored, forKey: "quickAccess.selectedCardScale")
+            XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, 1.12, accuracy: 0.0001,
+                           "\(stored)")
+        }
+
+        // A choice is stored kept to the range and to hundredths, and the strip takes what is stored, now and at the
+        // next launch.
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        for (chosen, stored) in [(1.3, 1.25), (0.9, 1.0), (1.204, 1.2)] as [(Double, Double)] {
+            preferences.selectedCardScale = chosen
+            XCTAssertEqual(defaults.object(forKey: "quickAccess.selectedCardScale") as? Double, stored, "\(chosen)")
+            XCTAssertEqual(preferences.stripStyle, StripStyle(selectedScale: stored), "\(chosen)")
+        }
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).stripStyle, StripStyle(selectedScale: 1.2))
+        // The other settings keep their own keys.
+        XCTAssertNil(defaults.object(forKey: "quickAccess.cardSize"))
+    }
+
+    func testTheEnlargementSliderReadsFromNoneToMore() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let hosting = NSHostingView(rootView: SettingsView(preferences: preferences))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        // As in the card size test: SwiftUI builds what VoiceOver reads once an assistive client asks the app for
+        // anything, and a host that may not use accessibility at all cannot run this test.
+        var applicationRole: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        let title = "Enlarge the selected card"
+        func slider() -> NSObject? {
+            accessibilityElements(in: hosting).first { role(of: $0) == .slider && name(of: $0) == title }
+        }
+        // What VoiceOver reads for the slider's value: its description where it has one, as SwiftUI may give it, and
+        // otherwise the value itself.
+        func spoken() -> String? {
+            guard let slider = slider() else { return nil }
+            if let description = attribute(of: slider, "accessibilityValueDescription") as? String,
+               !description.isEmpty {
+                return description
+            }
+            return attribute(of: slider, "accessibilityValue") as? String
+        }
+        let built = waitUntil { slider() != nil }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let described = accessibilityElements(in: hosting).map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+
+        // The standard enlargement reads as how much larger the selected card is.
+        XCTAssertEqual(spoken(), "12% larger", "\(described)")
+        // The slider's ends are named in the form: None at the left, More at the right.
+        let words = accessibilityElements(in: hosting).compactMap { element in
+            name(of: element) ?? attribute(of: element, "accessibilityValue") as? String
+        }
+        XCTAssertTrue(words.contains("None"), "\(described)")
+        XCTAssertTrue(words.contains("More"), "\(described)")
+        // Below the card sizes and their picture, above every switch.
+        let order = accessibilityElements(in: hosting).compactMap { element -> String? in
+            if role(of: element) == .slider { return "slider" }
+            if role(of: element) == .radioGroup { return "sizes" }
+            if role(of: element) == .checkBox { return "switch" }
+            return nil
+        }
+        XCTAssertEqual(Array(order.prefix(2)), ["sizes", "slider"], "\(described)")
+        XCTAssertEqual(Set(order.dropFirst(2)), ["switch"], "\(described)")
+
+        // The slider follows the preference: none at 1.00, and the most at 1.25. The percentage is rounded, not cut
+        // short: 1.13 is held as a hair under it.
+        preferences.selectedCardScale = 1
+        XCTAssertTrue(waitUntil { spoken() == "None" }, "\(String(describing: spoken()))")
+        preferences.selectedCardScale = 1.13
+        XCTAssertTrue(waitUntil { spoken() == "13% larger" }, "\(String(describing: spoken()))")
+        preferences.selectedCardScale = 1.25
+        XCTAssertTrue(waitUntil { spoken() == "25% larger" }, "\(String(describing: spoken()))")
+    }
+
     func testChangesPersistImmediately() throws {
         let defaults = try makeDefaults()
         let preferences = QuickAccessPreferences(defaults: defaults)

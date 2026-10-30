@@ -209,11 +209,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         (client as? QuickAccessSearchField) === searchField ? fieldEditor : nil
     }
 
-    /// The frame sizes for the card size Settings chose on a screen `visibleWidth` wide, with room below the cards for
-    /// the frequent wing's icons while Settings shows the frequent clips.
+    /// The frame sizes for the card size Settings chose on a screen `visibleWidth` wide, with room around the cards for
+    /// the selected card as Settings enlarges it, and below them for the frequent wing's icons while Settings shows the
+    /// frequent clips. The panel takes them only as it is made and as it opens, so the band keeps its size while it is
+    /// open and a change in Settings shows the next time it opens.
     private static func metrics(for preferences: QuickAccessPreferences, visibleWidth: CGFloat) -> StripMetrics {
         StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleWidth,
-                            showsFrequentClips: preferences.showsFrequentClips)
+                            showsFrequentClips: preferences.showsFrequentClips, style: preferences.stripStyle)
     }
 
     /// The main screen, or the one under the pointer when there is none.

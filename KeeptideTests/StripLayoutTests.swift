@@ -54,11 +54,14 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testTheBandIsTheToolbarTheCardsAndTheirPadding() {
-        // 16 above the toolbar, the toolbar's 32, 20 down to the cards, the cards, and 22 below them. Without the
-        // frequent wing, which is how the metrics come unless asked, the band is as it always was.
+        // 16 above the toolbar, the toolbar's 32, 20 down to the cards, the cards, and 22 below them. With the selected
+        // card not enlarged, and without the frequent wing, which is how the metrics come unless asked, the band is as
+        // it was before either.
+        let unscaled = StripStyle(selectedScale: 1)
         for (size, height) in [(CardSize.small, 310), (.medium, 340), (.large, 376)] as [(CardSize, CGFloat)] {
-            let m = StripLayout.metrics(for: size, visibleWidth: 1440)
-            XCTAssertEqual(m, StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: false), "\(size)")
+            let m = StripLayout.metrics(for: size, visibleWidth: 1440, style: unscaled)
+            XCTAssertEqual(m, StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: false,
+                                                  style: unscaled), "\(size)")
             XCTAssertEqual(m.toolbarGap, 20, "\(size)")
             XCTAssertEqual(m.bottomPadding, 22, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
@@ -72,10 +75,12 @@ final class StripLayoutTests: XCTestCase {
     func testTheFrequentWingMakesRoomForItsIconsBelowTheCards() {
         // With the frequent wing, the section icons lie below the cards, so the room there is 28 instead of 22 and the
         // band is 6 taller. The gap between the toolbar and the cards stays 20, so the cards start 68 below the band's
-        // top edge, as without the wing. The cards and the band's width are the same.
+        // top edge, as without the wing. The cards and the band's width are the same. With the selected card not
+        // enlarged, the band is as it was before the enlargement.
+        let unscaled = StripStyle(selectedScale: 1)
         for (size, height) in [(CardSize.small, 316), (.medium, 346), (.large, 382)] as [(CardSize, CGFloat)] {
-            let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true)
-            let plain = StripLayout.metrics(for: size, visibleWidth: 1440)
+            let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true, style: unscaled)
+            let plain = StripLayout.metrics(for: size, visibleWidth: 1440, style: unscaled)
             XCTAssertEqual(m.toolbarGap, 20, "\(size)")
             XCTAssertEqual(m.bottomPadding, 28, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
@@ -84,6 +89,79 @@ final class StripLayoutTests: XCTestCase {
             XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.bandHeight(plain), 6, "\(size)")
             XCTAssertEqual(m.frameSize, plain.frameSize, "\(size)")
             XCTAssertEqual(m.bandWidth, plain.bandWidth, "\(size)")
+        }
+    }
+
+    func testTheSelectedCardsScaleSetsThePushAndTheRoomAroundTheCards() {
+        // (size, scale) → (push, growth, toolbarGap, bottomPadding, band, band with the frequent wing). The selected
+        // card enlarged about its middle reaches its growth past the other cards' top and bottom edges, and the band
+        // makes that much more room above the cards and below them. Its neighbours stand aside by the push; not at all
+        // at 1.00, where the strip is as it was before the selected card was enlarged.
+        let cases: [(CardSize, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
+            (.small, 1.00, 0, 0, 20, 22, 310, 316), (.small, 1.12, 18, 14, 34, 36, 338, 344),
+            (.small, 1.25, 19, 28, 48, 50, 366, 372),
+            (.medium, 1.00, 0, 0, 20, 22, 340, 346), (.medium, 1.12, 18, 15, 35, 37, 370, 376),
+            (.medium, 1.25, 23, 32, 52, 54, 404, 410),
+            (.large, 1.00, 0, 0, 20, 22, 376, 382), (.large, 1.12, 18, 18, 38, 40, 412, 418),
+            (.large, 1.25, 27, 36, 56, 58, 448, 454),
+        ]
+        for (size, scale, push, growth, toolbarGap, bottomPadding, band, wingBand) in cases {
+            let name = "\(size) \(scale)"
+            let style = StripStyle(selectedScale: scale)
+            let m = StripLayout.metrics(for: size, visibleWidth: 1440, style: style)
+            XCTAssertEqual(m.selectedScale, scale, name)
+            XCTAssertEqual(m.neighbourPush, push, name)
+            XCTAssertEqual(m.selectionGrowth, growth, name)
+            XCTAssertEqual(m.toolbarGap, toolbarGap, name)
+            XCTAssertEqual(m.bottomPadding, bottomPadding, name)
+            XCTAssertEqual(StripLayout.bandHeight(m), band, name)
+            XCTAssertEqual(StripLayout.cardTop(m), 68 + growth, name)
+            let wing = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true, style: style)
+            XCTAssertEqual(wing.bottomPadding, bottomPadding + 6, name)
+            XCTAssertEqual(StripLayout.bandHeight(wing), wingBand, name)
+            // The cards themselves, their gaps and the band's width are the same at every scale.
+            let plain = StripLayout.metrics(for: size, visibleWidth: 1440, style: StripStyle(selectedScale: 1))
+            XCTAssertEqual([m.frameSize.width, m.frameSize.height, m.gap, m.bandWidth, m.dockInset],
+                           [plain.frameSize.width, plain.frameSize.height, plain.gap, plain.bandWidth, plain.dockInset],
+                           name)
+        }
+        // Unless asked otherwise, the metrics take the standard enlargement.
+        XCTAssertEqual(StripLayout.metrics(for: .medium, visibleWidth: 1440),
+                       StripLayout.metrics(for: .medium, visibleWidth: 1440, style: .standard))
+        XCTAssertEqual(StripStyle.standard.selectedScale, 1.12)
+
+        // The ring keeps 3 pt from the card and is 3 pt wide, so it reaches 6 pt beyond it; 4 pt wide, and 7 pt, with
+        // Increase Contrast.
+        XCTAssertEqual(StripLayout.selectionRingGap + StripLayout.selectionRingWidth(increasedContrast: false), 6)
+        XCTAssertEqual(StripLayout.selectionRingGap + StripLayout.selectionRingWidth(increasedContrast: true), 7)
+        // Every value the slider gives keeps the ring clear of a neighbour. The enlarged card reaches (s − 1)·W/2 into
+        // the gap on either side and its ring 6 pt beyond that, and 2 pt are left before the neighbour, which stands
+        // aside by the push; 1 pt with Increase Contrast's ring. At small size and 1.24–1.25 that is exactly 2, or 1,
+        // give or take rounding.
+        for hundredths in 100...125 {
+            let scale = CGFloat(hundredths) / 100
+            for size in CardSize.allCases {
+                let m = StripLayout.metrics(for: size, visibleWidth: 1440, style: StripStyle(selectedScale: scale))
+                let clear = m.gap + m.neighbourPush - (scale - 1) * m.frameSize.width / 2
+                XCTAssertGreaterThanOrEqual(clear - 6, 2 - 1e-9, "\(size) \(scale)")
+                XCTAssertGreaterThanOrEqual(clear - 7, 1 - 1e-9, "\(size) \(scale), Increase Contrast")
+            }
+        }
+        // The scale stays within what the slider offers.
+        XCTAssertEqual(StripStyle(selectedScale: 1.4).selectedScale, 1.25)
+        XCTAssertEqual(StripStyle(selectedScale: 0.9).selectedScale, 1)
+    }
+
+    func testTheSectionIconsStayThreePointsAboveTheBandsEdge() {
+        // Below the cards, a section icon is centred between the band's bottom edge and the lowest reach of the ring
+        // around the enlarged selected card: the growth, then 7 pt with Increase Contrast. The room there grows with
+        // the card, so a 15 pt icon starts 3 pt above the edge at every scale and card size.
+        for size in CardSize.allCases {
+            for scale in [1.0, 1.12, 1.25] as [CGFloat] {
+                let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true,
+                                            style: StripStyle(selectedScale: scale))
+                XCTAssertEqual(StripLayout.sectionLabelBottom(m, height: 15), 3, "\(size) \(scale)")
+            }
         }
     }
 
@@ -154,8 +232,12 @@ final class StripLayoutTests: XCTestCase {
 
     // MARK: The frequent wing
 
-    // m is StripLayout.metrics(for: .medium, visibleWidth: 1440): band 1376, card 228, gap 14, step 242, dock 20.
-    private var medium: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+    // Medium cards on a screen 1440 wide with the selected card not enlarged: band 1376, card 228, gap 14, step 242,
+    // dock 20. The frequent wing's cases below were worked out before the selected card was enlarged; the enlargement
+    // has cases of its own.
+    private var medium: StripMetrics {
+        StripLayout.metrics(for: .medium, visibleWidth: 1440, style: StripStyle(selectedScale: 1))
+    }
 
     func testFirstScreenCountsTheCardsTheBandShowsWhole() {
         // Without a frequent wing the newest clip rests at the left dock, and the band shows
@@ -196,6 +278,20 @@ final class StripLayoutTests: XCTestCase {
                 let dock = m.bandWidth - m.dockInset
                 XCTAssertLessThanOrEqual(origins[wing + count - 1] + m.frameSize.width, dock, "\(visible), \(wing)")
                 XCTAssertGreaterThan(origins[wing + count] + m.frameSize.width, dock, "\(visible), \(wing)")
+            }
+        }
+    }
+
+    func testTheFirstScreenCountDoesNotDependOnTheEnlargement() {
+        // The frequent wing leaves out the newest clips the band shows whole as the strip opens. The band counts the
+        // same clips whole however much the selected card is enlarged, so the enlargement never changes which clips
+        // the wing lists.
+        for (visible, counts) in [(1300, [5, 3, 3, 3, 3]), (1440, [5, 4, 3, 3, 3])] as [(CGFloat, [Int])] {
+            for scale in [1.0, 1.12, 1.25] as [CGFloat] {
+                let m = StripLayout.metrics(for: .medium, visibleWidth: visible, showsFrequentClips: true,
+                                            style: StripStyle(selectedScale: scale))
+                XCTAssertEqual([0, 1, 2, 3, 20].map { StripLayout.recentShownWhole(m, frequentCount: $0) }, counts,
+                               "\(visible) \(scale)")
             }
         }
     }
@@ -350,18 +446,27 @@ final class StripLayoutTests: XCTestCase {
         }
     }
 
-    func testALaptopScreenHoldsTheWholePreviewCard() {
-        // 1440 × 875 is what a 1440 × 900 laptop screen leaves under the menu bar. With small and medium cards the
-        // preview card keeps its full 760 × 470 above the band, the two centred together.
+    func testALaptopScreenHoldsThePreviewCardAboveTheBand() {
+        // 1440 × 875 is what a 1440 × 900 laptop screen leaves under the menu bar. Above the band, the preview card
+        // keeps as much of its 760 × 470 as the screen leaves it, the two centred together. With the standard
+        // enlargement the band is taller, by the room around the cards for the selected card: small cards still leave
+        // the whole card, medium ones 441 pt of its height, and 435 with the frequent wing's room below the cards.
+        // Without the enlargement medium cards leave the whole card, as they did before it.
         let laptop = NSRect(x: 0, y: 0, width: 1440, height: 875)
-        for size in [CardSize.small, .medium] {
-            let m = StripLayout.metrics(for: size, visibleWidth: laptop.width)
+        let cases: [(size: CardSize, wing: Bool, scale: CGFloat, height: CGFloat)] = [
+            (.small, false, 1.12, 470), (.medium, false, 1.12, 441), (.medium, true, 1.12, 435),
+            (.medium, false, 1, 470),
+        ]
+        for (size, wing, scale, height) in cases {
+            let name = "\(size), wing \(wing), \(scale)"
+            let m = StripLayout.metrics(for: size, visibleWidth: laptop.width, showsFrequentClips: wing,
+                                        style: StripStyle(selectedScale: scale))
             let band = StripLayout.bandFrame(m, in: laptop)
             let (preview, moved) = StripLayout.previewLayout(band: band, in: laptop)
-            XCTAssertEqual(preview.size, StripLayout.previewMaximum, "\(size)")
-            XCTAssertEqual(preview.minY, moved.maxY + StripLayout.previewGap, accuracy: 0.5, "\(size)")
-            XCTAssertEqual((preview.maxY + moved.minY) / 2, laptop.midY, accuracy: 0.5, "\(size)")
-            XCTAssertTrue(laptop.contains(StripLayout.panelFrame(band: moved, preview: preview, in: laptop)), "\(size)")
+            XCTAssertEqual(preview.size, NSSize(width: StripLayout.previewMaximum.width, height: height), name)
+            XCTAssertEqual(preview.minY, moved.maxY + StripLayout.previewGap, accuracy: 0.5, name)
+            XCTAssertEqual((preview.maxY + moved.minY) / 2, laptop.midY, accuracy: 0.5, name)
+            XCTAssertTrue(laptop.contains(StripLayout.panelFrame(band: moved, preview: preview, in: laptop)), name)
         }
     }
 
@@ -376,14 +481,15 @@ final class StripLayoutTests: XCTestCase {
         XCTAssertEqual(panel.maxY - band.maxY, 40)
         XCTAssertEqual(band.minY - panel.minY, 100)
 
-        // Where the screen is shorter the panel stops at its edges, and the band stays in the middle.
+        // Where the screen is shorter the panel stops at its edges, and the band stays in the middle: on a screen 480
+        // high, the band, 370 high with the standard enlargement, leaves its shadow 55 below it.
         let short = NSRect(x: 0, y: 40, width: 1440, height: 480)
         let shortBand = StripLayout.bandFrame(m, in: short)
         let shortPanel = StripLayout.panelFrame(band: shortBand, preview: nil, in: short)
         XCTAssertEqual(shortBand.midY, short.midY, accuracy: 0.5)
         XCTAssertEqual(shortPanel.minY, short.minY, accuracy: 0.5)
         XCTAssertEqual(shortPanel.maxY, shortBand.maxY + 40, accuracy: 0.5)
-        XCTAssertEqual(shortBand.minY - shortPanel.minY, 70, accuracy: 0.5)
+        XCTAssertEqual(shortBand.minY - shortPanel.minY, 55, accuracy: 0.5)
 
         // The preview card above the band takes the room above in the same way.
         let (preview, moved) = StripLayout.previewLayout(band: band, in: tall)
@@ -415,7 +521,7 @@ final class StripLayoutTests: XCTestCase {
 
     func testALowScreenKeepsThePreviewCardAtLeast160High() {
         // 1024 × 520, as a small laptop at a larger text size leaves under the menu bar and above the Dock: the room
-        // above the band would leave the card 116 high with medium cards, and less than nothing on a lower screen. The
+        // above the band would leave the card 86 high with medium cards, and less than nothing on a lower screen. The
         // card is never under 160, and it stays on the screen with the band.
         let low = NSRect(x: 0, y: 0, width: 1024, height: 520)
         for size in CardSize.allCases {
@@ -430,10 +536,15 @@ final class StripLayoutTests: XCTestCase {
             XCTAssertTrue(low.contains(StripLayout.panelFrame(band: moved, preview: preview, in: low)), "\(size)")
         }
 
-        // With medium cards the card still fits above the band once the two take the screen's whole height.
+        // With medium cards the band, taller by the room the standard enlargement needs around the cards, leaves the
+        // card no room above it even across the screen's whole height: the card lies 10 pt over the band's top edge.
+        // Without the enlargement it still fits above the band, as it did before.
         let m = StripLayout.metrics(for: .medium, visibleWidth: low.width)
         let (preview, moved) = StripLayout.previewLayout(band: StripLayout.bandFrame(m, in: low), in: low)
-        XCTAssertEqual(preview.minY, moved.maxY + StripLayout.previewGap, accuracy: 0.5)
+        XCTAssertEqual(preview.minY, moved.maxY - 10, accuracy: 0.5)
+        let plain = StripLayout.metrics(for: .medium, visibleWidth: low.width, style: StripStyle(selectedScale: 1))
+        let unscaled = StripLayout.previewLayout(band: StripLayout.bandFrame(plain, in: low), in: low)
+        XCTAssertEqual(unscaled.preview.minY, unscaled.band.maxY + StripLayout.previewGap, accuracy: 0.5)
 
         // On a screen lower still there is no room for it above the band at all: it is drawn over the band's top edge
         // rather than be cut down further or leave the screen.

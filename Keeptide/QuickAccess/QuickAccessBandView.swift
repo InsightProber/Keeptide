@@ -36,10 +36,10 @@ struct QuickAccessBandView: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
-    /// The selected clip's ring is drawn outside its frame, so the strip reaches this far above and below the cards.
-    private static let ringRoom: CGFloat = 8
-
     private var metrics: StripMetrics { layout.metrics }
+    /// The strip reaches this far above and below the cards: as far as the enlarged selected card reaches past them,
+    /// and 8 pt more for the ring drawn outside it.
+    private var ringRoom: CGFloat { metrics.selectionGrowth + 8 }
     private var hasFrames: Bool { !state.selection.rows.isEmpty }
     private var selectedRow: QuickAccessRow? { state.selection.selectedRow }
 
@@ -63,7 +63,7 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: QuickAccessToolbar.height)
                 .padding(.top, StripLayout.toolbarTop - QuickAccessToolbar.focusRoom)
             stripRow
-                .padding(.top, metrics.toolbarGap - QuickAccessToolbar.focusRoom - Self.ringRoom)
+                .padding(.top, metrics.toolbarGap - QuickAccessToolbar.focusRoom - ringRoom)
             Spacer(minLength: 0)
         }
         .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics), alignment: .top)
@@ -86,7 +86,7 @@ struct QuickAccessBandView: View {
     private var stripRow: some View {
         ZStack {
             HostedView(view: strip)
-                .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * Self.ringRoom)
+                .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * ringRoom)
             if !hasFrames { emptyState }
         }
     }

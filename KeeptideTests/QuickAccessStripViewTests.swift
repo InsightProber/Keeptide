@@ -1670,17 +1670,17 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testTheSectionIconsSitBelowTheCardsAndStayWhenTheBandResizesTheirView() throws {
-        // With the frequent wing there are 28 pt below the cards. The ring around a selected card reaches 7 pt into
-        // them with Increase Contrast, and each icon is centred in the 21 pt left between the ring and the band's
-        // bottom edge: a 15 pt icon starts 3 above that edge and ends 3 short of the ring. QuickAccessBandTests
-        // measures the ink the icons draw.
+        // With the frequent wing and the standard enlargement there are 43 pt below the cards. The selected card
+        // enlarged reaches 15 pt into them, the ring around it 7 pt more with Increase Contrast, and each icon is
+        // centred in the 21 pt left between the ring and the band's bottom edge: a 15 pt icon starts 3 above that edge
+        // and ends 3 short of the ring. QuickAccessBandTests measures the ink the icons draw.
         let wing = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
         let strip = makeStrip(wing)
         let rows = makeWing(frequent: 3, recent: 20)
         strip.show(rows, selection: rows[3].id, details: [:], metrics: wing, applicationNames: ApplicationNames())
         let cardBottom = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).minY
         let bandBottom = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil).minY
-        XCTAssertEqual(cardBottom - bandBottom, 28, accuracy: 0.01)
+        XCTAssertEqual(cardBottom - bandBottom, 43, accuracy: 0.01)
         var places: [String: CGFloat] = [:]
         for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
             let icon = try sectionLabel(identifier, of: strip)
@@ -1688,14 +1688,14 @@ final class QuickAccessStripViewTests: XCTestCase {
             let frame = icon.convert(icon.bounds, to: nil)
             // Centred to the pixel: as far above the band's bottom edge as short of the ring.
             XCTAssertEqual(frame.minY - bandBottom, (21 - frame.height) / 2, accuracy: 0.5, identifier)
-            XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 7, identifier)
+            XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 15 - 7, identifier)
             places[identifier] = frame.minY - bandBottom
         }
 
-        // The band gives the icons' view the room below the cards, 28 pt with the frequent wing turned on and 22
+        // The band gives the icons' view the room below the cards, 43 pt with the frequent wing turned on and 37
         // without, and may do so after the strip has placed them. Its bottom stays at the band's bottom edge, and so
         // do the icons' places.
-        for height in [22, 28] as [CGFloat] {
+        for height in [37, 43] as [CGFloat] {
             strip.sectionLabels.setFrameSize(NSSize(width: wing.bandWidth, height: height))
             for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
                 let icon = try sectionLabel(identifier, of: strip)
@@ -1827,12 +1827,17 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// Medium cards on a screen 1440 pt wide: a band 1376 wide, frames 228 by 250 and 242 apart, a dock inset of 20.
-    private var medium: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+    /// Medium cards on a screen 1440 pt wide with the selected card not enlarged: a band 1376 wide, frames 228 by 250
+    /// and 242 apart, a dock inset of 20. The cases that use it were worked out before the selected card was enlarged.
+    private var medium: StripMetrics {
+        StripLayout.metrics(for: .medium, visibleWidth: 1440, style: StripStyle(selectedScale: 1))
+    }
 
     /// A strip one band wide in a window that is never shown, so frames go straight to their places, with its section
     /// icons below the cards as the band places them. A test that shows the window sees the frames slide, whatever
     /// Reduce Motion is set to on the Mac that runs it; the divider is as wide as without Increase Contrast either way.
+    /// As in the band, the strip reaches as far above and below the cards as the enlarged selected card does, and 8 pt
+    /// more for its ring.
     private func makeStrip(_ metrics: StripMetrics? = nil) -> QuickAccessStripView {
         let metrics = metrics ?? self.metrics
         let size = NSSize(width: metrics.bandWidth, height: 300)
@@ -1841,7 +1846,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         window.isReleasedWhenClosed = false
         let content = KeyRecordingView(frame: NSRect(origin: .zero, size: size))
         let strip = QuickAccessStripView(frame: NSRect(x: 0, y: 100, width: metrics.bandWidth,
-                                                       height: metrics.frameSize.height + 24))
+                                                       height: metrics.frameSize.height
+                                                           + 2 * (metrics.selectionGrowth + 8)))
         strip.reducesMotion = { false }
         strip.increasesContrast = { false }
         content.addSubview(strip)

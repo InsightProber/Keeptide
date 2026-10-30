@@ -5,6 +5,22 @@ enum CardSize: String, CaseIterable, Sendable {
     case small, medium, large
 }
 
+/// How the strip draws its selected card, as Settings chose it when the panel opened.
+struct StripStyle: Equatable, Sendable {
+    /// From the selected card as large as the others to a quarter larger.
+    static let scaleRange: ClosedRange<CGFloat> = 1.0...1.25
+    /// The selected card a little larger than the others, as Settings has it until it is changed.
+    static let standard = StripStyle(selectedScale: 1.12)
+    /// How much larger the selected card is drawn than the others, kept within `scaleRange`.
+    let selectedScale: CGFloat
+
+    /// A scale outside `scaleRange` is taken to its nearer end, and one that is not a number to no enlargement.
+    init(selectedScale: CGFloat) {
+        self.selectedScale = selectedScale.isNaN ? Self.scaleRange.lowerBound
+            : min(max(selectedScale, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
+    }
+}
+
 /// Frame sizes for one card size and screen width.
 struct StripMetrics: Equatable {
     let cardSize: CardSize
@@ -20,12 +36,22 @@ struct StripMetrics: Equatable {
     let footerHeight: CGFloat
     /// Side of the source app's icon in the colour band.
     let iconSize: CGFloat
-    /// From the toolbar's bottom edge to the cards: 20 pt.
+    /// From the toolbar's bottom edge to the cards: 20 pt, and the distance the enlarged selected card reaches above
+    /// the others.
     let toolbarGap: CGFloat
     /// From the cards to the band's bottom edge: 22 pt, or 28 with the frequent wing turned on, so that its section
-    /// icons have room there below the ring around a selected card.
+    /// icons have room there below the ring around a selected card; and the distance the enlarged selected card reaches
+    /// below the others.
     let bottomPadding: CGFloat
+    /// How much larger the selected card is drawn than the others. Metrics made up for a test leave it at 1, and the
+    /// push at 0, so that the strip lies as it did before the selected card was enlarged.
+    var selectedScale: CGFloat = 1
+    /// How far each neighbour of the selected card stands aside from its place, to keep clear of the enlarged card's
+    /// ring.
+    var neighbourPush: CGFloat = 0
 
+    /// How far the enlarged selected card reaches past an unscaled card's top and bottom edges.
+    var selectionGrowth: CGFloat { StripLayout.selectionGrowth(scale: selectedScale, cardHeight: frameSize.height) }
     /// Distance between the left edges of neighbouring frames.
     var step: CGFloat { frameSize.width + gap }
     /// What the divider adds to the gap after the frequent wing: a third of a card, rounded (67 / 76 / 87).
@@ -72,9 +98,13 @@ enum StripLayout {
     /// it came within 2 pt of the corner, at 40 pt the flame cleared 8 pt by less than half a point, and beside a
     /// divider resting 34 to 66 pt from an end it came within 0.4 to 4 pt.
     static let sectionLabelPinInset: CGFloat = 42
+    /// From a selected card's edge to the inner edge of the ring around it.
+    static let selectionRingGap: CGFloat = 3
     /// How far beyond a selected card the ring around it reaches: 6 pt, and 7 with Increase Contrast. The section icons
     /// below the cards are kept clear of the wider ring.
-    static let selectionRingReach: CGFloat = 7
+    static let selectionRingReach = selectionRingGap + selectionRingWidth(increasedContrast: true)
+    /// The neighbours of a selected card enlarged by 1.12 or more stand at least this far aside.
+    static let minimumNeighbourPush: CGFloat = 18
     /// The band stands this far in from each side of the screen's visible area. The panel reaches the edge, so its
     /// shadow has that room beside the band.
     static let sideMargin: CGFloat = 32
@@ -89,16 +119,47 @@ enum StripLayout {
     static let previewMinimumHeight: CGFloat = 160
 
     /// The frames are as large on every screen as the card size makes them; a narrow screen shows fewer of them.
-    /// The band is as wide as the visible area less the margin at each side. With the frequent wing turned on, the room
-    /// below the cards is 28 instead of 22, for the section icons in it, and the band is that much taller. It stays so
-    /// while the strip shows no wing, as for a search, so the band keeps its height while it is open.
-    static func metrics(for size: CardSize, visibleWidth: CGFloat, showsFrequentClips: Bool = false) -> StripMetrics {
+    /// The band is as wide as the visible area less the margin at each side. Above and below the cards it has room for
+    /// the selected card as `style` enlarges it: the 20 pt between the toolbar and the cards, and the 22 pt below them,
+    /// each grow by `selectionGrowth`. With the frequent wing turned on, the room below the cards is 6 pt more, for the
+    /// section icons in it, and the band is that much taller. It stays so while the strip shows no wing, as for a
+    /// search, so the band keeps its height while it is open.
+    static func metrics(for size: CardSize, visibleWidth: CGFloat, showsFrequentClips: Bool = false,
+                        style: StripStyle = .standard) -> StripMetrics {
         let card = cardDimensions(for: size)
+        let gap: CGFloat = 14
+        let growth = selectionGrowth(scale: style.selectedScale, cardHeight: card.frame.height)
         return StripMetrics(
-            cardSize: size, bandWidth: visibleWidth - 2 * sideMargin, frameSize: card.frame, gap: 14,
+            cardSize: size, bandWidth: visibleWidth - 2 * sideMargin, frameSize: card.frame, gap: gap,
             cornerRadius: card.radius, dockInset: 20, headerHeight: card.header, footerHeight: card.footer,
-            iconSize: card.icon, toolbarGap: 20, bottomPadding: showsFrequentClips ? 28 : 22
+            iconSize: card.icon, toolbarGap: 20 + growth, bottomPadding: (showsFrequentClips ? 28 : 22) + growth,
+            selectedScale: style.selectedScale,
+            neighbourPush: neighbourPush(scale: style.selectedScale, cardWidth: card.frame.width, gap: gap)
         )
+    }
+
+    /// The width of the ring around a selected card: 3 pt, and 4 with Increase Contrast.
+    static func selectionRingWidth(increasedContrast: Bool) -> CGFloat {
+        increasedContrast ? 4 : 3
+    }
+
+    /// How far each neighbour of a card enlarged by `scale` stands aside so that the card's ring keeps 2 pt from it, or
+    /// 1 pt from Increase Contrast's wider ring. The enlarged card reaches (scale − 1)·cardWidth/2 into the `gap` on
+    /// either side, and its ring 6 pt beyond that. From 1.12 on the neighbours stand at least `minimumNeighbourPush`
+    /// aside; below that, in proportion to the enlargement, so that at 1.00 they stand where they did before the
+    /// selected card was enlarged. The millionth taken off keeps a sum that should be whole from rounding up to the
+    /// next point when the arithmetic leaves it a hair over.
+    static func neighbourPush(scale: CGFloat, cardWidth: CGFloat, gap: CGFloat) -> CGFloat {
+        let reach = selectionRingGap + selectionRingWidth(increasedContrast: false)
+        let clear = ((scale - 1) * cardWidth / 2 + reach + 2 - gap - 0.000001).rounded(.up)
+        return max(clear, min(minimumNeighbourPush, minimumNeighbourPush * (scale - 1) / 0.12))
+    }
+
+    /// How far a card enlarged by `scale` about its middle reaches past its unscaled top and bottom edges, in whole
+    /// points: 15 for a medium card at 1.12. The millionth taken off keeps 15 from rounding up to 16 where the
+    /// arithmetic leaves it a hair over.
+    static func selectionGrowth(scale: CGFloat, cardHeight: CGFloat) -> CGFloat {
+        max(((scale - 1) * cardHeight / 2 - 0.000001).rounded(.up), 0)
     }
 
     /// How many of the newest clips the band shows whole as the strip opens with `frequentCount` frequent clips before
@@ -117,21 +178,23 @@ enum StripLayout {
         return max(0, Int(((m.bandWidth - m.dockInset - newest + m.gap) / m.step).rounded(.down)))
     }
 
-    /// How far below the band's top edge the cards' top edges are: 68.
+    /// How far below the band's top edge the cards' top edges are: 68, and the enlarged selected card's growth; 83 with
+    /// medium cards at the standard enlargement.
     static func cardTop(_ m: StripMetrics) -> CGFloat {
         toolbarTop + toolbarHeight + m.toolbarGap
     }
 
-    /// The toolbar, the cards and the room around them: 340 with medium cards, 346 with the frequent wing.
+    /// The toolbar, the cards and the room around them: 370 with medium cards at the standard enlargement, 376 with
+    /// the frequent wing; 340 and 346 with the selected card not enlarged.
     static func bandHeight(_ m: StripMetrics) -> CGFloat {
         cardTop(m) + m.frameSize.height + m.bottomPadding
     }
 
     /// How far above the band's bottom edge a section icon `height` tall starts: centred between that edge and the
-    /// lowest reach of the ring around a selected card, `selectionRingReach` below the cards. A 15 pt icon starts 3
-    /// above the edge in the frequent wing's 28 pt below the cards.
+    /// lowest reach of the ring around the enlarged selected card, its growth and then `selectionRingReach` below the
+    /// cards. A 15 pt icon starts 3 above the edge in the frequent wing's room below the cards, at every enlargement.
     static func sectionLabelBottom(_ m: StripMetrics, height: CGFloat) -> CGFloat {
-        (m.bottomPadding - selectionRingReach - height) / 2
+        (m.bottomPadding - m.selectionGrowth - selectionRingReach - height) / 2
     }
 
     /// The band, centred in the screen's visible area. Its height is the same whatever the panel shows, so its top

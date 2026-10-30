@@ -46,12 +46,54 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertFalse(backdrop.surface.isSolid)
     }
 
+    // MARK: Room for the enlarged card
+
+    func testTheBandGivesTheEnlargedCardRoomAboveAndBelow() throws {
+        // Medium cards at each enlargement, without the frequent wing and with it. The band is as tall as the toolbar,
+        // the cards and the room around them. The selected card, still drawn at its unscaled size here, starts 68 pt
+        // below the band's top edge and the growth further down, the distance the enlarged card reaches past it, and
+        // the room below it is the metrics' own. The strip reaches the growth and 8 pt more for the ring above the
+        // cards and below them, and the section icons' view fills the room below the cards.
+        let cases: [(scale: CGFloat, wing: Bool, height: CGFloat)] = [
+            (1, false, 340), (1, true, 346), (1.12, false, 370), (1.12, true, 376), (1.25, false, 404),
+            (1.25, true, 410),
+        ]
+        for (scale, wing, height) in cases {
+            let name = "\(scale), wing \(wing)"
+            let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: wing,
+                                              style: StripStyle(selectedScale: scale))
+            let growth = metrics.selectionGrowth
+            let strip = QuickAccessStripView()
+            let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
+                                              strip: strip)
+            // With the wing, three frequent rows and the newest clip selected beside them; without it, the newest.
+            let rows = makeWing(frequent: wing ? 3 : 0, recent: 20)
+            strip.show(rows, selection: rows[wing ? 3 : 0].id, details: [:], metrics: metrics,
+                       applicationNames: ApplicationNames())
+            settle(window)
+
+            let band = backdrop.convert(backdrop.bandRect, to: nil)
+            let card = try selectedCard(in: strip)
+            XCTAssertEqual(band.height, height, name)
+            XCTAssertEqual(band.maxY - card.maxY, 68 + growth, accuracy: 0.5, name)
+            XCTAssertEqual(card.minY - band.minY, metrics.bottomPadding, accuracy: 0.5, name)
+            // The strip as the band hosts it.
+            let hosted = strip.convert(strip.bounds, to: nil)
+            XCTAssertEqual(hosted.maxY - card.maxY, growth + 8, accuracy: 0.5, name)
+            XCTAssertEqual(card.minY - hosted.minY, growth + 8, accuracy: 0.5, name)
+            let icons = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
+            XCTAssertEqual(icons.height, metrics.bottomPadding, accuracy: 0.5, name)
+            XCTAssertEqual(icons.minY, band.minY, accuracy: 0.5, name)
+        }
+    }
+
     // MARK: Section icons
 
     func testTheSectionIconsLieBelowTheCards() throws {
-        // Without the frequent wing the band is 340 tall with 22 below the cards, as it always was; with it, 346 with
-        // 28 below them. Either way the cards start 68 below the band's top edge, 20 below the toolbar's row.
-        for (wing, room, height) in [(false, 22, 340), (true, 28, 346)] as [(Bool, CGFloat, CGFloat)] {
+        // With the standard enlargement and without the frequent wing the band is 370 tall with 37 below the cards;
+        // with the wing, 376 with 43 below them. Either way the cards start 83 below the band's top edge: 20 below the
+        // toolbar's row, and 15 more for the selected card enlarged.
+        for (wing, room, height) in [(false, 37, 370), (true, 43, 376)] as [(Bool, CGFloat, CGFloat)] {
             let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: wing)
             let strip = QuickAccessStripView()
             let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
@@ -64,7 +106,7 @@ final class QuickAccessBandTests: XCTestCase {
             let band = backdrop.convert(backdrop.bandRect, to: nil)
             let card = try selectedCard(in: strip)
             XCTAssertEqual(band.height, height, "wing \(wing)")
-            XCTAssertEqual(band.maxY - card.maxY, 68, accuracy: 0.5, "wing \(wing)")
+            XCTAssertEqual(band.maxY - card.maxY, 83, accuracy: 0.5, "wing \(wing)")
             XCTAssertEqual(card.minY - band.minY, room, accuracy: 0.5, "wing \(wing)")
             // The icons' view is as wide as the band, from the cards' bottom edge down to the band's.
             let icons = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
@@ -93,11 +135,13 @@ final class QuickAccessBandTests: XCTestCase {
     }
 
     func testTheSectionIconsStandClearOfTheRingAndTheBandsBottomEdge() throws {
-        // The ring around a selected card reaches 6 pt below it, and 7 with Increase Contrast. Each icon is centred
-        // between the wider ring's lowest reach and the band's bottom edge, and the ink it draws, measured as SwiftUI
-        // draws it, keeps at least 3 pt from both, the two gaps differing by less than a point. The icons are the same
-        // with Increase Contrast or without.
+        // The ring around a selected card reaches 6 pt below it, and 7 with Increase Contrast. The selected card
+        // enlarged by the standard 1.12 reaches 15 pt below the others' bottom edges, and its ring that much lower.
+        // Each icon is centred between the wider ring's lowest reach and the band's bottom edge, and the ink it draws,
+        // measured as SwiftUI draws it, keeps at least 3 pt from both, the two gaps differing by less than a point. The
+        // icons are the same with Increase Contrast or without.
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
+        XCTAssertEqual(metrics.selectionGrowth, 15)
         XCTAssertEqual(try ringReach(increasedContrast: false, below: true), 6, accuracy: 0.5)
         let reach = try ringReach(increasedContrast: true, below: true)
         XCTAssertEqual(reach, 7, accuracy: 0.5)
@@ -111,7 +155,8 @@ final class QuickAccessBandTests: XCTestCase {
                        applicationNames: ApplicationNames())
             settle(window)
             let band = backdrop.convert(backdrop.bandRect, to: nil)
-            let ring = try selectedCard(in: strip).minY - reach
+            // The selected card's unscaled frame, then the enlarged card's growth and its ring's reach below it.
+            let ring = try selectedCard(in: strip).minY - metrics.selectionGrowth - reach
             for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
                 let name = "\(identifier), Increase Contrast \(increasedContrast)"
                 let label = try sectionLabel(identifier, of: strip)
@@ -198,13 +243,19 @@ final class QuickAccessBandTests: XCTestCase {
         // the film rests in, with twenty frequent clips and thirty recent ones, on the screens and card sizes where
         // that happened and on the medium ones named with them: each icon shown keeps 8 pt from the corner, measured
         // by its ink as in the test above, 42 pt or more from either end, and on its own wing's side of the divider,
-        // so the two never meet.
+        // so the two never meet. It does so at every enlargement of the selected card: at the slider's two ends and the
+        // standard one between them. The places where the divider came that close to an end were found with the
+        // selected card not enlarged, and that is where the test looks for them.
         let reported: [(width: CGFloat, size: CardSize)] = [(1440, .medium), (1920, .medium), (1280, .small),
                                                             (1600, .large), (1710, .small), (2560, .small)]
         let named: [(width: CGFloat, size: CardSize)] = [(1280, .medium), (1600, .medium), (1710, .medium)]
-        for (width, size) in reported + named {
-            let name = "\(Int(width)) \(size)"
-            let metrics = StripLayout.metrics(for: size, visibleWidth: width, showsFrequentClips: true)
+        let cases = (reported + named).flatMap { screen in
+            ([1, 1.12, 1.25] as [CGFloat]).map { (width: screen.width, size: screen.size, scale: $0) }
+        }
+        for (width, size, scale) in cases {
+            let name = "\(Int(width)) \(size) \(scale)"
+            let metrics = StripLayout.metrics(for: size, visibleWidth: width, showsFrequentClips: true,
+                                              style: StripStyle(selectedScale: scale))
             let strip = QuickAccessStripView()
             let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
                                               strip: strip)
@@ -253,7 +304,7 @@ final class QuickAccessBandTests: XCTestCase {
                 if shown.count == 2 { XCTAssertFalse(shown[0].intersects(shown[1]), rest) }
             }
             // Where it happened, the film does rest with the divider that close to an end.
-            if reported.contains(where: { $0.width == width && $0.size == size }) {
+            if scale == 1, reported.contains(where: { $0.width == width && $0.size == size }) {
                 XCTAssertGreaterThan(nearAnEnd, 0, name)
             }
         }
