@@ -27,10 +27,10 @@ previews text and images, and copies the selected item. With the Accessibility
 (send keys) permission it can paste the selected clip directly into the app
 window it was opened from, and it copies instead, saying so, when that window
 changed or anything is uncertain. Text pasted into a terminal is plain text
-without its trailing newline, and a multi-line command is confirmed first.
-Keeptide never runs commands, and it does not confirm that the app received a
-paste. Snippet workflows, persistent file authorization, and cloud integration
-remain planned.
+without its trailing newline, and a multi-line command, or one with control or
+invisible characters, is confirmed first. Keeptide never runs commands, and it
+does not confirm that the app received a paste. Snippet workflows, persistent
+file authorization, and cloud integration remain planned.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here

@@ -97,6 +97,9 @@ final class QuickAccessState {
     @ObservationIgnored var onCommandReviewChanged: (@MainActor () -> Void)?
     /// Hides the panel for a paste, before the keystroke, without ending its session. Every action passes it on.
     @ObservationIgnored var dismissForPaste: (@MainActor () -> Void)?
+    /// Whether Return or keypad Enter is down in the panel now. Every action passes it on: a paste asks just before
+    /// the panel would hide, and copies instead while one is.
+    @ObservationIgnored var returnIsDown: (@MainActor () -> Bool)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
 
@@ -313,7 +316,7 @@ final class QuickAccessState {
         failure = nil
         let outcome = await paste.execute(PasteRequest(ref: target.ref, queryGeneration: target.generation, mode: mode,
                                                        session: session, delivery: delivery, dismiss: dismissForPaste,
-                                                       confirmation: confirmation))
+                                                       returnIsDown: returnIsDown, confirmation: confirmation))
         // A reopened panel or a newer selection owns the screen now.
         guard isOpen, self.session === session else { return }
         switch outcome {

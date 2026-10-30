@@ -98,9 +98,10 @@ instead and says so. Keeptide sends the paste and does not confirm that the app
 received it.
 
 When the target is a terminal, text is pasted as plain text only, and its
-trailing newline is removed. A multi-line command needs confirmation first,
-because a terminal can run each line as soon as it arrives. **Copy As-Is** in
-the actions menu copies the clip complete. The application does not execute saved
+trailing newline is removed. A multi-line command, or one with control or
+invisible characters, needs confirmation first, because a terminal can run each
+line, or act on such a character, as soon as it arrives. **Copy As-Is** in the
+actions menu copies the clip complete. The application does not execute saved
 commands: the paste is the only keystroke it sends.
 
 ## Extension boundary

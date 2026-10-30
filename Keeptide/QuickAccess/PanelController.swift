@@ -27,12 +27,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private(set) var isHiddenForPaste = false
     /// Says what an action did, where the band was, as the panel closes.
     let toast = CopyToastController(duration: PanelController.toastDuration(for: .copied))
-    /// Return and keypad Enter while they are down in the panel. A paste waits until they are up: hidden, the panel
-    /// would leave a held key's repeats to the app it pasted into, where a terminal would run what was pasted. The
-    /// panel forgets them as it closes, since it no longer sees them come up.
+    /// Return and keypad Enter while they are down in the panel, by key code, and `returnMayBeDown` while either may be.
+    /// A paste waits until they are up, and the panel does not close while one is down: hidden or gone, it would leave
+    /// a held key's repeats to the app below, where a terminal would run what was pasted, or the line typed there.
+    /// The panel forgets them as it closes, since it no longer sees them come up.
     private var heldReturnKeys: Set<UInt16> = []
+    /// Stands in `heldReturnKeys` for Return or keypad Enter when a menu item that pastes was chosen neither with the
+    /// pointer nor with either key: one of them may still be down. Either key coming up takes it away.
+    private static let returnMayBeDown = UInt16.max
     /// How long a paste waits for Return to come up before it copies instead.
     static let returnReleaseWait: Duration = .seconds(1)
+    /// Set when an action ended while Return or keypad Enter was down: the session is over, but the panel stays on
+    /// screen with the keys, which drop the key's repeats, until the key comes up. Then it closes and says what the
+    /// action did, where the band was. Escape or a click beside the panel closes it as at any other time.
+    private var closingOnceReturnIsUp: (completion: QuickAccessCompletion, band: NSRect)?
     /// The visible area of the screen the panel opens on and the frame sizes for it, settled each time it opens.
     private var visibleFrame: NSRect
     /// A visible area given for tests in place of the screen's.
@@ -133,6 +141,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     func show() {
         guard let window else { return }
+        // Shown again while it waits for Return after an action, the panel opens a session of its own, and what the
+        // ended one waited to say no longer applies.
+        closingOnceReturnIsUp = nil
         let opening = !isSessionOpen
         if opening {
             searchField.stringValue = ""
@@ -151,18 +162,28 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if opening { focusSearchField() }
     }
 
+    /// Ends the session, if it is open, and takes the panel off screen, also when it waits for Return after an action:
+    /// what the toast was to say then is said now.
     override func close() {
-        guard isSessionOpen else { return }
-        isSessionOpen = false
-        isHiddenForPaste = false
+        let closing = closingOnceReturnIsUp
+        guard isSessionOpen || closing != nil else { return }
+        closingOnceReturnIsUp = nil
+        if isSessionOpen { endSession() }
         heldReturnKeys = []
-        searchReachedByKeyboard = false
-        state.close()
         window?.makeFirstResponder(nil)
         window?.orderOut(nil)
+        if let closing { showToast(for: closing.completion, centeredOn: closing.band) }
     }
 
-    func toggle() { isSessionOpen ? close() : show() }
+    /// Ends the session and the state's, so that nothing in the panel acts any more. It does not move the panel.
+    private func endSession() {
+        isSessionOpen = false
+        isHiddenForPaste = false
+        searchReachedByKeyboard = false
+        state.close()
+    }
+
+    func toggle() { isSessionOpen || closingOnceReturnIsUp != nil ? close() : show() }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         close()
@@ -216,6 +237,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         state.onCompleted = { [weak self] in self?.finish($0) }
         state.onCommandReviewChanged = { [weak self] in self?.commandReviewChanged() }
         state.dismissForPaste = { [weak self] in self?.hideForPaste() }
+        state.returnIsDown = { [weak self] in self?.heldReturnKeys.isEmpty == false }
         state.onPreviewCollapsed = { [weak self] in self?.previewCollapsed() }
     }
 
@@ -515,11 +537,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// Return, ⇧Return and the toolbar's button: the clip selected when the key is pressed, delivered as the toolbar
     /// says (decision 2). The action finishes later. While a command waits on the review card they do nothing: only
     /// ⌘Return and the card's button confirm it.
+    ///
+    /// A paste waits for Return and keypad Enter to come up, for up to `returnReleaseWait`, and then goes ahead: with
+    /// one still down, the paste service copies instead (`.returnHeld`), and the panel stays until the key is up. A
+    /// panel closed meanwhile does nothing; one shown again meanwhile has a session of its own, which the paste service
+    /// refuses the old action for.
     private func act(_ mode: PasteMode) {
         guard state.commandReview == nil, let target = state.copyTarget else { return }
-        let requested = state.preferredDelivery
+        let delivery = state.preferredDelivery
         Task {
-            guard let delivery = await deliveryOnceReturnIsUp(requested) else { return }
+            if delivery == .paste, !heldReturnKeys.isEmpty, await returnKeysComeUp() == nil { return }
             await state.act(on: target, mode: mode, delivery: delivery)
         }
     }
@@ -538,21 +565,14 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard let review = state.commandReview else { return }
         let delivery = review.confirmation.delivery
         Task {
-            guard await deliveryOnceReturnIsUp(delivery) == delivery, state.commandReview == review else { return }
+            if delivery == .paste, !heldReturnKeys.isEmpty, await returnKeysComeUp() != true { return }
+            guard state.commandReview == review else { return }
             await state.confirmCommand()
         }
     }
 
     private func cancelCommandReview() {
         state.cancelCommandReview()
-    }
-
-    /// `delivery` once Return and keypad Enter are up: a copy at once, and a paste once they come up within
-    /// `returnReleaseWait`, or else a copy. nil once the panel has closed meanwhile. A panel shown again meanwhile has
-    /// a session of its own, which the paste service refuses the old action for.
-    private func deliveryOnceReturnIsUp(_ delivery: PasteDelivery) async -> PasteDelivery? {
-        guard delivery == .paste, !heldReturnKeys.isEmpty else { return delivery }
-        return await returnKeysComeUp().map { $0 ? .paste : .copy }
     }
 
     /// Whether Return and keypad Enter are up within `returnReleaseWait`: true once they are, false when one is still
@@ -567,15 +587,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// Follows Return and keypad Enter going down and coming up while the panel has the keys. Any other event, and any
-    /// other key, is left alone; only a key event has a key code to read.
+    /// other key, is left alone; only a key event has a key code to read. Either key coming up also ends a Return that
+    /// was only taken for down, and once none is left down, a panel that waits for that after its action closes.
     private func followReturnKey(_ event: NSEvent) {
-        guard event.type == .keyDown || event.type == .keyUp,
-              [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode)) else { return }
-        if event.type == .keyDown {
+        guard event.type == .keyDown || event.type == .keyUp, Self.isReturnOrEnter(event) else { return }
+        guard event.type == .keyUp else {
             heldReturnKeys.insert(event.keyCode)
-        } else {
-            heldReturnKeys.remove(event.keyCode)
+            return
         }
+        heldReturnKeys.remove(event.keyCode)
+        heldReturnKeys.remove(Self.returnMayBeDown)
+        if heldReturnKeys.isEmpty, closingOnceReturnIsUp != nil { close() }
+    }
+
+    private static func isReturnOrEnter(_ event: NSEvent) -> Bool {
+        [kVK_Return, kVK_ANSI_KeypadEnter].contains(Int(event.keyCode))
     }
 
     /// The toolbar's "⏎ Copy" or "⏎ Paste into …", for the pointer.
@@ -590,11 +616,23 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         window?.orderOut(nil)
     }
 
-    /// The action wrote the clipboard: the panel closes, and says what happened where the band was. After ⌘V it says
-    /// nothing, since the keystroke does not prove that the target pasted.
+    /// The action wrote the clipboard: the session ends, and the panel closes and says what happened where the band
+    /// was. After ⌘V it says nothing, since the keystroke does not prove that the target pasted. With Return or keypad
+    /// Enter still down, the panel stays on screen with the keys until the key comes up (`closingOnceReturnIsUp`).
     private func finish(_ completion: QuickAccessCompletion) {
         let band = bandFrame
-        close()
+        guard !heldReturnKeys.isEmpty, isSessionOpen, window?.isVisible == true else {
+            close()
+            return showToast(for: completion, centeredOn: band)
+        }
+        let focus = currentFocus
+        endSession()
+        closingOnceReturnIsUp = (completion, band)
+        // The keys stay with a view that drops the held key's repeats, out of a card that goes with the session.
+        restoreFocus(focus)
+    }
+
+    private func showToast(for completion: QuickAccessCompletion, centeredOn band: NSRect) {
         guard let message = completion.toastMessage else { return }
         toast.show(message, centeredOn: band, duration: Self.toastDuration(for: completion))
     }
@@ -650,10 +688,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
             guard let self else { return }
-            // An item chosen with Return or keypad Enter acts while the key is still down: the menu took its key-down,
-            // which the panel notes here, so that what the item does waits for the key to come up as it would for a
-            // key pressed in the panel. The key-up comes to the panel, which still has the keys.
-            if let event = currentEvent(), event.type == .keyDown { followReturnKey(event) }
+            followMenuChoice(of: command)
             if let ref, ref != state.selection.selection {
                 state.select(ref)
                 update()
@@ -668,6 +703,31 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             }
         }
     }
+
+    /// An item chosen with Return or keypad Enter acts while the key is still down: the menu took its key-down, which
+    /// the panel notes here, so that what the item does waits for the key to come up as it would for a key pressed in
+    /// the panel. The key-up comes to the panel, which still has the keys. Chosen with the pointer, an item acts at
+    /// once. An item that pastes, or that leads to an alert Return would press, and that was chosen any other way may
+    /// still have Return down: the panel takes it that one of the keys is down until one comes up.
+    private func followMenuChoice(of command: ActionMenuCommand) {
+        let event = currentEvent()
+        if let event, event.type == .keyDown, Self.isReturnOrEnter(event) { return followReturnKey(event) }
+        switch command {
+        case .primary, .plainText, .enableDirectPaste:
+            guard let event, Self.pointerEvents.contains(event.type) else {
+                heldReturnKeys.insert(Self.returnMayBeDown)
+                return
+            }
+        case .copyOnly, .togglePreview:
+            break
+        }
+    }
+
+    /// The events that choose a menu item with the pointer.
+    private static let pointerEvents: [NSEvent.EventType] = [
+        .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .otherMouseDown, .otherMouseUp,
+        .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .pressure,
+    ]
 
     /// Enable Direct Paste…: the panel closes, and the app takes it from there. With Return still down, from choosing
     /// the item, the panel first waits for it to come up: held, its repeats would press the alert's default button.
@@ -689,7 +749,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     // MARK: Escape
 
     /// Escape from the strip, the filters, the preview or the review card; the search field peels its own layers first.
+    /// A panel that waits for Return after its action has nothing left to peel, and closes.
     private func escape() {
+        guard closingOnceReturnIsUp == nil else { return close() }
         let action = QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: state.commandReview != nil,
                                                     isPreviewExpanded: state.isPreviewExpanded,
                                                     hasQuery: !searchField.stringValue.isEmpty,
@@ -707,6 +769,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func applyEscape(_ action: QuickAccessEscapeAction) {
+        guard closingOnceReturnIsUp == nil else { return close() }
         switch action {
         case .cancelCommandReview:
             cancelCommandReview()
@@ -728,6 +791,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard isSessionOpen, event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command else {
             return false
         }
+        // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
+        // review card, and nothing else: a preview is not a review, and while an input method composes in the search
+        // field the key is the composition's.
+        if Self.isReturnOrEnter(event) {
+            let isComposing = (searchField.currentEditor() as? NSTextView)?.hasMarkedText() == true
+            guard state.commandReview != nil, !isComposing else { return false }
+            // A key equivalent never reaches the window's own handling, so the key going down is noted here.
+            followReturnKey(event)
+            // Held down, it has confirmed already: its repeats confirm nothing, such as a review that replaced it.
+            guard !event.isARepeat else { return true }
+            confirmCommand()
+            return true
+        }
         switch event.charactersIgnoringModifiers?.lowercased() {
         case "f":
             unfoldSearch()
@@ -739,17 +815,6 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             // Held down, ⌘Y has acted already: its repeats are taken and do nothing.
             guard !event.isARepeat else { return true }
             togglePreview()
-            return true
-        case "\r":
-            // ⌘Return confirms the command on the review card, and nothing else: a preview is not a review, and while
-            // an input method composes in the search field the key is the composition's.
-            let isComposing = (searchField.currentEditor() as? NSTextView)?.hasMarkedText() == true
-            guard state.commandReview != nil, !isComposing else { return false }
-            // A key equivalent never reaches the window's own handling, so Return going down is noted here.
-            followReturnKey(event)
-            // Held down, ⌘Return has confirmed already: its repeats confirm nothing, such as a review that replaced it.
-            guard !event.isARepeat else { return true }
-            confirmCommand()
             return true
         default:
             return false

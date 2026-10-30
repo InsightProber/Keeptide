@@ -94,7 +94,8 @@ final class CaptureSession {
 
     #if DEBUG
     /// Opens a manual paste QA library without choosing from launch flags, as a test does. It is the only library a
-    /// test can open directly: the user's library records the general clipboard.
+    /// test can open directly: the user's library records the general clipboard. It copies to the clipboard the
+    /// session was made with, if any, which a test gives it, and otherwise to the general one.
     func open(manualPasteQA session: ManualPasteQASession) async {
         await open(.manualPasteQA(session))
     }
@@ -125,10 +126,11 @@ final class CaptureSession {
             #if DEBUG
             case .manualPasteQA(let qa):
                 // Its own library and preferences, never the user's. Pastes go to the general clipboard, where the
-                // app in front reads them; nothing records it in this session.
+                // app in front reads them; nothing records it in this session. A test gives the session a clipboard
+                // of its own when it makes it.
                 manualPasteQASession = qa
                 preferences = CapturePreferences(defaults: UserDefaults(suiteName: qa.preferencesSuite)!)
-                board = .general
+                board = pasteboard ?? .general
             #endif
             case .user:
                 board = .general

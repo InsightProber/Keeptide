@@ -68,7 +68,8 @@ struct QuickAccessActions: Equatable {
 
     /// The reasons the user can act on. Without permission the menu offers Enable Direct Paste… instead, until access
     /// was asked for: the system lets Keeptide see it granted only once Keeptide reopens. A changed window or no
-    /// target needs nothing from the user.
+    /// target needs nothing from the user, and a held Return is found only as a paste is sent, never as the panel
+    /// opens.
     private static func hint(for fallback: DirectPasteFallback, accessRequested: Bool) -> String? {
         switch fallback {
         case .secureInput: "Secure input is on"
@@ -97,8 +98,7 @@ enum QuickAccessCompletion: Equatable {
             case .secureInput: "Secure input is on — copied instead. Press ⌘V to paste."
             case .cannotSendKeystroke: "Couldn't send ⌘V — copied instead. Press ⌘V to paste."
             case .testSessionTarget: "Test sessions paste only into the system test host — copied instead."
-            // Stub for the tests that land first.
-            case .returnHeld: "Copied — press ⌘V to paste"
+            case .returnHeld: "Return was held — copied instead. Press ⌘V to paste."
             // The panel asks for a paste only with a target, so without one the copy is all there is to tell.
             case .noTarget: "Copied — press ⌘V to paste"
             }

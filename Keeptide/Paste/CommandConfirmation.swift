@@ -63,6 +63,12 @@ struct TerminalCommand: Equatable, Sendable {
         plainText.last == "\n" || plainText.last == "\r\n" ? plainText.dropLast() : plainText[...]
     }
 
+    /// Whether `text` holds what makes a command need a review: a line break, or a control or invisible character
+    /// other than a tab. A file path that a terminal would paste is held to the same rule.
+    nonisolated static func needsReview(_ text: String) -> Bool {
+        text.contains(where: \.isNewline) || containsControlOrInvisible(text)
+    }
+
     /// Whether `text` holds a control or invisible character other than a tab. ASCII has neither format nor
     /// default-ignorable characters, so pure ASCII is checked byte by byte without a walk through its scalars.
     private nonisolated static func containsControlOrInvisible(_ text: String) -> Bool {

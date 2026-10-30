@@ -13,7 +13,8 @@ enum PasteFormat: Equatable, Sendable {
     /// The clip's plain text without one trailing line break, reviewed first when it needs it: `TerminalCommand`.
     case command
     /// Only the clip's images and file references (`PasteboardWriter.prepareWithoutText`): never its text, its links
-    /// or any other data.
+    /// or any other data, nor an image that is text as well, such as SVG. A file reference whose path breaks the line
+    /// or holds a control or invisible character refuses the clip.
     case originalWithoutText
 
     /// For a terminal, text reaches the clipboard only as a command, so no request can paste it another way:
@@ -49,7 +50,8 @@ enum PasteDelivery: Equatable, Sendable {
 /// Why a paste that was asked for became a copy.
 enum DirectPasteFallback: Equatable, Sendable {
     case noTarget, testSessionTarget, notPermitted, targetChanged, secureInput, cannotSendKeystroke
-    /// Stub for the tests that land first: nothing reports it yet.
+    /// Return or keypad Enter was down as the panel was about to hide: hidden, it would have left the key's repeats
+    /// to the target.
     case returnHeld
 }
 
@@ -118,7 +120,8 @@ struct PasteRequest {
     /// Hides the panel for a paste. Called once, after the clipboard is written and before the last check.
     /// It hides the panel before the keystroke without ending the session, which the last check still needs.
     var dismiss: (@MainActor () -> Void)? = nil
-    /// Stub for the tests that land first: nothing asks it yet.
+    /// Whether Return or keypad Enter is down in the panel now. A paste asks once, after the clipboard is written and
+    /// just before `dismiss`, and with one down it copies instead: nothing is hidden or sent.
     var returnIsDown: (@MainActor () -> Bool)? = nil
     /// The confirmation from the review of this command, once the user confirms it.
     var confirmation: CommandConfirmation? = nil
@@ -127,9 +130,10 @@ struct PasteRequest {
 /// The one path from a selected row to the clipboard. It re-reads the content,
 /// re-checks the request after every suspension, and records one use receipt
 /// per successful action. A paste also needs every target check to pass, both
-/// before the clipboard is written and after the panel hides; otherwise the clip
-/// is only copied. Text for a terminal is a command, and a command that needs a
-/// review is written only once the user confirms it.
+/// before the clipboard is written and after the panel hides, and Return to be up
+/// as the panel hides; otherwise the clip is only copied. Text for a terminal is a
+/// command, and a command that needs a review is written only once the user
+/// confirms it.
 @MainActor
 final class PasteService {
     /// The longest command, in UTF-8 bytes once its trailing line break is removed. Every command is held to it,
@@ -165,9 +169,12 @@ final class PasteService {
         self.directPasteOnlyTo = directPasteOnlyTo
     }
 
-    /// A session whose target is the app window in front now, if any.
+    /// A session whose target is the app window in front now, if any. Finder is never the target, so with it in front
+    /// the session only copies: the window check cannot tell its desktop from one of its windows, and a paste into
+    /// Finder copies files.
     func beginSession() -> PasteSession {
-        beginSession(target: system.frontmostTarget())
+        let front = system.frontmostTarget()
+        return beginSession(target: front?.isFinder == true ? nil : front)
     }
 
     /// A session with a target recorded earlier, or none. The system is not asked.
@@ -232,7 +239,7 @@ final class PasteService {
             guard session.accepts(generation) else { return .refused(.stale) }
             switch error as? PasteboardWriterError {
             case .noPlainText?: return .refused(.noPlainText)
-            case .noImageOrFileReference?: return .refused(.terminalCannotTake)
+            case .noImageOrFileReference?, .unsafeFileReference?: return .refused(.terminalCannotTake)
             case .commandTooLong?: return .refused(.commandTooLong)
             default: return .refused(.contentUnavailable)
             }
@@ -242,11 +249,11 @@ final class PasteService {
     }
 
     /// Writes the clip and, for a paste whose checks all pass before the write and again after the panel hides,
-    /// posts one ⌘V. A command that needs a review is written only with the session's pending confirmation for
-    /// exactly this content, mode and delivery. `ref` is the content read: the confirmation and the use receipt
-    /// both name it. It is synchronous so that the compiler rejects any suspension here:
-    /// nothing else on the main actor runs between the checks, the confirmation, the write, hiding the panel and
-    /// the keystroke.
+    /// posts one ⌘V. With Return or keypad Enter down just before the panel would hide, the clip is only copied. A
+    /// command that needs a review is written only with the session's pending confirmation for exactly this content,
+    /// mode and delivery. `ref` is the content read: the confirmation and the use receipt both name it. It is
+    /// synchronous so that the compiler rejects any suspension here: nothing else on the main actor runs between the
+    /// checks, the confirmation, the write, hiding the panel and the keystroke, so no key event either.
     private func deliver(_ prepared: PreparedPasteboardContent, command: TerminalCommand?, of ref: ContentRef,
                          for request: PasteRequest) -> PasteOutcome {
         let session = request.session
@@ -296,6 +303,9 @@ final class PasteService {
         case .copy(let fallback)?: return .copiedInstead(fallback)
         case .paste?: break
         }
+        // Hidden with Return or keypad Enter down, the panel would leave the key's repeats to the target, where a
+        // terminal would run what it holds. The panel stays, and closes once the key is up.
+        if request.returnIsDown?() == true { return .copiedInstead(.returnHeld) }
         request.dismiss?()
         // Hiding the panel can bring another window forward, so every check runs again.
         switch availability(for: session) {

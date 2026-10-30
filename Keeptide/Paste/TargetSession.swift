@@ -10,20 +10,14 @@ struct PasteTarget: Equatable, Sendable {
 
     var isTerminal: Bool { KnownTerminals.contains(bundleIdentifier) }
 
-    /// The app's frontmost on-screen window at layer 0, or nil. `windowList` is CGWindowListCopyWindowInfo's
-    /// result, front to back.
-    static func frontmostWindow(in windowList: [[String: Any]], processIdentifier: pid_t) -> Int? {
-        windowList.lazy.compactMap { window -> Int? in
-            guard (window[kCGWindowOwnerPID as String] as? Int) == Int(processIdentifier),
-                  (window[kCGWindowLayer as String] as? Int) == 0 else { return nil }
-            return window[kCGWindowNumber as String] as? Int
-        }.first
-    }
+    /// Finder, which is never a target: the window check cannot tell its desktop from one of its windows on top, and
+    /// a paste into Finder copies files. Compared without regard to case.
+    var isFinder: Bool { bundleIdentifier?.lowercased() == "com.apple.finder" }
 
-    /// The front app's window to paste into, or nil. It is `frontmostWindow`, and in addition the topmost
-    /// on-screen window at layer 0 that is not Keeptide's own must be the front app's. The list's z-order is
-    /// live, so this also catches an app switch that `frontmostApplication` has not reported yet, and an
-    /// active app whose windows sit behind another app's.
+    /// The front app's window to paste into, or nil: its frontmost on-screen window at layer 0, which must also be the
+    /// topmost window at layer 0 that is not Keeptide's own. `windowList` is CGWindowListCopyWindowInfo's result, front
+    /// to back. The list's z-order is live, so this also catches an app switch that `frontmostApplication` has not
+    /// reported yet, and an active app whose windows sit behind another app's.
     static func targetWindow(in windowList: [[String: Any]], frontProcessIdentifier: pid_t,
                              ownProcessIdentifier: pid_t) -> Int? {
         for window in windowList where (window[kCGWindowLayer as String] as? Int) == 0 {
@@ -46,6 +40,7 @@ enum KnownTerminals {
     static let bundleIdentifiers: Set<String> = [
         "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "net.kovidgoyal.kitty",
         "org.alacritty", "io.alacritty", "com.github.wez.wezterm", "com.mitchellh.ghostty",
+        "co.zeit.hyper", "org.tabby", "com.raphaelamorim.rio", "dev.warp.Warp-Preview",
     ]
 
     /// Bundle identifiers are compared without regard to case.

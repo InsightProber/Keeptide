@@ -33,6 +33,8 @@ enum PasteboardWriterError: Error, Equatable {
     case noPlainText
     /// `prepareWithoutText` found no image or file reference to keep.
     case noImageOrFileReference
+    /// `prepareWithoutText` kept a file reference whose path a terminal must not take, or that cannot be read.
+    case unsafeFileReference
     case commandTooLong
 }
 
@@ -119,7 +121,8 @@ final class PasteboardWriter {
     /// list of file paths. Everything else is left out, whatever it is: a terminal can make text out of more formats
     /// than a list of text formats names, such as rich text with attachments, web archives and old text flavours.
     /// The order is kept, and an item left with nothing is dropped. Throws `.noImageOrFileReference` when nothing is
-    /// left: the terminal can take none of the clip, so only Copy As-Is copies it.
+    /// left, and `.unsafeFileReference` when a file reference kept names a path that a terminal could act on: the
+    /// terminal can take none of the clip, so only Copy As-Is copies it.
     nonisolated static func prepareWithoutText(_ content: ResolvedContent) throws -> PreparedPasteboardContent {
         var kept: [RepresentationValue] = []
         var lastSourceItem: Int?
@@ -137,16 +140,40 @@ final class PasteboardWriter {
             kept.append(representation)
         }
         guard !kept.isEmpty else { throw PasteboardWriterError.noImageOrFileReference }
+        // A terminal pastes a file reference as its path.
+        guard kept.allSatisfy(namesPathsATerminalCanTake) else { throw PasteboardWriterError.unsafeFileReference }
         return PreparedPasteboardContent(representations: kept)
     }
 
-    /// The formats `prepareWithoutText` keeps: a type that conforms to `public.image`, `public.file-url`, and
-    /// NSFilenamesPboardType under its legacy name or the dynamic identifiers an item's types give it. Identifiers
-    /// are compared without regard to case.
+    /// The formats `prepareWithoutText` keeps: a type that conforms to `public.image` and is not text as well, unlike
+    /// SVG, which is XML; `public.file-url`; and NSFilenamesPboardType under its legacy name or the dynamic identifiers
+    /// an item's types give it. Identifiers are compared without regard to case.
     private nonisolated static func isImageOrFileReference(_ typeIdentifier: String) -> Bool {
         let lowered = typeIdentifier.lowercased()
         return lowered == "public.file-url" || SystemFileReferenceClassifier.filenamesListIdentifiers.contains(lowered)
-            || UTType(typeIdentifier)?.conforms(to: .image) == true
+            || (UTType(typeIdentifier)?.conforms(to: .image) == true && !ContentKind.isText(typeIdentifier))
+    }
+
+    /// Whether a representation `prepareWithoutText` keeps names only paths a terminal can take, by the rule a command
+    /// is reviewed by: no line break, and no control or invisible character other than a tab, in the path of a
+    /// `public.file-url` with its percent escapes decoded or in any path of a list of file paths. A path with one could
+    /// run a command or hide what it is. A reference that cannot be read as text, or as a list of paths, names nothing
+    /// that can be checked and fails. An image names no path.
+    private nonisolated static func namesPathsATerminalCanTake(_ representation: RepresentationValue) -> Bool {
+        let lowered = representation.typeIdentifier.lowercased()
+        let paths: [String]?
+        if lowered == "public.file-url" {
+            paths = representation.bytes.flatMap { String(data: $0, encoding: .utf8) }?.removingPercentEncoding
+                .map { [$0] }
+        } else if SystemFileReferenceClassifier.filenamesListIdentifiers.contains(lowered) {
+            paths = representation.bytes.flatMap {
+                try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String]
+            }
+        } else {
+            return true
+        }
+        guard let paths else { return false }
+        return !paths.contains(where: TerminalCommand.needsReview)
     }
 
     /// Plain text built like the search body: each item's first cleanly decodable text,

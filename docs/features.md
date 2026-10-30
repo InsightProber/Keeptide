@@ -48,9 +48,9 @@ release yet.
   or anything is uncertain, it copies instead and says so. It sends the paste and
   does not confirm that the app received it.
 - When the target is a terminal, text is pasted as plain text only, and its
-  trailing newline is removed. A multi-line command needs confirmation first, and
-  **Copy As-Is** in the actions menu copies a clip complete. Keeptide never runs
-  commands.
+  trailing newline is removed. A multi-line command, or one with control or
+  invisible characters, needs confirmation first, and **Copy As-Is** in the
+  actions menu copies a clip complete. Keeptide never runs commands.
 - Detailed implementation notes and internal delivery checklists are maintained
   separately from these public product documents.
 

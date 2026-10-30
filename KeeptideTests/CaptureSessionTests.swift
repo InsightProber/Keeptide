@@ -262,6 +262,12 @@ final class CaptureSessionTests: XCTestCase {
         // A session that records can still start and pause, and keeps its own status.
         XCTAssertTrue(try item("CaptureRecordingToggleMenuItem", in: recordingMenu).isEnabled)
         XCTAssertNotEqual(try item("CaptureStatusMenuItem", in: recordingMenu).title, "Manual paste QA — not recording")
+        // The QA session copies to the clipboard it was given, the test's own.
+        let before = board.changeCount
+        let newest = try XCTUnwrap(session.recent.first?.history)
+        await session.copy(newest)
+        XCTAssertGreaterThan(board.changeCount, before)
+        XCTAssertNotNil(board.string(forType: .string))
 
         await session.shutdown()
         await recording.shutdown()

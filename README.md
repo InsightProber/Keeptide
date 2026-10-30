@@ -31,9 +31,10 @@ as a snippet, or write one directly.
 > Return copies. If that window changed, or anything is uncertain, it copies
 > instead and says so. Keeptide sends the paste and does not confirm that the app
 > received it. In a terminal, text is pasted as plain text without its trailing
-> newline, and a multi-line command is confirmed first. Keeptide never runs
-> commands. Snippet workflows and iCloud saving are still planned. There is no
-> end-user release yet.
+> newline, and a multi-line command, or one with control or invisible
+> characters, is confirmed first. Keeptide never runs commands. Snippet
+> workflows and iCloud saving are still planned. There is no end-user release
+> yet.
 
 ## Designed for the Mac
 
