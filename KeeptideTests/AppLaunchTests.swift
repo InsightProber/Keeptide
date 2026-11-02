@@ -2002,7 +2002,11 @@ final class AppLaunchTests: XCTestCase {
         addTeardownBlock { controller.close() }
         controller.show()
         try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: controller.window?.contentView).first)
+        let window = try XCTUnwrap(controller.window)
+        // The state receives the rows before PanelController's observation task
+        // applies them to AppKit. Judge the fade only once a real frame is in the
+        // strip, as the other panel-rendering tests do.
+        let strip = try await clipStrip(in: window)
         XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
         XCTAssertNotNil(strip.layer?.mask)
         preferences.fadesStripEnds = false
@@ -2011,7 +2015,9 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(strip.layer?.mask)
         controller.close()
         controller.show()
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == 40 && !self.framesOnScreen(in: strip).isEmpty
+        }
         XCTAssertNil(strip.layer?.mask)
         XCTAssertFalse(strip.isFollowingMotion)
     }
