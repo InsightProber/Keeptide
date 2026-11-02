@@ -87,6 +87,11 @@ struct LibraryView: View {
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
         }
+        .sheet(isPresented: exportStatusPresentation) {
+            if let coordinator = session.exportCoordinator {
+                ExportStatusView(coordinator: coordinator)
+            }
+        }
         .sheet(item: $collectionEditorMode) { mode in
             CollectionEditorSheet(mode: mode) { name, color in
                 guard let workspace = session.libraryWorkspace else { return false }
@@ -123,8 +128,14 @@ struct LibraryView: View {
         .onChange(of: selectedScope) { _, scope in
             selectedItemID = nil
             selectedEntryIDs.removeAll()
+            updateExportContext()
             guard let scope else { return }
             session.libraryWorkspace?.updateScope(scope)
+        }
+        .onChange(of: selectedItemID) { _, _ in updateExportContext() }
+        .onChange(of: selectedEntryIDs) { _, _ in updateExportContext() }
+        .onChange(of: session.libraryWorkspace?.entries.map(\.ref) ?? []) { _, _ in
+            updateExportContext()
         }
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
@@ -135,7 +146,74 @@ struct LibraryView: View {
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }
         }
+        .onChange(of: commands.exportLibraryRequest) { _, _ in beginExport(selectedOnly: false) }
+        .onChange(of: commands.exportSelectedRequest) { _, _ in beginExport(selectedOnly: true) }
+        .onAppear { updateExportContext() }
         .disabled(session.libraryWorkspace?.isClosing == true)
+    }
+
+    private var exportStatusPresentation: Binding<Bool> {
+        Binding(
+            get: { session.exportCoordinator?.presentsStatus == true },
+            set: { presented in
+                guard !presented else { return }
+                guard let coordinator = session.exportCoordinator else { return }
+                if case .exporting = coordinator.phase {
+                    coordinator.cancel()
+                } else {
+                    coordinator.dismissResult()
+                }
+            }
+        )
+    }
+
+    private func updateExportContext() {
+        commands.updateExportContext(
+            refs: currentExportRefs(),
+            isRecentlyDeleted: selectedScope == .recentlyDeleted
+        )
+    }
+
+    private func currentExportRefs() -> [ContentRef] {
+        guard selectedScope != .recentlyDeleted, let workspace = session.libraryWorkspace else { return [] }
+        if selectedScope == .recentClips {
+            guard let selectedItemID else { return [] }
+            return workspace.entries.filter { $0.id == selectedItemID }.map(\.ref)
+        }
+        return workspace.entries.filter { selectedEntryIDs.contains($0.id) }.map(\.ref)
+    }
+
+    private func beginExport(selectedOnly: Bool) {
+        guard selectedScope != .recentlyDeleted,
+              let coordinator = session.exportCoordinator,
+              let workspace = session.libraryWorkspace else { return }
+        let requested = currentExportRefs()
+        if selectedOnly && requested.isEmpty { return }
+
+        coordinator.start {
+            if workspace.editor?.isComposing == true
+                || (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true {
+                throw ExportPreparationError.compositionInProgress
+            }
+            if selectedOnly, currentExportRefs() != requested {
+                throw ExportPreparationError.selectionChanged
+            }
+
+            let editorRef = workspace.editor?.ref
+            let flushed: ContentRef?
+            do {
+                flushed = try await workspace.flush()
+            } catch {
+                throw ExportPreparationError.saveFailed
+            }
+            guard selectedOnly else { return .allVisible }
+            return try ExportSelectionResolver.selectedScope(
+                requested: requested,
+                editorRef: editorRef,
+                flushedRef: flushed,
+                displayed: currentExportRefs()
+            )
+        }
     }
 
     private var librarySidebar: some View {
@@ -198,6 +276,7 @@ struct LibraryView: View {
                 .accessibilityHidden(true)
             Text(collection.value.name)
                 .lineLimit(1)
+                .accessibilityLabel(collection.value.name)
                 .help(collection.value.name)
         }
         .accessibilityLabel(collection.value.name)

@@ -57,6 +57,10 @@ History retention is configurable, including forever. Recently Deleted supports
 restoration and explicit permanent removal, while saved snippets retain their
 own content. Storage warnings are advisory, and disk-full recovery preserves
 primary content and drafts.
+The File menu exports the visible library or exact selected items into a new,
+verified local directory. Archives preserve portable source formats alongside
+readable text or Markdown; local file references require relocation. Export is
+a local snapshot, not an iCloud backup or an import-and-restore workflow.
 
 ## Designed for the Mac
 

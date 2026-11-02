@@ -1,5 +1,6 @@
 import CoreData
 import Foundation
+import Synchronization
 
 struct ContentSnapshotReader: Sendable {
     let controller: PersistenceController
@@ -16,9 +17,14 @@ struct ContentSnapshotReader: Sendable {
             do {
                 values = try context.performAndWait {
                     try context.setQueryGenerationFrom(.current)
-                    let values = try StoredRecords.snapshotReferences(in: context)
-                    try Self.requirePrivacySafeArchive(refs: values.refs, in: context)
-                    return values
+                    let visible = try StoredRecords.snapshotReferences(in: context)
+                    let refs = try Self.references(for: request.scope, visible: visible.refs)
+                    let protectedPayloadRecords = try Self.protectedPayloadRecords(
+                        for: refs,
+                        in: context
+                    )
+                    try Self.requirePrivacySafeArchive(refs: refs, in: context)
+                    return (refs, protectedPayloadRecords)
                 }
             } catch {
                 context.performAndWait { context.reset() }
@@ -115,6 +121,44 @@ struct ContentSnapshotReader: Sendable {
         return page
     }
 
+    /// The short external commit runs on the same queue as lease expiry,
+    /// generation changes and store closure. The publication closure must not
+    /// perform asynchronous work or call back into the store.
+    func withValidatedLease<T: Sendable>(
+        _ lease: SnapshotLease,
+        permit: StorePermit,
+        publication: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        let cancellation = SnapshotPublicationCancellation()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await controller.perform { _ in
+                try cancellation.commit {
+                    try validateOnWriterQueue(lease, permit: permit)
+                    return try publication()
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+
+    func validate(_ lease: SnapshotLease, permit: StorePermit) async throws {
+        try await controller.perform { _ in
+            try validateOnWriterQueue(lease, permit: permit)
+        }
+    }
+
+    private func validateOnWriterQueue(_ lease: SnapshotLease, permit: StorePermit) throws {
+        guard !controller.runtime.closed else { throw StoreError.closed }
+        controller.runtime.expireLeases()
+        guard lease.identity == controller.runtime.identity,
+              controller.runtime.leases[lease.leaseID]?.lease == lease else {
+            throw StoreError.invalidLease
+        }
+        try StoreSafetyGate.validate(.completeArchive, runtime: controller.runtime, permit: permit)
+    }
+
     func end(_ lease: SnapshotLease) async {
         try? await controller.perform { _ in
             guard controller.runtime.leases[lease.leaseID]?.lease == lease else { return }
@@ -124,6 +168,68 @@ struct ContentSnapshotReader: Sendable {
 }
 
 private extension ContentSnapshotReader {
+    struct FacetIdentity: Hashable {
+        let itemID: ItemID
+        let facet: ContentFacet
+    }
+
+    static func references(
+        for scope: SnapshotScope,
+        visible: [ContentRef]
+    ) throws -> [ContentRef] {
+        guard case .selected(let requested) = scope else { return visible }
+        guard !requested.isEmpty else { throw StoreError.invalidTransaction }
+
+        var selected: [ContentRef] = []
+        var exactRefs = Set<ContentRef>()
+        var facets: [FacetIdentity: ContentRef] = [:]
+        for ref in requested {
+            let identity = FacetIdentity(itemID: ref.itemID, facet: ref.facet)
+            if let existing = facets[identity], existing != ref {
+                throw StoreError.invalidTransaction
+            }
+            facets[identity] = ref
+            if exactRefs.insert(ref).inserted { selected.append(ref) }
+        }
+
+        let visibleRefs = Set(visible)
+        guard selected.allSatisfy(visibleRefs.contains) else {
+            throw StoreError.snapshotUnavailable
+        }
+        return selected
+    }
+
+    static func protectedPayloadRecords(
+        for refs: [ContentRef],
+        in context: NSManagedObjectContext
+    ) throws -> Set<RecordKey> {
+        var protected = Set<RecordKey>()
+        var visitedItems = Set<ItemID>()
+        for ref in refs where visitedItems.insert(ref.itemID).inserted {
+            guard case .item(let item)? = try StoredRecords.value(.item(ref.itemID), in: context) else {
+                throw StoreError.snapshotUnavailable
+            }
+            if let captureID = item.captureID {
+                protected.insert(.capture(captureID))
+            }
+            if let memoID = item.memoID {
+                let request = NSFetchRequest<NSDictionary>(entityName: RecordKey.memo(memoID).entity)
+                request.resultType = .dictionaryResultType
+                request.propertiesToFetch = ["bodyMode"]
+                request.predicate = NSPredicate(format: "id == %@", memoID as NSUUID)
+                request.fetchLimit = 2
+                let rows = try context.fetch(request)
+                guard rows.count == 1,
+                      let rawMode = rows[0]["bodyMode"] as? String,
+                      let mode = MemoBodyMode(rawValue: rawMode) else {
+                    throw StoreError.snapshotUnavailable
+                }
+                if mode != .inheritedCapture { protected.insert(.memo(memoID)) }
+            }
+        }
+        return protected
+    }
+
     static func requirePrivacySafeArchive(
         refs: [ContentRef],
         in context: NSManagedObjectContext
@@ -260,5 +366,20 @@ private extension ContentSnapshotReader {
     ) {
         guard included.insert(record.key).inserted else { return }
         records.append(record)
+    }
+}
+
+/// Cancellation wins before the commit starts; after the commit begins its
+/// returned result is authoritative even if cancellation is requested.
+private final class SnapshotPublicationCancellation: Sendable {
+    private let cancelled = Mutex(false)
+
+    func cancel() { cancelled.withLock { $0 = true } }
+
+    func commit<T>(_ publication: () throws -> T) throws -> T {
+        try cancelled.withLock { cancelled in
+            guard !cancelled else { throw CancellationError() }
+            return try publication()
+        }
     }
 }

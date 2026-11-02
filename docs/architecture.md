@@ -133,3 +133,14 @@ interface allow future semantic retrieval to be added as a derived capability.
 The first release does not include embeddings, model inference or background
 input monitoring. Future suggestions must preserve the same permission and
 content-validation boundaries.
+
+## Local export
+
+Export reads a fixed local snapshot and keeps its source content protected until
+publication finishes. Portable originals and readable derivatives are written
+to a new directory, then independently checked against the declared content
+identities and file digests. Publication uses an exclusive atomic rename and
+never replaces an existing directory. This provides verified, atomic publication
+while the system is running; it is not a guarantee against sudden power loss.
+Local file permissions, bookmarks and reference paths are excluded. Exports do
+not claim remote completeness and are separate from future cloud recovery.

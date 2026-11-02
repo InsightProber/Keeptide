@@ -32,6 +32,8 @@ final class CaptureSession {
     @ObservationIgnored private(set) var fileAccessStore: FileAccessStore?
     @ObservationIgnored private(set) var fileAccessIdentity: StoreIdentity?
     @ObservationIgnored private(set) var usageStore: LocalUsageStore?
+    /// Local export is bound to the exact store identity opened by this session.
+    private(set) var exportCoordinator: ExportCoordinator?
     /// The library window's copies share one session; selections and newer copies refuse older ones.
     @ObservationIgnored private var librarySession: PasteSession?
     /// Called when the store-backed services appear or go away.
@@ -195,6 +197,9 @@ final class CaptureSession {
             usageStore = usage
             fileAccessStore = fileAccess
             fileAccessIdentity = storeIdentity
+            exportCoordinator = .production(
+                exporter: ExportService(controller: store, expecting: storeIdentity)
+            )
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
                                         didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) },
                                         system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo)
@@ -343,6 +348,9 @@ final class CaptureSession {
     }
 
     func shutdown() async {
+        // Export owns a pinned snapshot and a security-scoped destination. Drain it before any store service closes.
+        await exportCoordinator?.stopAndDrain()
+        exportCoordinator = nil
         await maintenance?.stopAndDrain()
         maintenance = nil
         librarySession?.end()
