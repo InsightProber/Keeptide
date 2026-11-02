@@ -3,6 +3,50 @@ import XCTest
 @testable import Keeptide
 
 final class SQLiteSearchIndexTests: XCTestCase {
+    func testDiskPressureEvictsOnlyIndexFilesAndPreventsReopeningThisInstance() throws {
+        let root = SearchTestSupport.directory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Search")
+        let index = try SQLiteSearchIndex(directory: directory)
+        let identity = SearchTestSupport.identity()
+        try index.reset(identity: identity)
+        let preserved = [root.appendingPathComponent("Content.sqlite"),
+                         root.appendingPathComponent("Drafts/retained.json"),
+                         directory.appendingPathComponent("unknown-evidence")]
+        for url in preserved {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("preserved".utf8).write(to: url)
+        }
+        try index.evictForDiskPressure()
+        for suffix in ["", "-wal", "-shm"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("Search.sqlite" + suffix).path))
+        }
+        for url in preserved { XCTAssertEqual(try Data(contentsOf: url), Data("preserved".utf8)) }
+        XCTAssertThrowsError(try index.openReader()) { XCTAssertEqual($0 as? SearchIndexError, .closed) }
+        XCTAssertThrowsError(try index.reset(identity: identity)) { XCTAssertEqual($0 as? SearchIndexError, .closed) }
+        try index.evictForDiskPressure() // repeated recovery stays bounded and harmless
+        let replacement = try SQLiteSearchIndex(directory: directory)
+        defer { replacement.close() }
+        try replacement.reset(identity: identity)
+        XCTAssertNotNil(try replacement.metadata())
+    }
+
+    func testDiskPressureDoesNotFollowReplacedIndexDirectorySymlink() throws {
+        let root = SearchTestSupport.directory()
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Search")
+        let index = try SQLiteSearchIndex(directory: directory)
+        index.close()
+        try FileManager.default.removeItem(at: directory)
+        let other = root.appendingPathComponent("Other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let evidence = other.appendingPathComponent("Search.sqlite")
+        try Data("unrelated".utf8).write(to: evidence)
+        try FileManager.default.createSymbolicLink(at: directory, withDestinationURL: other)
+        XCTAssertThrowsError(try index.evictForDiskPressure())
+        XCTAssertEqual(try Data(contentsOf: evidence), Data("unrelated".utf8))
+    }
+
     func testFreshIndexHasNoMetadataUntilReset() throws {
         let index = try makeIndex()
         XCTAssertNil(try index.metadata())

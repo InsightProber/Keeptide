@@ -259,13 +259,13 @@ enum StoredRecords {
 
     static func snapshotReferences(
         in context: NSManagedObjectContext
-    ) throws -> (refs: [ContentRef], protectedCaptures: Set<UUID>) {
+    ) throws -> (refs: [ContentRef], protectedPayloadRecords: Set<RecordKey>) {
         let projection = try readProjection(strict: true, in: context)
         var refs: [ContentRef] = []
-        var protectedCaptures = Set<UUID>()
+        var protectedPayloadRecords = Set<RecordKey>()
         for row in projection.items {
             let metadata = try validatedItemMetadata(row)
-            if let captureID = metadata.captureID { protectedCaptures.insert(captureID) }
+            if let captureID = metadata.captureID { protectedPayloadRecords.insert(.capture(captureID)) }
             guard metadata.deletedAt == nil,
                   !projection.itemMarkerIDs.contains(metadata.id.rawValue) else { continue }
 
@@ -304,9 +304,14 @@ enum StoredRecords {
                     projection: projection
                 ) else { throw StoreError.snapshotUnavailable }
                 refs.append(ref)
+                guard let rawMode = memo["bodyMode"] as? String,
+                      let mode = MemoBodyMode(rawValue: rawMode) else {
+                    throw StoreError.corruptStore
+                }
+                if mode != .inheritedCapture { protectedPayloadRecords.insert(.memo(memoID)) }
             }
         }
-        return (refs, protectedCaptures)
+        return (refs, protectedPayloadRecords)
     }
 
     static func currentRef(

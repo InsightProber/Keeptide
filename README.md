@@ -53,6 +53,10 @@ actions. Markdown has a native reading mode that preserves its editable source.
 Image previews offer fitted and actual-size views, with explicit loading for
 larger originals. URL previews use stored information and open links only when
 requested. File previews use local authorization and system Quick Look.
+History retention is configurable, including forever. Recently Deleted supports
+restoration and explicit permanent removal, while saved snippets retain their
+own content. Storage warnings are advisory, and disk-full recovery preserves
+primary content and drafts.
 
 ## Designed for the Mac
 

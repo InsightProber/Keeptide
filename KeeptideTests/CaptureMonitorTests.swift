@@ -268,6 +268,70 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
+    func testUnknownMaintenanceRequiresRecoveryWithoutTransientRetry() async throws {
+        try await withMonitor { monitor, reader, preferences, _ in
+            preferences.isEnabled = true
+            reader.unexpectedFailure = StoreError.operationDenied
+            reader.changeCount = 1
+            var unavailable = false
+            monitor.onUnavailable = { unavailable = true }
+            await monitor.poll()
+            XCTAssertTrue(unavailable)
+            XCTAssertTrue(monitor.status.contains("newer Keeptide version or library recovery"))
+            reader.unexpectedFailure = nil
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+        }
+    }
+
+    func testDiskFullPausesWithoutDisablingTheLibraryAndRequiresANewCopyAfterResume() async throws {
+        try await withMonitor { monitor, reader, preferences, controller in
+            preferences.isEnabled = true
+            reader.unexpectedFailure = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
+            reader.changeCount = 1
+            var recoveries = 0
+            var unavailable = false
+            monitor.onStorageFull = { recoveries += 1 }
+            monitor.onUnavailable = { unavailable = true }
+            await monitor.poll()
+            XCTAssertEqual(recoveries, 1)
+            XCTAssertFalse(unavailable)
+            XCTAssertFalse(preferences.isEnabled)
+            XCTAssertTrue(monitor.status.contains("storage is full"))
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            reader.unexpectedFailure = nil
+            preferences.isEnabled = true
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            reader.changeCount = 3
+            await monitor.poll()
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
+    func testMaintenanceContentionRetriesTheCurrentCopyWithoutDisablingRecording() async throws {
+        try await withMonitor { monitor, reader, preferences, controller in
+            preferences.isEnabled = true
+            reader.unexpectedFailure = StoreError.maintenanceInProgress
+            reader.changeCount = 1
+            var unavailable = false
+            monitor.onUnavailable = { unavailable = true }
+            await monitor.poll()
+            XCTAssertFalse(unavailable)
+            XCTAssertTrue(preferences.isEnabled)
+            XCTAssertTrue(monitor.isRecording)
+            reader.unexpectedFailure = nil
+            try await Task.sleep(for: .milliseconds(300))
+            await monitor.poll()
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
     private func withMonitor(_ body: (PasteboardMonitor, FakeReader, CapturePreferences, PersistenceController) async throws -> Void) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Monitor-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -299,6 +363,7 @@ private final class FakeReader: SnapshotReading {
     }
     var foregroundSource: String? = "test.source"
     var readCount = 0
+    var unexpectedFailure: Error?
     var failure: SnapshotReaderError?
     var failureAfterRead: SnapshotReaderError?
     var advanceCountOnRead = false
@@ -326,6 +391,7 @@ private final class FakeReader: SnapshotReading {
 
     func read(sourceApp: String?) throws -> CaptureSnapshotValue {
         readCount += 1
+        if let unexpectedFailure { throw unexpectedFailure }
         if let failure { throw failure }
         return CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: [
             CapturedRepresentation(typeIdentifier: "public.utf8-plain-text", bytes: body)

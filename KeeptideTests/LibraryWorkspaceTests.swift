@@ -112,6 +112,122 @@ final class LibraryWorkspaceTests: XCTestCase {
         }
     }
 
+    func testMovingDirtyMemoToRecentlyDeletedFlushesExactItemAndEndsEditorSession() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = LibraryService(controller: harness.controller)
+        let original = try await service.create(MemoDraft(title: "Command", body: "before"))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.open(original)
+        let detachedEditor = try XCTUnwrap(workspace.editor)
+        detachedEditor.setBody("after flush", isComposing: false)
+        var removedRef: ContentRef?
+
+        let removed = await workspace.moveToRecentlyDeleted(original) { ref in
+            removedRef = ref
+            return true
+        }
+
+        let exactRef = try XCTUnwrap(removedRef)
+        XCTAssertTrue(removed)
+        XCTAssertEqual(exactRef.itemID, original.itemID)
+        XCTAssertEqual(exactRef.facet, .memo)
+        XCTAssertNotEqual(exactRef.version, original.version)
+        XCTAssertNil(workspace.editor)
+        let savedAfterFlush = try await service.editingSnapshot(exactRef)
+        XCTAssertEqual(savedAfterFlush.body, "after flush")
+
+        // A detached native editor callback queued after deletion cannot recreate a draft or commit another body.
+        detachedEditor.setBody("late detached change", isComposing: false)
+        try await Task.sleep(for: .milliseconds(1_100))
+        let savedAfterDetachedEdit = try await service.editingSnapshot(exactRef)
+        XCTAssertEqual(savedAfterDetachedEdit.body, "after flush")
+    }
+
+    func testMovingComposingMemoToRecentlyDeletedIsRefusedWithoutCallingBackend() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let ref = try await LibraryService(controller: harness.controller).create(
+            MemoDraft(title: "IME", body: "start")
+        )
+        let workspace = try await makeWorkspace(harness)
+        await workspace.open(ref)
+        workspace.editor?.setBody("ni", isComposing: true)
+        var backendCalled = false
+
+        let removed = await workspace.moveToRecentlyDeleted(ref) { _ in
+            backendCalled = true
+            return true
+        }
+
+        XCTAssertFalse(removed)
+        XCTAssertFalse(backendCalled)
+        XCTAssertEqual(workspace.editor?.ref, ref)
+        XCTAssertTrue(workspace.editor?.isComposing == true)
+        XCTAssertNotNil(workspace.message)
+    }
+
+    func testFailedEditorFlushRefusesSoftDeleteAndKeepsEditorVisible() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let ref = try await LibraryService(controller: harness.controller).create(
+            MemoDraft(title: "Unsaved", body: "before")
+        )
+        let workspace = try await makeWorkspace(harness)
+        await workspace.open(ref)
+        try await harness.controller.close()
+        workspace.editor?.setBody("must survive failed flush", isComposing: false)
+        var backendCalled = false
+
+        let removed = await workspace.moveToRecentlyDeleted(ref) { _ in
+            backendCalled = true
+            return true
+        }
+
+        XCTAssertFalse(removed)
+        XCTAssertFalse(backendCalled)
+        XCTAssertEqual(workspace.editor?.body, "must survive failed flush")
+        XCTAssertEqual(workspace.editor?.status, .failed)
+        XCTAssertNotNil(workspace.message)
+    }
+
+    func testConflictCopyRefusesToDeleteTheOriginalMemoIdentity() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = LibraryService(controller: harness.controller)
+        let original = try await service.create(MemoDraft(title: "Shared", body: "base"))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.open(original)
+        let externalBase = try await service.editingSnapshot(original)
+        workspace.editor?.setBody("local edit", isComposing: false)
+        _ = try await service.commit(MemoEdit(
+            title: "External", body: "external edit",
+            expectedMemoFingerprint: externalBase.memoFingerprint
+        ), base: original)
+        var backendCalled = false
+
+        let removed = await workspace.moveToRecentlyDeleted(original) { _ in
+            backendCalled = true
+            return true
+        }
+
+        XCTAssertFalse(removed)
+        XCTAssertFalse(backendCalled)
+        XCTAssertNotEqual(workspace.editor?.ref?.itemID, original.itemID)
+        XCTAssertNotNil(workspace.message)
+    }
+
+    func testRecentlyDeletedScopeClearsSearchAndDoesNotLoadActiveEntries() async throws {
+        let harness = try SearchHarness.make(in: self)
+        _ = try await insertHistory("still active", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        workspace.updateQuery("active")
+
+        await workspace.setScope(.recentlyDeleted)
+
+        XCTAssertEqual(workspace.scope, .recentlyDeleted)
+        XCTAssertEqual(workspace.query, "")
+        XCTAssertTrue(workspace.entries.isEmpty)
+        XCTAssertFalse(workspace.hasMoreEntries)
+    }
+
     func testUndoNewSaveRestoresHistoryWithoutDeletingChangedMemo() async throws {
         let harness = try SearchHarness.make(in: self)
         let (item, _) = try await insertHistory("undo source", into: harness)

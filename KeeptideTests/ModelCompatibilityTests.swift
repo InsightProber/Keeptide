@@ -8,6 +8,9 @@ final class ModelCompatibilityTests: XCTestCase {
         "ItemDeletionMarker", "FacetDeletionMarker"
     ]
     private let localEntities: Set<String> = [
+        "StoreIdentity", "UsageSummary", "UsageExecutionDedup", "FileAccessRecord", "CleanupIntent", "RawRecoveryPlan"
+    ]
+    private let legacyLocalEntities: Set<String> = [
         "StoreIdentity", "UsageSummary", "UsageExecutionDedup", "FileAccessRecord"
     ]
 
@@ -21,7 +24,7 @@ final class ModelCompatibilityTests: XCTestCase {
         for entity in ["CaptureSnapshot", "LibraryItem"] {
             XCTAssertNotEqual(original.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity])
         }
-        for entity in localEntities {
+        for entity in legacyLocalEntities {
             XCTAssertEqual(original.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity])
         }
         _ = try NSMappingModel.inferredMappingModel(forSourceModel: original, destinationModel: current)
@@ -34,7 +37,7 @@ final class ModelCompatibilityTests: XCTestCase {
         XCTAssertEqual(customConfigurations, ["CloudContent", "LocalState"])
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent")).compactMap(\.name)), cloudEntities)
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "LocalState")).compactMap(\.name)), localEntities)
-        XCTAssertEqual(model.versionIdentifiers, ["3"])
+        XCTAssertEqual(model.versionIdentifiers, ["4"])
     }
 
     func testCloudEntitiesExposeTheFrozenAttributes() throws {
@@ -94,6 +97,14 @@ final class ModelCompatibilityTests: XCTestCase {
             "id": .UUIDAttributeType, "snapshotID": .UUIDAttributeType, "bytes": .binaryDataAttributeType,
             "bookmark": .binaryDataAttributeType, "localPath": .stringAttributeType
         ])
+        for entity in ["CleanupIntent", "RawRecoveryPlan"] {
+            assertAttributes(model, entity: entity, expected: [
+                "id": .UUIDAttributeType, "schemaVersion": .integer64AttributeType,
+                "storeID": .UUIDAttributeType, "generation": .UUIDAttributeType,
+                "phase": .stringAttributeType, "payload": .binaryDataAttributeType,
+                "createdAt": .dateAttributeType, "updatedAt": .dateAttributeType
+            ])
+        }
     }
 
     func testRelationshipsStayInsideCloudConfigurationAndHaveInverses() throws {
@@ -183,7 +194,8 @@ final class ModelCompatibilityTests: XCTestCase {
         })
 
         XCTAssertEqual(externalAttributes, [
-            "CaptureRepresentation.bytes", "MemoDocument.body", "FileAccessRecord.bytes", "FileAccessRecord.bookmark"
+            "CaptureRepresentation.bytes", "MemoDocument.body", "FileAccessRecord.bytes", "FileAccessRecord.bookmark",
+            "CleanupIntent.payload", "RawRecoveryPlan.payload"
         ])
 
         let cloudAttributeNames = Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent"))
@@ -210,7 +222,9 @@ final class ModelCompatibilityTests: XCTestCase {
             "StoreIdentity": ["id:ascending"],
             "UsageSummary": ["id:ascending", "itemID:ascending,facet:ascending"],
             "UsageExecutionDedup": ["id:ascending", "recordedAt:ascending,id:ascending"],
-            "FileAccessRecord": ["id:ascending"]
+            "FileAccessRecord": ["id:ascending"],
+            "CleanupIntent": ["id:ascending", "phase:ascending,updatedAt:ascending"],
+            "RawRecoveryPlan": ["id:ascending", "phase:ascending,updatedAt:ascending"]
         ]
 
         for (entityName, requiredIndexes) in expected {
@@ -222,6 +236,230 @@ final class ModelCompatibilityTests: XCTestCase {
             })
             XCTAssertTrue(requiredIndexes.isSubset(of: actualIndexes),
                           "\(entityName) is missing \(requiredIndexes.subtracting(actualIndexes).sorted())")
+        }
+    }
+
+    func testV4ChangesOnlyLocalStateAndSupportsInferredMigrationFromEveryPriorModel() throws {
+        let current = try loadModel()
+        let directory = try XCTUnwrap(Bundle(for: PersistenceController.self)
+            .url(forResource: "Keeptide", withExtension: "momd"))
+        for version in 1...3 {
+            let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
+                directory.appendingPathComponent("KeeptideV\(version).mom")))
+            _ = try NSMappingModel.inferredMappingModel(forSourceModel: prior, destinationModel: current)
+        }
+        let v3 = try XCTUnwrap(NSManagedObjectModel(contentsOf:
+            directory.appendingPathComponent("KeeptideV3.mom")))
+        for entity in cloudEntities {
+            XCTAssertEqual(v3.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity],
+                           "V4 changed CloudContent entity \(entity)")
+        }
+    }
+
+    func testEveryPriorDiskStoreMigratesToV4AndReopensWithStableIdentity() async throws {
+        let modelDirectory = try XCTUnwrap(Bundle(for: PersistenceController.self)
+            .url(forResource: "Keeptide", withExtension: "momd"))
+        for version in 1...3 {
+            let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
+                modelDirectory.appendingPathComponent("KeeptideV\(version).mom")))
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("Keeptide-V\(version)-to-V4-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let seed = NSPersistentContainer(name: "Keeptide", managedObjectModel: prior)
+            let coordinator = seed.persistentStoreCoordinator
+            let options: [AnyHashable: Any] = [
+                NSMigratePersistentStoresAutomaticallyOption: true,
+                NSInferMappingModelAutomaticallyOption: true
+            ]
+            let content = try coordinator.addPersistentStore(
+                ofType: NSSQLiteStoreType,
+                configurationName: "CloudContent",
+                at: directory.appendingPathComponent("Content.sqlite"),
+                options: options
+            )
+            let local = try coordinator.addPersistentStore(
+                ofType: NSSQLiteStoreType,
+                configurationName: "LocalState",
+                at: directory.appendingPathComponent("Local.sqlite"),
+                options: options
+            )
+            let expected = try seedMigrationFixture(
+                version: version,
+                contentStore: content,
+                container: seed
+            )
+            try coordinator.remove(content)
+            try coordinator.remove(local)
+
+            let migrated = try PersistenceController(directory: directory)
+            let identity = try await migrated.identity()
+            XCTAssertEqual(identity, expected.identity, "V\(version) identity changed during migration")
+            XCTAssertEqual(migrated.runtime.safety, expected.safety, "V\(version) safety state changed during migration")
+            let migratedRecords = try await readMigrationFixture(from: migrated, expected: expected)
+            XCTAssertEqual(migratedRecords, expected.records, "V\(version) records changed during migration")
+            let lifecycleRows = try await insertLifecycleRows(into: migrated, version: version)
+            try await migrated.close()
+
+            let reopened = try PersistenceController(directory: directory)
+            let reopenedIdentity = try await reopened.identity()
+            XCTAssertEqual(reopenedIdentity, expected.identity, "V\(version) identity changed after reopen")
+            XCTAssertEqual(reopened.runtime.safety, expected.safety, "V\(version) safety state changed after reopen")
+            let reopenedRecords = try await readMigrationFixture(from: reopened, expected: expected)
+            XCTAssertEqual(
+                reopenedRecords,
+                expected.records,
+                "V\(version) records changed after reopen"
+            )
+            let reopenedLifecycleRows = try await readLifecycleRows(from: reopened)
+            XCTAssertEqual(
+                reopenedLifecycleRows,
+                lifecycleRows,
+                "V\(version) V4 lifecycle rows changed after reopen"
+            )
+            try await reopened.close()
+        }
+    }
+
+    private func seedMigrationFixture(
+        version: Int,
+        contentStore: NSPersistentStore,
+        container: NSPersistentContainer
+    ) throws -> MigrationFixture {
+        let storeID = try XCTUnwrap(UUID(uuidString: contentStore.identifier))
+        let identity = StoreIdentity(storeID: storeID, generation: UUID())
+        let safety = StoreSafetyState.active
+        let records = MigrationRecords(
+            collectionID: UUID(),
+            collectionName: "V\(version) migration collection",
+            collectionColor: "blue",
+            collectionSortOrder: Double(version) + 0.5,
+            usageID: UUID(),
+            usageItemID: UUID(),
+            usageFacet: ContentFacet.memo.rawValue,
+            usageLastUsedAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(version)),
+            usageCount: Int64(40 + version)
+        )
+        let context = container.newBackgroundContext()
+        try context.performAndWait {
+            let identityObject = NSEntityDescription.insertNewObject(forEntityName: "StoreIdentity", into: context)
+            identityObject.setValue(identity.storeID, forKey: "id")
+            identityObject.setValue(identity.generation, forKey: "generation")
+            identityObject.setValue(safety.rawValue, forKey: "safetyState")
+
+            let collection = NSEntityDescription.insertNewObject(forEntityName: "Collection", into: context)
+            collection.setValue(records.collectionID, forKey: "id")
+            collection.setValue(records.collectionName, forKey: "name")
+            collection.setValue(records.collectionColor, forKey: "color")
+            collection.setValue(records.collectionSortOrder, forKey: "sortOrder")
+
+            let usage = NSEntityDescription.insertNewObject(forEntityName: "UsageSummary", into: context)
+            usage.setValue(records.usageID, forKey: "id")
+            usage.setValue(records.usageItemID, forKey: "itemID")
+            usage.setValue(records.usageFacet, forKey: "facet")
+            usage.setValue(records.usageLastUsedAt, forKey: "lastUsedAt")
+            usage.setValue(records.usageCount, forKey: "useCount")
+            try context.save()
+            context.reset()
+        }
+        return MigrationFixture(identity: identity, safety: safety, records: records)
+    }
+
+    private func readMigrationFixture(
+        from controller: PersistenceController,
+        expected: MigrationFixture
+    ) async throws -> MigrationRecords {
+        try await controller.perform { context in
+            let collectionRequest = NSFetchRequest<NSManagedObject>(entityName: "Collection")
+            collectionRequest.predicate = NSPredicate(format: "id == %@", expected.records.collectionID as NSUUID)
+            collectionRequest.fetchLimit = 2
+            let collections = try context.fetch(collectionRequest)
+            guard collections.count == 1, let collection = collections.first else { throw StoreError.corruptStore }
+
+            let usageRequest = NSFetchRequest<NSManagedObject>(entityName: "UsageSummary")
+            usageRequest.predicate = NSPredicate(format: "id == %@", expected.records.usageID as NSUUID)
+            usageRequest.fetchLimit = 2
+            let usages = try context.fetch(usageRequest)
+            guard usages.count == 1, let usage = usages.first,
+                  let collectionID = collection.value(forKey: "id") as? UUID,
+                  let collectionName = collection.value(forKey: "name") as? String,
+                  let collectionColor = collection.value(forKey: "color") as? String,
+                  let collectionSortOrder = collection.value(forKey: "sortOrder") as? Double,
+                  let usageID = usage.value(forKey: "id") as? UUID,
+                  let usageItemID = usage.value(forKey: "itemID") as? UUID,
+                  let usageFacet = usage.value(forKey: "facet") as? String,
+                  let usageLastUsedAt = usage.value(forKey: "lastUsedAt") as? Date,
+                  let usageCount = usage.value(forKey: "useCount") as? Int64 else {
+                throw StoreError.corruptStore
+            }
+            return MigrationRecords(
+                collectionID: collectionID,
+                collectionName: collectionName,
+                collectionColor: collectionColor,
+                collectionSortOrder: collectionSortOrder,
+                usageID: usageID,
+                usageItemID: usageItemID,
+                usageFacet: usageFacet,
+                usageLastUsedAt: usageLastUsedAt,
+                usageCount: usageCount
+            )
+        }
+    }
+
+    private func insertLifecycleRows(
+        into controller: PersistenceController,
+        version: Int
+    ) async throws -> [LifecycleRow] {
+        let now = Date(timeIntervalSince1970: 1_800_100_000 + Double(version))
+        let rows = [
+            LifecycleRow(entity: "CleanupIntent", id: UUID(), schemaVersion: 1,
+                         storeID: controller.runtime.identity.storeID, generation: controller.runtime.identity.generation,
+                         phase: CleanupIntentPhase.prepared.rawValue,
+                         payload: Data("cleanup-v\(version)".utf8), createdAt: now, updatedAt: now),
+            LifecycleRow(entity: "RawRecoveryPlan", id: UUID(), schemaVersion: 1,
+                         storeID: controller.runtime.identity.storeID, generation: controller.runtime.identity.generation,
+                         phase: RawRecoveryPlanPhase.reconciling.rawValue,
+                         payload: Data("recovery-v\(version)".utf8), createdAt: now, updatedAt: now)
+        ]
+        try await controller.perform { context in
+            for row in rows {
+                let object = NSEntityDescription.insertNewObject(forEntityName: row.entity, into: context)
+                object.setValue(row.id, forKey: "id")
+                object.setValue(row.schemaVersion, forKey: "schemaVersion")
+                object.setValue(row.storeID, forKey: "storeID")
+                object.setValue(row.generation, forKey: "generation")
+                object.setValue(row.phase, forKey: "phase")
+                object.setValue(row.payload, forKey: "payload")
+                object.setValue(row.createdAt, forKey: "createdAt")
+                object.setValue(row.updatedAt, forKey: "updatedAt")
+            }
+            try context.save()
+            context.reset()
+        }
+        return rows
+    }
+
+    private func readLifecycleRows(from controller: PersistenceController) async throws -> [LifecycleRow] {
+        try await controller.perform { context in
+            try ["CleanupIntent", "RawRecoveryPlan"].map { entity in
+                let request = NSFetchRequest<NSManagedObject>(entityName: entity)
+                request.fetchLimit = 2
+                let matches = try context.fetch(request)
+                guard matches.count == 1, let object = matches.first,
+                      let id = object.value(forKey: "id") as? UUID,
+                      let schemaVersion = object.value(forKey: "schemaVersion") as? Int64,
+                      let storeID = object.value(forKey: "storeID") as? UUID,
+                      let generation = object.value(forKey: "generation") as? UUID,
+                      let phase = object.value(forKey: "phase") as? String,
+                      let payload = object.value(forKey: "payload") as? Data,
+                      let createdAt = object.value(forKey: "createdAt") as? Date,
+                      let updatedAt = object.value(forKey: "updatedAt") as? Date else {
+                    throw StoreError.corruptStore
+                }
+                return LifecycleRow(entity: entity, id: id, schemaVersion: schemaVersion,
+                                    storeID: storeID, generation: generation, phase: phase,
+                                    payload: payload, createdAt: createdAt, updatedAt: updatedAt)
+            }
         }
     }
 
@@ -247,4 +485,34 @@ final class ModelCompatibilityTests: XCTestCase {
                            "\(name).\(attributeName)", file: file, line: line)
         }
     }
+}
+
+private struct MigrationFixture: Sendable {
+    let identity: StoreIdentity
+    let safety: StoreSafetyState
+    let records: MigrationRecords
+}
+
+private struct MigrationRecords: Equatable, Sendable {
+    let collectionID: UUID
+    let collectionName: String
+    let collectionColor: String
+    let collectionSortOrder: Double
+    let usageID: UUID
+    let usageItemID: UUID
+    let usageFacet: String
+    let usageLastUsedAt: Date
+    let usageCount: Int64
+}
+
+private struct LifecycleRow: Equatable, Sendable {
+    let entity: String
+    let id: UUID
+    let schemaVersion: Int64
+    let storeID: UUID
+    let generation: UUID
+    let phase: String
+    let payload: Data
+    let createdAt: Date
+    let updatedAt: Date
 }

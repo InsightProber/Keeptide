@@ -78,6 +78,7 @@ struct SearchPage: Sendable {
 final class SearchIndexStatus: @unchecked Sendable {
     private let lock = NSLock()
     private var current: SearchIndexState
+    private var suspended = false
     private var pendingSaves = 0
     private var readFailureHandler: (@Sendable () -> Void)?
 
@@ -88,7 +89,19 @@ final class SearchIndexStatus: @unchecked Sendable {
     var state: SearchIndexState { lock.withLock { current } }
 
     func update(_ state: SearchIndexState) {
-        lock.withLock { current = state }
+        lock.withLock { if !suspended { current = state } }
+    }
+
+    /// Retire this index lifetime. Late consumer completions cannot reopen it.
+    func suspend() { lock.withLock { suspended = true; current = .unavailable } }
+
+    /// Serialize the availability check with emission, so a page cannot be
+    /// published after a disk-pressure transition while using an old reader.
+    func publishIfAvailable(_ emit: () -> Void) throws {
+        try lock.withLock {
+            guard current != .unavailable else { throw SearchIndexError.closed }
+            emit()
+        }
     }
 
     /// Called synchronously for every store save: the index is now behind.
@@ -104,7 +117,7 @@ final class SearchIndexStatus: @unchecked Sendable {
 
     /// Reports `.ready` only if no save arrived after the pass started.
     func finishPass(startedAt mark: Int) {
-        lock.withLock { current = pendingSaves == mark ? .ready : .updating }
+        lock.withLock { if !suspended { current = pendingSaves == mark ? .ready : .updating } }
     }
 
     func setReadFailureHandler(_ handler: @escaping @Sendable () -> Void) {
@@ -170,17 +183,18 @@ struct SearchService: Sendable {
         defer { reader.close() }
         guard cancellation.attach(reader) else { throw CancellationError() }
         defer { cancellation.detach() }
+        func publish(_ page: SearchPage) throws { try status.publishIfAvailable { emit(page) } }
         do {
             // One snapshot per search: counts, ranks, scanned ranges and the reported
             // index state all see the same documents even while the consumer replaces them.
             try reader.snapshot {
                 let state = try indexState(reader)
                 if query.isEmpty {
-                    emit(try browse(query, request, reader, state))
+                    try publish(try browse(query, request, reader, state))
                 } else if query.longTerms.isEmpty {
-                    try scan(query, request, reader, state, cancellation, emit: emit)
+                    try scan(query, request, reader, state, cancellation, emit: publish)
                 } else {
-                    emit(try ranked(query, request, reader, state))
+                    try publish(try ranked(query, request, reader, state))
                 }
             }
         } catch let error as SearchIndexError {
@@ -252,10 +266,10 @@ struct SearchService: Sendable {
     /// first range is done; the final page is complete.
     private func scan(
         _ query: ParsedQuery, _ request: SearchRequest, _ reader: SearchIndexReader, _ state: SearchIndexState,
-        _ cancellation: SearchCancellation, emit: (SearchPage) -> Void
+        _ cancellation: SearchCancellation, emit: (SearchPage) throws -> Void
     ) throws {
         guard case .integer(let maximum)? = try reader.rows("SELECT max(id) FROM doc", []).first?.first else {
-            emit(page(request, query, [], total: 0, complete: true, state: state))
+            try emit(page(request, query, [], total: 0, complete: true, state: state))
             return
         }
         var keys: [RankKey] = []
@@ -286,7 +300,7 @@ struct SearchService: Sendable {
             let window = Array(keys.dropFirst(request.offset).prefix(request.limit))
             guard complete || lastEmission == nil || window.map(\.id) != lastWindow else { continue }
             let results = try results(for: window.map { (id: $0.id, tier: $0.tier) }, query: query, reader)
-            emit(page(request, query, results, total: keys.count, complete: complete, state: state))
+            try emit(page(request, query, results, total: keys.count, complete: complete, state: state))
             lastEmission = now
             lastWindow = window.map(\.id)
         }

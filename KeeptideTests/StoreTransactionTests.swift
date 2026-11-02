@@ -4,6 +4,73 @@ import XCTest
 
 @MainActor
 final class StoreTransactionTests: XCTestCase {
+    func testPureUpdateRejectsStaleMaintenancePermitEvenWithCurrentTransactionIdentity() async throws {
+        try await withStore { controller in
+            let writer = WriteCoordinator(controller: controller)
+            let repository = ContentRepository(controller: controller)
+            let gate = StoreSafetyGate(controller: controller)
+            let original = CollectionValue(name: "protected by permit generation")
+            _ = try await writer.commit(StoreTransaction(
+                identity: try await controller.identity(),
+                mutations: [.insert(.collection(original))]
+            ))
+            let state = try await repository.recordState(.collection(original.id))
+            let stalePermit = try await gate.permit(.maintenance)
+            try await gate.transition(to: .quarantined, expecting: try await controller.identity())
+            try await gate.transition(to: .active, expecting: try await controller.identity())
+
+            var renamed = original
+            renamed.name = "must not commit"
+            do {
+                _ = try await writer.commit(StoreTransaction(
+                    identity: try await controller.identity(),
+                    preconditions: [.recordUnchanged(.collection(original.id), fingerprint: state.fingerprint)],
+                    mutations: [.update(.collection(renamed))],
+                    permit: stalePermit
+                ))
+                XCTFail("A pure update ignored its stale maintenance permit")
+            } catch {
+                XCTAssertEqual(error as? StoreError, .preconditionFailed)
+            }
+            guard case .collection(let persisted) = try await repository.recordState(.collection(original.id)).value
+            else { return XCTFail("Collection changed record type") }
+            XCTAssertEqual(persisted.name, original.name)
+        }
+    }
+
+    func testMaintenancePermitIsRevalidatedAfterFinalAuthorizationBeforeSave() async throws {
+        try await withStore { controller in
+            let writer = WriteCoordinator(controller: controller)
+            let repository = ContentRepository(controller: controller)
+            let gate = StoreSafetyGate(controller: controller)
+            let original = CollectionValue(name: "presave fence")
+            _ = try await writer.commit(StoreTransaction(
+                identity: try await controller.identity(),
+                mutations: [.insert(.collection(original))]
+            ))
+            let state = try await repository.recordState(.collection(original.id))
+            var renamed = original
+            renamed.name = "must roll back"
+            let permit = try await gate.permit(.maintenance)
+            let authorization = PresaveQuarantineProbe(controller: controller)
+
+            do {
+                _ = try await writer.commit(StoreTransaction(
+                    identity: try await controller.identity(),
+                    preconditions: [.recordUnchanged(.collection(original.id), fingerprint: state.fingerprint)],
+                    mutations: [.update(.collection(renamed))],
+                    permit: permit
+                ), validate: authorization.check)
+                XCTFail("A maintenance update saved after its permit became invalid")
+            } catch {
+                XCTAssertEqual(error as? StoreError, .operationDenied)
+            }
+            guard case .collection(let persisted) = try await repository.recordState(.collection(original.id)).value
+            else { return XCTFail("Collection changed record type") }
+            XCTAssertEqual(persisted.name, original.name)
+        }
+    }
+
     func testItemCannotDetachAStillPersistedMemo() async throws {
         try await withStore { controller in
             let (item, memo, ref) = try await insertOwnedMemo(into: controller, body: "attached memo")
@@ -1007,6 +1074,23 @@ private extension StoreTransactionTests {
             let request = NSFetchRequest<NSFetchRequestResult>(entityName: "CaptureRepresentation")
             request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
             return try context.count(for: request)
+        }
+    }
+}
+
+private final class PresaveQuarantineProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private let controller: PersistenceController
+    private var calls = 0
+
+    init(controller: PersistenceController) {
+        self.controller = controller
+    }
+
+    func check() {
+        lock.withLock {
+            calls += 1
+            if calls == 2 { controller.runtime.safety = .quarantined }
         }
     }
 }

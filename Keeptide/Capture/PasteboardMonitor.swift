@@ -45,6 +45,8 @@ final class PasteboardMonitor {
     @ObservationIgnored private var ownWrite: OwnWriteToken?
     @ObservationIgnored var onCapture: (() async -> Void)?
     @ObservationIgnored var onUnavailable: (() -> Void)?
+    @ObservationIgnored var onStorageFull: (() async -> Void)?
+    @ObservationIgnored private var retryAfter: ContinuousClock.Instant?
 
     init(reader: any SnapshotReading, service: CaptureService, preferences: CapturePreferences,
          sourceApp: @escaping () -> String?, matchesOwnWrite: @escaping (OwnWriteToken) -> Bool) {
@@ -97,6 +99,8 @@ final class PasteboardMonitor {
     private func sampleAndStart() {
         guard !stopping, preferences.isEnabled else { return }
         if case .failed = state { return }
+        if let retryAfter, ContinuousClock.now < retryAfter { return }
+        retryAfter = nil
         let source = sourceApp()
         if source != observedSource { foregroundApplicationChanged(to: source) }
         observe(count: reader.changeCount, source: observedSource)
@@ -153,6 +157,21 @@ final class PasteboardMonitor {
             guard admission.isValid, !Task.isCancelled, !stopping, preferences.isEnabled else { return }
             if error is CancellationError || error as? CaptureError == .staleSnapshot {
                 state = .recording
+            } else if error as? StoreError == .maintenanceInProgress {
+                // Retry only this observed copy. A newer clipboard count, Pause,
+                // or shutdown invalidates it through the existing admission path.
+                pending = observation
+                processedCount = observation.count &- 1
+                retryAfter = ContinuousClock.now.advanced(by: .milliseconds(250))
+                state = .skipped("Recording · waiting for library maintenance")
+            } else if error as? StoreError == .operationDenied {
+                pollingTask?.cancel(); pollingTask = nil
+                state = .failed("Recording requires a newer Keeptide version or library recovery. Existing content is preserved.")
+                onUnavailable?()
+            } else if DiskPressurePolicy.isOutOfSpace(error) {
+                preferences.isEnabled = false
+                state = .failed("Recording paused because storage is full. Free space, then resume and copy this item again.")
+                await onStorageFull?()
             } else if let error = error as? SnapshotReaderError {
                 handle(error)
             } else if let error = error as? CaptureError,

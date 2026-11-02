@@ -59,6 +59,7 @@ final class SQLiteSearchIndex: @unchecked Sendable {
     /// Why there is no connection: `.corrupt` waits for `reset`; any other
     /// failure is retried by reopening on the next call. Nil after `close()`.
     private var openFailure: SearchIndexError?
+    private var evictedForDiskPressure = false
 
     private var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
 
@@ -111,6 +112,7 @@ final class SQLiteSearchIndex: @unchecked Sendable {
     /// Deletes only this index's own files and starts an empty build.
     func reset(identity: StoreIdentity) throws {
         try lock.withLock {
+            guard !evictedForDiskPressure else { throw SearchIndexError.closed }
             connection?.close()
             connection = nil
             let database: SQLiteConnection
@@ -239,18 +241,44 @@ final class SQLiteSearchIndex: @unchecked Sendable {
     }
 
     func openReader() throws -> SearchIndexReader {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            throw SearchIndexError.unavailable(code: SQLITE_CANTOPEN)
+        try lock.withLock {
+            guard !evictedForDiskPressure else { throw SearchIndexError.closed }
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                throw SearchIndexError.unavailable(code: SQLITE_CANTOPEN)
+            }
+            let database = try SQLiteConnection(
+                path: fileURL.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX
+            )
+            do {
+                try database.execute("PRAGMA query_only = 1")
+                return SearchIndexReader(connection: database)
+            } catch {
+                database.close()
+                throw error
+            }
         }
-        let database = try SQLiteConnection(
-            path: fileURL.path, flags: SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX
-        )
-        do {
-            try database.execute("PRAGMA query_only = 1")
-            return SearchIndexReader(connection: database)
-        } catch {
-            database.close()
-            throw error
+    }
+
+    /// The owner stops the consumer first. Retire this instance before unlinking
+    /// only its three known derived files; rebuilding requires a new instance.
+    func evictForDiskPressure() throws {
+        try lock.withLock {
+            evictedForDiskPressure = true
+            connection?.close()
+            connection = nil
+            openFailure = nil
+            let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard values.isDirectory == true, values.isSymbolicLink != true else {
+                throw SearchIndexError.unavailable(code: SQLITE_CANTOPEN)
+            }
+            for suffix in ["", "-wal", "-shm"] {
+                let url = directory.appendingPathComponent(Self.fileName + suffix)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let file = try url.resourceValues(forKeys: [.isDirectoryKey])
+                    guard file.isDirectory != true else { throw SearchIndexError.unavailable(code: SQLITE_CANTOPEN) }
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
         }
     }
 

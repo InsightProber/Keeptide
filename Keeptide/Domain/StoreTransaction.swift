@@ -4,6 +4,8 @@ enum StoreError: Error, Equatable {
     case closed, invalidModel, corruptStore, invalidTransaction, preconditionFailed
     case notFound, staleReference, invalidToken, invalidLease, snapshotUnavailable
     case contentProtected, operationDenied, storeInUse
+    /// A durable cleanup intent owns CloudContent until it completes or blocks.
+    case maintenanceInProgress
     // Rebuild the derived projection before adopting this captured history boundary.
     case historyRequiresRebuild(checkpoint: Data?)
 }

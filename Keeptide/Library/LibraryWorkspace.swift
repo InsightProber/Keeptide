@@ -6,6 +6,7 @@ enum LibraryScope: Hashable, Sendable {
     case favorites
     case allSnippets
     case uncategorized
+    case recentlyDeleted
     case collection(CollectionID)
 
     var collectionID: CollectionID? {
@@ -252,6 +253,12 @@ final class LibraryWorkspace {
         hasMoreEntries = false
         searchIsPartial = false
         message = nil
+        if scope == .recentlyDeleted {
+            entries = []
+            selectedEntryID = nil
+            isLoading = false
+            return
+        }
         do {
             if refreshIndex {
                 try await refreshSearch()
@@ -299,6 +306,19 @@ final class LibraryWorkspace {
         guard !isClosing, !isClosed, scope != value else { return }
         navigationGeneration &+= 1
         scope = value
+        if value == .recentlyDeleted {
+            queryTask?.cancel()
+            queryTask = nil
+            loadGeneration &+= 1
+            query = ""
+            entries = []
+            selectedEntryID = nil
+            hasMoreEntries = false
+            searchIsPartial = false
+            isLoading = false
+            message = nil
+            return
+        }
         scheduleQueryLoad(refreshIndex: true)
     }
 
@@ -316,6 +336,7 @@ final class LibraryWorkspace {
     /// Only result loading is asynchronous; every edit invalidates older loads.
     func updateQuery(_ value: String) {
         guard !isClosing, !isClosed else { return }
+        guard scope != .recentlyDeleted else { return }
         guard query != value else { return }
         query = value
         scheduleQueryLoad()
@@ -368,6 +389,10 @@ final class LibraryWorkspace {
 
     func startNew(in requestedScope: LibraryScope? = nil) async {
         guard !isClosing, !isClosed else { return }
+        guard requestedScope != .recentlyDeleted, scope != .recentlyDeleted else {
+            message = "Choose a snippet collection before creating a new snippet."
+            return
+        }
         if let requestedScope { updateScope(requestedScope) }
         navigationGeneration &+= 1
         let navigation = navigationGeneration
@@ -514,6 +539,68 @@ final class LibraryWorkspace {
         ))
     }
 
+    /// Safely ends any editor for the exact facet before the root maintenance facade performs a soft delete.
+    /// The injected operation is the only code here that mutates lifecycle state, which keeps tests isolated and
+    /// prevents this workspace from acquiring maintenance permits or duplicating backend rules.
+    func moveToRecentlyDeleted(
+        _ requestedRef: ContentRef,
+        using remove: (ContentRef) async -> Bool
+    ) async -> Bool {
+        guard !isClosing, !isClosed else { return false }
+        var target = requestedRef
+        var editorDraftID: UUID?
+
+        if requestedRef.facet == .memo,
+           let current = editor,
+           current.ref?.facet == .memo,
+           current.itemID == requestedRef.itemID {
+            guard !current.isComposing else {
+                message = "Finish text composition before moving this snippet to Recently Deleted."
+                return false
+            }
+            let draftID = current.draftID
+            do {
+                let flushed = try await flush()
+                guard editor?.draftID == draftID,
+                      let currentRef = flushed ?? editor?.ref,
+                      currentRef.facet == .memo,
+                      currentRef.itemID == requestedRef.itemID else {
+                    message = "The edit was saved as a separate snippet. Review it before deleting anything."
+                    return false
+                }
+                target = currentRef
+                editorDraftID = draftID
+            } catch {
+                message = "The snippet could not be saved, so it was not moved to Recently Deleted."
+                return false
+            }
+        }
+
+        guard await remove(target) else {
+            message = "This item could not be moved to Recently Deleted."
+            return false
+        }
+
+        let matchingEditor = editor.flatMap { current -> MemoEditorSession? in
+            guard current.itemID == target.itemID, current.ref?.facet == target.facet else { return nil }
+            return current
+        }
+        if let matchingEditor {
+            editorDraftID = editorDraftID ?? matchingEditor.draftID
+            matchingEditor.attachChangeHandler({})
+            editor = nil
+        }
+        if let editorDraftID { _ = await coordinator.endSession(editorDraftID) }
+
+        navigationGeneration &+= 1
+        selectedEntryID = nil
+        undoSave = nil
+        canUndoNewSave = false
+        message = nil
+        await reload()
+        return true
+    }
+
     func recoverDraft(_ draftID: UUID) async {
         guard let draft = recoveredByID[draftID] else { return }
         navigationGeneration &+= 1
@@ -649,6 +736,7 @@ final class LibraryWorkspace {
     private func loadEntries(
         generation: UInt64, offset: Int
     ) async throws -> (entries: [LibraryEntry], hasMore: Bool, isPartial: Bool) {
+        if scope == .recentlyDeleted { return ([], false, false) }
         if let searchService {
             let searchScope: SearchScope = scope == .recentClips ? .history : .memo
             let collection: CollectionFilter?

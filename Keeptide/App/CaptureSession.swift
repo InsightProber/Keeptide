@@ -11,6 +11,7 @@ final class CaptureSession {
     private(set) var selectionError: String?
     private(set) var isReady = false
     private(set) var libraryWorkspace: LibraryWorkspace?
+    private(set) var maintenance: LibraryMaintenance?
     private(set) var libraryInitializationError: String?
     private(set) var actionMessage: String?
     private var message: String?
@@ -40,6 +41,7 @@ final class CaptureSession {
     /// Search over the local index; nil until the store opens. No UI uses it yet.
     @ObservationIgnored private(set) var searchService: SearchService?
     @ObservationIgnored private var searchIndex: SQLiteSearchIndex?
+    @ObservationIgnored private var searchStatus: SearchIndexStatus?
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
     /// What direct paste asks of the system. Every paste service this session makes uses it.
     @ObservationIgnored private let directPaste: DirectPasteSystem
@@ -177,6 +179,7 @@ final class CaptureSession {
                 matchesOwnWrite: { $0.matches(pasteboard: board) }) : nil
             monitor?.onCapture = { [weak self] in await self?.refresh() }
             monitor?.onUnavailable = { [weak self] in self?.isReady = false }
+            monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
             if let monitor {
                 foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
                     forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -213,9 +216,17 @@ final class CaptureSession {
             } catch {
                 libraryInitializationError = "The editor could not be opened. Your saved content is preserved."
             }
+            let lifecycleDefaults = library.preferencesSuite.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+            let maintenance = LibraryMaintenance(
+                controller: store, identity: storeIdentity, directory: directory,
+                preferences: LifecyclePreferences(defaults: lifecycleDefaults),
+                didChange: { [weak self] in await self?.refresh() }
+            )
+            self.maintenance = maintenance
             isReady = true
             message = nil
             await refresh()
+            maintenance.start()
             monitor?.start()
             onServicesChanged?()
         } catch {
@@ -227,6 +238,7 @@ final class CaptureSession {
     /// then report the index as unavailable.
     private func startSearch(store: PersistenceController, directory: URL) async {
         let status = SearchIndexStatus()
+        searchStatus = status
         let searchDirectory = directory.appendingPathComponent("Search", isDirectory: true)
         guard let index = try? await Task.detached(priority: .utility, operation: {
             try SQLiteSearchIndex(directory: searchDirectory)
@@ -240,6 +252,25 @@ final class CaptureSession {
         historyConsumer = consumer
         searchService = SearchService(index: index, status: status)
         await consumer.start()
+    }
+
+    /// Keep primary stores and drafts intact. Search remains unavailable until
+    /// restart rebuilds it, so a full disk cannot cause a rebuild/eviction loop.
+    private func recoverFromDiskPressure() async {
+        guard let index = searchIndex else { return }
+        let consumer = historyConsumer
+        searchStatus?.suspend()
+        await consumer?.stopAndDrain()
+        guard searchIndex === index else { return }
+        historyConsumer = nil
+        do {
+            try await Task.detached(priority: .utility) { try index.evictForDiskPressure() }.value
+            guard searchIndex === index else { return }
+            actionMessage = "Search cache cleared. Your content and drafts are preserved. Restart after freeing space to rebuild search."
+        } catch {
+            guard searchIndex === index else { return }
+            actionMessage = "Recording is paused. Your content and drafts are preserved; the search cache could not be cleared."
+        }
     }
 
     func refresh() async {
@@ -312,6 +343,8 @@ final class CaptureSession {
     }
 
     func shutdown() async {
+        await maintenance?.stopAndDrain()
+        maintenance = nil
         librarySession?.end()
         librarySession = nil
         selectionGeneration += 1
@@ -341,6 +374,7 @@ final class CaptureSession {
         manualPasteQASession = nil
         #endif
         searchService = nil
+        searchStatus = nil
         libraryWorkspace = nil
         readContent = nil
         pasteService = nil

@@ -3,6 +3,12 @@ import SwiftUI
 /// The one page of the Settings window. Each control writes its preference at once.
 struct SettingsView: View {
     @Bindable var preferences: QuickAccessPreferences
+    let lifecycle: LifecycleSettingsModel?
+
+    init(preferences: QuickAccessPreferences, lifecycle: LifecycleSettingsModel? = nil) {
+        self.preferences = preferences
+        self.lifecycle = lifecycle
+    }
 
     var body: some View {
         Form {
@@ -36,9 +42,162 @@ struct SettingsView: View {
             } footer: {
                 Text("Larger cards give each clip more room and larger type. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
             }
+
+            Section("History & Storage") {
+                if let lifecycle {
+                    lifecycleSettings(lifecycle)
+                } else {
+                    Label("History settings are unavailable", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("LifecycleSettingsUnavailable")
+                }
+            }
         }
         .formStyle(.grouped)
         .frame(width: 520)
+        .alert(
+            "Shorten History Retention?",
+            isPresented: confirmationPresented
+        ) {
+            Button("Cancel", role: .cancel) { lifecycle?.cancelConfirmation() }
+            Button("Apply Shorter Retention", role: .destructive) {
+                guard let lifecycle else { return }
+                Task { await lifecycle.confirmShortening() }
+            }
+        } message: {
+            if let confirmation = lifecycle?.pendingConfirmation {
+                Text(Self.confirmationMessage(historyCount: confirmation.historyCount))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func lifecycleSettings(_ model: LifecycleSettingsModel) -> some View {
+        Picker("Keep clipboard history", selection: retentionOption(model)) {
+            Text("1 day").tag(LifecycleRetentionOption.oneDay)
+            Text("7 days").tag(LifecycleRetentionOption.sevenDays)
+            Text("30 days").tag(LifecycleRetentionOption.thirtyDays)
+            Text("90 days").tag(LifecycleRetentionOption.ninetyDays)
+            Text("1 year").tag(LifecycleRetentionOption.oneYear)
+            Text("Custom…").tag(LifecycleRetentionOption.custom)
+            Text("Forever").tag(LifecycleRetentionOption.permanent)
+        }
+        .disabled(model.phase == .evaluatingImpact || model.phase == .applying)
+        .accessibilityIdentifier("HistoryRetentionPicker")
+
+        if model.selectedOption == .custom {
+            HStack {
+                TextField("Days", text: customDays(model))
+                    .frame(width: 88)
+                    .accessibilityIdentifier("CustomRetentionDays")
+                Text("days")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Apply") { Task { await model.submitCustomRetention() } }
+                    .disabled(model.phase == .evaluatingImpact || model.phase == .applying)
+                    .accessibilityIdentifier("ApplyCustomRetention")
+            }
+        }
+
+        if model.requiresRetentionReview {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(
+                    "The saved retention setting could not be read. Keeptide is keeping history forever until you review it.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(.orange)
+                Button("Confirm Keep Forever") {
+                    Task { await model.selectRetention(.permanent) }
+                }
+                .accessibilityIdentifier("ReviewRetentionSetting")
+            }
+            .accessibilityIdentifier("RetentionReviewRequired")
+        }
+
+        if model.phase == .evaluatingImpact {
+            HStack {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Checking affected clips…")
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityIdentifier("RetentionImpactProgress")
+        }
+
+        if let message = model.message {
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red)
+                .accessibilityIdentifier("LifecycleSettingsMessage")
+        }
+
+        Toggle("Warn when Keeptide storage grows large", isOn: warningEnabled(model))
+            .accessibilityIdentifier("StorageWarningToggle")
+        if model.warningIsEnabled {
+            Stepper(
+                "Warn at \(model.warningLimitGiB) GiB",
+                value: warningGiB(model),
+                in: 1...1_024
+            )
+            .accessibilityIdentifier("StorageWarningLimit")
+        }
+        Text("This is a warning only, not a storage quota. Keeptide never deletes saved content to stay below it.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+        HStack {
+            if let usage = model.usage {
+                Text(Self.usageDescription(usage))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("StorageUsageSummary")
+            } else {
+                Text("Storage usage has not been measured.")
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Refresh Usage") { Task { await model.refreshUsage() } }
+                .disabled(model.isRefreshingUsage)
+                .accessibilityIdentifier("RefreshStorageUsage")
+        }
+    }
+
+    private var confirmationPresented: Binding<Bool> {
+        Binding(
+            get: { lifecycle?.pendingConfirmation != nil },
+            // Alert buttons own the transition. Treating SwiftUI's automatic dismissal write as
+            // cancellation can race the confirmation Task and discard the exact staged change.
+            set: { _ in }
+        )
+    }
+
+    private func retentionOption(_ model: LifecycleSettingsModel) -> Binding<LifecycleRetentionOption> {
+        Binding(
+            get: { model.selectedOption },
+            set: { option in Task { await model.selectOption(option) } }
+        )
+    }
+
+    private func customDays(_ model: LifecycleSettingsModel) -> Binding<String> {
+        Binding(get: { model.customDays }, set: { model.customDays = $0 })
+    }
+
+    private func warningEnabled(_ model: LifecycleSettingsModel) -> Binding<Bool> {
+        Binding(get: { model.warningIsEnabled }, set: { model.setWarningEnabled($0) })
+    }
+
+    private func warningGiB(_ model: LifecycleSettingsModel) -> Binding<Int> {
+        Binding(get: { model.warningLimitGiB }, set: { model.setWarningLimitGiB($0) })
+    }
+
+    static func confirmationMessage(historyCount: Int) -> String {
+        let clips = historyCount == 1 ? "1 active clip" : "\(historyCount) active clips"
+        return "This will expire \(clips) from clipboard history. Saved snippets are kept."
+    }
+
+    static func usageDescription(_ report: StorageUsageReport) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        let amount = formatter.string(fromByteCount: Int64(clamping: report.totalAllocatedBytes))
+        return report.isPartialCoverage ? "At least \(amount) used" : "\(amount) used"
     }
 
     /// The enlargement slider's range: the one the strip's style keeps the scale in.
