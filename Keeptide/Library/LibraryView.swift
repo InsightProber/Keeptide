@@ -52,7 +52,7 @@ struct LibraryView: View {
         _commands = Bindable(wrappedValue: commands)
     }
 
-    var body: some View {
+    private var libraryLayout: some View {
         GeometryReader { geometry in
             NavigationSplitView(columnVisibility: $splitVisibility) {
                 librarySidebar
@@ -84,6 +84,10 @@ struct LibraryView: View {
             sidebarVisibility = next
             sidebarPreference = next == .visible ? .shown : .hidden
         }
+    }
+
+    private var presentedLibrary: some View {
+        libraryLayout
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
         }
@@ -118,6 +122,10 @@ struct LibraryView: View {
         } message: { _ in
             Text("Items will move to Uncategorized. Their content and history will not be deleted.")
         }
+    }
+
+    private var selectionLibrary: some View {
+        presentedLibrary
         .task(id: selectedItemID) {
             let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
             await session.select(ref)
@@ -137,17 +145,28 @@ struct LibraryView: View {
         .onChange(of: session.libraryWorkspace?.entries.map(\.ref) ?? []) { _, _ in
             updateExportContext()
         }
+    }
+
+    var body: some View {
+        selectionLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }
         .onChange(of: commands.saveRequest) { _, _ in saveCurrentEditor() }
         .onChange(of: commands.copyRequest) { _, _ in copyCurrentEditor() }
+        .onChange(of: commands.ignoredApplicationsRequest, initial: true) { _, request in
+            if request > 0 { showsIgnoredApplications = true }
+        }
         .onChange(of: commands.openRequest) { _, request in
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }
         }
-        .onChange(of: commands.exportLibraryRequest) { _, _ in beginExport(selectedOnly: false) }
-        .onChange(of: commands.exportSelectedRequest) { _, _ in beginExport(selectedOnly: true) }
+        .onChange(of: commands.exportLibraryRequest, initial: true) { _, request in
+            if request > 0 { beginExport(selectedOnly: false) }
+        }
+        .onChange(of: commands.exportSelectedRequest, initial: true) { _, request in
+            if request > 0 { beginExport(selectedOnly: true) }
+        }
         .onAppear { updateExportContext() }
         .disabled(session.libraryWorkspace?.isClosing == true)
     }

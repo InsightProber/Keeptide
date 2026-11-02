@@ -35,7 +35,10 @@ APPLICATION_ACTIVATION = re.compile(
     r"|\bactivate\s*\(\s*ignoringOtherApps\b|\bactivateIgnoringOtherApps\b|\.unhide\s*\("
 )
 LIVE_SYSTEM = re.compile(r"\.live\b")
-LIVE_WIRING = re.compile(r"CaptureSession\s*\(\s*directPaste\s*:\s*\.live\s*\)")
+LIVE_WIRING = re.compile(
+    r"CaptureSession\s*\(\s*preferences\s*:\s*capturePreferences\s*,"
+    r"\s*directPaste\s*:\s*\.live\s*\)"
+)
 # Reading the keyboard's state or watching other apps' events needs Input Monitoring access.
 INPUT_MONITORING = re.compile(
     r"\bCGEventSource\.keyState\b|\bCGEventSourceKeyState\b|\bCGEvent\.tapCreate\w*|\bCGEventTapCreate\w*"
@@ -134,6 +137,16 @@ class ProductionShellBoundaryTests(unittest.TestCase):
 
 
 class DirectPasteBoundaryTests(unittest.TestCase):
+    def test_live_wiring_pattern_allows_only_the_explicit_preference_injection_shape(self) -> None:
+        accepted = "CaptureSession(preferences: capturePreferences, directPaste: .live)"
+        self.assertIsNotNone(LIVE_WIRING.fullmatch(accepted))
+        for rejected in (
+            "CaptureSession(directPaste: .live)",
+            "CaptureSession(preferences: otherPreferences, directPaste: .live)",
+            "CaptureSession(preferences: capturePreferences, pasteboard: board, directPaste: .live)",
+        ):
+            self.assertIsNone(LIVE_WIRING.fullmatch(rejected), rejected)
+
     def test_no_accessibility_element_or_screen_capture_apis(self) -> None:
         self.assertEqual(
             matching_lines(ACCESSIBILITY_ELEMENT_OR_SCREEN_CAPTURE, (APP_SOURCES,)),
@@ -173,7 +186,7 @@ class DirectPasteBoundaryTests(unittest.TestCase):
         self.assertEqual(
             (len(LIVE_SYSTEM.findall(code)), len(LIVE_WIRING.findall(code))),
             (1, 1),
-            "The app delegate must use .live once, in CaptureSession(directPaste: .live)",
+            "The app delegate must use .live once, in the explicit capturePreferences CaptureSession wiring",
         )
 
     def test_no_input_monitoring_apis(self) -> None:

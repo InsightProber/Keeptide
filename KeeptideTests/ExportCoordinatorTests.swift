@@ -1,4 +1,6 @@
 import Foundation
+import Observation
+import Synchronization
 import XCTest
 @testable import Keeptide
 
@@ -110,6 +112,30 @@ final class ExportCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.phase, .idle)
         let callsAfterCancellation = await exporter.callCount
         XCTAssertEqual(callsAfterCancellation, 0)
+    }
+
+    func testAvailabilityNotifiesObserversWhenFolderCancellationFinishes() async throws {
+        let chooser = FolderChoiceProbe()
+        let coordinator = ExportCoordinator(exporter: ExportProbe(), chooseFolder: { await chooser.choose() })
+        let changes = Mutex(0)
+        withObservationTracking {
+            XCTAssertTrue(coordinator.canStart)
+        } onChange: {
+            changes.withLock { $0 += 1 }
+        }
+        coordinator.start { .allVisible }
+        XCTAssertEqual(changes.withLock { $0 }, 1)
+        await waitUntil { coordinator.phase == .choosingFolder }
+        withObservationTracking {
+            XCTAssertFalse(coordinator.canStart)
+        } onChange: {
+            changes.withLock { $0 += 1 }
+        }
+        coordinator.cancel()
+        chooser.finish(nil)
+        await waitUntil { coordinator.canStart }
+        XCTAssertEqual(changes.withLock { $0 }, 2)
+        XCTAssertEqual(coordinator.phase, .idle)
     }
 
     func testStopAndDrainWaitsForInFlightExporterAndRejectsLaterStarts() async throws {

@@ -45,16 +45,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let toggleQuickAccess: () -> Void
     private let showLibrary: () -> Void
     private let showSettings: () -> Void
+    private let showWelcome: () -> Void
     private let captureIsReady: () -> Bool
     private let captureIsEnabled: () -> Bool
     private let captureStatus: () -> String
     private let toggleCapture: () -> Void
     private let canRequestQuit: () -> Bool
     private let requestQuit: () -> Void
-    private let registration: ShortcutRegistration
     private let statusItem: NSStatusItem
-    private var eventHandler: EventHandlerRef?
-    private var hotKey: EventHotKeyRef?
+    private var shortcutCoordinator: GlobalShortcutCoordinator?
+    private var fallbackPreferencesSuiteName: String?
     private weak var captureToggleItem: NSMenuItem?
     private weak var captureStatusItem: NSMenuItem?
     private weak var quitItem: NSMenuItem?
@@ -67,6 +67,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         toggleQuickAccess: @escaping () -> Void,
         showLibrary: @escaping () -> Void,
         showSettings: @escaping () -> Void = {},
+        showWelcome: @escaping () -> Void = {},
         captureIsReady: @escaping () -> Bool = { true },
         captureIsEnabled: @escaping () -> Bool = { false },
         captureStatus: @escaping () -> String = { "Clipboard recording is off" },
@@ -74,19 +75,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         canRequestQuit: @escaping () -> Bool = { true },
         requestQuit: @escaping () -> Void = { NSApplication.shared.terminate(nil) },
         shouldRegisterHotKey: Bool,
-        registration: ShortcutRegistration = .system()
+        registration: ShortcutRegistration? = nil,
+        shortcutCoordinator: GlobalShortcutCoordinator? = nil
     ) {
         self.showQuickAccess = showQuickAccess
         self.toggleQuickAccess = toggleQuickAccess
         self.showLibrary = showLibrary
         self.showSettings = showSettings
+        self.showWelcome = showWelcome
         self.captureIsReady = captureIsReady
         self.captureIsEnabled = captureIsEnabled
         self.captureStatus = captureStatus
         self.toggleCapture = toggleCapture
         self.canRequestQuit = canRequestQuit
         self.requestQuit = requestQuit
-        self.registration = registration
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
@@ -97,105 +99,45 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         statusItem.button?.setAccessibilityLabel("Keeptide")
 
         if shouldRegisterHotKey {
-            installHotKeyHandler()
-            DistributedNotificationCenter.default().addObserver(
-                self, selector: #selector(inputSourceChanged),
-                name: Notification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String), object: nil,
-                suspensionBehavior: .deliverImmediately
-            )
+            let coordinator: GlobalShortcutCoordinator
+            if let shortcutCoordinator {
+                coordinator = shortcutCoordinator
+            } else {
+                let suiteName = "Keeptide.MenuBarFallback.\(UUID().uuidString)"
+                fallbackPreferencesSuiteName = suiteName
+                coordinator = GlobalShortcutCoordinator(
+                    preferences: GlobalShortcutPreferences(defaults: UserDefaults(suiteName: suiteName)!),
+                    registration: registration.map(Self.globalRegistration) ?? .system()
+                )
+            }
+            self.shortcutCoordinator = coordinator
+            coordinator.onInvoke = { [weak self] in self?.toggleQuickAccess() }
+            coordinator.onStatusChange = { [weak self] status in
+                guard let self else { return }
+                self.shortcutStatus = Self.legacyStatus(status)
+                self.rebuildMenu()
+            }
+            self.shortcutStatus = Self.legacyStatus(coordinator.status)
         }
         rebuildMenu()
     }
 
     isolated deinit {
-        if let hotKey {
-            registration.unregister(hotKey)
+        shortcutCoordinator?.onStatusChange = nil
+        shortcutCoordinator?.onInvoke = nil
+        if let fallbackPreferencesSuiteName {
+            UserDefaults(suiteName: fallbackPreferencesSuiteName)?
+                .removePersistentDomain(forName: fallbackPreferencesSuiteName)
         }
-        if let eventHandler {
-            RemoveEventHandler(eventHandler)
-        }
-        DistributedNotificationCenter.default().removeObserver(self)
         NSStatusBar.system.removeStatusItem(statusItem)
     }
 
-    private func installHotKeyHandler() {
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
-
-        let handlerStatus = InstallEventHandler(
-            GetApplicationEventTarget(),
-            { _, event, userData in
-                guard let event, let userData else {
-                    return OSStatus(eventNotHandledErr)
-                }
-
-                var hotKeyID = EventHotKeyID()
-                let parameterStatus = GetEventParameter(
-                    event,
-                    EventParamName(kEventParamDirectObject),
-                    EventParamType(typeEventHotKeyID),
-                    nil,
-                    MemoryLayout<EventHotKeyID>.size,
-                    nil,
-                    &hotKeyID
-                )
-                guard parameterStatus == noErr,
-                      hotKeyID.signature == MenuBarController.hotKeySignature,
-                      hotKeyID.id == MenuBarController.hotKeyIdentifier else {
-                    return OSStatus(eventNotHandledErr)
-                }
-
-                let controller = Unmanaged<MenuBarController>
-                    .fromOpaque(userData)
-                    .takeUnretainedValue()
-                MainActor.assumeIsolated {
-                    controller.toggleQuickAccess()
-                }
-                return noErr
-            },
-            1,
-            &eventType,
-            Unmanaged.passUnretained(self).toOpaque(),
-            &eventHandler
-        )
-        guard handlerStatus == noErr else {
-            shortcutStatus = .failed(handlerStatus)
-            return
-        }
-
-        refreshHotKey()
-    }
-
     @objc func inputSourceChanged() {
-        refreshHotKey()
+        shortcutCoordinator?.inputSourceChanged()
+        if let shortcutCoordinator {
+            shortcutStatus = Self.legacyStatus(shortcutCoordinator.status)
+        }
         rebuildMenu()
-    }
-
-    private func refreshHotKey() {
-        guard eventHandler != nil else { return }
-        if let hotKey {
-            registration.unregister(hotKey)
-            self.hotKey = nil
-        }
-        guard let keyCode = registration.keyCode() else {
-            shortcutStatus = .failed(OSStatus(paramErr))
-            return
-        }
-        var registeredHotKey: EventHotKeyRef?
-        // Registration success does not prove a combination is unused by other apps.
-        let registrationStatus = registration.register(keyCode, 0, &registeredHotKey)
-
-        switch registrationStatus {
-        case noErr:
-            hotKey = registeredHotKey
-            shortcutStatus = .registered
-        case OSStatus(eventHotKeyExistsErr):
-            shortcutStatus = .unavailable
-        default:
-            shortcutStatus = .failed(registrationStatus)
-        }
     }
 
     var menu: NSMenu? { statusItem.menu }
@@ -207,6 +149,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(withTitle: "Open Quick Access", action: #selector(openQuickAccess), keyEquivalent: "")
         menu.addItem(withTitle: "Open Library", action: #selector(openLibrary), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        menu.addItem(withTitle: "Show Welcome", action: #selector(openWelcome), keyEquivalent: "")
 
         menu.addItem(.separator())
         let captureToggleItem = menu.addItem(
@@ -222,7 +165,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(captureStatusItem)
         self.captureStatusItem = captureStatusItem
 
-        if let shortcutMenuTitle = shortcutStatus.menuTitle {
+        let cloudItem = NSMenuItem(title: "iCloud: Not available in this build", action: nil, keyEquivalent: "")
+        cloudItem.isEnabled = false
+        menu.addItem(cloudItem)
+
+        if let shortcutMenuTitle {
             menu.addItem(.separator())
             let shortcutItem = NSMenuItem(
                 title: shortcutMenuTitle,
@@ -272,6 +219,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         showSettings()
     }
 
+    @objc private func openWelcome() {
+        showWelcome()
+    }
+
     @objc private func toggleCaptureRecording() {
         guard captureIsReady() else { return }
         toggleCapture()
@@ -290,6 +241,36 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func updateQuitMenuItem() {
         quitItem?.isEnabled = !isQuitPending && canRequestQuit()
+    }
+
+    private var shortcutMenuTitle: String? {
+        guard let shortcutCoordinator else { return shortcutStatus.menuTitle }
+        return switch shortcutCoordinator.status {
+        case .disabled, .registered:
+            nil
+        case .unavailable(let shortcut):
+            "\(shortcut.displayName) is already in use — open Quick Access here"
+        case .failed(let shortcut, let status):
+            "\(shortcut.displayName) is unavailable (error \(status)) — open Quick Access here"
+        }
+    }
+
+    private static func globalRegistration(_ legacy: ShortcutRegistration) -> GlobalShortcutRegistration {
+        var registration = GlobalShortcutRegistration.system(resolveSemanticV: legacy.keyCode)
+        registration.register = { keyCode, _, options, reference in
+            legacy.register(keyCode, options, &reference)
+        }
+        registration.unregister = legacy.unregister
+        return registration
+    }
+
+    private static func legacyStatus(_ status: GlobalShortcutStatus) -> ShortcutStatus {
+        switch status {
+        case .disabled: .disabledForTesting
+        case .registered: .registered
+        case .unavailable: .unavailable
+        case .failed(_, let error): .failed(error)
+        }
     }
 }
 

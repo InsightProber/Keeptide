@@ -1,11 +1,89 @@
 import AppKit
 import ApplicationServices
 import SwiftUI
+import Observation
 import XCTest
 @testable import Keeptide
 
 @MainActor
 final class SettingsTests: XCTestCase {
+    func testRecordingConsentIsDistinctFromActualAvailability() throws {
+        XCTAssertEqual(SettingsRecordingState.waitingForLibrary.message(consentEnabled: true),
+                       "Recording will start when the local library is ready.")
+        XCTAssertEqual(SettingsRecordingState.waitingForLibrary.message(consentEnabled: false),
+                       "Recording is off. The local library is opening.")
+        XCTAssertEqual(SettingsRecordingState.unavailable("The local library could not be opened.")
+            .message(consentEnabled: true), "The local library could not be opened.")
+        let preferences = CapturePreferences(defaults: try makeDefaults())
+        let session = CaptureSession(preferences: preferences)
+        preferences.isEnabled = true
+        XCTAssertFalse(session.isRecording)
+        XCTAssertEqual(session.settingsRecordingState, .waitingForLibrary)
+        XCTAssertTrue(session.canChangeRecordingConsent)
+    }
+
+    func testSettingsTabsHaveTheProductOrder() {
+        XCTAssertEqual(SettingsTab.allCases.map(\.title), [
+            "General", "Shortcuts", "Recording & Privacy", "iCloud",
+        ])
+    }
+
+    func testSettingsModelKeepsSharedReferencesAndCanReleaseAStoreScopedLifecycle() throws {
+        let quickAccess = QuickAccessPreferences(defaults: try makeDefaults())
+        let capture = CapturePreferences(defaults: try makeDefaults())
+        let shortcut = makeShortcutCoordinator()
+        let login = SettingsLaunchAtLoginFake()
+        weak var released: LifecycleSettingsModel?
+        let model: SettingsModel
+        do {
+            let lifecycle = LifecycleSettingsModel(preferences: LifecyclePreferences(defaults: try makeDefaults()))
+            released = lifecycle
+            model = SettingsModel(
+                quickAccess: quickAccess,
+                capture: capture,
+                lifecycle: lifecycle,
+                shortcut: shortcut,
+                launchAtLogin: login
+            )
+            XCTAssertTrue(model.quickAccess === quickAccess)
+            XCTAssertTrue(model.capture === capture)
+            XCTAssertTrue(model.shortcut === shortcut)
+            XCTAssertTrue(model.launchAtLogin === login)
+            XCTAssertTrue(model.lifecycle === lifecycle)
+        }
+        XCTAssertNotNil(released)
+        model.updateLifecycle(nil)
+        XCTAssertNil(released)
+        XCTAssertEqual(model.cloud, .unavailableInThisBuild)
+        XCTAssertNil(model.actions.exportArchive)
+    }
+
+    func testLifecycleRebindPreservesTheSelectedSettingsTab() throws {
+        let model = makeSettingsModel()
+        let controller = SettingsWindowController(model: model, setActivationPolicy: { _ in })
+        defer { controller.close() }
+        model.selectedTab = .recordingAndPrivacy
+
+        controller.updateLifecycle(
+            LifecycleSettingsModel(preferences: LifecyclePreferences(defaults: try makeDefaults()))
+        )
+
+        XCTAssertEqual(model.selectedTab, .recordingAndPrivacy)
+    }
+
+    func testClosingSettingsDoesNotRestoreAccessoryWhileAnotherWindowNeedsTheDock() throws {
+        var policies: [NSApplication.ActivationPolicy] = []
+        let controller = SettingsWindowController(
+            model: makeSettingsModel(),
+            setActivationPolicy: { policies.append($0) },
+            shouldRestoreAccessory: { false }
+        )
+        controller.show()
+        controller.close()
+
+        XCTAssertEqual(policies, [.regular])
+    }
+
     func testTheEndsFadeUntilTurnedOff() throws {
         let defaults = try makeDefaults()
         let preferences = QuickAccessPreferences(defaults: defaults)
@@ -400,7 +478,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertNil(releasedModel, "Closing the store must release its lifecycle model")
     }
 
-    func testSettingsWindowIs520PointsWideAndFitsItsForm() throws {
+    func testSettingsWindowIs600PointsWideAndFitsItsForm() throws {
         let controller = try makeController()
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
@@ -410,7 +488,7 @@ final class SettingsTests: XCTestCase {
 
         let content = window.contentRect(forFrameRect: window.frame)
         let form = try XCTUnwrap(window.contentView).fittingSize
-        XCTAssertEqual(content.width, 520)
+        XCTAssertEqual(content.width, 600)
         // A form that took no height of its own would leave a bare title bar.
         XCTAssertGreaterThan(form.height, 150)
         XCTAssertEqual(content.height, form.height, accuracy: 1)
@@ -466,6 +544,24 @@ final class SettingsTests: XCTestCase {
                                  setActivationPolicy: onPolicy)
     }
 
+    private func makeSettingsModel() -> SettingsModel {
+        let defaults = UserDefaults(suiteName: "SettingsModelTests-\(UUID().uuidString)")!
+        defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
+        return SettingsModel(
+            quickAccess: QuickAccessPreferences(defaults: defaults),
+            capture: CapturePreferences(defaults: defaults),
+            lifecycle: nil,
+            shortcut: GlobalShortcutCoordinator(preferences: GlobalShortcutPreferences(defaults: defaults)),
+            launchAtLogin: SettingsLaunchAtLoginFake()
+        )
+    }
+
+    private func makeShortcutCoordinator() -> GlobalShortcutCoordinator {
+        let defaults = UserDefaults(suiteName: "SettingsShortcutTests-\(UUID().uuidString)")!
+        defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
+        return GlobalShortcutCoordinator(preferences: GlobalShortcutPreferences(defaults: defaults))
+    }
+
     private func settleLayout() {
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
     }
@@ -517,4 +613,12 @@ final class SettingsTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return defaults
     }
+}
+
+@MainActor @Observable
+private final class SettingsLaunchAtLoginFake: LaunchAtLoginControlling {
+    var state: LaunchAtLoginState = .disabled
+    var isBusy = false
+    func refresh() {}
+    func setEnabled(_ enabled: Bool) async { state = enabled ? .enabled : .disabled }
 }
