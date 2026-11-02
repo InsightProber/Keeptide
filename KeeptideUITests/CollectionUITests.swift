@@ -61,7 +61,7 @@ final class CollectionUITests: XCTestCase {
                       app.debugDescription)
         XCTAssertFalse(collectionRow(named: names.first!, in: library).exists)
 
-        let scopeMenu = app.buttons["LibraryScopeMenu"]
+        let scopeMenu = app.descendants(matching: .menuButton)["LibraryScopeMenu"]
         XCTAssertTrue(scopeMenu.waitForExistence(timeout: 5), app.debugDescription)
         scopeMenu.click()
         XCTAssertTrue(app.menuItems[names.last!].waitForExistence(timeout: 5), app.debugDescription)
@@ -124,7 +124,7 @@ final class CollectionUITests: XCTestCase {
         actions.click()
         app.menuItems["Move To"].click()
         app.menuItems["Move to Prompts"].click()
-        app.buttons["LibraryScopeMenu"].click()
+        app.descendants(matching: .menuButton)["LibraryScopeMenu"].click()
         app.menuItems["Prompts"].click()
         waitForScope("Prompts", in: app)
         XCTAssertTrue(snippetRow(containing: "Selected Alpha", in: app).waitForExistence(timeout: 8))
@@ -193,27 +193,32 @@ final class CollectionUITests: XCTestCase {
     }
 
     private func collectionRow(named name: String, in library: XCUIElement) -> XCUIElement {
-        library.descendants(matching: .tableRow)
-            .matching(NSPredicate(format: "label == %@", name))
+        // macOS exposes sidebar List entries as OutlineRows with an inner
+        // StaticText; the row itself has no label on the supported OS.
+        library.descendants(matching: .outline)["LibrarySidebar"].staticTexts
+            .matching(NSPredicate(format: "label == %@ OR value == %@", name, name))
             .firstMatch
     }
 
     private func scopeRow(named name: String, in library: XCUIElement) -> XCUIElement {
-        library.descendants(matching: .tableRow)
-            .matching(NSPredicate(format: "label == %@", name))
+        // macOS exposes sidebar List entries as OutlineRows with an inner
+        // StaticText; the row itself has no label on the supported OS.
+        library.descendants(matching: .outline)["LibrarySidebar"].staticTexts
+            .matching(NSPredicate(format: "label == %@ OR value == %@", name, name))
             .firstMatch
     }
 
     private func snippetRow(containing title: String, in app: XCUIApplication) -> XCUIElement {
         let list = app.descendants(matching: .any)["SnippetList"]
-        let titleInRow = NSPredicate(
-            format: "label CONTAINS %@ OR value CONTAINS %@", title, title
-        )
-        return list.descendants(matching: .tableRow).matching(titleInRow).firstMatch
+        let exactTitle = NSPredicate(format: "label == %@ OR value == %@", title, title)
+        return list.staticTexts
+            .matching(identifier: "LibraryEntryRow")
+            .matching(exactTitle)
+            .firstMatch
     }
 
     private func waitForScope(_ name: String, in app: XCUIApplication) {
-        let menu = app.buttons["LibraryScopeMenu"]
+        let menu = app.descendants(matching: .menuButton)["LibraryScopeMenu"]
         let selected = NSPredicate(
             format: "label CONTAINS %@ OR value CONTAINS %@", name, name
         )
