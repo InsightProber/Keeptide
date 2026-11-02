@@ -16,17 +16,20 @@ as a snippet, or write one directly.
 > consistent reads. Local recording now preserves complete clipboard formats,
 > deduplicates exact copies, and provides a recent-clips list with copy-back.
 > The quick-access panel is a wide translucent band that holds a row of large
-> cards: the clips you use most, then the newest and older ones. Each card shows
-> the clip itself under a band in its source app's color, with the clip's
-> details below. The selection starts on the newest card, and the cards slide to
-> keep it in the middle except near either end of the row. Clips you've copied
-> or pasted from Keeptide more than once, and used in the last 90 days, appear
-> to the left of the newest card, set apart by a divider and marked by icons
-> below the cards; a search lists them all together. The search folds into an
-> icon until you type. The arrow keys step one card at a time, and a trackpad
-> swipe moves one card per detent with a haptic tick on a Force Touch trackpad.
-> A minimal Settings window chooses small, medium or large cards and can turn
-> the frequent clips off.
+> cards: the clips you use most, then the newest and older ones. Each card
+> shows the clip itself under a band in its source app's color, with the clip's
+> details below. The selected card is drawn larger, with its neighbors moved
+> aside. It starts on the newest card, and the cards slide with it to keep it
+> in the middle except near either end of the row. Each end of the band fades
+> while more cards continue past it. Clips you've copied or pasted from
+> Keeptide more than once, and used in the last 90 days, appear to the left of
+> the newest card, set apart by a divider and marked by icons below the cards;
+> a search lists them all together. The search folds into an icon at the band's
+> left end until you type. The arrow keys step one card at a time, and a
+> trackpad swipe moves one card per detent with a haptic tick on a Force Touch
+> trackpad. A minimal Settings window chooses small, medium or large cards, how
+> much larger the selected card is drawn, and whether the ends fade. It can
+> also turn the frequent clips off.
 > The panel browses recent clips, searches all content through a rebuildable local
 > full-text index (including one- and two-character Chinese queries), previews
 > text and images, and copies the selected item in its original formats or as
