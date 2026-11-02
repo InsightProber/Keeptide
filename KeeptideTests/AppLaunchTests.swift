@@ -1192,8 +1192,9 @@ final class AppLaunchTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
-        // The film slides whatever Reduce Motion is set to on the Mac that runs the test.
-        strip.reducesMotion = { false }
+        // Establish the first page and the long jump without an unrelated selection spring. Motion is enabled
+        // below only for the page arrival this test measures, whatever the Mac's Reduce Motion setting is.
+        strip.reducesMotion = { true }
         let metrics = try stripMetrics(in: window)
         let left = strip.bounds.midX - metrics.bandWidth / 2
         editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -1202,6 +1203,7 @@ final class AppLaunchTests: XCTestCase {
                 && controller.state.selection.isComplete
         }
         XCTAssertEqual(controller.state.selection.rows.count, 60)
+        XCTAssertTrue(controller.state.hasMoreRows)
 
         // The last row of the first page is not the oldest match: the film keeps it in the middle while the next
         // page is on its way. The strip shows the first page before the step is taken, so the step starts from it.
@@ -1211,11 +1213,16 @@ final class AppLaunchTests: XCTestCase {
         }
         controller.perform(.move(59))
         let title = controller.state.selection.rows[59].title
+        CATransaction.flush()
+        // No await separates the step and the frozen clock: the next page cannot arrive during this setup.
+        XCTAssertEqual(controller.state.selection.rows.count, 60)
+        XCTAssertTrue(controller.state.hasMoreRows)
         XCTAssertEqual(try frame(of: title, in: strip).midX - left, metrics.bandWidth / 2, accuracy: 0.5)
 
         // Time stands still from here, so a slide that the next page starts stays at its beginning.
         strip.wantsLayer = true
         strip.layer?.speed = 0
+        strip.reducesMotion = { false }
         defer { strip.layer?.speed = 1 }
         // The next page brings the last match. With no more to fetch, the film comes to rest with it at the right
         // dock, and slides there: the selected clip is still drawn in the middle, where it was.

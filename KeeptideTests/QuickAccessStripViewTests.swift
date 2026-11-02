@@ -396,7 +396,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         CATransaction.flush()
         let ring = drawnRect(of: try ringView(in: strip), in: strip)
         XCTAssertEqual(ring.midX, 688, accuracy: 0.5)
-        XCTAssertEqual(ring.width, 267.36, accuracy: 0.5)
+        try assertBackingAlignedRing(ringView(in: strip), in: strip,
+                                    theoreticalFrame: NSRect(x: 554.32, y: 2, width: 267.36, height: 292))
         XCTAssertEqual(try drawnRect(of: "Row 12", in: strip).width, 255.36, accuracy: 0.5)
         XCTAssertEqual(try drawnRect(of: "Row 10", in: strip).width, 228, accuracy: 0.5)
         XCTAssertEqual(try drawnRect(of: "Row 10", in: strip).minX, 72, accuracy: 0.5)
@@ -471,8 +472,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         let ring = try ringView(in: strip), ringRect = drawnRect(of: ring, in: strip)
         XCTAssertEqual(ringRect.midX, 688, accuracy: 0.5)
         XCTAssertEqual(ringRect.midY, drawn.midY, accuracy: 0.5)
-        XCTAssertEqual(ringRect.width, 267.36, accuracy: 0.5)
-        XCTAssertEqual(ringRect.height, 292, accuracy: 0.5)
+        try assertBackingAlignedRing(ring, in: strip,
+                                    theoreticalFrame: NSRect(x: 554.32, y: 2, width: 267.36, height: 292))
         XCTAssertEqual(ring.layer?.borderWidth, 3)
         XCTAssertEqual(try XCTUnwrap(ring.layer).cornerRadius, 28.4, accuracy: 0.01)
         XCTAssertEqual(ring.layer?.cornerCurve, .continuous)
@@ -541,7 +542,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
         let ring = try ringView(in: strip)
         XCTAssertEqual(ring.layer?.borderWidth, 4)
-        XCTAssertEqual(ring.frame.width, 269.36, accuracy: 0.5)
+        try assertBackingAlignedRing(ring, in: strip,
+                                    theoreticalFrame: NSRect(x: 553.32, y: 1, width: 269.36, height: 294))
         XCTAssertEqual(try XCTUnwrap(ring.layer).cornerRadius, 29.4, accuracy: 0.01)
         strip.increasesContrast = { false }
         NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
@@ -583,6 +585,41 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(try sectionLabel("QuickAccessRecentLabel", of: strip).frame.minX, 519, accuracy: 0.5)
         strip.show(rows, selection: rows[2].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
         XCTAssertEqual(try dividerRect(in: strip).midX, 813, accuracy: 0.5)
+    }
+
+    func testTheFocusedRingKeepsItsUnroundedLayoutGeometry() {
+        let card = NSRect(x: 574, y: 23, width: 228, height: 250)
+        XCTAssertEqual(StripLayout.scaled(card, by: 1.12).width, 255.36, accuracy: 1e-9)
+        for (reach, width, height) in [(CGFloat(6), CGFloat(267.36), CGFloat(292)), (7, 269.36, 294)] {
+            let ring = StripLayout.ringFrame(around: card, scale: 1.12, reach: reach)
+            XCTAssertEqual(ring.midX, 688, accuracy: 1e-9)
+            XCTAssertEqual(ring.midY, 148, accuracy: 1e-9)
+            XCTAssertEqual(ring.width, width, accuracy: 1e-9)
+            XCTAssertEqual(ring.height, height, accuracy: 1e-9)
+        }
+    }
+
+    /// The hand-calculated film-local rectangle is snapped one backing edge at a time, not by rounding its size.
+    /// Compare the actual drawn rectangle in the same coordinates, so both 1x and 2x windows keep sharp edges.
+    private func assertBackingAlignedRing(_ ring: NSView, in strip: NSView, theoreticalFrame: NSRect,
+                                         file: StaticString = #filePath, line: UInt = #line) throws {
+        let film = try XCTUnwrap(ring.superview, file: file, line: line)
+        let theoretical = strip.convertToBacking(strip.convert(theoreticalFrame, from: film))
+        let aligned = NSRect(x: theoretical.minX.rounded(), y: theoretical.minY.rounded(),
+                             width: theoretical.maxX.rounded() - theoretical.minX.rounded(),
+                             height: theoretical.maxY.rounded() - theoretical.minY.rounded())
+        let expected = strip.convertFromBacking(aligned)
+        let actual = drawnRect(of: ring, in: strip)
+        let pixels = strip.convertToBacking(actual)
+        for (actualEdge, expectedEdge) in zip([actual.minX, actual.minY, actual.maxX, actual.maxY],
+                                              [expected.minX, expected.minY, expected.maxX, expected.maxY]) {
+            XCTAssertEqual(actualEdge, expectedEdge, accuracy: 1e-9, file: file, line: line)
+        }
+        for (actualEdge, theoreticalEdge) in zip([pixels.minX, pixels.minY, pixels.maxX, pixels.maxY],
+                                                 [theoretical.minX, theoretical.minY, theoretical.maxX, theoretical.maxY]) {
+            XCTAssertEqual(actualEdge, actualEdge.rounded(), accuracy: 1e-9, file: file, line: line)
+            XCTAssertLessThanOrEqual(abs(actualEdge - theoreticalEdge), 0.5 + 1e-9, file: file, line: line)
+        }
     }
 
     private func ringView(in strip: NSView) throws -> NSView {
