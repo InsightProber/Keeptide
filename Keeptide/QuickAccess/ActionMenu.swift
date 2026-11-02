@@ -1,38 +1,64 @@
 import AppKit
 
 enum ActionMenuCommand {
-    case copy, copyPlainText, togglePreview, saveSnippet, openLibrary, newSnippet
+    case primary, plainText, copyOnly, togglePreview
+    case saveSnippet, openLibrary, newSnippet, enableDirectPaste
 }
 
-/// Cmd-K: the actions for the current selection only. Unavailable actions are
-/// disabled rather than hidden, so the menu's shape stays predictable.
+/// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
+/// and the copy that never pastes, where the panel offers them; then the preview; then Enable Direct Paste… when the
+/// panel only copies for want of access. Unavailable actions are disabled rather than hidden, so the menu's shape stays
+/// predictable: Return's and ⇧Return's are disabled while a command waits on the review card, which alone confirms it.
 @MainActor
 enum ActionMenu {
-    static func make(row: QuickAccessRow?, canAct: Bool, isPreviewExpanded: Bool,
-                     perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
+    static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isReviewing: Bool = false,
+                     isPreviewExpanded: Bool, perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
-        let copy = ActionMenuItem("Copy", key: "\r", modifiers: []) { perform(.copy) }
-        copy.isEnabled = canAct
-        let plainText = ActionMenuItem("Copy as Plain Text", key: "\r", modifiers: .shift) { perform(.copyPlainText) }
-        plainText.isEnabled = canAct && row.map { $0.kind != .image && $0.kind != .file } == true
+        let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
+        primary.isEnabled = canAct && !isReviewing
+        menu.addItem(primary)
+        if let title = actions.plainTextTitle {
+            let plainText = ActionMenuItem(title, key: "\r", modifiers: .shift) { perform(.plainText) }
+            plainText.isEnabled = canAct && !isReviewing && row.map { $0.kind != .image && $0.kind != .file } == true
+            menu.addItem(plainText)
+        }
+        if let title = actions.copyOnlyTitle {
+            let copyOnly = ActionMenuItem(title, key: "", modifiers: []) { perform(.copyOnly) }
+            copyOnly.isEnabled = canAct
+            menu.addItem(copyOnly)
+        }
+        menu.addItem(.separator())
         let preview = ActionMenuItem(isPreviewExpanded ? "Hide Preview" : "Show Preview", key: " ", modifiers: []) {
             perform(.togglePreview)
         }
         preview.isEnabled = row != nil
-        menu.addItem(copy)
-        menu.addItem(plainText)
-        menu.addItem(.separator())
         menu.addItem(preview)
         menu.addItem(.separator())
-        let save = ActionMenuItem("Save as Snippet", key: "s", modifiers: .command) { perform(.saveSnippet) }
+        let save = ActionMenuItem("Save as Snippet", key: "s", modifiers: .command) {
+            perform(.saveSnippet)
+        }
         save.isEnabled = canAct
         menu.addItem(save)
-        let open = ActionMenuItem("Open in Library", key: "e", modifiers: .command) { perform(.openLibrary) }
+        let open = ActionMenuItem("Open in Library", key: "e", modifiers: .command) {
+            perform(.openLibrary)
+        }
         open.isEnabled = canAct
         menu.addItem(open)
-        menu.addItem(ActionMenuItem("New Snippet", key: "n", modifiers: .command) { perform(.newSnippet) })
+        menu.addItem(ActionMenuItem("New Snippet", key: "n", modifiers: .command) {
+            perform(.newSnippet)
+        })
+        if actions.offersEnableDirectPaste {
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Enable Direct Paste…", key: "", modifiers: []) { perform(.enableDirectPaste) })
+        }
         return menu
+    }
+
+    /// Where the menu opens: beside the selected clip, level with its top edge, so that it covers neither the
+    /// clip nor the search field. `frame` is the clip's frame in `view`.
+    static func anchor(beside frame: NSRect, in view: NSView) -> NSPoint {
+        NSPoint(x: frame.maxX + 8, y: view.isFlipped ? frame.minY : frame.maxY)
     }
 }
 

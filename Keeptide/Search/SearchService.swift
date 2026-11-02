@@ -412,7 +412,8 @@ struct SearchService: Sendable {
         return keys.compactMap { byID[$0.id] }
     }
 
-    private static let snippetOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
+    /// How a term is found in a snippet, and in a link's title on its card.
+    static let snippetOptions: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]
 
     /// Builds the display snippet from original text. `windowStart` and
     /// `bodyLength` are SQLite character positions in the stored body.

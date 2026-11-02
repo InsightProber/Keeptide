@@ -1,13 +1,34 @@
+import CoreGraphics
 import Foundation
 import Observation
+
+/// Where quick access gets its search pages: the search service, or a stand-in in tests.
+protocol QuickAccessSearch: Sendable {
+    func search(_ request: SearchRequest) -> AsyncThrowingStream<SearchPage, Error>
+}
+
+extension SearchService: QuickAccessSearch {}
+
+/// Where quick access reads how often clips were used: the local usage store, or a stand-in in tests.
+protocol QuickAccessUsage: Sendable {
+    func frequent(minimumCount: Int64, since: Date, limit: Int) async throws -> [UsageSummary]
+}
+
+extension LocalUsageStore: QuickAccessUsage {}
 
 /// The store-backed services quick access reads and acts through; nil while the
 /// library is not open.
 @MainActor
 struct QuickAccessServices {
     let repository: ContentRepository
-    let search: SearchService?
+    let search: (any QuickAccessSearch)?
     let paste: PasteService
+    /// What the strip frames and the image preview show comes from here; without it they show only what a
+    /// row already knows.
+    var preview: PreviewService? = nil
+    /// How often clips were used, for the frequent wing; without it there is no wing.
+    var usage: (any QuickAccessUsage)? = nil
+    /// Saving a capture as a snippet uses the same service and transaction rules as the library.
     var library: LibraryService? = nil
 }
 
@@ -21,20 +42,22 @@ enum IndexNotice: Equatable {
 
 enum PreviewContent: Equatable {
     case text(String, isTruncated: Bool)
+    case image(CGImage, pixelSize: CGSize)
     case info(kind: ContentKind, sourceApp: String?)
     case failed(PasteRefusal)
 }
 
 extension ContentKind {
-    /// The kinds quick access filters by, in menu order.
+    /// The kinds quick access filters by, in the toolbar's order.
     static let filters: [ContentKind] = [.text, .url, .image, .file]
 
+    /// The kind's name in the toolbar.
     var filterTitle: String {
         switch self {
         case .text: "Text"
-        case .url: "Link"
-        case .image: "Image"
-        case .file: "File"
+        case .url: "Links"
+        case .image: "Images"
+        case .file: "Files"
         case .other: "Other"
         }
     }
@@ -42,12 +65,26 @@ extension ContentKind {
 
 /// What the quick access panel lists, which row is selected, and what an action may
 /// touch. Every load belongs to one query generation of the panel's paste session, so
-/// results that arrive after the query, filters or session changed are dropped.
+/// results that arrive after the query, filters or session changed are dropped. Clip
+/// details are the exception: they belong to the clip, not to a generation.
 @MainActor @Observable
 final class QuickAccessState {
     static let recentLimit = 200
     static let pageSize = 60
     nonisolated static let previewByteLimit = 262_144
+    /// The preview card is at most 760 pt wide, which is 1520 px at 2x.
+    static let previewImagePixels = 1520
+    /// Clip details read at once. Each read takes the whole clip through the store's one writer context, which a
+    /// copy reads through as well, so a copy made just after the panel opens waits behind these few reads and
+    /// not behind one for every frame.
+    static let detailReadLimit = 2
+    /// A clip joins the frequent wing once it was used this many times, the last time within `frequentWindow`.
+    static let frequentMinimumUses: Int64 = 2
+    static let frequentWindow: TimeInterval = 7_776_000      // 90 days
+    /// The frequent wing lists at most this many clips.
+    static let frequentLimit = 20
+    /// The frequent clips read as a session starts, so that a type filter can take its first twenty from them.
+    static let frequentCandidateLimit = 200
 
     private(set) var query = ""
     private(set) var kinds: Set<ContentKind> = []
@@ -59,7 +96,30 @@ final class QuickAccessState {
     private(set) var failure: PasteRefusal?
     private(set) var saveMessage: String?
     private(set) var canUndoSave = false
-    @ObservationIgnored var onCopied: (@MainActor () -> Void)?
+    /// What strip frames show of a clip beyond its title. Only clips still in the list keep one.
+    private(set) var details: [ContentRef: ClipDetail] = [:]
+    /// Whether the search was unfolded by hand or by typing, and has not been folded since.
+    private(set) var isSearchUnfolded = false
+    /// The app window this session would paste into, recorded as the panel opened. nil without a session.
+    private(set) var pasteTarget: PasteTarget?
+    /// What the checks allowed for the session's target when the session started: a paste, or why not. nil without
+    /// a library.
+    private(set) var directPaste: DirectPasteAvailability?
+    /// Whether Enable Direct Paste… asked for access in this run of Keeptide. The system shows a grant to Keeptide
+    /// only once it reopens, so every later showing says so. Closing the panel keeps it.
+    private(set) var hasRequestedDirectPasteAccess = false
+    /// The command the selected clip's last action is waiting on. Nothing has been written or sent for it.
+    private(set) var commandReview: CommandReview?
+    /// Called once an action has written the clipboard, whether it pasted, copied or copied instead.
+    @ObservationIgnored var onCompleted: (@MainActor (QuickAccessCompletion) -> Void)?
+    /// Called when a command review appears, is replaced or is dropped. An action that completes clears the review
+    /// without this call, since the panel closes.
+    @ObservationIgnored var onCommandReviewChanged: (@MainActor () -> Void)?
+    /// Hides the panel for a paste, before the keystroke, without ending its session. Every action passes it on.
+    @ObservationIgnored var dismissForPaste: (@MainActor () -> Void)?
+    /// Whether Return or keypad Enter is down in the panel now. Every action passes it on: a paste asks just before
+    /// the panel would hide, and copies instead while one is.
+    @ObservationIgnored var returnIsDown: (@MainActor () -> Bool)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
 
@@ -68,14 +128,38 @@ final class QuickAccessState {
     @ObservationIgnored private var isOpen = false
     /// The session a copy is running for; a reopened panel's session can copy at once.
     @ObservationIgnored private var copying: PasteSession?
-    @ObservationIgnored private var totalMatches = 0
+    /// The action `commandReview` is for. Confirming sends it again with the review's confirmation.
+    @ObservationIgnored private var reviewedAction: (target: CopyTarget, mode: PasteMode, delivery: PasteDelivery)?
+    private var totalMatches = 0
     @ObservationIgnored private var previewedRef: ContentRef?
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
+    /// Set once a page of the current generation added no rows; the generation asks for no more pages.
+    private var pagingStopped = false
     @ObservationIgnored private var previewing: Task<Void, Never>?
     @ObservationIgnored private var saving = false
-    @ObservationIgnored private var savedUndo: (itemID: ItemID, memoID: UUID, fingerprint: Data, identity: StoreIdentity)?
+    @ObservationIgnored private var savedUndo: (
+        itemID: ItemID,
+        memoID: UUID,
+        fingerprint: Data,
+        identity: StoreIdentity
+    )?
+    /// One read per clip whose detail is wanted, running or finished. A load that has finished stays listed
+    /// while its clip is still requested, so a clip that cannot be read is not read again on every request.
+    @ObservationIgnored private var detailLoads: [ContentRef: Task<Void, Never>] = [:]
+    /// Requested clips that wait for a read, nearest the middle first, at the frame size in `detailFrameSize`.
+    @ObservationIgnored private var waitingDetails: [ContentRef] = []
+    @ObservationIgnored private var detailFrameSize = CGSize.zero
+    /// Reads started and not yet returned. One that was cancelled still counts until it returns, since it
+    /// keeps its place on the writer context until then.
+    @ObservationIgnored private var detailReadsRunning = 0
+    /// How many of the newest clips the band shows whole as the panel opens, for a frequent wing of so many clips
+    /// before them: the wing leaves those clips out. nil lists no wing.
+    @ObservationIgnored private var frequentWingFirstScreen: ((Int) -> Int)?
+    /// The session's one read of the frequent wing's candidates, in rank order: each the row of its clip, or nil where
+    /// the clip cannot show. nil without a wing to read.
+    @ObservationIgnored private var frequentRead: Task<[QuickAccessRow?], Never>?
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -86,38 +170,77 @@ final class QuickAccessState {
 
     var hasFiltersOrQuery: Bool { !query.isEmpty || !kinds.isEmpty }
 
-    var scopeTitle: String {
-        guard !showsRecentClips else { return "Recent Clips" }
-        return (["All Content"] + ContentKind.filters.filter(kinds.contains).map(\.filterTitle))
-            .joined(separator: " · ")
+    /// The search shows as its field rather than its icon while there is a query, and once it was unfolded until it
+    /// is folded again.
+    var isSearchExpanded: Bool { !query.isEmpty || isSearchUnfolded }
+
+    /// A search has another page to fetch, so the last row listed is not the last there is. The frequent wing is no
+    /// page of the search, so only the rows after it count.
+    var hasMoreRows: Bool {
+        !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count - selection.frequentCount
     }
 
-    func open() {
+    /// What the panel offers for the selected row.
+    var actions: QuickAccessActions { actions(for: selection.selection) }
+
+    /// What the panel offers for a listed row, such as the one a right-click is on, which need not be the selected one.
+    func actions(for ref: ContentRef?) -> QuickAccessActions {
+        QuickAccessActions.make(target: pasteTarget, availability: directPaste,
+                                kind: ref.flatMap { ref in selection.rows.first { $0.ref == ref } }?.kind,
+                                accessRequested: hasRequestedDirectPasteAccess)
+    }
+
+    /// The delivery Return and ⇧Return ask for. It is a paste only when the session started able to paste, so a
+    /// panel that opened offering Copy keeps copying even once access arrives (decision 2). The paste service checks
+    /// everything again before it sends.
+    var preferredDelivery: PasteDelivery {
+        if case .paste? = directPaste { .paste } else { .copy }
+    }
+
+    /// Records the front app window as the target, before the panel takes the keys, and lists recent clips.
+    /// `firstScreen` says how many of the newest clips the band shows whole as it opens with a frequent wing of so
+    /// many clips before them (`StripLayout.recentShownWhole`). With it the frequent wing leads the recent clips,
+    /// without the clips the band shows whole; nil lists no wing.
+    func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         saveMessage = nil
         savedUndo = nil
         canUndoSave = false
         isOpen = true
+        frequentWingFirstScreen = firstScreen
         query = ""
         kinds = []
+        isSearchUnfolded = false
         isPreviewExpanded = false
         selection = SelectionCoordinator()
-        startSession()
+        dropDetailsOfUnlistedRows()
+        startSession(recordingTarget: true)
     }
 
     func close() {
         isOpen = false
         cancelLoads()
+        frequentRead?.cancel()
+        frequentRead = nil
+        detailLoads.values.forEach { $0.cancel() }
+        detailLoads = [:]
+        waitingDetails = []
+        details = [:]
         session?.end()
         session = nil
+        pasteTarget = nil
+        directPaste = nil
         isPreviewExpanded = false
         preview = nil
         failure = nil
+        dropCommandReview()
     }
 
-    /// The library opened or closed; an open panel reloads its current query.
+    /// The library opened or closed; an open panel reloads its current query. The new session keeps the target
+    /// recorded as the panel opened, and the front window is not read again (decision 1). It reads the frequent wing
+    /// again, from the library it now has.
     func servicesDidChange() {
         guard isOpen else { return }
-        startSession()
+        startSession(recordingTarget: false)
     }
 
     /// New clips arrived; the recent list reloads without moving the selection.
@@ -140,15 +263,64 @@ final class QuickAccessState {
         reload()
     }
 
+    func unfoldSearch() {
+        isSearchUnfolded = true
+    }
+
+    /// Folding an empty search changes nothing in the list.
+    func foldSearch() {
+        isSearchUnfolded = false
+    }
+
+    /// Clears the query and the filters and folds the search, as Escape does.
     func clearQueryAndFilters() {
+        isSearchUnfolded = false
         guard hasFiltersOrQuery else { return }
         query = ""
         kinds = []
         reload()
     }
 
-    func select(_ ref: ContentRef) {
-        selection.select(ref)
+    /// Reads the detail of each requested clip that has none yet, `detailReadLimit` at a time in the order
+    /// given, which is nearest the middle first, and stops reading the clips no longer requested. `frameSize`
+    /// is in pixels. A clip's stored content never changes, so its detail belongs to the clip and not to the
+    /// query generation it was asked for under: it applies for as long as the row is in the list. A clip
+    /// that is not in the list is ignored.
+    func loadDetails(for refs: [ContentRef], frameSize: CGSize) {
+        guard isOpen, services()?.preview != nil else { return }
+        let requested = Set(refs)
+        for ref in detailLoads.keys where !requested.contains(ref) {
+            detailLoads.removeValue(forKey: ref)?.cancel()
+        }
+        waitingDetails = refs.filter { details[$0] == nil && detailLoads[$0] == nil }
+        detailFrameSize = frameSize
+        startDetailReads()
+    }
+
+    /// Starts the next waiting reads while fewer than `detailReadLimit` run; each read starts the next as it
+    /// returns.
+    private func startDetailReads() {
+        guard isOpen, let service = services()?.preview else { return }
+        while detailReadsRunning < Self.detailReadLimit, !waitingDetails.isEmpty {
+            let ref = waitingDetails.removeFirst()
+            guard details[ref] == nil, detailLoads[ref] == nil,
+                  let kind = selection.rows.first(where: { $0.ref == ref })?.kind else { continue }
+            detailReadsRunning += 1
+            let frameSize = detailFrameSize
+            detailLoads[ref] = Task {
+                let detail = try? await service.detail(for: ref, kind: kind, frameSize: frameSize)
+                self.detailReadsRunning -= 1
+                if let detail, !Task.isCancelled, self.selection.rows.contains(where: { $0.ref == ref }) {
+                    self.details[ref] = detail
+                }
+                self.startDetailReads()
+            }
+        }
+    }
+
+    /// Selects a listed row. A clip listed in both wings is two rows, and each is selected on its own.
+    func select(_ id: QuickAccessRow.ID) {
+        selection.select(id)
         selectionChanged()
     }
 
@@ -157,7 +329,7 @@ final class QuickAccessState {
         let move = selection.move(by: offset)
         guard move == .moved else { return move }
         selectionChanged()
-        if let selected = selection.selection, let index = selection.rows.firstIndex(where: { $0.ref == selected }) {
+        if let selected = selection.selectedID, let index = selection.rows.firstIndex(where: { $0.id == selected }) {
             loadMoreIfNeeded(visibleRow: index)
         }
         return move
@@ -178,20 +350,60 @@ final class QuickAccessState {
         selection.executableSelection.map { CopyTarget(ref: $0, generation: selection.generation) }
     }
 
-    /// Copies what was selected when the key was pressed, never a row selected later.
-    func copy(_ target: CopyTarget, mode: PasteMode) async {
+    /// Acts on what was selected when the key was pressed, never a row selected later: writes the clipboard and, for
+    /// a paste whose checks pass, sends ⌘V once the panel hides. A command that needs a review writes nothing; it
+    /// opens the review instead. `confirmation` is the review's, once the user confirms it.
+    func act(on target: CopyTarget, mode: PasteMode, delivery requested: PasteDelivery,
+             confirmation: CommandConfirmation? = nil) async {
         guard let session, copying !== session, let paste = services()?.paste else { return }
+        // A showing that opened offering Copy only copies, whatever is asked for (decision 2).
+        let delivery = preferredDelivery == .paste ? requested : .copy
         copying = session
         defer { if copying === session { copying = nil } }
         failure = nil
         let outcome = await paste.execute(PasteRequest(ref: target.ref, queryGeneration: target.generation, mode: mode,
-                                                       session: session))
+                                                       session: session, delivery: delivery, dismiss: dismissForPaste,
+                                                       returnIsDown: returnIsDown, confirmation: confirmation))
         // A reopened panel or a newer selection owns the screen now.
         guard isOpen, self.session === session else { return }
         switch outcome {
-        case .copied: onCopied?()
-        case .refused(let refusal): if selection.selection == target.ref { failure = refusal }
+        case .copied: complete(.copied)
+        case .copiedInstead(let fallback): complete(.copiedInstead(fallback))
+        case .dispatched: complete(.dispatched)
+        case .needsConfirmation(let review):
+            // A review is for the selected row: one that comes back after the selection moved on is not shown.
+            guard selection.selection == target.ref else { return }
+            reviewedAction = (target, mode, delivery)
+            commandReview = review
+            onCommandReviewChanged?()
+        case .refused(let refusal):
+            if selection.selection == target.ref { failure = refusal }
         }
+    }
+
+    /// Sends the reviewed action again, with the review's confirmation. The paste service checks the clip, the
+    /// target and the delivery again, so any change comes back as a new review.
+    func confirmCommand() async {
+        guard let commandReview, let reviewedAction else { return }
+        await act(on: reviewedAction.target, mode: reviewedAction.mode, delivery: reviewedAction.delivery,
+                  confirmation: commandReview.confirmation)
+    }
+
+    func cancelCommandReview() {
+        dropCommandReview()
+    }
+
+    /// Enable Direct Paste…: asks for access, and opens Accessibility settings when the system no longer asks. The
+    /// request is remembered for the rest of this run. What the panel offers to do stays as it was when it opened.
+    func requestDirectPasteAccess() {
+        guard let paste = services()?.paste else { return }
+        paste.requestDirectPasteAccess()
+        hasRequestedDirectPasteAccess = true
+    }
+
+    /// Copies what was selected when the key was pressed, never a row selected later.
+    func copy(_ target: CopyTarget, mode: PasteMode) async {
+        await act(on: target, mode: mode, delivery: .copy)
     }
 
     func copySelection(_ mode: PasteMode) async {
@@ -199,6 +411,8 @@ final class QuickAccessState {
         await copy(target, mode: mode)
     }
 
+    /// Saves the captured selection without changing or duplicating its immutable payload.
+    /// Every await is fenced by the panel session and captured selection.
     func saveSelection(_ target: CopyTarget) async {
         guard isOpen, !saving, copyTarget == target, let currentSession = session,
               let services = services(), let library = services.library else { return }
@@ -236,9 +450,12 @@ final class QuickAccessState {
         saving = true
         defer { saving = false }
         do {
-            try await library.undoSaveAsMemo(savedUndo.itemID, memoID: savedUndo.memoID,
-                                            expectedFingerprint: savedUndo.fingerprint,
-                                            expecting: savedUndo.identity)
+            try await library.undoSaveAsMemo(
+                savedUndo.itemID,
+                memoID: savedUndo.memoID,
+                expectedFingerprint: savedUndo.fingerprint,
+                expecting: savedUndo.identity
+            )
             guard isOpen, session === currentSession else { return }
             self.savedUndo = nil
             canUndoSave = false
@@ -250,18 +467,22 @@ final class QuickAccessState {
     }
 
     func loadMoreIfNeeded(visibleRow index: Int) {
-        guard !showsRecentClips, loadingMore == nil, phase == .results,
-              index >= selection.rows.count - 10, totalMatches > selection.rows.count,
+        guard hasMoreRows, loadingMore == nil, phase == .results, index >= selection.rows.count - 10,
               let search = services()?.search, let generation = currentGeneration else { return }
+        // The search's own rows follow the frequent wing, which is no page of it.
         let request = SearchRequest(query: query, kinds: kinds, generation: generation,
-                                    offset: selection.rows.count, limit: Self.pageSize)
+                                    offset: selection.rows.count - selection.frequentCount, limit: Self.pageSize)
         loadingMore = Task {
             defer { if self.currentGeneration == generation { self.loadingMore = nil } }
             do {
                 for try await page in search.search(request) where page.isComplete {
                     guard self.isCurrent(generation) else { return }
+                    let listed = self.selection.rows.count
                     self.selection.append(page.results.map { Self.row(from: $0) }, generation: generation)
                     self.totalMatches = page.totalMatches
+                    // A page whose rows are all listed already, as when a clip copied again moved up into the
+                    // list, would come back the same however often it is asked for.
+                    if self.selection.rows.count == listed { self.pagingStopped = true }
                 }
             } catch {
                 // The rows already shown stay usable; the next scroll asks again.
@@ -278,18 +499,57 @@ final class QuickAccessState {
         !Task.isCancelled && currentGeneration == generation
     }
 
-    private func startSession() {
+    /// Starts a paste session and reloads. Only an opening panel records the front app window as the target; a
+    /// later session keeps the previous session's target, or has none. Each session's checks run once, here, and
+    /// never ask for access.
+    private func startSession(recordingTarget: Bool) {
+        let previousTarget = pasteTarget
         session?.end()
-        session = services()?.paste.beginSession()
+        if let paste = services()?.paste {
+            let session = recordingTarget ? paste.beginSession() : paste.beginSession(target: previousTarget)
+            self.session = session
+            pasteTarget = session.target
+            directPaste = paste.availability(for: session)
+        } else {
+            session = nil
+            pasteTarget = nil
+            directPaste = nil
+        }
+        readFrequentWing()
         reload()
+    }
+
+    /// Starts the session's one read of the frequent wing's candidates, which every list of the session takes its wing
+    /// from: uses recorded while the panel is open show the next time it opens. A read that fails finds none, and the
+    /// recent clips are listed without a wing.
+    private func readFrequentWing() {
+        frequentRead?.cancel()
+        frequentRead = nil
+        guard frequentWingFirstScreen != nil, let services = services(), let usage = services.usage else { return }
+        let repository = services.repository
+        frequentRead = Task {
+            do {
+                let uses = try await usage.frequent(minimumCount: Self.frequentMinimumUses,
+                                                    since: Date(timeIntervalSinceNow: -Self.frequentWindow),
+                                                    limit: Self.frequentCandidateLimit)
+                try Task.checkCancellation()
+                let items = try await repository.summaries(for: uses.map(\.itemID))
+                return Self.frequentCandidates(uses, items)
+            } catch {
+                return []
+            }
+        }
     }
 
     private func reload() {
         cancelLoads()
         failure = nil
         preview = nil
+        // A review belongs to the query it was made under, even when the new one keeps the clip selected.
+        dropCommandReview()
         guard isOpen, let services = services(), let session else {
             selection = SelectionCoordinator()
+            dropDetailsOfUnlistedRows()
             phase = .libraryUnavailable
             indexNotice = nil
             return
@@ -297,6 +557,7 @@ final class QuickAccessState {
         let generation = session.advanceQueryGeneration()
         selection.beginGeneration(generation)
         totalMatches = 0
+        pagingStopped = false
         phase = .loading
         if showsRecentClips {
             indexNotice = nil
@@ -308,31 +569,34 @@ final class QuickAccessState {
     }
 
     private func loadRecent(_ repository: ContentRepository, generation: UInt64, isRefresh: Bool) async {
+        // The wing's candidates come before the clips are read, and nothing waits between a read and its page: an
+        // opening's first page and a refresh started while it waits then apply in the order they read the clips, so
+        // the later read, which has the newer clips, applies last.
+        let candidates = await frequentCandidates()
         let summaries = try? await repository.recent(limit: Self.recentLimit)
         guard isCurrent(generation) else { return }
         // A refresh that fails keeps the clips already listed.
         if summaries == nil, isRefresh { return }
-        let rows = (summaries ?? []).compactMap { Self.row(from: $0) }
-        selection.apply(rows, generation: generation, isComplete: true)
+        let rows = ledByFrequentWing((summaries ?? []).compactMap { Self.row(from: $0) }, candidates: candidates)
+        applyRows(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
-        followSelection()
     }
 
-    private func loadSearch(_ search: SearchService?, _ request: SearchRequest) async {
+    private func loadSearch(_ search: (any QuickAccessSearch)?, _ request: SearchRequest) async {
         let generation = request.generation
         guard let search else {
             if isCurrent(generation) { showSearchUnavailable(generation) }
             return
         }
+        let candidates = await frequentCandidates()
         do {
             for try await page in search.search(request) {
                 guard isCurrent(generation) else { return }
-                selection.apply(page.results.map { Self.row(from: $0) }, generation: generation,
-                                isComplete: page.isComplete, keepsChosenRow: true)
+                let rows = ledByFrequentWing(page.results.map { Self.row(from: $0) }, candidates: candidates)
+                applyRows(rows, generation: generation, isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
-                phase = !page.results.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
-                followSelection()
+                phase = !rows.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
             }
         } catch {
             guard isCurrent(generation) else { return }
@@ -340,10 +604,67 @@ final class QuickAccessState {
         }
     }
 
+    /// The session's frequent candidates, once its one read of them is done, for a list that has a frequent wing. A
+    /// list loads them before its rows, so that the two show together and the film does not jump. nil, without
+    /// waiting, when the list has no wing: a query with words lists its results alone, and a session without a first
+    /// screen or without usage reads none.
+    private func frequentCandidates() async -> [QuickAccessRow?]? {
+        guard let read = frequentRead, ParsedQuery(query).isEmpty else { return nil }
+        return await read.value
+    }
+
+    /// `rows` led by the frequent wing drawn from `candidates`. Without a filter the wing lists those of the first
+    /// `frequentLimit` candidates that can show, and leaves a rank that cannot show empty; with one, the first
+    /// `frequentLimit` of every candidate that match it. Either way it leaves out the clips among the first of `rows`
+    /// that the band shows whole as it opens beside the wing. It lists them from the least used to the most used, which
+    /// stands beside the newest clip. There is no wing without candidates, nor over no rows.
+    private func ledByFrequentWing(_ rows: [QuickAccessRow], candidates: [QuickAccessRow?]?) -> [QuickAccessRow] {
+        guard let candidates, let shownWhole = frequentWingFirstScreen, !rows.isEmpty else { return rows }
+        let pool = kinds.isEmpty ? Array(candidates.prefix(Self.frequentLimit)) : candidates
+        let ranked = pool.compactMap { $0 }.filter { kinds.isEmpty || kinds.contains($0.kind) }
+            .prefix(Self.frequentLimit)
+        // How many of the newest clips the band shows whole depends on the wing before them: a wing that reaches the
+        // middle puts the newest clip there, and a shorter one leaves it further left, with more of them whole. So the
+        // wing is first taken without as many as the band shows beside every ranked clip, the fewest, and taken again
+        // without as many as its own length leaves whole while those are more. A wing that shrinks never shows fewer,
+        // so this ends, within a round for each length the wing can have.
+        var firstScreen = -1
+        var wing: [QuickAccessRow] = []
+        var shown = max(0, shownWhole(ranked.count))
+        while shown > firstScreen {
+            firstScreen = shown
+            let firstScreenClips = Set(rows.prefix(firstScreen).map(\.ref))
+            wing = ranked.filter { !firstScreenClips.contains($0.ref) }
+            shown = max(0, shownWhole(wing.count))
+        }
+        return wing.reversed() + rows
+    }
+
     private func showSearchUnavailable(_ generation: UInt64) {
-        selection.apply([], generation: generation, isComplete: true)
+        applyRows([], generation: generation, isComplete: true)
         indexNotice = .searchUnavailable
         phase = .noResults
+    }
+
+    /// Lists a page of rows. Every page goes through here, so that what the panel shows for a row stays with the
+    /// selection whatever the page did to it: details of clips no longer listed go, and so does a review or a preview
+    /// of a row that is no longer selected.
+    private func applyRows(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool,
+                           keepsChosenRow: Bool = false) {
+        selection.apply(rows, generation: generation, isComplete: isComplete, keepsChosenRow: keepsChosenRow)
+        dropDetailsOfUnlistedRows()
+        followSelection()
+    }
+
+    /// A clip that left the list takes its detail, and any read of it, along.
+    private func dropDetailsOfUnlistedRows() {
+        let listed = Set(selection.rows.map(\.ref))
+        for ref in detailLoads.keys where !listed.contains(ref) {
+            detailLoads.removeValue(forKey: ref)?.cancel()
+        }
+        for ref in details.keys where !listed.contains(ref) {
+            details[ref] = nil
+        }
     }
 
     private func selectionChanged() {
@@ -351,9 +672,26 @@ final class QuickAccessState {
         followSelection()
     }
 
-    /// Keeps an open preview on the selected row; it never shows another row's content,
-    /// and it collapses when the selected row is gone.
+    /// The clipboard is written, so the review, if any, is done with. The panel closes on `onCompleted`.
+    private func complete(_ completion: QuickAccessCompletion) {
+        commandReview = nil
+        reviewedAction = nil
+        onCompleted?(completion)
+    }
+
+    private func dropCommandReview() {
+        guard commandReview != nil else { return }
+        commandReview = nil
+        reviewedAction = nil
+        onCommandReviewChanged?()
+    }
+
+    /// Keeps what the panel shows for a row on the selected row. A command review of another clip, or of a clip that
+    /// is gone, is dropped; a clip listed in both wings keeps its review from one copy to the other, since both hold
+    /// the same content. An open preview never shows another clip's content, and it collapses when the selected row is
+    /// gone.
     private func followSelection() {
+        if let reviewedAction, selection.selection != reviewedAction.target.ref { dropCommandReview() }
         guard isPreviewExpanded else { return }
         if selection.selectionLost {
             isPreviewExpanded = false
@@ -373,16 +711,26 @@ final class QuickAccessState {
         previewedRef = ref
         let row = selection.rows.first { $0.ref == ref }
         let kind = row?.kind ?? .other
-        // Only text is decoded; other kinds show what the row already knows.
-        guard kind == .text || kind == .url else {
+        let imageService = kind == .image ? services()?.preview : nil
+        // Text is decoded, and so is an image when there is a preview service; other kinds show what the
+        // row already knows.
+        guard kind == .text || kind == .url || imageService != nil else {
             preview = .info(kind: kind, sourceApp: row?.sourceApp)
             return
         }
         previewing = Task {
             let content: PreviewContent
             do {
-                let resolved = try await repository.read(ref)
-                content = await Task.detached(priority: .userInitiated) { Self.preview(of: resolved, row: row) }.value
+                if let imageService {
+                    if let loaded = try await imageService.image(for: ref, maximumPixels: Self.previewImagePixels) {
+                        content = .image(loaded.image, pixelSize: loaded.pixelSize)
+                    } else {
+                        content = .info(kind: kind, sourceApp: row?.sourceApp)
+                    }
+                } else {
+                    let resolved = try await repository.read(ref)
+                    content = await Task.detached(priority: .userInitiated) { Self.preview(of: resolved, row: row) }.value
+                }
             } catch {
                 content = .failed(.contentUnavailable)
             }
@@ -419,6 +767,18 @@ final class QuickAccessState {
         }
     }
 
+    /// The frequent wing's candidates in rank order: each the row of its clip with its use count, or nil where the clip
+    /// cannot show, as when it was deleted or left the history. An item ranked twice keeps its first place.
+    private static func frequentCandidates(_ uses: [UsageSummary], _ items: [ItemSummary]) -> [QuickAccessRow?] {
+        let itemsByID = Dictionary(items.map { ($0.itemID, $0) }, uniquingKeysWith: { first, _ in first })
+        var ranked = Set<ItemID>()
+        return uses.filter { ranked.insert($0.itemID).inserted }.map { use in
+            guard var row = itemsByID[use.itemID].flatMap({ Self.row(from: $0) }) else { return nil }
+            row.frequentUses = use.useCount
+            return row
+        }
+    }
+
     private static func row(from summary: ItemSummary) -> QuickAccessRow? {
         guard let history = summary.history else { return nil }
         return QuickAccessRow(ref: history, title: summary.title, snippet: nil, kind: summary.kind,
@@ -445,6 +805,10 @@ enum QuickAccessStatus {
     /// What an empty result area says.
     static func empty(phase: QuickAccessPhase, notice: IndexNotice?) -> Message {
         switch phase {
+        case .noContent:
+            return Message(text: "No clips yet. Copy something and it shows up here.", detail: nil)
+        case .libraryUnavailable:
+            return Message(text: "Library unavailable", detail: "Recent clips appear here once the library opens.")
         case .noResults:
             if notice == .searchUnavailable { return Message(text: "Search is unavailable — recent clips are still here", detail: nil) }
             return Message(text: "No results", detail: notice == .rebuilding ? rebuilding : nil)
@@ -453,11 +817,11 @@ enum QuickAccessStatus {
         }
     }
 
-    /// The line above rows that are on screen.
-    static func line(selectionLost: Bool, phase: QuickAccessPhase, isComplete: Bool, notice: IndexNotice?) -> String? {
+    /// What the toolbar says over rows that are on screen, in place of Return's hint. An index that is rebuilding
+    /// takes no such place: the toolbar says so after the filters.
+    static func line(selectionLost: Bool, phase: QuickAccessPhase, isComplete: Bool) -> String? {
         if selectionLost { return "The selected item is no longer in the results" }
         if phase == .loading || !isComplete { return "Searching…" }
-        if notice == .rebuilding { return rebuilding }
         return nil
     }
 }

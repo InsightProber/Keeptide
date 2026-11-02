@@ -170,7 +170,7 @@ struct LibraryView: View {
                     )
                 }
                 .accessibilityIdentifier("CaptureRecordingToggle")
-                .disabled(!session.isReady || session.isPausing)
+                .disabled(!session.canToggleRecording)
 
                 Button {
                     showsIgnoredApplications = true

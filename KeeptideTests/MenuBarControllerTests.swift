@@ -44,4 +44,25 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
         XCTAssertEqual(requestCount, 0)
     }
+
+    func testSettingsItemUsesCommandCommaAndOpensSettings() throws {
+        var settingsOpened = 0
+        var libraryOpened = 0
+        let controller = MenuBarController(
+            showQuickAccess: {},
+            toggleQuickAccess: {},
+            showLibrary: { libraryOpened += 1 },
+            showSettings: { settingsOpened += 1 },
+            shouldRegisterHotKey: false
+        )
+        let item = try XCTUnwrap(controller.menu?.item(withTitle: "Settings…"))
+        let action = try XCTUnwrap(item.action)
+
+        XCTAssertEqual(item.keyEquivalent, ",")
+        XCTAssertEqual(item.keyEquivalentModifierMask, .command)
+        XCTAssertTrue(NSApplication.shared.sendAction(action, to: item.target, from: item))
+
+        XCTAssertEqual(settingsOpened, 1)
+        XCTAssertEqual(libraryOpened, 0)
+    }
 }
