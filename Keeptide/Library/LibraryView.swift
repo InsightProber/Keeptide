@@ -55,11 +55,9 @@ struct LibraryView: View {
                     Label(section.title, systemImage: section.symbolName)
                         .tag(section)
                 }
-                .navigationTitle("Library")
                 .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
             } content: {
                 contentColumn
-                    .navigationTitle(selectedSection?.title ?? "Library")
                     .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(nsColor: .textBackgroundColor))
@@ -79,6 +77,12 @@ struct LibraryView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar { libraryToolbar }
+        .onChange(of: splitVisibility) { _, visibility in
+            let next: LibrarySidebarVisibility = visibility == .all ? .visible : .hidden
+            guard next != sidebarVisibility else { return }
+            sidebarVisibility = next
+            sidebarPreference = next == .visible ? .shown : .hidden
+        }
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
         }
@@ -287,16 +291,6 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button {
-                sidebarPreference = sidebarVisibility == .visible ? .hidden : .shown
-                updateSidebar(for: availableWidth)
-            } label: {
-                Label("Toggle Sidebar", systemImage: "sidebar.left")
-            }
-            .help("Show or hide the library sidebar")
-        }
-
         ToolbarItemGroup(placement: .primaryAction) {
             TextField("Search", text: searchBinding)
                 .textFieldStyle(.roundedBorder)
@@ -700,7 +694,7 @@ private struct MemoEditorView: View {
     }
 
     private var kindBinding: Binding<MemoKind> {
-        Binding(get: { editor.kind }, set: editor.setKind)
+        Binding(get: { editor.kind }, set: { editor.setKind($0) })
     }
 }
 

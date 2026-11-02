@@ -19,7 +19,10 @@ final class AppEnvironment {
         self.makePanel = makePanel ?? { [weak captureSession] in
             PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }))
         }
-        self.makeLibrary = makeLibrary ?? { LibraryWindowController(session: captureSession) }
+        self.makeLibrary = makeLibrary ?? {
+            LibraryWindowController(session: captureSession,
+                autosaveName: ProcessInfo.processInfo.arguments.contains("--ui-testing") ? nil : "KeeptideLibraryWindow")
+        }
     }
 
     var panelController: PanelController {
