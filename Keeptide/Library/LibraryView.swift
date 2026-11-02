@@ -146,8 +146,12 @@ struct LibraryView: View {
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }
         }
-        .onChange(of: commands.exportLibraryRequest) { _, _ in beginExport(selectedOnly: false) }
-        .onChange(of: commands.exportSelectedRequest) { _, _ in beginExport(selectedOnly: true) }
+        .onChange(of: commands.exportLibraryRequest, initial: true) { _, request in
+            if request > 0 { beginExport(selectedOnly: false) }
+        }
+        .onChange(of: commands.exportSelectedRequest, initial: true) { _, request in
+            if request > 0 { beginExport(selectedOnly: true) }
+        }
         .onAppear { updateExportContext() }
         .disabled(session.libraryWorkspace?.isClosing == true)
     }
