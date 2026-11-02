@@ -202,22 +202,19 @@ final class LifecycleTests: XCTestCase {
             expecting: identity,
             permit: try await gate.permit(.maintenance)
         )
-        let exactMarker = FacetDeletionMarkerValue(
-            itemID: fixture.item.id,
-            facet: .memo,
-            generationID: memo.id,
-            purgedAt: now
-        )
-        _ = try await WriteCoordinator(controller: fixture.store).commit(StoreTransaction(
-            identity: identity,
-            mutations: [.insert(.facetMarker(exactMarker))],
+        let purged = try await LifecycleCleanupService(controller: fixture.store).purgeFacet(
+            removed.target,
+            trigger: .explicitUserRequest,
+            at: now + 1,
+            expecting: identity,
             permit: try await gate.permit(.maintenance)
-        ))
+        )
+        XCTAssertEqual(purged.phase, .completed)
         await XCTAssertThrowsErrorAsync {
             _ = try await service.restore(
                 removed.target,
                 policy: .permanent,
-                at: now + 1,
+                at: now + 2,
                 expecting: identity,
                 permit: try await gate.permit(.maintenance)
             )
@@ -226,27 +223,21 @@ final class LifecycleTests: XCTestCase {
         }
 
         let newMemo = ownedMemo(itemID: fixture.item.id, mode: .ownedPlainText, body: "new generation")
-        var updatedItem = fixture.item
-        updatedItem.memoID = newMemo.id
         let itemState = try await ContentRepository(controller: fixture.store).recordState(.item(fixture.item.id))
-        let oldMemoState = try await ContentRepository(controller: fixture.store).recordState(.memo(memo.id))
+        guard case .item(var updatedItem) = itemState.value else { return XCTFail("Missing item after memo purge") }
+        updatedItem.memoID = newMemo.id
         _ = try await WriteCoordinator(controller: fixture.store).commit(StoreTransaction(
             identity: identity,
-            preconditions: [
-                .recordUnchanged(.item(fixture.item.id), fingerprint: itemState.fingerprint),
-                .recordUnchanged(.memo(memo.id), fingerprint: oldMemoState.fingerprint),
-            ],
+            preconditions: [.recordUnchanged(.item(fixture.item.id), fingerprint: itemState.fingerprint)],
             mutations: [
-                .delete(.memo(memo.id)),
                 .insert(.memo(newMemo)),
                 .update(.item(updatedItem)),
-            ],
-            permit: try await gate.permit(.maintenance)
+            ]
         ))
         let newRemoval = try await service.remove(
             itemID: fixture.item.id,
             facet: .memo,
-            at: now + 2,
+            at: now + 3,
             expecting: identity,
             permit: try await gate.permit(.maintenance)
         )
