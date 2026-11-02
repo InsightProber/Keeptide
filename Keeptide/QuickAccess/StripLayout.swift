@@ -170,6 +170,10 @@ enum StripLayout {
     /// itself, which leaves floor((bandWidth − 2·dockInset + gap) / step). So the count never grows with the wing. A
     /// band too narrow for one shows none, never fewer.
     static func recentShownWhole(_ m: StripMetrics, frequentCount: Int) -> Int {
+        // Dedupe uses the uniform slots, regardless of how the selected card is drawn.
+        var m = m
+        m.selectedScale = 1
+        m.neighbourPush = 0
         let wing = max(0, frequentCount)
         // A film with no end in sight, so that it neither centres as a short group nor stops at its oldest end: the
         // band's whole-card count does not depend on how many clips there are.
@@ -216,9 +220,10 @@ enum StripLayout {
     /// a group. A negative `position` (-1) stands for a selection that vanished: the film lies as if a selected empty
     /// slot stood where the newest clip rests as the strip opens, past the divider, or before index 0 without one, with
     /// the newest clip a step to its right. Going from a negative position to a row, the slot goes and the frames after
-    /// it step left at once; that step is deliberate, since the slot belongs to no clip.
+    /// it step left at once; that step is deliberate, since the slot belongs to no clip. End-card overhangs use the
+    /// actual `selected` index, including while the fingers carry `position` across another slot.
     static func placement(_ m: StripMetrics, count: Int, position: CGFloat, oldestIsLoaded: Bool,
-                          frequentCount: Int = 0) -> StripPlacement {
+                          frequentCount: Int = 0, selected selectedIndex: Int? = nil) -> StripPlacement {
         let dividerBefore = frequentCount > 0 && frequentCount < count ? frequentCount : nil
         let extra = dividerBefore == nil ? 0 : m.dividerExtra
         let slot = position < 0 ? dividerBefore ?? 0 : nil
@@ -227,17 +232,44 @@ enum StripLayout {
         // across the divider's gap by the fingers, it takes its share of the extra, so the film moves without a jump.
         let selected = slot.map { CGFloat($0) * m.step + extra }
             ?? position * m.step + extra * min(1, max(0, position - CGFloat(frequentCount - 1)))
+        let index = selectedIndex ?? Int(position.rounded(.down))
+        let growth = (m.selectedScale - 1) * m.frameSize.width / 2
+        let leftOverhang = position < 0 ? 0 : index == 0 ? growth : m.neighbourPush
+        let rightOverhang = position < 0 ? 0 : index == count - 1 ? growth : m.neighbourPush
         let filmStart: CGFloat
-        if oldestIsLoaded && filmWidth <= m.bandWidth - 2 * m.dockInset {
-            filmStart = (m.bandWidth - filmWidth) / 2
+        if oldestIsLoaded && filmWidth + leftOverhang + rightOverhang <= m.bandWidth - 2 * m.dockInset {
+            filmStart = (m.bandWidth - filmWidth - rightOverhang + leftOverhang) / 2
         } else {
             let centred = m.bandWidth / 2 - m.frameSize.width / 2 - selected
-            let lowest = oldestIsLoaded ? m.bandWidth - m.dockInset - filmWidth : -.infinity
-            filmStart = min(m.dockInset, max(lowest, centred))
+            let lowest = oldestIsLoaded ? m.bandWidth - m.dockInset - filmWidth - rightOverhang : -.infinity
+            filmStart = min(m.dockInset + leftOverhang, max(lowest, centred))
         }
         // A slot before index 0 is where the film starts, and index 0 stands a step to its right.
         return StripPlacement(firstOrigin: slot == 0 ? filmStart + m.step : filmStart, dividerBefore: dividerBefore,
                               slotBefore: slot)
+    }
+
+    /// Neighbors stand aside on their own side of the selection; a vanished selection moves no cards.
+    static func push(of index: Int, selected: Int, _ m: StripMetrics) -> CGFloat {
+        guard selected >= 0, index != selected else { return 0 }
+        return index < selected ? -m.neighbourPush : m.neighbourPush
+    }
+
+    static func scale(of index: Int, selected: Int, _ m: StripMetrics) -> CGFloat {
+        selected >= 0 && index == selected ? m.selectedScale : 1
+    }
+
+    /// The divider moves with the wing opposite the selected card.
+    static func dividerPush(selected: Int, frequentCount: Int, _ m: StripMetrics) -> CGFloat {
+        selected < 0 ? 0 : selected < frequentCount ? m.neighbourPush : -m.neighbourPush
+    }
+
+    static func scaled(_ rect: NSRect, by scale: CGFloat) -> NSRect {
+        rect.insetBy(dx: rect.width * (1 - scale) / 2, dy: rect.height * (1 - scale) / 2)
+    }
+
+    static func ringFrame(around card: NSRect, scale: CGFloat, reach: CGFloat) -> NSRect {
+        scaled(card, by: scale).insetBy(dx: -reach, dy: -reach)
     }
 
     /// The left edge of each frame within the band, one step apart from index 0 at `placement.firstOrigin` on,

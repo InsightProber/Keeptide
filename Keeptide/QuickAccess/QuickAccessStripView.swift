@@ -46,7 +46,9 @@ final class QuickAccessStripView: NSView {
     /// dock without a frequent wing. nil without clips.
     var selectionAnchorFrame: NSRect? {
         guard let metrics, let rest = restingPlacement else { return nil }
-        return convert(frameRect(origin: origin(of: selectedIndex, metrics, in: rest), metrics), from: film)
+        let card = frameRect(origin: origin(of: selectedIndex, metrics, in: rest), metrics)
+        return convert(StripLayout.scaled(card, by: StripLayout.scale(of: selectedIndex, selected: selectedIndex, metrics)),
+                       from: film)
     }
 
     /// Frames kept beyond each end of the ones on screen, so a step or a push never shows a gap.
@@ -72,6 +74,7 @@ final class QuickAccessStripView: NSView {
     private var frames: [QuickAccessRow.ID: StripFrameHost] = [:]
     /// The line between the frequent wing and the recent clips. It lies in the film, so it moves with the frames.
     private let divider = StripDivider()
+    private let ring = StripSelectionRing()
     private let frequentLabel = StripSectionLabel.hosted("Frequent", symbol: "flame",
                                                          identifier: "QuickAccessFrequentLabel")
     private let recentLabel = StripSectionLabel.hosted("Recent", symbol: "clock", identifier: "QuickAccessRecentLabel")
@@ -113,6 +116,10 @@ final class QuickAccessStripView: NSView {
         divider.isHidden = true
         divider.setAccessibilityIdentifier("QuickAccessDivider")
         film.addSubview(divider)
+        ring.wantsLayer = true
+        ring.isHidden = true
+        ring.setAccessibilityIdentifier("QuickAccessSelectionRing")
+        film.addSubview(ring)
         sectionLabels.addSubview(frequentLabel)
         sectionLabels.addSubview(recentLabel)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways,
@@ -138,7 +145,8 @@ final class QuickAccessStripView: NSView {
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
         // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
         // moves. The springs still running are read before another joins them.
-        let start = metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX }.map { $0 + pushed } : nil
+        let start = metrics == self.metrics
+            ? selection.flatMap { frames[$0] }.map { $0.frame.midX - $0.placedPush + pushed } : nil
         let running = drawnOffset
         let previousIndex = selectedIndex
         let labelsBefore = labelPlaces
@@ -270,7 +278,7 @@ final class QuickAccessStripView: NSView {
     private func placement(at position: CGFloat) -> StripPlacement? {
         guard let metrics, !rows.isEmpty else { return nil }
         return StripLayout.placement(metrics, count: rows.count, position: position, oldestIsLoaded: oldestIsLoaded,
-                                     frequentCount: frequentCount)
+                                     frequentCount: frequentCount, selected: selectedIndex)
     }
 
     /// Where the film rests with the selected clip.
@@ -310,7 +318,8 @@ final class QuickAccessStripView: NSView {
     /// frames from the divider on stand `dividerExtra` further right, and those from a vanished selection's slot
     /// between the wings on a step further still, so both are reckoned at even steps: the last as if no frame stood
     /// further right, and the first as if every frame did. Either may then take in a row or two more than the band
-    /// shows, never fewer, so the spare beyond each end stays spare.
+    /// shows, never fewer, so the spare beyond each end stays spare. Push only moves cards outward; enlargement and
+    /// the divider together reach less than one step, so one spare frame at each end also covers their overhang.
     private func rowsOnScreen(_ metrics: StripMetrics, origins: ClosedRange<CGFloat>) -> (first: Int, last: Int) {
         let rest = restingPlacement
         let extra = (rest?.dividerBefore == nil ? 0 : metrics.dividerExtra)
@@ -366,13 +375,17 @@ final class QuickAccessStripView: NSView {
             frames[row.id] = host
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
                       isHovered: row.id == hovered)
-            host.frame = frameRect(origin: origins[index], metrics)
+            let push = StripLayout.push(of: index, selected: selectedIndex, metrics)
+            let rect = frameRect(origin: origins[index] + push, metrics)
+            host.place(at: rect, index: index, push: rect.minX - frameRect(origin: origins[index], metrics).minX,
+                       scale: StripLayout.scale(of: index, selected: selectedIndex, metrics))
             // VoiceOver finds a frame in its wing's group, or in the list itself without a wing.
             host.setAccessibilityParent(frequentCount == 0 ? self : row.isFrequent ? frequentGroup : recentGroup)
         }
         spare.forEach { $0.removeFromSuperview() }
         fillWingGroups()
         placeDivider(metrics, at: rest)
+        placeRing(metrics)
         dimSideFrames()
     }
 
@@ -384,7 +397,8 @@ final class QuickAccessStripView: NSView {
             return
         }
         let width: CGFloat = increasesContrast() ? 2 : 1
-        divider.frame = backingAlignedRect(cardRow(from: line - width / 2, width: width, metrics),
+        let push = StripLayout.dividerPush(selected: selectedIndex, frequentCount: frequentCount, metrics)
+        divider.frame = backingAlignedRect(cardRow(from: line + push - width / 2, width: width, metrics),
                                            options: [.alignMinXNearest, .alignWidthNearest, .alignMinYNearest,
                                                      .alignHeightNearest])
         if divider.isHidden {
@@ -392,6 +406,27 @@ final class QuickAccessStripView: NSView {
             // It takes its colour when it is drawn, which it never is while hidden.
             divider.needsDisplay = true
         }
+    }
+
+    /// One ring belongs to the strip, outside the scaled card rather than inside its transformed drawing.
+    private func placeRing(_ metrics: StripMetrics) {
+        guard let selection, let host = frames[selection] else {
+            ring.isHidden = true
+            return
+        }
+        let width = StripLayout.selectionRingWidth(increasedContrast: increasesContrast())
+        let reach = StripLayout.selectionRingGap + width
+        ring.frame = backingAlignedRect(StripLayout.ringFrame(around: host.frame, scale: metrics.selectedScale,
+                                                              reach: reach), options: .alignAllEdgesNearest)
+        ring.layer?.cornerCurve = .continuous
+        ring.layer?.borderWidth = width
+        ring.layer?.cornerRadius = metrics.cornerRadius * metrics.selectedScale + reach
+        ring.isHidden = false
+        ring.needsDisplay = true
+    }
+
+    private func drawnRect(of host: StripFrameHost) -> NSRect {
+        convert(host.drawnFrame.offsetBy(dx: drawnOffset, dy: 0), from: film)
     }
 
     /// Where the section labels stand, springs aside; nil for a hidden one.
@@ -413,6 +448,7 @@ final class QuickAccessStripView: NSView {
         var places = StripSectionLabels()
         if let metrics, let rest = restingPlacement, let line = StripLayout.dividerX(metrics, placement: rest) {
             let divider = line + pushed
+                + StripLayout.dividerPush(selected: selectedIndex, frequentCount: frequentCount, metrics)
             places = StripLayout.sectionLabelOrigins(metrics, dividerX: divider,
                                                      frequentWidth: frequentLabel.frame.width,
                                                      recentWidth: recentLabel.frame.width)
@@ -443,7 +479,7 @@ final class QuickAccessStripView: NSView {
 
     private func addFrame(_ view: StripFrameView) -> StripFrameHost {
         let host = StripFrameHost(view)
-        film.addSubview(host)
+        film.addSubview(host, positioned: .below, relativeTo: ring)
         return host
     }
 
@@ -618,7 +654,8 @@ final class QuickAccessStripView: NSView {
     private func row(at event: NSEvent) -> QuickAccessRow.ID? {
         var point = film.convert(event.locationInWindow, from: nil)
         point.x -= drawnOffset
-        return frames.first { $0.value.frame.offsetBy(dx: drawnShift(of: $0.value.layer), dy: 0).contains(point) }?.key
+        if let selection, let host = frames[selection], host.drawnFrame.contains(point) { return selection }
+        return frames.first { $0.value.drawnFrame.contains(point) }?.key
     }
 
     /// A faint wash on the frame under the pointer. It only shows the pointer; it never selects.
@@ -685,7 +722,7 @@ final class QuickAccessStripView: NSView {
         let band = NSRect(x: bounds.midX - metrics.bandWidth / 2, y: bounds.minY, width: metrics.bandWidth,
                           height: bounds.height)
         return frames.map { (row: $0.key, host: $0.value) }
-            .filter { convert($0.host.frame, from: film).intersects(band) }
+            .filter { drawnRect(of: $0.host).intersects(band) }
             .sorted { $0.host.frame.minX < $1.host.frame.minX }
     }
 
@@ -708,7 +745,7 @@ final class QuickAccessStripView: NSView {
         let onScreen = frequentCount == 0 ? [] : framesOnScreen
         return [(frequentGroup, true), (recentGroup, false)].compactMap { group, frequent in
             let hosts = onScreen.filter { $0.row.isFrequent == frequent }.map(\.host)
-            let rects = hosts.map { convert($0.frame, from: film) }
+            let rects = hosts.map { drawnRect(of: $0) }
             group.setAccessibilityChildren(hosts)
             group.setAccessibilityFrameInParentSpace(rects.dropFirst().reduce(rects.first ?? .zero) { $0.union($1) })
             return hosts.isEmpty ? nil : group
@@ -740,11 +777,61 @@ private final class StripFrameHost: NSView {
     private let wash = HoverWash()
     private var row: QuickAccessRow?
     private var applicationName: String?
+    private(set) var placedIndex = -1
+    private(set) var placedPush: CGFloat = 0
+    private(set) var placedScale: CGFloat = 1
+
+    var drawnFrame: NSRect {
+        guard let layer else { return frame }
+        return (layer.presentation() ?? layer).frame
+    }
+
+    func place(at rect: NSRect, index: Int, push: CGFloat, scale: CGFloat) {
+        placedIndex = index
+        placedPush = push
+        placedScale = scale
+        frame = rect
+        applyScale()
+    }
+
+    private func applyScale() {
+        guard let layer else { return }
+        let cx = (0.5 - layer.anchorPoint.x) * bounds.width
+        let cy = (0.5 - layer.anchorPoint.y) * bounds.height
+        var transform = CATransform3DMakeScale(placedScale, placedScale, 1)
+        transform.m41 = cx * (1 - placedScale)
+        transform.m42 = cy * (1 - placedScale)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = transform
+        CATransaction.commit()
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        super.setFrameOrigin(newOrigin)
+        applyScale()
+    }
+
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        // AppKit synchronizes a backing layer after layout and may replace its transform. Restore our scale after
+        // that synchronization as well as after frame changes, including the first draw in a SwiftUI container.
+        applyScale()
+    }
+
+    override func accessibilityFrame() -> NSRect {
+        guard let film = superview, let window else { return super.accessibilityFrame() }
+        let shift = (film.layer?.presentation()?.position.x ?? film.layer?.position.x ?? 0)
+            - (film.layer?.position.x ?? 0)
+        return window.convertToScreen(film.convert(drawnFrame.offsetBy(dx: shift, dy: 0), to: nil))
+    }
 
     init(_ view: StripFrameView) {
         drawing = NSHostingView(rootView: view)
         super.init(frame: .zero)
-        // The selection ring is drawn outside the frame.
+        // The shadow extends outside the frame.
+        wantsLayer = true
         clipsToBounds = false
         drawing.clipsToBounds = false
         drawing.sizingOptions = []
@@ -783,6 +870,7 @@ private final class StripFrameHost: NSView {
         super.setFrameSize(newSize)
         drawing.frame = bounds
         wash.frame = bounds
+        applyScale()
     }
 
     override func isAccessibilityElement() -> Bool { true }
@@ -821,6 +909,19 @@ private final class HoverWash: NSView {
     override func updateLayer() {
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
     }
+}
+
+/// The strip's single selection ring. It follows system accent changes and never takes pointer or accessibility input.
+private final class StripSelectionRing: NSView {
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.cornerCurve = .continuous
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func isAccessibilityElement() -> Bool { false }
 }
 
 /// The line between the frequent wing and the recent clips, in the colour of the line over each card's footer.

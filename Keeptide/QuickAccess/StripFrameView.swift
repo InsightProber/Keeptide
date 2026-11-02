@@ -228,9 +228,8 @@ extension ContentKind {
 
 /// One card of the strip: a band in the colour of the source app's icon, naming the kind of clip and how long ago
 /// it was copied, with the app's icon at its right; the clip itself, as large as the card allows; and a footer with
-/// its length, size, host or type. It is drawn at the size `metrics` gives. A selected card's ring is drawn outside
-/// that size, 3 pt from its edge and 3 pt wide (4 pt with Increase Contrast), and so is the card's shadow, so
-/// whatever hosts the card must not clip them.
+/// its length, size, host or type. It is drawn at the size `metrics` gives. Its shadow extends outside that size,
+/// so whatever hosts the card must not clip it.
 struct StripFrameView: View {
     let content: StripFrameContent
     let applicationIcon: NSImage
@@ -244,7 +243,6 @@ struct StripFrameView: View {
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
-    private static let selectionGap: CGFloat = 3
     /// The system draws an app's icon, and a document's, with a clear margin around it: of every 64 points the
     /// icon itself fills 52 across, and a document's page 57 down. The icons are drawn that much larger, so that
     /// what shows is the size the card asks for.
@@ -285,7 +283,6 @@ struct StripFrameView: View {
             shape.fill(Palette.paper(isDark))
                 .shadow(color: Palette.shadow(isDark), radius: isDark ? 10 : 8, x: 0, y: isDark ? 8 : 6)
         }
-        .overlay { selectionRing }
     }
 
     /// The width of the line drawn along a card's edge, if it has one. With Reduce Transparency the band is
@@ -560,22 +557,6 @@ struct StripFrameView: View {
                     .fill(Palette.separator(isDark))
                     .frame(height: 0.5)
             }
-    }
-
-    // MARK: Selection
-
-    /// A ring in the system's accent colour outside the card: 3 pt wide, 3 pt from its edge; 4 pt wide with
-    /// Increase Contrast.
-    @ViewBuilder
-    private var selectionRing: some View {
-        if isSelected {
-            let width: CGFloat = increasedContrast ? 4 : 3
-            let offset = Self.selectionGap + width / 2
-            RoundedRectangle(cornerRadius: metrics.cornerRadius + offset, style: .continuous)
-                .stroke(Color(nsColor: .controlAccentColor), lineWidth: width)
-                .padding(-offset)
-                .allowsHitTesting(false)
-        }
     }
 }
 

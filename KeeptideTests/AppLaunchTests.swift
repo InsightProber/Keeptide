@@ -988,9 +988,10 @@ final class AppLaunchTests: XCTestCase {
         // running to its right.
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 0") == true, selectedClipLabel(in: strip) ?? "")
-        let newest = try frame(of: "clip 0", in: strip)
+        let newest = try drawnFrame(of: "clip 0", in: strip)
         XCTAssertEqual(newest.minX - left, metrics.dockInset, accuracy: 0.5)
-        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX - newest.minX, metrics.step, accuracy: 1)
+        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX - frame(of: "clip 0", in: strip).minX,
+                       metrics.step + metrics.neighbourPush, accuracy: 1)
         controller.state.close()
     }
 
@@ -1018,18 +1019,18 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testStepsInTheDockMoveTheSelectionNotTheFrames() async throws {
+    func testStepsInTheDockKeepTheNewestCardsEdgeAtTheDock() async throws {
         let (controller, _) = try await makePanelWithClips((0..<40).reversed().map { "clip \($0)" })
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try await clipStrip(in: window)
-        let docked = try frame(of: "clip 0", in: strip)
+        let docked = try drawnFrame(of: "clip 0", in: strip).minX
 
-        // Near the newest end the selection walks along the film, which stays where it is.
+        // Near the newest end the selection walks along the film while the newest visible edge stays docked.
         editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows[1].ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 1") == true, selectedClipLabel(in: strip) ?? "")
-        XCTAssertEqual(try frame(of: "clip 0", in: strip), docked)
+        XCTAssertEqual(try drawnFrame(of: "clip 0", in: strip).minX, docked, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -1071,7 +1072,7 @@ final class AppLaunchTests: XCTestCase {
         editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 1") == true, selectedClipLabel(in: strip) ?? "")
-        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX, dock.minX, accuracy: 0.5)
+        XCTAssertEqual(try drawnFrame(of: "clip 1", in: strip).minX, dock.minX, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -1148,7 +1149,7 @@ final class AppLaunchTests: XCTestCase {
             controller.state.selection.rows.count == 61 && !controller.state.hasMoreRows
                 && self.hasFrame(titled: controller.state.selection.rows[60].title, in: strip)
         }
-        let oldest = try frame(of: controller.state.selection.rows[60].title, in: strip)
+        let oldest = try drawnFrame(of: controller.state.selection.rows[60].title, in: strip)
         XCTAssertEqual(oldest.maxX - left, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
         CATransaction.flush()
         let drawn = try frame(of: title, in: strip).midX + (try filmOffset(in: strip))
@@ -1201,7 +1202,7 @@ final class AppLaunchTests: XCTestCase {
 
         // The rest of the scan may bring more clips, so the two found so far are not centred as a group: they rest
         // at the left dock.
-        let first = try frame(of: controller.state.selection.rows[0].title, in: strip)
+        let first = try drawnFrame(of: controller.state.selection.rows[0].title, in: strip)
         XCTAssertEqual(first.minX - left, metrics.dockInset, accuracy: 0.5)
 
         // The finished scan is all there is, and three clips fit: they are centred as a group.
@@ -1209,9 +1210,9 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil {
             controller.state.selection.isComplete && self.framesOnScreen(in: strip).count == 3
         }
-        let film = 3 * metrics.step - metrics.gap
-        let newest = try frame(of: controller.state.selection.rows[0].title, in: strip)
-        XCTAssertEqual(newest.minX - left, (metrics.bandWidth - film) / 2, accuracy: 0.5)
+        let newest = try drawnFrame(of: controller.state.selection.rows[0].title, in: strip)
+        let oldest = try drawnFrame(of: controller.state.selection.rows[2].title, in: strip)
+        XCTAssertEqual((newest.minX + oldest.maxX) / 2 - left, metrics.bandWidth / 2, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -1395,7 +1396,7 @@ final class AppLaunchTests: XCTestCase {
         // ⌘K opens the selected clip's actions beside it, level with its top edge.
         XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "k", modifiers: .command)))
         let commandK = try XCTUnwrap(shown.first)
-        let selected = try frame(of: "newer", in: strip)
+        let selected = try drawnFrame(of: "newer", in: strip)
         XCTAssertTrue(commandK.view === strip)
         XCTAssertEqual(commandK.point.x, selected.maxX, accuracy: try stripMetrics(in: window).gap)
         XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
@@ -1577,7 +1578,7 @@ final class AppLaunchTests: XCTestCase {
         let mostUsedFrame = strip.convert(mostUsed.bounds, from: mostUsed)
         let secondFrame = strip.convert(secondMostUsed.bounds, from: secondMostUsed)
         XCTAssertEqual(newestFrame.midX, strip.bounds.midX, accuracy: 0.5)
-        XCTAssertEqual(newestFrame.minX - mostUsedFrame.maxX, metrics.gap + metrics.dividerExtra, accuracy: 1)
+        XCTAssertEqual(newestFrame.minX - mostUsedFrame.maxX, metrics.gap + metrics.dividerExtra + metrics.neighbourPush, accuracy: 1)
         XCTAssertEqual(mostUsedFrame.minX - secondFrame.maxX, metrics.gap, accuracy: 1)
 
         // The band has room below the cards for the section icons: 43 instead of 37, so it is 376 high. Both icons
@@ -1678,7 +1679,7 @@ final class AppLaunchTests: XCTestCase {
         // and the frames are the list's own children.
         XCTAssertEqual(state.selection.frequentCount, 0)
         XCTAssertEqual(state.selection.rows.map(\.title), Array(Self.wingTitles.reversed()))
-        XCTAssertEqual(try frame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(try drawnFrame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
         let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
         let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
         let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
@@ -1704,7 +1705,7 @@ final class AppLaunchTests: XCTestCase {
         // frames are the list's own children, in no groups.
         XCTAssertEqual(state.selection.frequentCount, 0)
         XCTAssertEqual(state.selection.rows.map(\.title), Array(Self.wingTitles.reversed()))
-        XCTAssertEqual(try frame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(try drawnFrame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
         let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
         let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
         let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
@@ -1763,7 +1764,7 @@ final class AppLaunchTests: XCTestCase {
         let state = controller.state
         let window = try XCTUnwrap(controller.window)
         let strip = try await clipStrip(in: window)
-        // Frames go straight to their places, so a click lands where a frame rests.
+        // Disable springs; clicks still use the drawn face while AppKit commits the new model geometry.
         strip.reducesMotion = { true }
         try await waitForWingFrames(in: strip)
         // clip 11 is listed twice: last in the wing, beside the divider, and as the oldest of the recent clips, off the
@@ -1772,7 +1773,11 @@ final class AppLaunchTests: XCTestCase {
         let recentCopy = try XCTUnwrap(state.selection.rows.first { !$0.isFrequent && $0.title == "clip 11" })
         XCTAssertEqual(wingCopy.ref, recentCopy.ref)
         func rightClick(on frame: NSView) throws -> NSEvent {
-            let rect = strip.convert(frame.bounds, from: frame)
+            let layer = try XCTUnwrap(frame.layer)
+            let film = try XCTUnwrap(frame.superview)
+            let shift = (film.layer?.presentation()?.position.x ?? film.layer?.position.x ?? 0)
+                - (film.layer?.position.x ?? 0)
+            let rect = strip.convert((layer.presentation() ?? layer).frame.offsetBy(dx: shift, dy: 0), from: film)
             return try XCTUnwrap(NSEvent.mouseEvent(
                 with: .rightMouseDown, location: strip.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil),
                 modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
@@ -1801,6 +1806,12 @@ final class AppLaunchTests: XCTestCase {
         controller.perform(.move(10))
         XCTAssertEqual(state.selection.selectedRow?.title, "clip 10")
         XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        // The list reports frames where they are drawn. Wait for AppKit to show this copy and remove the frequent
+        // wing from the visible group before asking VoiceOver for the recent copy.
+        try await SearchTestSupport.waitUntil {
+            self.framesOnScreen(in: strip).contains { $0.accessibilityLabel()?.hasSuffix(": clip 11") == true }
+                && (try? self.groups(in: strip).map(\.name)) == ["Recent"]
+        }
         let recentFrame = try XCTUnwrap(framesOnScreen(in: strip).first {
             $0.accessibilityLabel()?.hasSuffix(": clip 11") == true
         })
@@ -3542,6 +3553,13 @@ final class AppLaunchTests: XCTestCase {
         let frames = framesOnScreen(in: strip)
         let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
         return strip.convert(frame.bounds, from: frame)
+    }
+
+    /// The resting drawn face, including the host layer's centered scale but no running film spring.
+    private func drawnFrame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
+        let host = try XCTUnwrap(framesOnScreen(in: strip).first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true })
+        let scale = host.layer?.transform.m11 ?? 1
+        return StripLayout.scaled(try frame(of: title, in: strip), by: scale)
     }
 
     /// Where the band is in the panel's window: as wide as the screen's visible area less the margins, and as tall

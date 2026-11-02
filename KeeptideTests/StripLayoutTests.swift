@@ -10,6 +10,46 @@ final class StripLayoutTests: XCTestCase {
                      bottomPadding: 22)
     }
 
+    private var focused: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+
+    func testTheNeighboursStandAsideAndOnlyTheSelectedCardIsEnlarged() {
+        XCTAssertEqual((0..<5).map { StripLayout.push(of: $0, selected: 2, focused) }, [-18, -18, 0, 18, 18])
+        XCTAssertEqual((0..<5).map { StripLayout.scale(of: $0, selected: 2, focused) }, [1, 1, 1.12, 1, 1])
+        XCTAssertEqual((0..<3).map { StripLayout.push(of: $0, selected: -1, focused) }, [0, 0, 0])
+        XCTAssertEqual((0..<3).map { StripLayout.scale(of: $0, selected: -1, focused) }, [1, 1, 1])
+        XCTAssertEqual([2, 3, -1].map { StripLayout.dividerPush(selected: $0, frequentCount: 3, focused) }, [18, -18, 0])
+        let card = NSRect(x: 574, y: 0, width: 228, height: 250)
+        assertRect(StripLayout.scaled(card, by: 1.12), NSRect(x: 560.32, y: -15, width: 255.36, height: 280))
+        assertRect(StripLayout.ringFrame(around: card, scale: 1.12, reach: 6), NSRect(x: 554.32, y: -21, width: 267.36, height: 292))
+    }
+
+    func testTheDockHoldsTheEndCardsVisibleEdgeAtTheDockInset() {
+        for (selected, origin) in [(0, 33.68), (1, 38), (2, 38), (3, -152)] as [(Int, CGFloat)] {
+            XCTAssertEqual(StripLayout.placement(focused, count: 50, position: CGFloat(selected), oldestIsLoaded: true,
+                                                 selected: selected).firstOrigin, origin, accuracy: 0.001)
+        }
+        for (selected, origin) in [(19, -3483.68), (18, -3488)] as [(Int, CGFloat)] {
+            XCTAssertEqual(StripLayout.placement(focused, count: 20, position: CGFloat(selected), oldestIsLoaded: true,
+                                                 selected: selected).firstOrigin, origin, accuracy: 0.001)
+        }
+        XCTAssertEqual(StripLayout.placement(focused, count: 20, position: 0.75, oldestIsLoaded: true,
+                                             selected: 1).firstOrigin, 38, accuracy: 0.001)
+    }
+
+    func testAShortListIsCentredWithItsOverhangs() {
+        for (selected, origin) in [(0, 329.84), (1, 332), (2, 334.16)] as [(Int, CGFloat)] {
+            XCTAssertEqual(StripLayout.placement(focused, count: 3, position: CGFloat(selected), oldestIsLoaded: true).firstOrigin,
+                           origin, accuracy: 0.001)
+        }
+    }
+
+    private func assertRect(_ actual: NSRect, _ expected: NSRect, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.minX, expected.minX, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actual.minY, expected.minY, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actual.maxX, expected.maxX, accuracy: 0.001, file: file, line: line)
+        XCTAssertEqual(actual.maxY, expected.maxY, accuracy: 0.001, file: file, line: line)
+    }
+
     func testCardSizesMatchTheSpec() {
         let sizes: [(size: CardSize, card: CGSize, header: CGFloat, icon: CGFloat, footer: CGFloat, radius: CGFloat)] = [
             (.small, CGSize(width: 200, height: 220), 52, 36, 28, 18),
@@ -41,7 +81,7 @@ final class StripLayoutTests: XCTestCase {
     func testANarrowScreenKeepsTheCardSizeAndShowsFewerCards() {
         for size in CardSize.allCases {
             let wide = StripLayout.metrics(for: size, visibleWidth: 2560)
-            let narrow = StripLayout.metrics(for: size, visibleWidth: 1024)
+            let narrow = StripLayout.metrics(for: size, visibleWidth: 1024, style: StripStyle(selectedScale: 1))
             XCTAssertEqual(narrow.cardSize, size)
             XCTAssertEqual(narrow.frameSize, wide.frameSize, "\(size)")
             XCTAssertEqual(narrow.gap, wide.gap, "\(size)")
@@ -49,7 +89,7 @@ final class StripLayoutTests: XCTestCase {
             XCTAssertEqual(narrow.dockInset, wide.dockInset, "\(size)")
         }
         // The film docks the same 20 pt in from the band's left end.
-        let narrow = StripLayout.metrics(for: .large, visibleWidth: 1024)
+        let narrow = StripLayout.metrics(for: .large, visibleWidth: 1024, style: StripStyle(selectedScale: 1))
         XCTAssertEqual(StripLayout.placement(narrow, count: 50, position: 0, oldestIsLoaded: false).firstOrigin, 20)
     }
 

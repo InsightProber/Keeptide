@@ -44,8 +44,10 @@ struct SettingsView: View {
 
     /// What VoiceOver reads for the enlargement: "None" where the selected card is drawn as large as the others, and
     /// otherwise how much larger it is in whole percent, such as "12% larger".
-    private static func enlargement(_ scale: Double) -> String {
-        let percent = Int(((scale - 1) * 100).rounded())
+    static func enlargement(_ scale: Double) -> String {
+        let normalized = scale.isFinite ? min(max(scale, scales.lowerBound), scales.upperBound)
+            : Double(StripStyle.standard.selectedScale)
+        let percent = Int(((normalized - 1) * 100).rounded())
         return percent == 0 ? "None" : "\(percent)% larger"
     }
 }

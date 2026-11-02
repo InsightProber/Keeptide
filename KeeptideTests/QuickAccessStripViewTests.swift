@@ -17,6 +17,151 @@ final class QuickAccessStripViewTests: XCTestCase {
     /// The middle of the frame resting at the left dock.
     private var dock: CGFloat { metrics.dockInset + metrics.frameSize.width / 2 }
 
+    private var focused: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+
+    func testTheSelectedCardIsEnlargedAndItsNeighboursStepAside() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        let drawn = try drawnRect(of: "Row 5", in: strip)
+        XCTAssertEqual(drawn.midX, 688, accuracy: 0.5)
+        XCTAssertEqual(drawn.width, 255.36, accuracy: 0.5)
+        XCTAssertEqual(drawn.height, 280, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 4", in: strip).maxX, 542, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 3", in: strip).maxX, 300, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 6", in: strip).minX, 834, accuracy: 0.5)
+        for title in ["Row 3", "Row 4", "Row 6"] { XCTAssertEqual(try drawnRect(of: title, in: strip).size, focused.frameSize) }
+        let ring = try ringView(in: strip), ringRect = drawnRect(of: ring, in: strip)
+        XCTAssertEqual(ringRect.midX, 688, accuracy: 0.5)
+        XCTAssertEqual(ringRect.midY, drawn.midY, accuracy: 0.5)
+        XCTAssertEqual(ringRect.width, 267.36, accuracy: 0.5)
+        XCTAssertEqual(ringRect.height, 292, accuracy: 0.5)
+        XCTAssertEqual(ring.layer?.borderWidth, 3)
+        XCTAssertEqual(try XCTUnwrap(ring.layer).cornerRadius, 28.4, accuracy: 0.01)
+        XCTAssertEqual(ring.layer?.cornerCurve, .continuous)
+        strip.setFrameSize(strip.frame.size)
+        XCTAssertEqual(try drawnRect(of: "Row 5", in: strip).width, 255.36, accuracy: 0.5)
+        let host = try XCTUnwrap(drawings(in: strip).first { $0.rootView.isSelected }?.superview)
+        let screen = try XCTUnwrap(strip.window).convertToScreen(strip.convert(drawn, to: nil))
+        XCTAssertEqual(host.accessibilityFrame(), screen)
+    }
+
+    func testTheEnlargedEndCardRestsAtTheDock() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        for index in [0, 1, 2, 19] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            if index == 19 { XCTAssertEqual(try drawnRect(of: "Row 19", in: strip).maxX, 1356, accuracy: 0.5) }
+            else { XCTAssertEqual(try drawnRect(of: "Row 0", in: strip).minX, 20, accuracy: 0.5) }
+            if index == 0 { XCTAssertEqual(drawnRect(of: try ringView(in: strip), in: strip).minX, 14, accuracy: 0.5) }
+        }
+    }
+
+    func testFingerCarriedPlacementKeepsTheActualSelectedEndOverhang() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.haptics = RecordingHaptics()
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        // A third of a step back has floor(position) == 0, but Row 1 is still selected.
+        strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1))
+        XCTAssertEqual(try drawnRect(of: "Row 0", in: strip).minX, 20, accuracy: 0.5)
+        XCTAssertEqual(try drawnRect(of: "Row 1", in: strip).width, 255.36, accuracy: 0.5)
+    }
+
+    func testTheRingNeverTouchesANeighbour() throws {
+        for size in CardSize.allCases {
+            for scale in [1.0, 1.01, 1.07, 1.12, 1.24, 1.25] {
+                let m = StripLayout.metrics(for: size, visibleWidth: 1440, style: StripStyle(selectedScale: scale))
+                let strip = makeStrip(m), rows = makeRows(20)
+                for contrast in [false, true] {
+                    strip.increasesContrast = { contrast }
+                    for index in [0, 1, 10] {
+                        strip.show(rows, selection: rows[index].id, details: [:], metrics: m, applicationNames: ApplicationNames())
+                        let ring = drawnRect(of: try ringView(in: strip), in: strip)
+                        let pixels = strip.convertToBacking(ring)
+                        for edge in [pixels.minX, pixels.maxX, pixels.minY, pixels.maxY] {
+                            XCTAssertEqual(edge, edge.rounded(), accuracy: 1e-9)
+                        }
+                        let clearance: CGFloat = contrast ? 1 : 2
+                        if index > 0 { XCTAssertGreaterThanOrEqual(ring.minX - (try drawnRect(of: "Row \(index - 1)", in: strip)).maxX, clearance - 1e-9) }
+                        XCTAssertGreaterThanOrEqual((try drawnRect(of: "Row \(index + 1)", in: strip)).minX - ring.maxX, clearance - 1e-9)
+                    }
+                }
+            }
+        }
+    }
+
+    func testTheRingIsTheStripsOwnAndTakesNoClicks() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        for index in [0, 10] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            let ring = try ringView(in: strip)
+            XCTAssertTrue(ring.superview === strip.subviews.first)
+            XCTAssertTrue(ring.superview?.subviews.last === ring)
+            XCTAssertNil(ring.hitTest(NSPoint(x: ring.frame.midX, y: ring.frame.midY)))
+            XCTAssertFalse(ring.isAccessibilityElement())
+            XCTAssertFalse((strip.accessibilityChildren() as? [NSView] ?? []).contains { $0 === ring })
+        }
+        strip.increasesContrast = { true }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        let ring = try ringView(in: strip)
+        XCTAssertEqual(ring.layer?.borderWidth, 4)
+        XCTAssertEqual(ring.frame.width, 269.36, accuracy: 0.5)
+        XCTAssertEqual(try XCTUnwrap(ring.layer).cornerRadius, 29.4, accuracy: 0.01)
+        strip.increasesContrast = { false }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        XCTAssertEqual(ring.layer?.borderWidth, 3)
+        strip.show(rows, selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(ring.isHidden)
+        strip.show([], selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(ring.isHidden)
+    }
+
+    func testTheEnlargedCardTakesClicksOnItsWholeDrawnFace() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        var selected: QuickAccessRow.ID?
+        strip.onSelect = { selected = $0 }
+        let card = try rect(titled: "Row 5", in: strip)
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: NSPoint(x: card.minX - 5, y: card.midY), in: strip))
+        XCTAssertEqual(selected, rows[5].id)
+        selected = nil
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: NSPoint(x: 550, y: card.midY), in: strip))
+        XCTAssertNil(selected)
+    }
+
+    func testTheMenuAnchorsBesideTheEnlargedCard() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.selectionAnchorFrame, try drawnRect(of: "Row 5", in: strip))
+        strip.show(rows, selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.selectionAnchorFrame?.size, focused.frameSize)
+        XCTAssertEqual(try XCTUnwrap(strip.selectionAnchorFrame).minX, 20, accuracy: 0.5)
+    }
+
+    func testTheDividerStepsAsideWithTheCardsOfItsSide() throws {
+        let strip = makeStrip(focused), rows = makeWing(frequent: 3, recent: 20)
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(try dividerRect(in: strip).midX, 511, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Freq 2", in: strip).maxX, 466, accuracy: 0.5)
+        XCTAssertEqual(try sectionLabel("QuickAccessFrequentLabel", of: strip).frame.maxX, 503, accuracy: 0.5)
+        XCTAssertEqual(try sectionLabel("QuickAccessRecentLabel", of: strip).frame.minX, 519, accuracy: 0.5)
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(try dividerRect(in: strip).midX, 813, accuracy: 0.5)
+    }
+
+    private func ringView(in strip: NSView) throws -> NSView {
+        try XCTUnwrap(strip.subviews.first?.subviews.first { $0.accessibilityIdentifier() == "QuickAccessSelectionRing" })
+    }
+
+    private func drawnRect(of title: String, in strip: NSView) throws -> NSRect {
+        let host = try XCTUnwrap(drawings(in: strip).first { self.title(of: $0) == title }?.superview)
+        return drawnRect(of: host, in: strip)
+    }
+
+    private func drawnRect(of view: NSView, in strip: NSView) -> NSRect {
+        guard let layer = view.layer, let film = view.superview else { return .zero }
+        let shift = (film.layer?.presentation()?.position.x ?? film.layer?.position.x ?? 0) - (film.layer?.position.x ?? 0)
+        return strip.convert((layer.presentation() ?? layer).frame.offsetBy(dx: shift, dy: 0), from: film)
+    }
+
     func testSelectedFrameIsCentredInTheBand() throws {
         let strip = makeStrip()
         let rows = makeRows(20)

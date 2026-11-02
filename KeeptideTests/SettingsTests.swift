@@ -6,6 +6,13 @@ import XCTest
 
 @MainActor
 final class SettingsTests: XCTestCase {
+    func testEnlargementTextUsesTheNormalizedScaleWithoutAccessibilityPermission() {
+        for (scale, expected) in [(1.0, "None"), (1.13, "13% larger"), (0.9, "None"), (1.3, "25% larger"),
+                                  (Double.nan, "12% larger"), (.infinity, "12% larger"), (-.infinity, "12% larger")] {
+            XCTAssertEqual(SettingsView.enlargement(scale), expected)
+        }
+    }
+
     func testDefaultsAreMediumAndTicksOn() throws {
         let preferences = QuickAccessPreferences(defaults: try makeDefaults())
 

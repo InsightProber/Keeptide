@@ -50,7 +50,7 @@ final class QuickAccessBandTests: XCTestCase {
 
     func testTheBandGivesTheEnlargedCardRoomAboveAndBelow() throws {
         // Medium cards at each enlargement, without the frequent wing and with it. The band is as tall as the toolbar,
-        // the cards and the room around them. The selected card, still drawn at its unscaled size here, starts 68 pt
+        // the cards and the room around them. The selected card's unscaled layout frame starts 68 pt
         // below the band's top edge and the growth further down, the distance the enlarged card reaches past it, and
         // the room below it is the metrics' own. The strip reaches the growth and 8 pt more for the ring above the
         // cards and below them, and the section icons' view fills the room below the cards.
@@ -84,6 +84,45 @@ final class QuickAccessBandTests: XCTestCase {
             let icons = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
             XCTAssertEqual(icons.height, metrics.bottomPadding, accuracy: 0.5, name)
             XCTAssertEqual(icons.minY, band.minY, accuracy: 0.5, name)
+        }
+    }
+
+    func testTheEnlargedCardAndItsRingFitInTheBand() throws {
+        for size in CardSize.allCases {
+            for scale in [1.0, 1.12, 1.25] {
+                for wing in [false, true] {
+                    for contrast in [false, true] {
+                        let metrics = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: wing,
+                                                          style: StripStyle(selectedScale: scale))
+                        let strip = QuickAccessStripView()
+                        strip.increasesContrast = { contrast }
+                        let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: contrast,
+                                                          metrics: metrics, strip: strip)
+                        let rows = makeWing(frequent: wing ? 3 : 0, recent: 20)
+                        strip.show(rows, selection: rows[wing ? 3 : 0].id, details: [:], metrics: metrics,
+                                   applicationNames: ApplicationNames())
+                        settle(window)
+                        let ringView = try XCTUnwrap(strip.subviews.first?.subviews.first {
+                            $0.accessibilityIdentifier() == "QuickAccessSelectionRing"
+                        })
+                        let ring = ringView.convert(ringView.bounds, to: nil)
+                        let card = try drawnSelectedCard(in: strip)
+                        let hosted = strip.convert(strip.bounds, to: nil)
+                        let band = backdrop.convert(backdrop.bandRect, to: nil)
+                        XCTAssertTrue(hosted.contains(ring))
+                        XCTAssertTrue(hosted.contains(card))
+                        XCTAssertGreaterThanOrEqual(band.maxY - 48 - ring.maxY, 13)
+                        XCTAssertGreaterThanOrEqual(ring.minY - band.minY, wing ? 21 : 15)
+                        let outline = QuickAccessBandBackdrop.outline(in: band)
+                        let radius = try XCTUnwrap(ringView.layer).cornerRadius
+                        let ringPath = RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: ring).cgPath
+                        let edge = self.outline(of: ringPath)
+                        for sample in 0..<64 {
+                            XCTAssertTrue(outline.contains(edge[sample * edge.count / 64]))
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -409,13 +448,24 @@ final class QuickAccessBandTests: XCTestCase {
         )
     }
 
-    /// The selected clip's card, in window coordinates.
+    /// The selected clip's unscaled layout frame, in window coordinates; growth is added separately by callers.
     private func selectedCard(in strip: QuickAccessStripView) throws -> NSRect {
         func drawings(in view: NSView) -> [NSHostingView<StripFrameView>] {
             view.subviews.flatMap { ($0 as? NSHostingView<StripFrameView>).map { [$0] } ?? drawings(in: $0) }
         }
         let card = try XCTUnwrap(drawings(in: strip).first { $0.rootView.isSelected }, "the selected card")
         return card.convert(card.bounds, to: nil)
+    }
+
+    private func drawnSelectedCard(in strip: QuickAccessStripView) throws -> NSRect {
+        func selected(in view: NSView) -> NSView? {
+            if let drawing = view as? NSHostingView<StripFrameView>, drawing.rootView.isSelected { return drawing.superview }
+            return view.subviews.lazy.compactMap { selected(in: $0) }.first
+        }
+        let host = try XCTUnwrap(selected(in: strip))
+        let film = try XCTUnwrap(host.superview), layer = try XCTUnwrap(host.layer)
+        let shift = (film.layer?.presentation()?.position.x ?? film.layer?.position.x ?? 0) - (film.layer?.position.x ?? 0)
+        return film.convert((layer.presentation() ?? layer).frame.offsetBy(dx: shift, dy: 0), to: nil)
     }
 
     /// One of the two section icons, found by its identifier.
@@ -461,6 +511,10 @@ final class QuickAccessBandTests: XCTestCase {
     /// Points along the band's outline as the band draws it around `band`, its curves included, no more than a
     /// quarter point apart.
     private func outline(of band: NSRect) -> [CGPoint] {
+        outline(of: QuickAccessBandBackdrop.outline(in: band))
+    }
+
+    private func outline(of path: CGPath) -> [CGPoint] {
         var points: [CGPoint] = []
         var current = CGPoint.zero, start = CGPoint.zero
         func follow(to end: CGPoint, steps: Int, _ point: (CGFloat) -> CGPoint) {
@@ -473,7 +527,7 @@ final class QuickAccessBandTests: XCTestCase {
                 CGPoint(x: from.x + (end.x - from.x) * t, y: from.y + (end.y - from.y) * t)
             }
         }
-        QuickAccessBandBackdrop.outline(in: band).applyWithBlock { pointer in
+        path.applyWithBlock { pointer in
             let element = pointer.pointee
             switch element.type {
             case .moveToPoint:
@@ -506,28 +560,23 @@ final class QuickAccessBandTests: XCTestCase {
         return points
     }
 
-    /// How far beyond a selected medium card its ring reaches, above it or `below` it, as SwiftUI draws the card with
-    /// Increase Contrast or without: from the card's edge out to the outermost row in which the card's picture differs
-    /// from the picture of the same card unselected. Its shadow is the same in both.
+    /// How far the strip's ring reaches past the selected medium card's drawn edge, above it or `below` it,
+    /// with Increase Contrast or without. Measure the separate AppKit ring rather than the card's SwiftUI drawing.
     private func ringReach(increasedContrast: Bool, below: Bool = false) throws -> CGFloat {
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
-        let row = makeRow()
-        let room: CGFloat = 20
-        func picture(selected: Bool) throws -> Picture {
-            try Picture(StripFrameView(content: StripFrameContent.make(row: row, detail: nil, cardSize: .medium),
-                                       applicationIcon: ApplicationNames().icon(for: nil), metrics: metrics,
-                                       headerTint: nil, isSelected: selected)
-                .padding(room)
-                .environment(\._colorSchemeContrast, increasedContrast ? .increased : .standard))
-        }
-        let plain = try picture(selected: false), ringed = try picture(selected: true)
-        XCTAssertEqual([ringed.width, ringed.height], [plain.width, plain.height], "The ring changes no size")
-        guard ringed.width == plain.width, ringed.height == plain.height else { return 0 }
-        // Rows counted in from the picture's top edge, or from its bottom edge below the card.
-        let outermost = try XCTUnwrap((0..<Int(room * Picture.scale)).first {
-            ringed.differs(from: plain, inRow: below ? ringed.height - 1 - $0 : $0)
-        }, "no ring \(below ? "below" : "above") the card")
-        return room - CGFloat(outermost) / Picture.scale
+        let strip = QuickAccessStripView()
+        strip.increasesContrast = { increasedContrast }
+        let (window, _) = try host(reducesTransparency: false, increasedContrast: increasedContrast,
+                                  metrics: metrics, strip: strip)
+        let rows = makeWing(frequent: 0, recent: 20)
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        settle(window)
+        let ring = try XCTUnwrap(strip.subviews.first?.subviews.first {
+            $0.accessibilityIdentifier() == "QuickAccessSelectionRing"
+        })
+        let frame = ring.convert(ring.bounds, to: nil)
+        let card = try drawnSelectedCard(in: strip)
+        return below ? card.minY - frame.minY : frame.maxY - card.maxY
     }
 }
 
