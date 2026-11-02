@@ -1,202 +1,45 @@
 import AppKit
-import SwiftUI
-
-/// Actions the panel controller supplies to the view.
-struct QuickAccessViewActions {
-    let primary: () -> Void
-    let togglePreview: () -> Void
-    let openActions: () -> Void
-    let toggleKind: (ContentKind) -> Void
-}
-
-/// The compact single-column panel, with the preview opening beside the results
-/// when there is room and as a page within the panel when there is not.
-struct QuickAccessView: View {
-    let searchField: QuickAccessSearchField
-    let results: QuickAccessResultsTableView
-    let state: QuickAccessState
-    let actions: QuickAccessViewActions
-    @State private var applicationNames = ApplicationNames()
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                SearchField(field: searchField)
-                QuickAccessFilterMenu(kinds: state.kinds, toggle: actions.toggleKind)
-            }
-            .padding(.horizontal, 20)
-            .frame(height: 58)
-            .background(.regularMaterial)
-            scopeBar
-            Divider()
-            GeometryReader { proxy in
-                content(width: proxy.size.width)
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-            }
-            .background(Color(nsColor: .textBackgroundColor))
-            Divider()
-            QuickAccessActionBar(
-                canAct: state.selection.executableSelection != nil,
-                canPreview: state.selection.selection != nil,
-                isPreviewExpanded: state.isPreviewExpanded,
-                failure: state.failure,
-                primary: actions.primary,
-                togglePreview: actions.togglePreview,
-                openActions: actions.openActions
-            )
-        }
-    }
-
-    private var scopeBar: some View {
-        HStack(spacing: 6) {
-            Text(state.showsRecentClips ? "Recent Clips" : "All Content")
-                .accessibilityLabel(state.scopeTitle)
-                .accessibilityIdentifier("QuickAccessScope")
-            ForEach(ContentKind.filters.filter(state.kinds.contains), id: \.self) { kind in
-                Button { actions.toggleKind(kind) } label: {
-                    Label(kind.filterTitle, systemImage: "xmark.circle.fill").labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Remove \(kind.filterTitle) filter")
-            }
-            Spacer(minLength: 8)
-            if let statusLine {
-                Text(statusLine).lineLimit(1).accessibilityIdentifier("QuickAccessStatus")
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 20)
-        .frame(height: 24)
-    }
-
-    /// Status shown above rows that are still on screen.
-    private var statusLine: String? {
-        guard !state.selection.rows.isEmpty else { return nil }
-        return QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
-                                      isComplete: state.selection.isComplete, notice: state.indexNotice)
-    }
-
-    /// The results stay in one place in the layout whether or not the preview is open,
-    /// so the table is never rebuilt and keeps keyboard focus.
-    private func content(width: CGFloat) -> some View {
-        let split = state.isPreviewExpanded && width >= 900
-        let page = state.isPreviewExpanded && !split
-        return HStack(spacing: 0) {
-            resultArea
-                .frame(width: split ? 400 : (page ? 0 : nil))
-                .opacity(page ? 0 : 1)
-                .accessibilityHidden(page)
-            if split {
-                Divider()
-                preview
-            }
-            if page {
-                VStack(spacing: 0) {
-                    HStack {
-                        Button("Back to Results", action: actions.togglePreview)
-                        Spacer()
-                    }
-                    .padding(8)
-                    preview
-                }
-            }
-        }
-    }
-
-    private var preview: some View {
-        let row = state.selection.rows.first { $0.ref == state.selection.selection }
-        return QuickAccessPreviewView(preview: state.preview,
-                                      applicationName: row?.sourceApp.flatMap(applicationNames.name(for:)))
-    }
-
-    @ViewBuilder
-    private var resultArea: some View {
-        let rows = state.selection.rows
-        if state.phase == .libraryUnavailable {
-            emptyState("Library unavailable", detail: "Recent clips appear here once the library opens.")
-        } else if rows.isEmpty {
-            if state.phase == .noContent {
-                emptyState("No content yet", detail: "Your saved content will appear here.")
-            } else {
-                status(QuickAccessStatus.empty(phase: state.phase, notice: state.indexNotice))
-            }
-        } else {
-            QuickAccessResultsView(table: results, rows: rows, selection: state.selection.selection)
-        }
-    }
-
-    private func emptyState(_ title: String, detail: String) -> some View {
-        ContentUnavailableView {
-            Label(title, systemImage: "doc.on.clipboard")
-        } description: {
-            Text(detail)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("QuickAccessEmptyState")
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func status(_ message: QuickAccessStatus.Message) -> some View {
-        VStack(spacing: 6) {
-            Text(message.text)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("QuickAccessStatus")
-            if let detail = message.detail {
-                Text(detail).font(.callout).foregroundStyle(.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-private struct QuickAccessFilterMenu: View {
-    let kinds: Set<ContentKind>
-    let toggle: (ContentKind) -> Void
-
-    var body: some View {
-        Menu {
-            ForEach(ContentKind.filters, id: \.self) { kind in
-                Toggle(kind.filterTitle, isOn: Binding(get: { kinds.contains(kind) }, set: { _ in toggle(kind) }))
-            }
-        } label: {
-            Image(systemName: kinds.isEmpty ? "line.3.horizontal.decrease.circle"
-                                           : "line.3.horizontal.decrease.circle.fill")
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("Filter by type")
-        .accessibilityLabel("Filter by type")
-        .accessibilityIdentifier("QuickAccessFilterButton")
-    }
-}
-
-private struct SearchField: NSViewRepresentable {
-    let field: QuickAccessSearchField
-    func makeNSView(context: Context) -> QuickAccessSearchField { field }
-    func updateNSView(_ nsView: QuickAccessSearchField, context: Context) {}
-}
+import Carbon.HIToolbox
 
 /// What Escape may peel in the panel besides the search field's own text.
 struct QuickAccessEscapeContext {
     var isPreviewExpanded = false
     var hasFilters = false
+    var isSearchExpanded = false
 }
 
+/// The panel's search field. It draws only its text: the toolbar's search control draws the round icon or the pill
+/// around it, the magnifier and the clear button.
 final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     /// The committed query; never reported while an input method has marked text.
     var onQueryChange: ((String) -> Void)?
+    /// Text went into the field, an input method's first key included, so the search should show it.
+    var onType: (() -> Void)?
     /// Commands from keys the field does not handle natively.
     var onCommand: ((QuickAccessCommand) -> Void)?
-    /// Escape layers handled outside the field: collapsing the preview, clearing filters.
+    /// Escape layers handled outside the field: collapsing the preview, clearing filters, folding the search.
     var onEscape: ((QuickAccessEscapeAction) -> Void)?
     var escapeContext: () -> QuickAccessEscapeContext = { QuickAccessEscapeContext() }
 
     init() {
         super.init(frame: .zero)
-        placeholderString = "Search Keeptide"
-        font = .preferredFont(forTextStyle: .title3)
+        isBezeled = false
+        isBordered = false
+        drawsBackground = false
+        focusRingType = .none
+        font = .systemFont(ofSize: 15)
+        textColor = ToolbarPalette.fieldText
+        placeholderAttributedString = NSAttributedString(string: "Search", attributes: [
+            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: ToolbarPalette.placeholder,
+        ])
+        // The field's own magnifier and cancel button stay, for what they do, and are neither drawn nor read: the
+        // search control has its own.
+        if let cell = cell as? NSSearchFieldCell {
+            for button in [cell.searchButtonCell, cell.cancelButtonCell].compactMap({ $0 }) {
+                button.isTransparent = true
+                button.setAccessibilityElement(false)
+            }
+        }
         delegate = self
         setAccessibilityLabel("Quick access query")
         setAccessibilityIdentifier("Quick access query")
@@ -204,32 +47,67 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    // The text takes the whole field; the search control draws the magnifier and the clear button.
+
+    override func rectForSearchText(whenCentered isCentered: Bool) -> NSRect { bounds }
+
+    override func rectForSearchButton(whenCentered isCentered: Bool) -> NSRect { .zero }
+
+    override func rectForCancelButton(whenCentered isCentered: Bool) -> NSRect { .zero }
+
+    /// Folded, the field lies undrawn under the search's icon, which takes the pointer with the arrow.
+    override func resetCursorRects() {
+        guard alphaValue > 0 else { return }
+        super.resetCursorRects()
+    }
+
     func controlTextDidChange(_ notification: Notification) {
-        guard let editor = currentEditor() as? NSTextView, !editor.hasMarkedText() else { return }
+        guard let editor = currentEditor() as? NSTextView else { return }
+        if !editor.string.isEmpty { onType?() }
+        guard !editor.hasMarkedText() else { return }
         onQueryChange?(stringValue)
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
-        let beganWithMarkedText = (textView as? QuickAccessFieldEditor)?.currentEventBeganWithMarkedText ?? false
+        let key: QuickAccessKey
         switch selector {
         case #selector(NSResponder.cancelOperation(_:)):
             return escape(textView)
         case #selector(NSResponder.insertNewline(_:)):
-            let shift = NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false
-            return route(QuickAccessKeyInput(key: .returnKey, shift: shift, focus: .searchField,
-                                             eventBeganWithMarkedText: beganWithMarkedText))
+            key = .returnKey
         case #selector(NSResponder.moveDown(_:)):
-            return route(QuickAccessKeyInput(key: .down, focus: .searchField,
-                                             eventBeganWithMarkedText: beganWithMarkedText))
+            key = .down
+        case #selector(NSResponder.moveLeft(_:)):
+            key = .left
+        case #selector(NSResponder.moveRight(_:)):
+            key = .right
+        case #selector(NSResponder.insertTab(_:)):
+            key = .tab
+        case #selector(NSResponder.insertBacktab(_:)):
+            key = .backTab
         default:
             return false
         }
+        return route(key, in: textView)
     }
 
-    private func route(_ input: QuickAccessKeyInput) -> Bool {
-        let command = QuickAccessKeyRouter.command(for: input)
+    /// Space types text, so it never arrives here as a command; the field editor asks before typing it. An
+    /// empty field has no use for it and opens the preview; in a query or a composition it is a space. Held
+    /// in an empty field, it acts once: its repeats are taken and dropped, not typed.
+    func handleSpace(in editor: QuickAccessFieldEditor, isRepeat: Bool) -> Bool {
+        route(.space, in: editor, acts: !isRepeat)
+    }
+
+    /// Keys with native meaning in the field, such as the arrows in a query, and keys that belong to a
+    /// composition pass through. A key that does not `act` is still taken when it has a command here.
+    private func route(_ key: QuickAccessKey, in editor: NSTextView, acts: Bool = true) -> Bool {
+        let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
+            key: key, shift: NSApp.currentEvent?.modifierFlags.contains(.shift) ?? false, focus: .searchField,
+            eventBeganWithMarkedText: (editor as? QuickAccessFieldEditor)?.currentEventBeganWithMarkedText ?? false,
+            queryIsEmpty: editor.string.isEmpty
+        ))
         guard command != .passThrough else { return false }
-        onCommand?(command)
+        if acts { onCommand?(command) }
         return true
     }
 
@@ -237,7 +115,8 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         let context = escapeContext()
         let action = QuickAccessEscapePolicy.action(hasMarkedText: textView.hasMarkedText(),
                                                     isPreviewExpanded: context.isPreviewExpanded,
-                                                    hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters)
+                                                    hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters,
+                                                    isSearchExpanded: context.isSearchExpanded)
         switch action {
         case .cancelComposition:
             // The input method already declined Escape. Remove only its marked range;
@@ -245,7 +124,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
             textView.insertText("", replacementRange: textView.markedRange())
             textView.inputContext?.discardMarkedText()
             return true
-        case .collapsePreview:
+        case .collapsePreview, .foldSearch:
             onEscape?(action)
             return true
         case .clearQuery:
@@ -277,35 +156,58 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
 
     private func focusIfNeeded() {
         guard let window, window.isKeyWindow, currentEditor() == nil else { return }
-        // Keep focus another control in the panel already holds, such as the results.
+        // Keep focus another control in the panel already holds, such as the strip.
         guard window.firstResponder == nil || window.firstResponder === window else { return }
         window.makeFirstResponder(self)
     }
 }
 
 /// The search field's editor. It records whether each key event began inside an input
-/// method composition, so the key that commits a candidate never also acts.
+/// method composition, so the key that commits a candidate never also acts, and lets the
+/// field decide what Space means before typing it.
 final class QuickAccessFieldEditor: NSTextView {
     private(set) var currentEventBeganWithMarkedText = false
+
+    /// The field being edited, which is the editor's delegate.
+    private var field: QuickAccessSearchField? { (delegate as AnyObject?) as? QuickAccessSearchField }
+
+    /// An input method's first key gives marked text before any change is reported; it opens a folded search at
+    /// once, so that the composition shows from its start.
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        if hasMarkedText() { field?.onType?() }
+    }
+
+    /// Under the folded search's icon the editor takes no text cursor either.
+    override func resetCursorRects() {
+        guard field?.alphaValue != 0 else { return }
+        super.resetCursorRects()
+    }
 
     override func keyDown(with event: NSEvent) {
         currentEventBeganWithMarkedText = hasMarkedText()
         defer { currentEventBeganWithMarkedText = false }
+        let keyCode = Int(event.keyCode)
+        // A held Return or Escape has acted already; a composition's keys are the input method's even then.
+        if event.isARepeat, !currentEventBeganWithMarkedText,
+           [kVK_Return, kVK_ANSI_KeypadEnter, kVK_Escape].contains(keyCode) { return }
+        if keyCode == kVK_Space, let field, field.handleSpace(in: self, isRepeat: event.isARepeat) { return }
         super.keyDown(with: event)
     }
 }
 
 enum QuickAccessEscapeAction: Equatable {
-    case cancelComposition, collapsePreview, clearQuery, closePanel
+    case cancelComposition, collapsePreview, clearQuery, foldSearch, closePanel
 }
 
-/// Escape handles only the top layer: composition, then preview, then the query and
-/// temporary filters, then the panel.
+/// Escape handles only the top layer: composition, then preview, then the query and filters, which folds the
+/// search with them, then an open search with nothing in it, then the panel.
 enum QuickAccessEscapePolicy {
-    static func action(hasMarkedText: Bool, isPreviewExpanded: Bool = false,
-                       hasQuery: Bool, hasFilters: Bool = false) -> QuickAccessEscapeAction {
+    static func action(hasMarkedText: Bool, isPreviewExpanded: Bool = false, hasQuery: Bool, hasFilters: Bool = false,
+                       isSearchExpanded: Bool = false) -> QuickAccessEscapeAction {
         if hasMarkedText { return .cancelComposition }
         if isPreviewExpanded { return .collapsePreview }
-        return hasQuery || hasFilters ? .clearQuery : .closePanel
+        if hasQuery || hasFilters { return .clearQuery }
+        return isSearchExpanded ? .foldSearch : .closePanel
     }
 }

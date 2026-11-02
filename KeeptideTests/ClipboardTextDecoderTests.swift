@@ -98,6 +98,28 @@ final class ClipboardTextDecoderTests: XCTestCase {
         XCTAssertEqual(ClipboardTextDecoder.preview(stored)?.text, "中文标题\nbody")
     }
 
+    func testLinkTitleIsReadFromTheURLNameAlone() throws {
+        let url = representation(type: "public.url", bytes: Data("https://zh.wikipedia.org/wiki/剪贴板".utf8))
+        let name = representation(type: "public.url-name", bytes: Data("  剪贴板 - 维基百科\n".utf8))
+
+        // Trimmed as the link itself is, and found in any order among the representations.
+        XCTAssertEqual(ClipboardTextDecoder.linkTitle([url, name]), "剪贴板 - 维基百科")
+        XCTAssertEqual(ClipboardTextDecoder.linkTitle([name, url]), "剪贴板 - 维基百科")
+        // A byte order mark selects UTF-16, as for any text, and NUL is dropped.
+        let utf16 = Data([0xFF, 0xFE]) + (try XCTUnwrap("Page\u{0} title".data(using: .utf16LittleEndian)))
+        XCTAssertEqual(ClipboardTextDecoder.linkTitle([representation(type: "PUBLIC.URL-NAME", bytes: utf16)]), "Page title")
+        // No name, or one of only blanks, is no title; the URL and plain text are never taken for one.
+        XCTAssertNil(ClipboardTextDecoder.linkTitle([url]))
+        XCTAssertNil(ClipboardTextDecoder.linkTitle([url, representation(type: "public.url-name", bytes: Data(" \n\t".utf8))]))
+        XCTAssertNil(ClipboardTextDecoder.linkTitle([representation(type: "public.utf8-plain-text", bytes: Data("Title".utf8))]))
+        // Only its first 4 KB is read, as for a clip's title, and never half a character: 1,365 three-byte characters.
+        let long = representation(type: "public.url-name", bytes: Data(String(repeating: "页", count: 3_000).utf8))
+        XCTAssertEqual(ClipboardTextDecoder.linkTitle([long]), String(repeating: "页", count: 1_365))
+        // The name is not text in its own right: titles and previews still skip it.
+        XCTAssertFalse(ClipboardTextDecoder.isTextType("public.url-name"))
+        XCTAssertNil(ClipboardTextDecoder.preview([name]))
+    }
+
     private func representation(type: String, bytes: Data) -> RepresentationValue {
         RepresentationValue(
             snapshotID: UUID(),

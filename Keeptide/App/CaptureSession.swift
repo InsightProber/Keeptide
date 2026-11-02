@@ -23,6 +23,8 @@ final class CaptureSession {
     @ObservationIgnored private var readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)?
     /// Every copy goes through this service; nil until the store opens.
     @ObservationIgnored private(set) var pasteService: PasteService?
+    /// What the strip shows of each clip is read through this; nil until the store opens.
+    @ObservationIgnored private(set) var previewService: PreviewService?
     @ObservationIgnored private(set) var usageStore: LocalUsageStore?
     /// The library window's copies share one session; selections and newer copies refuse older ones.
     @ObservationIgnored private var librarySession: PasteSession?
@@ -46,6 +48,7 @@ final class CaptureSession {
         self.pasteboard = pasteboard
         if let readContent, let pasteboard {
             pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in }, didWrite: { _ in })
+            previewService = PreviewService(read: readContent)
         }
     }
 
@@ -112,6 +115,7 @@ final class CaptureSession {
             usageStore = usage
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
                                         didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) })
+            previewService = PreviewService(read: read)
             await startSearch(store: store, directory: directory)
             isReady = true
             message = nil
@@ -230,6 +234,7 @@ final class CaptureSession {
         searchService = nil
         readContent = nil
         pasteService = nil
+        previewService = nil
         usageStore = nil
         isReady = false
         onServicesChanged?()

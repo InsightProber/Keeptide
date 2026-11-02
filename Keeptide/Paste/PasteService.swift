@@ -5,7 +5,7 @@ enum PasteMode: Equatable, Sendable {
     case original, plainText
 }
 
-enum PasteRefusal: Equatable, Sendable {
+enum PasteRefusal: Error, Equatable, Sendable {
     /// A newer query, selection or session owns the action now.
     case stale
     /// The content changed, was removed, or cannot be written in its original formats.
