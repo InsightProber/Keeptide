@@ -149,7 +149,12 @@ struct QuickAccessBandView: View {
             } else {
                 QuickAccessPreviewView(preview: state.preview,
                                        applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
-                                       onCommand: actions.previewCommand)
+                                       onCommand: actions.previewCommand,
+                                       fileAccessStore: state.fileAccessStore,
+                                       fileAccessIdentity: state.fileAccessIdentity,
+                                       isLoadingOriginal: state.isLoadingOriginalPreview,
+                                       previewMessage: state.previewMessage,
+                                       onRequestOriginal: state.loadOriginalPreview)
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))

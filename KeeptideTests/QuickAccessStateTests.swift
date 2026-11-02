@@ -816,6 +816,86 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.preview, .info(kind: .image, sourceApp: "test.source"))
     }
 
+    func testOriginalImageLoadCannotOverwriteANewerSelection() async throws {
+        let fixture = try makeFixture()
+        try await insert("older", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        try await insert("newer", types: [("public.png", try png(width: 80, height: 60))], at: 2, into: fixture)
+        let gate = SecondReadCancellationGate()
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        var gated = fixture.services
+        gated.preview = PreviewService(read: { ref in
+            try await gate.enter()
+            return try await repository.read(ref)
+        })
+        let services = gated
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        state.togglePreview()
+        try await SearchTestSupport.waitUntil {
+            guard case .image(_, let size)? = state.preview else { return false }
+            return size == CGSize(width: 80, height: 60)
+        }
+
+        state.loadOriginalPreview()
+        try await SearchTestSupport.waitUntil { await gate.waiting == 1 }
+        XCTAssertTrue(state.isLoadingOriginalPreview)
+        state.moveSelection(by: 1)
+
+        try await SearchTestSupport.waitUntil { await gate.cancelled == 1 }
+        try await SearchTestSupport.waitUntil {
+            guard case .image(_, let size)? = state.preview else { return false }
+            return size == CGSize(width: 40, height: 30)
+        }
+        XCTAssertFalse(state.isLoadingOriginalPreview)
+        XCTAssertNil(state.previewMessage)
+    }
+
+    func testCancelledOriginalLoadCannotClearANewerLoadForTheSameContent() async throws {
+        let fixture = try makeFixture()
+        try await insert("image", types: [("public.png", try png(width: 80, height: 60))], at: 1, into: fixture)
+        let gate = SameReferenceOriginalReadGate()
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        var gated = fixture.services
+        gated.preview = PreviewService(read: { ref in
+            let content = try await repository.read(ref)
+            await gate.enter()
+            return content
+        })
+        let services = gated
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        state.togglePreview()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+
+        state.loadOriginalPreview()
+        try await SearchTestSupport.waitUntil { await gate.isWaiting(call: 2) }
+        state.close()
+        state.open()
+        try await settled(state)
+        state.togglePreview()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+
+        state.loadOriginalPreview()
+        try await SearchTestSupport.waitUntil { await gate.isWaiting(call: 4) }
+        XCTAssertTrue(state.isLoadingOriginalPreview)
+
+        await gate.release(call: 2)
+        try await SearchTestSupport.waitUntil { await gate.didReturn(call: 2) }
+        // Let the cancelled task leave PreviewService and run its state cleanup.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertTrue(state.isLoadingOriginalPreview)
+        XCTAssertNil(state.previewMessage)
+
+        await gate.release(call: 4)
+        try await SearchTestSupport.waitUntil { !state.isLoadingOriginalPreview }
+        guard case .image(_, let size)? = state.preview else {
+            return XCTFail("New original preview disappeared")
+        }
+        XCTAssertEqual(size, CGSize(width: 80, height: 60))
+    }
+
     func testEmptyStatesUseTheStripCopy() {
         XCTAssertEqual(QuickAccessStatus.empty(phase: .noContent, notice: nil),
                        QuickAccessStatus.Message(text: "No clips yet. Copy something and it shows up here.", detail: nil))
@@ -2039,5 +2119,55 @@ private actor ReadWatch {
             cancelled += 1
             throw error
         }
+    }
+}
+
+/// The initial fitted preview returns, while the explicit original read waits until
+/// selection or closing cancels it. Later selection previews return immediately.
+private actor SecondReadCancellationGate {
+    private var calls = 0
+    private(set) var waiting = 0
+    private(set) var cancelled = 0
+
+    func enter() async throws {
+        calls += 1
+        guard calls == 2 else { return }
+        waiting += 1
+        do {
+            try await Task.sleep(for: .seconds(60))
+        } catch {
+            cancelled += 1
+            throw error
+        }
+    }
+}
+
+/// Holds the first and second explicit original reads. The first intentionally
+/// ignores cancellation until released, reproducing a late completion after the
+/// panel has closed and reopened on the same content reference.
+private actor SameReferenceOriginalReadGate {
+    private var calls = 0
+    private var waiting: Set<Int> = []
+    private var returned: Set<Int> = []
+    private var continuations: [Int: CheckedContinuation<Void, Never>] = [:]
+
+    func enter() async {
+        calls += 1
+        let call = calls
+        guard call == 2 || call == 4 else { return }
+        waiting.insert(call)
+        await withCheckedContinuation { continuation in
+            continuations[call] = continuation
+        }
+        waiting.remove(call)
+        returned.insert(call)
+    }
+
+    func isWaiting(call: Int) -> Bool { waiting.contains(call) }
+
+    func didReturn(call: Int) -> Bool { returned.contains(call) }
+
+    func release(call: Int) {
+        continuations.removeValue(forKey: call)?.resume()
     }
 }

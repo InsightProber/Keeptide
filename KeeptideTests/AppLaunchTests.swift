@@ -2483,6 +2483,26 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(fake.sent, [])
     }
 
+    func testFilePermissionSheetKeepsThePreviewSessionUntilItEnds() async throws {
+        let (controller, _) = try await makePanelWithClips(["synthetic file"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let sheet = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 120),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        window.beginSheet(sheet, completionHandler: { _ in })
+        defer {
+            if window.attachedSheet === sheet { window.endSheet(sheet) }
+            sheet.orderOut(nil)
+        }
+        XCTAssertTrue(window.attachedSheet === sheet)
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        XCTAssertTrue(controller.isSessionOpen)
+
+        window.endSheet(sheet)
+        try await SearchTestSupport.waitUntil { window.attachedSheet == nil }
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        XCTAssertFalse(controller.isSessionOpen)
+    }
+
     func testThePanelHidesBeforeTheKeystrokeWithoutEndingItsSession() async throws {
         let fake = FakeDirectPasteSystem()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true, system: fake.system)

@@ -88,6 +88,30 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.editor?.isReadOnly, false)
     }
 
+    func testExplicitMarkdownHistoryAndSavedMemoRemainExactEditableMarkdown() async throws {
+        for type in ["net.daringfireball.markdown", "text/markdown"] {
+            let harness = try SearchHarness.make(in: self)
+            let source = "## \(type)\n\n- [ ] keep exact\n"
+            let capture = try ContentStoreFixtures.capture([[(type, Data(source.utf8))]])
+            let item = ContentStoreFixtures.item(capture)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+            let workspace = try await makeWorkspace(harness)
+
+            await workspace.reload()
+            await workspace.select(item.id)
+            XCTAssertEqual(workspace.editor?.ref?.facet, .history, type)
+            XCTAssertEqual(workspace.editor?.kind, .markdown, type)
+            XCTAssertEqual(workspace.editor?.body, source, type)
+            XCTAssertEqual(workspace.editor?.isReadOnly, true, type)
+
+            _ = try await workspace.saveSelectedHistory()
+            XCTAssertEqual(workspace.editor?.ref?.facet, .memo, type)
+            XCTAssertEqual(workspace.editor?.kind, .markdown, type)
+            XCTAssertEqual(workspace.editor?.body, source, type)
+            XCTAssertEqual(workspace.editor?.isReadOnly, false, type)
+        }
+    }
+
     func testUndoNewSaveRestoresHistoryWithoutDeletingChangedMemo() async throws {
         let harness = try SearchHarness.make(in: self)
         let (item, _) = try await insertHistory("undo source", into: harness)

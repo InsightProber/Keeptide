@@ -52,29 +52,151 @@ final class FileAccessStore: @unchecked Sendable {
 
     func read(representationID: UUID) async throws -> LocalFileAccess? {
         return try await controller.perform { context throws -> LocalFileAccess? in
-            let request = Self.request(representationID: representationID)
-            request.fetchLimit = 2
-            let matches = try context.fetch(request)
-            guard matches.count <= 1 else { throw StoreError.corruptStore }
-            guard let record = matches.first else { return nil }
-            guard let id = record.value(forKey: "id") as? UUID,
-                  let snapshotID = record.value(forKey: "snapshotID") as? UUID,
-                  let persistedBytes = record.value(forKey: "bytes") as? Data else {
-                throw StoreError.corruptStore
+            try Self.localAccess(representationID: representationID, in: context)
+        }
+    }
+
+    func filePreviewReferences(
+        for ref: ContentRef,
+        expecting identity: StoreIdentity
+    ) async throws -> [FilePreviewReference] {
+        let controller = controller
+        return try await controller.perform { context in
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            guard let graph = try Self.validatedFileGraph(for: ref, in: context) else { return [] }
+            return try graph.representations.map { representation in
+                let access = try Self.localAccess(representationID: representation.id, in: context)
+                return FilePreviewReference(
+                    ref: ref,
+                    representationID: representation.id,
+                    snapshotID: graph.capture.id,
+                    itemIndex: representation.itemIndex,
+                    representationIndex: representation.representationIndex,
+                    typeIdentifier: representation.typeIdentifier,
+                    descriptorByteCount: representation.byteCount,
+                    descriptorDigest: representation.digest,
+                    bindingSupport: Self.bindingSupport(
+                        for: representation,
+                        localAccess: access,
+                        in: graph
+                    ),
+                    displayName: access?.localPath.flatMap(Self.displayName),
+                    localAccess: access
+                )
             }
-            let committed = try Self.committedRepresentation(id: id, in: context)
-            return LocalFileAccess(
-                id: id,
-                snapshotID: snapshotID,
-                bytes: try Self.decodeLocalBytes(
-                    persistedBytes,
-                    representationID: id,
-                    snapshotID: snapshotID,
-                    committed: committed
-                ),
-                bookmark: record.value(forKey: "bookmark") as? Data,
-                localPath: record.value(forKey: "localPath") as? String
-            )
+        }
+    }
+
+    func bind(
+        _ reference: FilePreviewReference,
+        selectedFileURL: URL,
+        bookmarkData: Data,
+        expecting expected: LocalFileAccess?,
+        identity: StoreIdentity
+    ) async throws -> LocalFileAccess {
+        guard let selectedFileURL = FileReferenceIdentity.standardizedFileURL(selectedFileURL),
+              !bookmarkData.isEmpty,
+              !selectedFileURL.absoluteString.utf8.contains(0) else {
+            throw FilePreviewReferenceError.invalidSelectedFile
+        }
+        let controller = controller
+        return try await controller.perform { context in
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            do {
+                guard let graph = try Self.validatedFileGraph(for: reference.ref, in: context) else {
+                    throw StoreError.preconditionFailed
+                }
+                let representation = try Self.validatedRepresentation(reference, in: graph)
+                let current = try Self.localAccess(representationID: representation.id, in: context)
+                guard current == expected else { throw StoreError.preconditionFailed }
+                switch Self.bindingSupport(for: representation, localAccess: current, in: graph) {
+                case .supportedFileURL:
+                    break
+                case .missingLegacyDescriptor:
+                    throw FilePreviewReferenceError.unsupportedLegacyRelocation
+                case .unsupportedCompound:
+                    throw FilePreviewReferenceError.unsupportedRepresentationLayout
+                }
+
+                let descriptorBytes: Data
+                if let current {
+                    guard FileReferenceIdentity.matches(current, candidateURL: selectedFileURL) else {
+                        throw FilePreviewReferenceError.differentFileReference
+                    }
+                    descriptorBytes = current.bytes
+                } else {
+                    guard LocalReferencePrivacy.usesOpaqueLocalDescriptor(
+                        manifestVersion: graph.capture.manifest.version
+                    ) else {
+                        throw FilePreviewReferenceError.unsupportedLegacyRelocation
+                    }
+                    descriptorBytes = Data(selectedFileURL.absoluteString.utf8)
+                }
+                let value = LocalFileAccess(
+                    id: representation.id,
+                    snapshotID: graph.capture.id,
+                    bytes: descriptorBytes,
+                    bookmark: bookmarkData,
+                    localPath: selectedFileURL.path
+                )
+                try Self.writeBound(value, manifestVersion: graph.capture.manifest.version, in: context)
+                try context.save()
+                CaptureCandidateRepository.invalidateLocalIndex(runtime: controller.runtime)
+                return value
+            } catch {
+                context.rollback()
+                throw error
+            }
+        }
+    }
+
+    func refreshBookmark(
+        for reference: FilePreviewReference,
+        bookmarkData: Data,
+        resolvedFileURL: URL,
+        expecting expected: LocalFileAccess,
+        identity: StoreIdentity
+    ) async throws -> LocalFileAccess {
+        guard !bookmarkData.isEmpty,
+              let resolvedFileURL = FileReferenceIdentity.standardizedFileURL(resolvedFileURL) else {
+            throw FilePreviewReferenceError.invalidSelectedFile
+        }
+        let controller = controller
+        return try await controller.perform { context in
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            do {
+                guard let graph = try Self.validatedFileGraph(for: reference.ref, in: context) else {
+                    throw StoreError.preconditionFailed
+                }
+                let representation = try Self.validatedRepresentation(reference, in: graph)
+                guard let current = try Self.localAccess(
+                    representationID: representation.id,
+                    in: context
+                ), current == expected else {
+                    throw StoreError.preconditionFailed
+                }
+                guard FileReferenceIdentity.matches(current, candidateURL: resolvedFileURL) else {
+                    throw FilePreviewReferenceError.differentFileReference
+                }
+                switch Self.bindingSupport(for: representation, localAccess: current, in: graph) {
+                case .supportedFileURL:
+                    break
+                case .missingLegacyDescriptor:
+                    throw FilePreviewReferenceError.unsupportedLegacyRelocation
+                case .unsupportedCompound:
+                    throw FilePreviewReferenceError.unsupportedRepresentationLayout
+                }
+                var refreshed = current
+                refreshed.bookmark = bookmarkData
+                try Self.writeBound(refreshed, manifestVersion: graph.capture.manifest.version, in: context)
+                if context.hasChanges { try context.save() }
+                return refreshed
+            } catch {
+                context.rollback()
+                throw error
+            }
         }
     }
 
@@ -148,6 +270,147 @@ final class FileAccessStore: @unchecked Sendable {
         let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
         request.predicate = NSPredicate(format: "id == %@", representationID as NSUUID)
         return request
+    }
+
+    private struct ValidatedFileGraph {
+        var capture: CaptureValue
+        var representations: [RepresentationValue]
+    }
+
+    private static func validatedFileGraph(
+        for ref: ContentRef,
+        in context: NSManagedObjectContext
+    ) throws -> ValidatedFileGraph? {
+        let resolved = try StoredRecords.resolve(ref, in: context)
+        switch resolved.integrity {
+        case .complete, .requiresRelocation:
+            break
+        case .recovering, .corrupt:
+            throw FilePreviewReferenceError.contentUnavailable(resolved.integrity)
+        }
+        guard case .item(let item)? = try StoredRecords.value(.item(ref.itemID), in: context),
+              let captureID = item.captureID else {
+            return nil
+        }
+        // Owned memo bodies have their own version and must not expose a capture's files.
+        guard captureID == ref.version.rawValue else { return nil }
+        let capture = try StoredRecords.validatedCapture(captureID, in: context)
+        guard capture.digest == ref.digest else { throw StoreError.staleReference }
+        let local = capture.representations.filter { $0.storage == .localReference }
+        return ValidatedFileGraph(
+            capture: capture,
+            representations: local.sorted { lhs, rhs in
+                if lhs.itemIndex != rhs.itemIndex { return lhs.itemIndex < rhs.itemIndex }
+                if lhs.representationIndex != rhs.representationIndex {
+                    return lhs.representationIndex < rhs.representationIndex
+                }
+                return lhs.id.uuidString < rhs.id.uuidString
+            }
+        )
+    }
+
+    private static func bindingSupport(
+        for representation: RepresentationValue,
+        localAccess: LocalFileAccess?,
+        in graph: ValidatedFileGraph
+    ) -> FilePreviewBindingSupport {
+        let publicFileURLs = graph.representations.filter {
+            $0.itemIndex == representation.itemIndex
+                && $0.typeIdentifier.lowercased() == "public.file-url"
+        }
+        guard representation.typeIdentifier.lowercased() == "public.file-url",
+              publicFileURLs.count == 1 else {
+            return .unsupportedCompound
+        }
+        if localAccess == nil,
+           LocalReferencePrivacy.usesLegacyLocalDescriptor(
+               manifestVersion: graph.capture.manifest.version
+           ) {
+            return .missingLegacyDescriptor
+        }
+        return .supportedFileURL
+    }
+
+    private static func validatedRepresentation(
+        _ reference: FilePreviewReference,
+        in graph: ValidatedFileGraph
+    ) throws -> RepresentationValue {
+        guard reference.snapshotID == graph.capture.id,
+              let representation = graph.representations.first(where: { $0.id == reference.representationID }),
+              representation.snapshotID == reference.snapshotID,
+              representation.itemIndex == reference.itemIndex,
+              representation.representationIndex == reference.representationIndex,
+              representation.typeIdentifier == reference.typeIdentifier,
+              representation.byteCount == reference.descriptorByteCount,
+              representation.digest == reference.descriptorDigest else {
+            throw StoreError.preconditionFailed
+        }
+        return representation
+    }
+
+    private static func localAccess(
+        representationID: UUID,
+        in context: NSManagedObjectContext
+    ) throws -> LocalFileAccess? {
+        let request = request(representationID: representationID)
+        request.fetchLimit = 2
+        let matches = try context.fetch(request)
+        guard matches.count <= 1 else { throw StoreError.corruptStore }
+        guard let record = matches.first else { return nil }
+        guard let id = record.value(forKey: "id") as? UUID,
+              id == representationID,
+              let snapshotID = record.value(forKey: "snapshotID") as? UUID,
+              let persistedBytes = record.value(forKey: "bytes") as? Data else {
+            throw StoreError.corruptStore
+        }
+        let committed = try committedRepresentation(id: id, in: context)
+        return LocalFileAccess(
+            id: id,
+            snapshotID: snapshotID,
+            bytes: try decodeLocalBytes(
+                persistedBytes,
+                representationID: id,
+                snapshotID: snapshotID,
+                committed: committed
+            ),
+            bookmark: record.value(forKey: "bookmark") as? Data,
+            localPath: record.value(forKey: "localPath") as? String
+        )
+    }
+
+    private static func writeBound(
+        _ value: LocalFileAccess,
+        manifestVersion: Int,
+        in context: NSManagedObjectContext
+    ) throws {
+        let request = request(representationID: value.id)
+        request.fetchLimit = 2
+        let matches = try context.fetch(request)
+        guard matches.count <= 1 else { throw StoreError.corruptStore }
+        let row = matches.first
+            ?? NSEntityDescription.insertNewObject(forEntityName: "FileAccessRecord", into: context)
+        let persisted: Data
+        if LocalReferencePrivacy.usesLegacyLocalDescriptor(manifestVersion: manifestVersion) {
+            persisted = value.bytes
+        } else if LocalReferencePrivacy.usesOpaqueLocalDescriptor(manifestVersion: manifestVersion) {
+            persisted = LocalFileAccessEnvelope.encode(
+                value.bytes,
+                representationID: value.id,
+                snapshotID: value.snapshotID
+            )
+        } else {
+            throw StoreError.corruptStore
+        }
+        row.setValue(value.id, forKey: "id")
+        row.setValue(value.snapshotID, forKey: "snapshotID")
+        row.setValue(persisted, forKey: "bytes")
+        row.setValue(value.bookmark, forKey: "bookmark")
+        row.setValue(value.localPath, forKey: "localPath")
+    }
+
+    private static func displayName(_ path: String) -> String? {
+        let name = (path as NSString).lastPathComponent
+        return name.isEmpty ? nil : name
     }
 
     private static func stage(
