@@ -3,7 +3,7 @@
 Keeptide is designed as a local-first native macOS application. This document
 describes the overall architecture. The native shell, local storage foundation,
 local clipboard recording, a rebuildable local search index, and quick-access
-search, text preview, and copying are implemented. Direct paste, editing, export
+search, text preview, and copying are implemented. Direct paste, editing UI, export
 UI, and cloud integration remain planned.
 
 ## Native interfaces
@@ -59,6 +59,14 @@ Repeated captures are deduplicated only when their complete content matches.
 Search normalization does not alter stored content or determine content identity.
 History retention and saved-snippet lifetime are independent. Content is reclaimed
 only when its retention and references permit it.
+
+The snippet service layer now performs capture saving, independent creation,
+copy-on-write edits, and conflict preservation through the same transactional
+store. Display types survive reopening and older stores migrate without changing
+capture bytes. Local drafts are isolated by library and editing session, written
+atomically, and retained when saving fails. Composition and asynchronous saves
+are coordinated before changes reach the content store. Native editor integration
+remains a separate milestone.
 
 ## Search and previews
 

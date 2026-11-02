@@ -7,6 +7,11 @@ copying, and a quick-access panel that searches all content with a local
 full-text index, filters by type, and previews text. Other capabilities, including
 direct paste into other apps, remain planned. There is no application release yet.
 
+The reusable-library service foundation also supports saving captures, creating
+plain text, prompt, code and Markdown content, preserving originals during edits,
+recoverable local drafts, and independent conflict copies. The editor interface,
+collections and Markdown reading mode remain planned.
+
 ## First release
 
 | Area | Planned capability |

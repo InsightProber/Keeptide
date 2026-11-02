@@ -18,8 +18,16 @@ as a snippet, or write one directly.
 > The quick-access panel browses recent clips, searches all content through a
 > rebuildable local full-text index (including one- and two-character Chinese
 > queries), previews text, and copies the selected item in its original formats
-> or as plain text. Direct paste into other apps, snippet workflows, and iCloud
-> saving are still planned. There is no end-user release yet.
+> or as plain text. The snippet service foundation is implemented; its editor,
+> direct paste into other apps, and iCloud saving remain planned. There is no
+> end-user release yet.
+
+The snippet service foundation supports saving a capture without duplicating its
+payload, independent text and Markdown snippets, explicit copies, and edits that
+preserve the original capture. Local drafts support restart recovery and protect
+concurrent edits by saving conflicting content separately. These services are
+covered by native tests; the library editor and its user-facing save actions are
+still planned.
 
 ## Designed for the Mac
 

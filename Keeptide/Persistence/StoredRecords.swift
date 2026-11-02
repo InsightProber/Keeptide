@@ -147,6 +147,11 @@ enum StoredRecords {
             object.setValue(memo.version?.rawValue, forKey: "version")
             object.setValue(memo.digest, forKey: "digest")
             object.setValue(memo.languageHint, forKey: "languageHint")
+            if object.entity.attributesByName["displayKind"] != nil {
+                object.setValue(memo.displayKind, forKey: "displayKind")
+            } else if memo.displayKind != nil {
+                throw StoreError.invalidTransaction
+            }
             object.setValue(memo.note, forKey: "note")
             object.setValue(memo.deletedAt, forKey: "deletedAt")
             object.setValue(memo.purgeAfter, forKey: "purgeAfter")
@@ -684,7 +689,7 @@ private extension StoredRecords {
     ]
     static let memoMetadataProperties = [
         "id", "itemID", "title", "bodyMode", "sourceRepresentationType", "version", "digest",
-        "languageHint", "note", "deletedAt", "purgeAfter"
+        "languageHint", "displayKind", "note", "deletedAt", "purgeAfter"
     ]
 
     static func readProjection(strict: Bool, in context: NSManagedObjectContext) throws -> ReadProjection {
@@ -1134,7 +1139,9 @@ private extension StoredRecords {
             languageHint: object.value(forKey: "languageHint") as? String,
             note: try required(object, "note"),
             deletedAt: object.value(forKey: "deletedAt") as? Date,
-            purgeAfter: object.value(forKey: "purgeAfter") as? Date
+            purgeAfter: object.value(forKey: "purgeAfter") as? Date,
+            displayKind: object.entity.attributesByName["displayKind"] == nil
+                ? nil : object.value(forKey: "displayKind") as? String
         )
     }
 
@@ -1579,6 +1586,7 @@ private struct MemoFingerprint: Encodable {
     let version: UUID?
     let digest: Data?
     let languageHint: String?
+    let displayKind: String?
     let note: String
     let deletedAt: Date?
     let purgeAfter: Date?
@@ -1600,6 +1608,7 @@ private struct MemoFingerprint: Encodable {
         version = try StoredRecords.optional(row, "version")
         digest = try StoredRecords.optional(row, "digest")
         languageHint = try StoredRecords.optional(row, "languageHint")
+        displayKind = try StoredRecords.optional(row, "displayKind")
         note = try StoredRecords.required(row, "note")
         deletedAt = try StoredRecords.optional(row, "deletedAt")
         purgeAfter = try StoredRecords.optional(row, "purgeAfter")

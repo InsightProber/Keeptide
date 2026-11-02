@@ -399,6 +399,10 @@ struct WriteCoordinator: Sendable {
                 }
             }
         case .memo(let memo):
+            if let kind = memo.displayKind,
+               !["plainText", "prompt", "code", "markdown"].contains(kind) {
+                throw StoreError.invalidTransaction
+            }
             if memo.bodyMode == .inheritedCapture {
                 guard memo.body == nil, memo.version == nil, memo.digest == nil else { throw StoreError.invalidTransaction }
             } else {
