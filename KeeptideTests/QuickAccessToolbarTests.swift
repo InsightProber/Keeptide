@@ -13,13 +13,13 @@ final class QuickAccessToolbarTests: XCTestCase {
         let row = toolbar.rowFrame
         XCTAssertEqual(row.height, 32)
 
-        // Folded, the search is a 32 pt circle, 12 left of the filters, and the two are centred together.
+        // Folded, the search is a 32 pt circle at the left inset, 12 left of the filters.
         let search = toolbar.search.frame
         let filters = toolbar.filters.frame
         XCTAssertEqual(search.size, NSSize(width: 32, height: 32))
         XCTAssertEqual(search.minY, row.minY)
         XCTAssertEqual(filters.minX - search.maxX, 12)
-        XCTAssertEqual((search.minX + filters.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
+        XCTAssertEqual(search.minX, 16)
         XCTAssertEqual(filters.midY, row.midY, accuracy: 0.5)
         // Each filter is 28 high, 6 from the next.
         let chips = toolbar.filters.chips.map { toolbar.filters.convert($0.frame, to: toolbar) }
@@ -52,7 +52,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         let pill = toolbar.search.frame
         XCTAssertEqual(pill.size, NSSize(width: 300, height: 32))
         XCTAssertEqual(toolbar.filters.frame.minX - pill.maxX, 12)
-        XCTAssertEqual((pill.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
+        XCTAssertEqual(pill.minX, 16)
         let magnifier = toolbar.search.magnifier.frame
         XCTAssertEqual(magnifier.minX, 11)
         XCTAssertEqual(magnifier.size, NSSize(width: 15, height: 15))
@@ -68,8 +68,8 @@ final class QuickAccessToolbarTests: XCTestCase {
 
     func testANarrowRowDropsTheHintsWordBeforeAnythingMeets() throws {
         // Wide enough, the hint says "⏎ Copy". Narrower, it keeps only the key cap, and narrower still it goes, while
-        // the ⋯ button stays. At no width does the right end reach the filters. The search moves aside for the hint's
-        // word first, so the hint goes only on rows narrower than 716 pt.
+        // the ⋯ button stays. At no width does the right end reach the filters. The search stays at its
+        // left inset, and the hint goes only on rows narrower than 716 pt.
         var seen: Set<String> = []
         for width in stride(from: 1376, through: 704, by: -8) {
             let toolbar = makeToolbar(width: CGFloat(width))
@@ -88,7 +88,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         }
         XCTAssertEqual(seen, ["word", "keycap", "none"])
 
-        // A status too long even once the search and the filters have moved as far left as they go is cut short with
+        // A status too long for the room after the search and the filters is cut short with
         // an ellipsis rather than run into the filters, and its whole text is in its help tag.
         let toolbar = makeToolbar(width: 900)
         toolbar.note = .status("The selected item is no longer in the results")
@@ -103,50 +103,37 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(status.toolTip, "The selected item is no longer in the results")
     }
 
-    func testALongNoteMovesTheSearchAsideBeforeItIsCut() throws {
-        // On 1024 and 1280 pt screens the band is 960 and 1216 wide. Centred, the open search and the filters leave the
-        // right end 107 and 235 pt, too little for a failure that needs 262; they move left, no nearer than 16 to the
-        // row's left end, and the failure reads in full.
+    func testANoteNeverMovesTheSearch() throws {
         let failure = "This item changed or is no longer available."
-        for width in [960, 1216] as [CGFloat] {
-            let toolbar = makeToolbar(width: width)
-            toolbar.setSearchExpanded(true)
-            toolbar.note = .failure(failure)
-            toolbar.layoutSubtreeIfNeeded()
-            let status = toolbar.statusLabel
-            let search = toolbar.search.frame
-            let filters = toolbar.filters.frame
-            XCTAssertFalse(status.isHidden, "\(width)")
-            XCTAssertEqual(status.stringValue, failure)
-            XCTAssertFalse(isCut(status), "\(width): read in full")
-            XCTAssertGreaterThanOrEqual(status.frame.minX, filters.maxX + 12, "\(width): clear of the filters")
-            XCTAssertEqual(status.frame.maxX, toolbar.moreButton.frame.minX - 12, "\(width)")
-            XCTAssertNil(status.toolTip, "\(width): nothing is cut, so there is no help tag")
-            XCTAssertGreaterThanOrEqual(search.minX, 16, "\(width)")
-            XCTAssertLessThan((search.minX + filters.maxX) / 2, toolbar.bounds.midX, "\(width): moved left")
-            // They move as one, keeping their sizes and the gap between them.
-            XCTAssertEqual(search.width, 300, "\(width)")
-            XCTAssertEqual(filters.minX - search.maxX, 12, "\(width)")
-
-            // With Return's hint in its place again they are centred again.
-            toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
-            toolbar.layoutSubtreeIfNeeded()
-            let centre = (toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2
-            XCTAssertEqual(centre, toolbar.bounds.midX, accuracy: 0.5, "\(width)")
+        let notes: [QuickAccessToolbar.Note] = [.none, .action(title: "Copy", enabled: true, hint: nil),
+                                              .status("Searching…"), .failure(failure)]
+        for width in [960, 1216, 1376] as [CGFloat] {
+            for expanded in [false, true] {
+                let toolbar = makeToolbar(width: width)
+                toolbar.setSearchExpanded(expanded)
+                for note in notes {
+                    toolbar.note = note
+                    toolbar.layoutSubtreeIfNeeded()
+                    let name = "\(width), expanded \(expanded), \(note)"
+                    XCTAssertEqual(toolbar.search.frame.minX, 16, name)
+                    XCTAssertEqual(toolbar.search.frame.width, expanded ? 300 : 32, name)
+                    XCTAssertEqual(toolbar.filters.frame.minX, toolbar.search.frame.maxX + 12, name)
+                    if case .failure = note {
+                        let status = toolbar.statusLabel
+                        XCTAssertFalse(status.isHidden, name)
+                        XCTAssertFalse(isCut(status), "\(name): read in full")
+                        XCTAssertNil(status.toolTip, name)
+                        XCTAssertGreaterThanOrEqual(status.frame.minX, toolbar.filters.frame.maxX + 12, name)
+                        XCTAssertEqual(status.frame.maxX, toolbar.moreButton.frame.minX - 12, name)
+                    }
+                }
+            }
         }
-
-        // A short status needs no room it does not have: the two stay centred.
-        let toolbar = makeToolbar(width: 960)
-        toolbar.setSearchExpanded(true)
-        toolbar.note = .status("Searching…")
-        toolbar.layoutSubtreeIfNeeded()
-        XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
-        XCTAssertFalse(isCut(toolbar.statusLabel))
     }
 
     func testALongPrimaryTitleIsCutBeforeTheKeycapGoes() throws {
-        // "Paste into " and a 30-character app name need more than a 960 pt row has with the search open, even once the
-        // search and the filters have moved as far left as they go. The word is cut at its tail, whole in its help tag
+        // "Paste into " and a 30-character app name need more than a 960 pt row has with the search open, with the
+        // search and the filters at the left inset. The word is cut at its tail, whole in its help tag
         // and for VoiceOver, and takes all the room there is.
         let title = "Paste into Synthetic Application Named Xy"
         XCTAssertEqual(title.count, "Paste into ".count + 30)
@@ -155,7 +142,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         toolbar.note = .action(title: title, enabled: true, hint: nil)
         toolbar.layoutSubtreeIfNeeded()
         let action = toolbar.copyHint
-        XCTAssertEqual(toolbar.search.frame.minX, 16, "The search moved aside first")
+        XCTAssertEqual(toolbar.search.frame.minX, 16, "The search stays at the left inset")
         XCTAssertFalse(action.isHidden)
         XCTAssertTrue(action.showsTitle)
         XCTAssertLessThan(action.frame.width, action.fullWidth, "Cut")
@@ -224,27 +211,25 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(seen, ["reason full, action full", "reason cut, action full", "reason none, action full",
                               "reason none, action cut", "reason none, action keycap", "reason none, action none"])
 
-        // As for a status, the search and the filters move left to make room for the action and its reason in full:
-        // on a 960 pt row, where centred they would leave too little, both read whole.
+        // On a 960 pt row both the action and its reason read whole; the search stays at 16.
         let toolbar = makeToolbar(width: 960)
         toolbar.setSearchExpanded(true)
         toolbar.note = .action(title: "Copy Command", enabled: true, hint: reason)
         toolbar.layoutSubtreeIfNeeded()
-        XCTAssertLessThan((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX - 1)
+        XCTAssertEqual(toolbar.search.frame.minX, 16)
         XCTAssertFalse(toolbar.directPasteHint.isHidden)
         XCTAssertFalse(isCut(toolbar.directPasteHint))
         XCTAssertEqual(toolbar.copyHint.frame.width, toolbar.copyHint.fullWidth)
-        // Without a reason nothing shows there, and the search stays centred.
+        // Without a reason nothing shows there, and the search stays at 16.
         toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertTrue(toolbar.directPasteHint.isHidden)
-        XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX, accuracy: 0.5)
+        XCTAssertEqual(toolbar.search.frame.minX, 16)
     }
 
-    func testTheRebuildNoticeTakesTheRowsLeftEnd() throws {
-        // While there are clips and the index rebuilds, the row's left end says so: 16 pt in, level with the row, in a
-        // status's type and colour, and at least the right end's 12 pt gap clear of the search's ring, folded or open.
-        // The search and the filters stay centred, and the right end keeps Return's hint, word and all.
+    func testTheRebuildNoticeTakesTheRoomBetweenTheFiltersAndTheRightEnd() throws {
+        // While there are clips and the index rebuilds, its notice follows the filters by 12 pt, level with the row,
+        // in a status's type and colour. The right end keeps Return's hint, word and all, folded or open.
         for expanded in [false, true] {
             let toolbar = makeToolbar(width: 1376)
             toolbar.setSearchExpanded(expanded)
@@ -253,20 +238,18 @@ final class QuickAccessToolbarTests: XCTestCase {
             toolbar.indexNotice = .rebuilding
             toolbar.layoutSubtreeIfNeeded()
             let notice = toolbar.indexNoticeLabel
-            let halo = toolbar.search.frame.insetBy(dx: -3, dy: -3)
             let name = expanded ? "open" : "folded"
             XCTAssertFalse(notice.isHidden, name)
             XCTAssertEqual(notice.stringValue, "Index is rebuilding — results may be incomplete", name)
             XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessIndexNotice", name)
-            XCTAssertEqual(notice.frame.minX, 16, name)
+            XCTAssertEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12, name)
             XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, name)
-            XCTAssertLessThanOrEqual(notice.frame.maxX, halo.minX - 12, name)
+            XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.copyHint.frame.minX - 12, name)
             XCTAssertFalse(isCut(notice), "\(name): in full")
             XCTAssertNil(notice.toolTip, name)
             XCTAssertEqual(notice.font, toolbar.statusLabel.font, name)
             XCTAssertEqual(notice.textColor, ToolbarPalette.secondary, name)
-            XCTAssertEqual((toolbar.search.frame.minX + toolbar.filters.frame.maxX) / 2, toolbar.bounds.midX,
-                           accuracy: 0.5, name)
+            XCTAssertEqual(toolbar.search.frame.minX, 16, name)
             XCTAssertFalse(toolbar.copyHint.isHidden, name)
             XCTAssertTrue(toolbar.copyHint.showsTitle, name)
         }
@@ -274,9 +257,8 @@ final class QuickAccessToolbarTests: XCTestCase {
 
     func testOnANarrowRowTheRebuildNoticeGivesWayToTheRightEnd() throws {
         // A 960 pt row, as a 1024 pt screen gives, with the search open. The right end has what it needs first, and the
-        // notice keeps clear of the search and its ring whatever it says. Beside Return's hint, or a short failure that
-        // moves the search a little to the left, the notice is cut short, its whole text in its help tag and read whole.
-        // A failure that moves the search as far left as it goes leaves it no room, and it is not shown.
+        // notice takes the gap after the filters. Beside Return's hint or a short failure the notice is cut short, its
+        // whole text in its help tag and read whole. A longer failure leaves it no room, and it is not shown.
         let cases: [(note: QuickAccessToolbar.Note, shown: Bool)] = [
             (.action(title: "Copy", enabled: true, hint: nil), true), (.failure("This item has no plain text."), true),
             (.failure("This item changed or is no longer available."), false),
@@ -290,12 +272,12 @@ final class QuickAccessToolbarTests: XCTestCase {
             toolbar.layoutSubtreeIfNeeded()
             let notice = toolbar.indexNoticeLabel
             let status = toolbar.statusLabel
-            let halo = toolbar.search.frame.insetBy(dx: -3, dy: -3)
             if case .failure = note { XCTAssertFalse(isCut(status), "\(note): read in full") }
             XCTAssertEqual(!notice.isHidden, shown, "\(note)")
             guard shown else { continue }
-            XCTAssertEqual(notice.frame.minX, 16, "\(note)")
-            XCTAssertLessThanOrEqual(notice.frame.maxX, halo.minX - 12, "\(note): clear of the search's ring")
+            XCTAssertEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12, "\(note)")
+            let right = toolbar.copyHint.isHidden ? status.frame : toolbar.copyHint.frame
+            XCTAssertLessThanOrEqual(notice.frame.maxX, right.minX - 12, "\(note)")
             XCTAssertTrue(isCut(notice), "\(note): cut short")
             XCTAssertEqual(notice.lineBreakMode, .byTruncatingTail)
             XCTAssertEqual(notice.toolTip, "Index is rebuilding — results may be incomplete", "\(note)")
@@ -320,6 +302,37 @@ final class QuickAccessToolbarTests: XCTestCase {
             toolbar.layoutSubtreeIfNeeded()
             XCTAssertEqual(!toolbar.indexNoticeLabel.isHidden, shown, "clips \(hasClips), \(String(describing: notice))")
         }
+    }
+
+    func testTheNoticeMovesWithTheFiltersAsTheSearchUnfolds() throws {
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.hasClips = true
+        toolbar.indexNotice = .rebuilding
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
+        toolbar.window?.contentView?.wantsLayer = true
+        toolbar.window?.orderFront(nil)
+        toolbar.layoutSubtreeIfNeeded()
+        toolbar.window?.contentView?.layer?.speed = 0
+        toolbar.reducesMotion = { false }
+        XCTAssertFalse(toolbar.indexNoticeLabel.isHidden)
+        toolbar.setSearchExpanded(true)
+        CATransaction.flush()
+        let layer = try XCTUnwrap(toolbar.indexNoticeLabel.layer)
+        let animation = try XCTUnwrap(layer.animation(forKey: "fold position") as? CABasicAnimation)
+        XCTAssertEqual(animation.duration, 0.2, accuracy: 0.001)
+        XCTAssertEqual(toolbar.indexNoticeLabel.frame.minX, toolbar.filters.frame.maxX + 12)
+        XCTAssertFalse(toolbar.indexNoticeLabel.isHidden)
+
+        layer.removeAllAnimations()
+        toolbar.reducesMotion = { true }
+        toolbar.setSearchExpanded(false)
+        XCTAssertEqual(layer.animationKeys() ?? [], [])
+        XCTAssertEqual(toolbar.indexNoticeLabel.frame.minX, toolbar.filters.frame.maxX + 12)
+        toolbar.reducesMotion = { false }
+        toolbar.window?.orderOut(nil)
+        toolbar.setSearchExpanded(true)
+        XCTAssertEqual(layer.animationKeys() ?? [], [])
+        XCTAssertEqual(toolbar.indexNoticeLabel.frame.minX, toolbar.filters.frame.maxX + 12)
     }
 
     func testTheSearchFoldsInAFifthOfASecondOrAtOnceWithReduceMotion() throws {

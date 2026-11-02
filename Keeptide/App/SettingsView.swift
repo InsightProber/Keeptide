@@ -14,6 +14,16 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.radioGroup)
                 StripPreview()
+                Slider(value: $preferences.selectedCardScale, in: Self.scales, step: 0.01) {
+                    Text("Enlarge the selected card")
+                } minimumValueLabel: {
+                    Text("None")
+                } maximumValueLabel: {
+                    Text("More")
+                }
+                .accessibilityValue(Text(Self.enlargement(preferences.selectedCardScale)))
+                Toggle("Fade the ends of the strip", isOn: $preferences.fadesStripEnds)
+                    .controlSize(.mini)
                 Toggle(isOn: $preferences.showsFrequentClips) {
                     Text("Show frequent clips in the strip")
                     Text("Clips you've copied or pasted from Keeptide more than once, and used in the last 90 days, appear to the left of the newest clip.")
@@ -29,6 +39,18 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 520)
+    }
+
+    /// The enlargement slider's range: the one the strip's style keeps the scale in.
+    private static let scales = Double(StripStyle.scaleRange.lowerBound)...Double(StripStyle.scaleRange.upperBound)
+
+    /// What VoiceOver reads for the enlargement: "None" where the selected card is drawn as large as the others, and
+    /// otherwise how much larger it is in whole percent, such as "12% larger".
+    static func enlargement(_ scale: Double) -> String {
+        let normalized = scale.isFinite ? min(max(scale, scales.lowerBound), scales.upperBound)
+            : Double(StripStyle.standard.selectedScale)
+        let percent = Int(((normalized - 1) * 100).rounded())
+        return percent == 0 ? "None" : "\(percent)% larger"
     }
 }
 

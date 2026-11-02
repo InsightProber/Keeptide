@@ -78,6 +78,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var onEnableDirectPaste: (() -> Void)?
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
+    /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
+    /// to count the calls.
+    var fieldCharactersMoved: (NSTextView) -> Void = { $0.inputContext?.invalidateCharacterCoordinates() }
     /// The event the app is handling now. For a menu item chosen with Return, it is the key-down that chose it, which
     /// the menu took before the panel could see it. Tests replace it.
     var currentEvent: () -> NSEvent? = { NSApp.currentEvent }
@@ -209,11 +212,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         (client as? QuickAccessSearchField) === searchField ? fieldEditor : nil
     }
 
-    /// The frame sizes for the card size Settings chose on a screen `visibleWidth` wide, with room below the cards for
-    /// the frequent wing's icons while Settings shows the frequent clips.
+    /// The frame sizes for the card size Settings chose on a screen `visibleWidth` wide, with room around the cards for
+    /// the selected card as Settings enlarges it, and below them for the frequent wing's icons while Settings shows the
+    /// frequent clips. The panel takes them only as it is made and as it opens, so the band keeps its size while it is
+    /// open and a change in Settings shows the next time it opens.
     private static func metrics(for preferences: QuickAccessPreferences, visibleWidth: CGFloat) -> StripMetrics {
         StripLayout.metrics(for: preferences.cardSize, visibleWidth: visibleWidth,
-                            showsFrequentClips: preferences.showsFrequentClips)
+                            showsFrequentClips: preferences.showsFrequentClips, style: preferences.stripStyle)
     }
 
     /// The main screen, or the one under the pointer when there is none.
@@ -276,9 +281,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         layoutPanel()
         let wasExpanded = toolbar.search.isExpanded
         toolbar.setSearchExpanded(state.isSearchExpanded)
-        if toolbar.search.isExpanded != wasExpanded {
+        if toolbar.search.isExpanded != wasExpanded, let editor = searchField.currentEditor() as? NSTextView {
             // The field has moved and changed size, so an input method's candidates move with it.
-            (searchField.currentEditor() as? NSTextView)?.inputContext?.invalidateCharacterCoordinates()
+            fieldCharactersMoved(editor)
         }
         if toolbar.search.isExpanded, !wasExpanded {
             // Open, the search is ringed while its field has the keys, however they came. Folded again, it is as the
@@ -302,7 +307,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// What the toolbar's right end says. A refused action's reason answers what was just done, so it comes first;
     /// then a status over clips on screen; then, with a clip selected, what Return does, under the name the session
     /// gives it, with why it only copies when the user can do something about that. With no clips the empty state says
-    /// it all. An index that is rebuilding is told at the toolbar's left end, and leaves Return's hint in place.
+    /// it all. An index that is rebuilding is told after the filters, and leaves Return's hint in place.
     private var toolbarNote: QuickAccessToolbar.Note {
         if let failure = state.failure { return .failure(failure.message) }
         if !state.selection.rows.isEmpty,

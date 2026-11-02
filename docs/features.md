@@ -1,19 +1,21 @@
 # Feature scope
 
-The table below describes the planned first release. Development builds currently
-include local recording, explicit start/pause controls, ignored applications,
-exact capture deduplication, a recent-clips list, original-format and plain-text
-copying, and a quick-access panel. The panel shows clips as a row of large cards
-in a wide band, in small, medium or large sizes as set in a minimal Settings
-window, and steps through them with the arrow keys or a trackpad swipe, one clip
-per detent with a haptic tick on a Force Touch trackpad. Clips copied or pasted
-from Keeptide more than once, and used in the last 90 days, appear to the left
-of the newest one, apart from the recent clips; Settings can turn this off. The
+The table below describes the planned first release. Development builds
+currently include local recording, explicit start/pause controls, ignored
+applications, exact capture deduplication, a recent-clips list, original-format
+and plain-text copying, and a quick-access panel. The panel shows clips as a
+row of large cards in a wide band, in small, medium or large sizes as set in a
+minimal Settings window, which also sets how much larger the selected card is
+drawn and whether the band's ends fade where more cards continue. The panel
+steps through them with the arrow keys or a trackpad swipe, one clip per detent
+with a haptic tick on a Force Touch trackpad. Clips copied or pasted from
+Keeptide more than once, and used in the last 90 days, appear to the left of
+the newest one, apart from the recent clips; Settings can turn this off. The
 panel searches all content with a local full-text index from a search that
-folds into an icon until you type, filters by type, previews text and images,
-and can paste the selected clip directly into the app window it was opened
-from. Other capabilities, including editable snippets and iCloud saving, remain
-planned. There is no application release yet.
+folds into an icon at the band's left end until you type, filters by type,
+previews text and images, and can paste the selected clip directly into the app
+window it was opened from. Other capabilities, including editable snippets and
+iCloud saving, remain planned. There is no application release yet.
 
 ## First release
 

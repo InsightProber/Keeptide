@@ -17,6 +17,626 @@ final class QuickAccessStripViewTests: XCTestCase {
     /// The middle of the frame resting at the left dock.
     private var dock: CGFloat { metrics.dockInset + metrics.frameSize.width / 2 }
 
+    private var focused: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+
+    func testADockedEndIsHardWhileTheFarEndFades() {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        for (index, expected) in [(0, StripEdgeFades(leading: 0, trailing: 1)),
+                                  (10, StripEdgeFades(leading: 1, trailing: 1)),
+                                  (19, StripEdgeFades(leading: 1, trailing: 0))] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertEqual(strip.edgeFades, expected)
+            if index == 10 {
+                let loaded = drawings(in: strip).compactMap { title(of: $0) }
+                XCTAssertFalse(loaded.contains("Row 0"))
+                XCTAssertFalse(loaded.contains("Row 19"))
+            }
+        }
+        let wing = makeWing(frequent: 3, recent: 20)
+        for (index, leading) in [(3, CGFloat(1)), (0, CGFloat(0))] {
+            strip.show(wing, selection: wing[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: leading, trailing: 1))
+        }
+        strip.show(rows, selection: rows[19].id, details: [:], metrics: focused, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 1, trailing: 0))
+    }
+
+    func testAShortFilteredListHasHardEnds() {
+        let strip = makeStrip(focused)
+        for count in [0, 3, 5, 6] {
+            let rows = makeRows(count)
+            strip.show(rows, selection: rows.first?.id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: count == 6 ? 1 : 0))
+            XCTAssertEqual(strip.layer?.mask == nil, count < 6)
+        }
+    }
+
+    func testTheFadeFollowsTheFilmWhileItSlides() async throws {
+        let rows = makeRows(20), frozen = makeStrip(focused)
+        frozen.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(frozen)
+        frozen.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        frozen.updateEdgeFades()
+        XCTAssertEqual(frozen.edgeFades.leading, 1)
+        XCTAssertTrue(frozen.isFollowingMotion)
+        // Let the shown window/link register its first frames before timing the intermediate update.
+        try await Task.sleep(for: .milliseconds(40))
+        // Move the frozen render clock into the fade ramp. Only a display-link frame may now update the mask.
+        frozen.superview?.layer?.timeOffset = 0.195
+        CATransaction.flush()
+        let expected = min(1, max(0, -(try drawnRect(of: "Row 0", in: frozen)).minX / StripLayout.fadeRamp))
+        XCTAssertGreaterThan(expected, 0)
+        XCTAssertLessThan(expected, 1)
+        let deadline = Date().addingTimeInterval(0.2)
+        while abs(frozen.edgeFades.leading - expected) >= 0.001 && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(frozen.edgeFades.leading, expected, accuracy: 0.001,
+                       "A display-link frame must update the mask before the settle deadline")
+        frozen.removeFromSuperview()
+        XCTAssertFalse(frozen.isFollowingMotion)
+
+        let strip = makeStrip(focused)
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.isFollowingMotion)
+        try await waitUntil { strip.edgeFades.leading == 0 && !strip.isFollowingMotion }
+    }
+
+    func testTheFadeFollowsTheFingersWithoutStartingALink() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.haptics = RecordingHaptics()
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades.leading, 0)
+        strip.scrollWheel(with: try swipe(dx: -12, phase: .began, at: 1))
+        let expected = -(try drawnRect(of: "Row 0", in: strip)).minX / StripLayout.fadeRamp
+        XCTAssertGreaterThan(expected, 0)
+        XCTAssertLessThan(expected, 1)
+        XCTAssertEqual(strip.edgeFades.leading, expected, accuracy: 0.001)
+        XCTAssertFalse(strip.isFollowingMotion)
+    }
+
+    func testTheMotionFollowerStopsEvenWhenItsWindowIsHidden() async throws {
+        for hidesView in [false, true] {
+            let rows = makeRows(20), strip = makeStrip(focused)
+            strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            strip.window?.orderFront(nil)
+            CATransaction.flush()
+            strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertTrue(strip.isFollowingMotion)
+            if hidesView { strip.isHidden = true } else { strip.window?.orderOut(nil) }
+            let deadline = Date().addingTimeInterval(2)
+            while strip.isFollowingMotion && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertFalse(strip.isFollowingMotion, "The link must release even when AppKit suspends callbacks")
+            XCTAssertEqual(strip.edgeFades.leading, 0)
+        }
+    }
+
+    func testTheMotionFollowerStopsWhenTheStripIsOutsideTheWindow() async throws {
+        let rows = makeRows(20), strip = makeStrip(focused)
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.isFollowingMotion)
+        strip.setFrameOrigin(NSPoint(x: 10000, y: 10000))
+        try await waitUntil { !strip.isFollowingMotion }
+    }
+
+    func testTheEndsDoNotFadeWhenTurnedOff() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.isFollowingMotion)
+        var disabled = focused
+        disabled.fadesEnds = false
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: disabled, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades())
+        XCTAssertNil(strip.layer?.mask)
+        XCTAssertFalse(strip.isFollowingMotion)
+    }
+
+    func testTheMaskReachesWellPastTheCardsAboveAndBelow() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.setFrameSize(NSSize(width: focused.bandWidth + 64, height: strip.bounds.height + 10))
+        let mask = try XCTUnwrap(strip.layer?.mask as? CAGradientLayer)
+        XCTAssertEqual(mask.frame, strip.bounds.insetBy(dx: 0, dy: -strip.bounds.height))
+        XCTAssertEqual(mask.startPoint, NSPoint(x: 0, y: 0.5))
+        XCTAssertEqual(mask.endPoint, NSPoint(x: 1, y: 0.5))
+        let rects = drawings(in: strip).compactMap { $0.superview }.map { drawnRect(of: $0, in: strip) }
+            + [drawnRect(of: try ringView(in: strip), in: strip)]
+        for rect in rects {
+            XCTAssertLessThanOrEqual(mask.frame.minY, rect.minY - 24)
+            XCTAssertGreaterThanOrEqual(mask.frame.maxY, rect.maxY + 24)
+        }
+        let stops = try XCTUnwrap(StripLayout.fadeStops(focused, fades: strip.edgeFades))
+        let colors = try XCTUnwrap(mask.colors as? [CGColor]), locations = try XCTUnwrap(mask.locations)
+        XCTAssertEqual(colors.count, 14)
+        XCTAssertEqual(locations.count, 14)
+        for ((stop, color), location) in zip(zip(stops, colors), locations) {
+            XCTAssertEqual(color.alpha, stop.opacity, accuracy: 0.0001)
+            XCTAssertEqual(location.doubleValue, Double((32 + stop.x) / strip.bounds.width), accuracy: 0.0001)
+        }
+        XCTAssertNil(strip.sectionLabels.layer?.mask)
+        XCTAssertNil(strip.superview?.layer?.mask)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        XCTAssertNotNil(strip.layer?.mask, "Reduce Transparency must not remove the content mask")
+    }
+
+    func testReduceMotionUpdatesTheFadeWithoutWaitingForPresentation() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.reducesMotion = { true }
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
+        strip.show(rows, selection: rows[18].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.show(rows, selection: rows[19].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 1, trailing: 0))
+        XCTAssertFalse(strip.isFollowingMotion)
+        XCTAssertTrue(motionLayers(in: strip).allSatisfy { $0.animationKeys()?.isEmpty != false })
+    }
+
+    // These exercise model-first additive retargeting: replacing a spring, sampling presentation for its offset,
+    // or dropping either the push or scale compensation makes a previously drawn frame jump.
+    func testEverythingTheStripMovesSharesOneSpring() throws {
+        let strip = makeStrip(focused), rows = makeWing(frequent: 3, recent: 20)
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        for index in [4, 2] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        }
+        let layers = motionLayers(in: strip)
+        XCTAssertGreaterThan(layers.filter { $0.animationKeys()?.isEmpty == false }.count, 6)
+        for layer in layers {
+            for key in layer.animationKeys() ?? [] {
+                let spring = try XCTUnwrap(layer.animation(forKey: key) as? CASpringAnimation, key)
+                XCTAssertEqual(spring.mass, 1)
+                XCTAssertEqual(spring.stiffness, 322.27, accuracy: 0.01)
+                XCTAssertEqual(spring.damping, 30.88, accuracy: 0.01)
+                XCTAssertEqual(spring.initialVelocity, 0)
+                XCTAssertTrue(spring.isAdditive)
+                XCTAssertEqual(spring.duration, spring.settlingDuration, accuracy: 0.001)
+                if spring.keyPath == "transform" {
+                    XCTAssertTrue(CATransform3DIsIdentity(try XCTUnwrap(spring.toValue as? NSValue).caTransform3DValue))
+                }
+            }
+        }
+    }
+
+    func testAClickSlidesTheRingFromWhereItWasDrawn() throws {
+        for (start, end) in [(0, 2), (10, 12)] {
+            let strip = makeStrip(focused), rows = makeRows(40)
+            strip.show(rows, selection: rows[start].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            try freeze(strip)
+            let oldCard = try drawnRect(of: "Row \(start)", in: strip)
+            let nextCard = try drawnRect(of: "Row \(end)", in: strip)
+            let ring = try ringView(in: strip), oldRing = drawnRect(of: ring, in: strip)
+            strip.onSelect = { [unowned strip, focused = self.focused] id in
+                strip.show(rows, selection: id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            }
+            strip.mouseDown(with: try mouse(.leftMouseDown, at: NSPoint(x: nextCard.midX, y: nextCard.midY), in: strip))
+            CATransaction.flush()
+            assertRect(drawnRect(of: ring, in: strip), equals: oldRing)
+            assertRect(try drawnRect(of: "Row \(start)", in: strip), equals: oldCard)
+            assertRect(try drawnRect(of: "Row \(end)", in: strip), equals: nextCard)
+            XCTAssertEqual(ring.frame.midX, start == 0 ? 636 : 688, accuracy: 0.5)
+            if start == 10 { XCTAssertEqual(try filmOffset(of: strip), 484, accuracy: 0.5) }
+        }
+    }
+
+    func testRapidStepsRetargetFromWhereTheStripIsDrawn() throws {
+        for sequence in [[21, 22, 23], [21, 20]] {
+            let strip = makeStrip(focused), rows = makeRows(40)
+            strip.show(rows, selection: rows[20].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            try freeze(strip)
+            let clock = try XCTUnwrap(strip.superview?.layer)
+            let ring = try ringView(in: strip)
+            var lastDrawn = try drawnRect(of: "Row 20", in: strip)
+            for (step, index) in sequence.enumerated() {
+                clock.timeOffset += 0.03
+                CATransaction.flush()
+                let before = try (18...23).map { try drawnRect(of: "Row \($0)", in: strip) }
+                let ringBefore = drawnRect(of: ring, in: strip)
+                let carried = try drawnRect(of: "Row 20", in: strip)
+                if step > 0 {
+                    XCTAssertGreaterThan(abs(carried.midX - lastDrawn.midX), 0.5, "The frozen clock must actually advance the spring")
+                    XCTAssertLessThan(abs(carried.midX - lastDrawn.midX), 242, "A 30 ms step must remain bounded")
+                }
+                strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+                CATransaction.flush()
+                for (row, rect) in zip(18...23, before) { assertRect(try drawnRect(of: "Row \(row)", in: strip), equals: rect) }
+                assertRect(drawnRect(of: ring, in: strip), equals: ringBefore)
+                XCTAssertEqual(ringBefore.midX, 688, accuracy: 0.5)
+                XCTAssertGreaterThan(try filmOffset(of: strip), -242)
+                XCTAssertLessThan(try filmOffset(of: strip), 726)
+                lastDrawn = try drawnRect(of: "Row 20", in: strip)
+            }
+        }
+    }
+
+    func testLeavingTheEnlargedDividerSlotKeepsFramesAndIconsStill() throws {
+        for (index, fingers) in [(3, false), (2, false), (3, true), (2, true)] {
+            let strip = makeStrip(focused), rows = makeWing(frequent: 3, recent: 20)
+            strip.haptics = RecordingHaptics()
+            strip.show(rows, selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            try freeze(strip)
+            let titles = drawings(in: strip).compactMap { title(of: $0) }
+            let before = try titles.map { try drawnRect(of: $0, in: strip) }
+            let line = try drawnDividerMidX(in: strip)
+            let labels = try strip.sectionLabels.subviews.map { try drawnMinX(of: $0) }
+            if fingers {
+                strip.onCommand = { [unowned strip, focused = self.focused] _ in
+                    strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+                }
+                strip.scrollWheel(with: try swipe(dx: index == 3 ? -30 : 30, phase: .began, at: 1))
+            } else {
+                strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            }
+            CATransaction.flush()
+            for (title, rect) in zip(titles, before) { assertRect(try drawnRect(of: title, in: strip), equals: rect) }
+            XCTAssertEqual(try drawnDividerMidX(in: strip), line, accuracy: 0.5)
+            for (label, x) in zip(strip.sectionLabels.subviews, labels) { XCTAssertEqual(try drawnMinX(of: label), x, accuracy: 0.5) }
+            let ring = drawnRect(of: try ringView(in: strip), in: strip)
+            let selected = try drawnRect(of: index == 3 ? "Row 0" : "Freq 2", in: strip)
+            XCTAssertEqual(ring.midX, selected.midX, accuracy: 0.5)
+            XCTAssertEqual(ring.width, 240, accuracy: 0.5)
+            XCTAssertEqual(ring.height, 262, accuracy: 0.5)
+        }
+    }
+
+    func testLayerUpdatePreservesAnInFlightScaleSpring() throws {
+        let strip = makeStrip(focused), rows = makeRows(40)
+        strip.show(rows, selection: rows[20].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[21].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        strip.superview?.layer?.timeOffset += 0.03
+        CATransaction.flush()
+        let host = try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "Row 21" }?.superview)
+        let layer = try XCTUnwrap(host.layer)
+        let key = try XCTUnwrap(layer.animationKeys()?.first { (layer.animation(forKey: $0) as? CASpringAnimation)?.keyPath == "transform" })
+        let animation = try XCTUnwrap(layer.animation(forKey: key))
+        let before = drawnRect(of: host, in: strip)
+        // Reproduce AppKit's model synchronization immediately before its updateLayer callback.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.transform = CATransform3DIdentity
+        host.updateLayer()
+        CATransaction.commit()
+        CATransaction.flush()
+        XCTAssertEqual(layer.transform.m11, 1.12, accuracy: 0.0001)
+        XCTAssertEqual(layer.animation(forKey: key)?.beginTime, animation.beginTime)
+        XCTAssertEqual(layer.animation(forKey: key)?.duration, animation.duration)
+        assertRect(drawnRect(of: host, in: strip), equals: before)
+    }
+
+    func testReduceMotionClearsAlreadyRunningCardAndRingSprings() throws {
+        let strip = makeStrip(focused), rows = makeWing(frequent: 3, recent: 20)
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        XCTAssertTrue(motionLayers(in: strip).contains { $0.animationKeys()?.isEmpty == false })
+        // An icon kept visible during a sweep must also settle immediately when motion is disabled.
+        strip.show(rows, selection: rows[8].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        let frequent = try sectionLabel("QuickAccessFrequentLabel", of: strip)
+        XCTAssertFalse(frequent.isHidden)
+        strip.reducesMotion = { true }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        CATransaction.flush()
+        for layer in motionLayers(in: strip) { XCTAssertEqual(layer.animationKeys() ?? [], []) }
+        XCTAssertTrue(frequent.isHidden)
+        XCTAssertEqual(try drawnRect(of: "Row 5", in: strip).width, 255.36, accuracy: 0.5)
+        let ring = try ringView(in: strip)
+        assertRect(drawnRect(of: ring, in: strip), equals: strip.convert(ring.frame, from: ring.superview))
+    }
+
+    func testAStepUnderTheFingersAtTheDockNeverJumps() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.haptics = RecordingHaptics()
+        var selected = 0
+        strip.onCommand = { [unowned strip, focused = self.focused] command in
+            guard case .move(let step) = command else { return }
+            selected += step
+            strip.show(rows, selection: rows[selected].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        }
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        var previous: CGFloat = 20
+        for event in 1...18 {
+            strip.scrollWheel(with: try swipe(dx: -5, phase: event == 1 ? .began : .changed, at: 1 + Double(event) / 20))
+            CATransaction.flush()
+            let x = try drawnRect(of: "Row 0", in: strip).minX
+            XCTAssertLessThanOrEqual(x, previous + 0.5)
+            XCTAssertLessThanOrEqual(previous - x, 242 / 6 + 1)
+            // At event 14 the fractional position passes the end of the dock, before the next whole selection.
+            if event <= 13 { XCTAssertEqual(x, 20, accuracy: 0.5) }
+            previous = x
+        }
+        XCTAssertEqual(selected, 3)
+    }
+
+    func testAFrameThatShowsAnotherRowLeavesItsSpringsBehind() throws {
+        let strip = makeStrip(focused), rows = makeRows(40)
+        strip.show(rows, selection: rows[20].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[21].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        for title in ["Row 20", "Row 21"] {
+            let host = try XCTUnwrap(drawings(in: strip).first { self.title(of: $0) == title }?.superview?.layer)
+            let paths = Set((host.animationKeys() ?? []).compactMap { (host.animation(forKey: $0) as? CAPropertyAnimation)?.keyPath })
+            XCTAssertTrue(paths.contains("position.x"))
+            XCTAssertTrue(paths.contains("transform"))
+        }
+        // A new query reuses the same hosts for entirely different rows while their old springs are still running.
+        let oldHosts = Set(drawings(in: strip).compactMap { $0.superview }.map(ObjectIdentifier.init))
+        let replacement = makeRows(40, from: 100)
+        strip.show(replacement, selection: replacement[20].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        let hosts = drawings(in: strip).compactMap { $0.superview }
+        XCTAssertTrue(hosts.contains { oldHosts.contains(ObjectIdentifier($0)) })
+        for host in hosts { XCTAssertEqual(host.layer?.animationKeys() ?? [], []) }
+    }
+
+    func testTheCardsAndRingReachTheirModelAfterTheSpringSettles() async throws {
+        let strip = makeStrip(focused), rows = makeRows(40)
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        strip.show(rows, selection: rows[12].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try await waitUntil { self.motionLayers(in: strip).allSatisfy { $0.animationKeys()?.isEmpty != false } }
+        CATransaction.flush()
+        let ring = drawnRect(of: try ringView(in: strip), in: strip)
+        XCTAssertEqual(ring.midX, 688, accuracy: 0.5)
+        try assertBackingAlignedRing(ringView(in: strip), in: strip,
+                                    theoreticalFrame: NSRect(x: 554.32, y: 2, width: 267.36, height: 292))
+        XCTAssertEqual(try drawnRect(of: "Row 12", in: strip).width, 255.36, accuracy: 0.5)
+        XCTAssertEqual(try drawnRect(of: "Row 10", in: strip).width, 228, accuracy: 0.5)
+        XCTAssertEqual(try drawnRect(of: "Row 10", in: strip).minX, 72, accuracy: 0.5)
+    }
+
+    func testASelectionUnderPushedFingersKeepsTheRingWhereItWasDrawn() throws {
+        let strip = makeStrip(focused), rows = makeRows(40)
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.haptics = RecordingHaptics()
+        strip.scrollWheel(with: try swipe(dx: -12, phase: .began, at: 1))
+        try freeze(strip)
+        let ring = try ringView(in: strip), before = drawnRect(of: ring, in: strip)
+        strip.show(rows, selection: rows[12].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        assertRect(drawnRect(of: ring, in: strip), equals: before)
+    }
+
+    func testAFingerStepDoesNotJumpTheRingBackToTheMiddle() throws {
+        let strip = makeStrip(focused), rows = makeRows(40)
+        strip.haptics = RecordingHaptics()
+        strip.show(rows, selection: rows[20].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.onCommand = { [unowned strip, focused = self.focused] _ in
+            strip.show(rows, selection: rows[21].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        }
+        try freeze(strip)
+        for event in 1...5 {
+            strip.scrollWheel(with: try swipe(dx: -5, phase: event == 1 ? .began : .changed, at: 1 + Double(event) / 20))
+        }
+        CATransaction.flush()
+        let ring = try ringView(in: strip), before = drawnRect(of: ring, in: strip)
+        strip.scrollWheel(with: try swipe(dx: -5, phase: .changed, at: 1.3))
+        CATransaction.flush()
+        assertRect(drawnRect(of: ring, in: strip), equals: before)
+    }
+
+    private func freeze(_ strip: QuickAccessStripView) throws {
+        let content = try XCTUnwrap(strip.superview)
+        content.wantsLayer = true
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        content.layer?.speed = 0
+    }
+
+    private func motionLayers(in strip: QuickAccessStripView) -> [CALayer] {
+        ([strip.subviews.first].compactMap { $0 } + (strip.subviews.first?.subviews ?? []) + strip.sectionLabels.subviews)
+            .compactMap(\.layer)
+    }
+
+    private func filmOffset(of strip: QuickAccessStripView) throws -> CGFloat {
+        let layer = try XCTUnwrap(strip.subviews.first?.layer)
+        return (layer.presentation()?.position.x ?? layer.position.x) - layer.position.x
+    }
+
+    private func assertRect(_ actual: NSRect, equals expected: NSRect, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.minX, expected.minX, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(actual.minY, expected.minY, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(actual.width, expected.width, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(actual.height, expected.height, accuracy: 0.5, file: file, line: line)
+    }
+
+    func testTheSelectedCardIsEnlargedAndItsNeighboursStepAside() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        let drawn = try drawnRect(of: "Row 5", in: strip)
+        XCTAssertEqual(drawn.midX, 688, accuracy: 0.5)
+        XCTAssertEqual(drawn.width, 255.36, accuracy: 0.5)
+        XCTAssertEqual(drawn.height, 280, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 4", in: strip).maxX, 542, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 3", in: strip).maxX, 300, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Row 6", in: strip).minX, 834, accuracy: 0.5)
+        for title in ["Row 3", "Row 4", "Row 6"] { XCTAssertEqual(try drawnRect(of: title, in: strip).size, focused.frameSize) }
+        let ring = try ringView(in: strip), ringRect = drawnRect(of: ring, in: strip)
+        XCTAssertEqual(ringRect.midX, 688, accuracy: 0.5)
+        XCTAssertEqual(ringRect.midY, drawn.midY, accuracy: 0.5)
+        try assertBackingAlignedRing(ring, in: strip,
+                                    theoreticalFrame: NSRect(x: 554.32, y: 2, width: 267.36, height: 292))
+        XCTAssertEqual(ring.layer?.borderWidth, 3)
+        XCTAssertEqual(try XCTUnwrap(ring.layer).cornerRadius, 28.4, accuracy: 0.01)
+        XCTAssertEqual(ring.layer?.cornerCurve, .continuous)
+        strip.setFrameSize(strip.frame.size)
+        XCTAssertEqual(try drawnRect(of: "Row 5", in: strip).width, 255.36, accuracy: 0.5)
+        let host = try XCTUnwrap(drawings(in: strip).first { $0.rootView.isSelected }?.superview)
+        let screen = try XCTUnwrap(strip.window).convertToScreen(strip.convert(drawn, to: nil))
+        XCTAssertEqual(host.accessibilityFrame(), screen)
+    }
+
+    func testTheEnlargedEndCardRestsAtTheDock() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        for index in [0, 1, 2, 19] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            if index == 19 { XCTAssertEqual(try drawnRect(of: "Row 19", in: strip).maxX, 1356, accuracy: 0.5) }
+            else { XCTAssertEqual(try drawnRect(of: "Row 0", in: strip).minX, 20, accuracy: 0.5) }
+            if index == 0 { XCTAssertEqual(drawnRect(of: try ringView(in: strip), in: strip).minX, 14, accuracy: 0.5) }
+        }
+    }
+
+    func testFingerCarriedPlacementKeepsTheActualSelectedEndOverhang() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.haptics = RecordingHaptics()
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        // A third of a step back has floor(position) == 0, but Row 1 is still selected.
+        strip.scrollWheel(with: try swipe(dx: 10, phase: .began, at: 1))
+        XCTAssertEqual(try drawnRect(of: "Row 0", in: strip).minX, 20, accuracy: 0.5)
+        XCTAssertEqual(try drawnRect(of: "Row 1", in: strip).width, 255.36, accuracy: 0.5)
+    }
+
+    func testTheRingNeverTouchesANeighbour() throws {
+        for size in CardSize.allCases {
+            for scale in [1.0, 1.01, 1.07, 1.12, 1.24, 1.25] {
+                let m = StripLayout.metrics(for: size, visibleWidth: 1440, style: StripStyle(selectedScale: scale))
+                let strip = makeStrip(m), rows = makeRows(20)
+                for contrast in [false, true] {
+                    strip.increasesContrast = { contrast }
+                    for index in [0, 1, 10] {
+                        strip.show(rows, selection: rows[index].id, details: [:], metrics: m, applicationNames: ApplicationNames())
+                        let ring = drawnRect(of: try ringView(in: strip), in: strip)
+                        let pixels = strip.convertToBacking(ring)
+                        for edge in [pixels.minX, pixels.maxX, pixels.minY, pixels.maxY] {
+                            XCTAssertEqual(edge, edge.rounded(), accuracy: 1e-9)
+                        }
+                        let clearance: CGFloat = contrast ? 1 : 2
+                        if index > 0 { XCTAssertGreaterThanOrEqual(ring.minX - (try drawnRect(of: "Row \(index - 1)", in: strip)).maxX, clearance - 1e-9) }
+                        XCTAssertGreaterThanOrEqual((try drawnRect(of: "Row \(index + 1)", in: strip)).minX - ring.maxX, clearance - 1e-9)
+                    }
+                }
+            }
+        }
+    }
+
+    func testTheRingIsTheStripsOwnAndTakesNoClicks() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        for index in [0, 10] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            let ring = try ringView(in: strip)
+            XCTAssertTrue(ring.superview === strip.subviews.first)
+            XCTAssertTrue(ring.superview?.subviews.last === ring)
+            XCTAssertNil(ring.hitTest(NSPoint(x: ring.frame.midX, y: ring.frame.midY)))
+            XCTAssertFalse(ring.isAccessibilityElement())
+            XCTAssertFalse((strip.accessibilityChildren() as? [NSView] ?? []).contains { $0 === ring })
+        }
+        strip.increasesContrast = { true }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        let ring = try ringView(in: strip)
+        XCTAssertEqual(ring.layer?.borderWidth, 4)
+        try assertBackingAlignedRing(ring, in: strip,
+                                    theoreticalFrame: NSRect(x: 553.32, y: 1, width: 269.36, height: 294))
+        XCTAssertEqual(try XCTUnwrap(ring.layer).cornerRadius, 29.4, accuracy: 0.01)
+        strip.increasesContrast = { false }
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        XCTAssertEqual(ring.layer?.borderWidth, 3)
+        strip.show(rows, selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(ring.isHidden)
+        strip.show([], selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(ring.isHidden)
+    }
+
+    func testTheEnlargedCardTakesClicksOnItsWholeDrawnFace() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        var selected: QuickAccessRow.ID?
+        strip.onSelect = { selected = $0 }
+        let card = try rect(titled: "Row 5", in: strip)
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: NSPoint(x: card.minX - 5, y: card.midY), in: strip))
+        XCTAssertEqual(selected, rows[5].id)
+        selected = nil
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: NSPoint(x: 550, y: card.midY), in: strip))
+        XCTAssertNil(selected)
+    }
+
+    func testTheMenuAnchorsBesideTheEnlargedCard() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[5].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.selectionAnchorFrame, try drawnRect(of: "Row 5", in: strip))
+        strip.show(rows, selection: nil, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.selectionAnchorFrame?.size, focused.frameSize)
+        XCTAssertEqual(try XCTUnwrap(strip.selectionAnchorFrame).minX, 20, accuracy: 0.5)
+    }
+
+    func testTheDividerStepsAsideWithTheCardsOfItsSide() throws {
+        let strip = makeStrip(focused), rows = makeWing(frequent: 3, recent: 20)
+        strip.show(rows, selection: rows[3].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(try dividerRect(in: strip).midX, 511, accuracy: 0.5)
+        XCTAssertEqual(try rect(titled: "Freq 2", in: strip).maxX, 466, accuracy: 0.5)
+        XCTAssertEqual(try sectionLabel("QuickAccessFrequentLabel", of: strip).frame.maxX, 503, accuracy: 0.5)
+        XCTAssertEqual(try sectionLabel("QuickAccessRecentLabel", of: strip).frame.minX, 519, accuracy: 0.5)
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(try dividerRect(in: strip).midX, 813, accuracy: 0.5)
+    }
+
+    func testTheFocusedRingKeepsItsUnroundedLayoutGeometry() {
+        let card = NSRect(x: 574, y: 23, width: 228, height: 250)
+        XCTAssertEqual(StripLayout.scaled(card, by: 1.12).width, 255.36, accuracy: 1e-9)
+        for (reach, width, height) in [(CGFloat(6), CGFloat(267.36), CGFloat(292)), (7, 269.36, 294)] {
+            let ring = StripLayout.ringFrame(around: card, scale: 1.12, reach: reach)
+            XCTAssertEqual(ring.midX, 688, accuracy: 1e-9)
+            XCTAssertEqual(ring.midY, 148, accuracy: 1e-9)
+            XCTAssertEqual(ring.width, width, accuracy: 1e-9)
+            XCTAssertEqual(ring.height, height, accuracy: 1e-9)
+        }
+    }
+
+    /// The hand-calculated film-local rectangle is snapped one backing edge at a time, not by rounding its size.
+    /// Compare the actual drawn rectangle in the same coordinates, so both 1x and 2x windows keep sharp edges.
+    private func assertBackingAlignedRing(_ ring: NSView, in strip: NSView, theoreticalFrame: NSRect,
+                                         file: StaticString = #filePath, line: UInt = #line) throws {
+        let film = try XCTUnwrap(ring.superview, file: file, line: line)
+        let theoretical = strip.convertToBacking(strip.convert(theoreticalFrame, from: film))
+        let aligned = NSRect(x: theoretical.minX.rounded(), y: theoretical.minY.rounded(),
+                             width: theoretical.maxX.rounded() - theoretical.minX.rounded(),
+                             height: theoretical.maxY.rounded() - theoretical.minY.rounded())
+        let expected = strip.convertFromBacking(aligned)
+        let actual = drawnRect(of: ring, in: strip)
+        let pixels = strip.convertToBacking(actual)
+        for (actualEdge, expectedEdge) in zip([actual.minX, actual.minY, actual.maxX, actual.maxY],
+                                              [expected.minX, expected.minY, expected.maxX, expected.maxY]) {
+            XCTAssertEqual(actualEdge, expectedEdge, accuracy: 1e-9, file: file, line: line)
+        }
+        for (actualEdge, theoreticalEdge) in zip([pixels.minX, pixels.minY, pixels.maxX, pixels.maxY],
+                                                 [theoretical.minX, theoretical.minY, theoretical.maxX, theoretical.maxY]) {
+            XCTAssertEqual(actualEdge, actualEdge.rounded(), accuracy: 1e-9, file: file, line: line)
+            XCTAssertLessThanOrEqual(abs(actualEdge - theoreticalEdge), 0.5 + 1e-9, file: file, line: line)
+        }
+    }
+
+    private func ringView(in strip: NSView) throws -> NSView {
+        try XCTUnwrap(strip.subviews.first?.subviews.first { $0.accessibilityIdentifier() == "QuickAccessSelectionRing" })
+    }
+
+    private func drawnRect(of title: String, in strip: NSView) throws -> NSRect {
+        let host = try XCTUnwrap(drawings(in: strip).first { self.title(of: $0) == title }?.superview)
+        return drawnRect(of: host, in: strip)
+    }
+
+    private func drawnRect(of view: NSView, in strip: NSView) -> NSRect {
+        guard let layer = view.layer, let film = view.superview else { return .zero }
+        let shift = (film.layer?.presentation()?.position.x ?? film.layer?.position.x ?? 0) - (film.layer?.position.x ?? 0)
+        return strip.convert((layer.presentation() ?? layer).frame.offsetBy(dx: shift, dy: 0), from: film)
+    }
+
     func testSelectedFrameIsCentredInTheBand() throws {
         let strip = makeStrip()
         let rows = makeRows(20)
@@ -1670,17 +2290,17 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testTheSectionIconsSitBelowTheCardsAndStayWhenTheBandResizesTheirView() throws {
-        // With the frequent wing there are 28 pt below the cards. The ring around a selected card reaches 7 pt into
-        // them with Increase Contrast, and each icon is centred in the 21 pt left between the ring and the band's
-        // bottom edge: a 15 pt icon starts 3 above that edge and ends 3 short of the ring. QuickAccessBandTests
-        // measures the ink the icons draw.
+        // With the frequent wing and the standard enlargement there are 43 pt below the cards. The selected card
+        // enlarged reaches 15 pt into them, the ring around it 7 pt more with Increase Contrast, and each icon is
+        // centred in the 21 pt left between the ring and the band's bottom edge: a 15 pt icon starts 3 above that edge
+        // and ends 3 short of the ring. QuickAccessBandTests measures the ink the icons draw.
         let wing = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
         let strip = makeStrip(wing)
         let rows = makeWing(frequent: 3, recent: 20)
         strip.show(rows, selection: rows[3].id, details: [:], metrics: wing, applicationNames: ApplicationNames())
         let cardBottom = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).minY
         let bandBottom = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil).minY
-        XCTAssertEqual(cardBottom - bandBottom, 28, accuracy: 0.01)
+        XCTAssertEqual(cardBottom - bandBottom, 43, accuracy: 0.01)
         var places: [String: CGFloat] = [:]
         for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
             let icon = try sectionLabel(identifier, of: strip)
@@ -1688,14 +2308,14 @@ final class QuickAccessStripViewTests: XCTestCase {
             let frame = icon.convert(icon.bounds, to: nil)
             // Centred to the pixel: as far above the band's bottom edge as short of the ring.
             XCTAssertEqual(frame.minY - bandBottom, (21 - frame.height) / 2, accuracy: 0.5, identifier)
-            XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 7, identifier)
+            XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 15 - 7, identifier)
             places[identifier] = frame.minY - bandBottom
         }
 
-        // The band gives the icons' view the room below the cards, 28 pt with the frequent wing turned on and 22
+        // The band gives the icons' view the room below the cards, 43 pt with the frequent wing turned on and 37
         // without, and may do so after the strip has placed them. Its bottom stays at the band's bottom edge, and so
         // do the icons' places.
-        for height in [22, 28] as [CGFloat] {
+        for height in [37, 43] as [CGFloat] {
             strip.sectionLabels.setFrameSize(NSSize(width: wing.bandWidth, height: height))
             for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
                 let icon = try sectionLabel(identifier, of: strip)
@@ -1827,12 +2447,17 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// Medium cards on a screen 1440 pt wide: a band 1376 wide, frames 228 by 250 and 242 apart, a dock inset of 20.
-    private var medium: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+    /// Medium cards on a screen 1440 pt wide with the selected card not enlarged: a band 1376 wide, frames 228 by 250
+    /// and 242 apart, a dock inset of 20. The cases that use it were worked out before the selected card was enlarged.
+    private var medium: StripMetrics {
+        StripLayout.metrics(for: .medium, visibleWidth: 1440, style: StripStyle(selectedScale: 1))
+    }
 
     /// A strip one band wide in a window that is never shown, so frames go straight to their places, with its section
     /// icons below the cards as the band places them. A test that shows the window sees the frames slide, whatever
     /// Reduce Motion is set to on the Mac that runs it; the divider is as wide as without Increase Contrast either way.
+    /// As in the band, the strip reaches as far above and below the cards as the enlarged selected card does, and 8 pt
+    /// more for its ring.
     private func makeStrip(_ metrics: StripMetrics? = nil) -> QuickAccessStripView {
         let metrics = metrics ?? self.metrics
         let size = NSSize(width: metrics.bandWidth, height: 300)
@@ -1841,7 +2466,8 @@ final class QuickAccessStripViewTests: XCTestCase {
         window.isReleasedWhenClosed = false
         let content = KeyRecordingView(frame: NSRect(origin: .zero, size: size))
         let strip = QuickAccessStripView(frame: NSRect(x: 0, y: 100, width: metrics.bandWidth,
-                                                       height: metrics.frameSize.height + 24))
+                                                       height: metrics.frameSize.height
+                                                           + 2 * (metrics.selectionGrowth + 8)))
         strip.reducesMotion = { false }
         strip.increasesContrast = { false }
         content.addSubview(strip)

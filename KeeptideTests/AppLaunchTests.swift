@@ -298,26 +298,28 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(panel.frame.width, metrics.bandWidth + 2 * StripLayout.sideMargin, accuracy: 1)
     }
 
-    func testTheBandIsThreeHundredFortyHighAtMediumSize() async throws {
+    func testTheBandGivesTheEnlargedCardRoomAtMediumSize() async throws {
+        // Settings as they come: the standard enlargement, and here the frequent clips turned off.
         let (controller, _) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
         let strip = try await clipStrip(in: window)
         let metrics = try stripMetrics(in: window)
-        XCTAssertEqual(StripLayout.bandHeight(metrics), 340)
+        XCTAssertEqual(StripLayout.bandHeight(metrics), 370)
         let band = try bandRect(in: window)
-        XCTAssertEqual(band.height, 340)
+        XCTAssertEqual(band.height, 370)
         XCTAssertEqual(band.width, metrics.bandWidth)
 
-        // From the top: 16 to the toolbar, its 32, 20 to the cards, the cards' 250, and 22 below them.
+        // From the top: 16 to the toolbar, its 32, 20 to the cards and 15 more, as far as the selected card reaches
+        // past the others once it is enlarged, the cards' 250, and 22 and 15 below them.
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
         let search = toolbar.search.convert(toolbar.search.bounds, to: nil)
         XCTAssertEqual(band.maxY - search.maxY, 16, accuracy: 0.5)
         XCTAssertEqual(search.height, 32, accuracy: 0.5)
         let card = strip.convert(try frame(of: "newer", in: strip), to: nil)
-        XCTAssertEqual(band.maxY - card.maxY, 68, accuracy: 0.5)
+        XCTAssertEqual(band.maxY - card.maxY, 83, accuracy: 0.5)
         XCTAssertEqual(card.height, 250, accuracy: 0.5)
-        XCTAssertEqual(card.minY - band.minY, 22, accuracy: 0.5)
+        XCTAssertEqual(card.minY - band.minY, 37, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -350,7 +352,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(toolbar.convert(toolbar.bounds, to: nil).contains(keycap.convert(keycap.bounds, to: nil)))
         let strip = try await clipStrip(in: window)
         let card = strip.convert(try frame(of: "newer", in: strip), to: nil)
-        XCTAssertEqual(card.minY - (try bandRect(in: window)).minY, 22, accuracy: 0.5)
+        XCTAssertEqual(card.minY - (try bandRect(in: window)).minY, 37, accuracy: 0.5)
     }
 
     func testTypingUnfoldsTheSearchAndSearches() async throws {
@@ -435,7 +437,16 @@ final class AppLaunchTests: XCTestCase {
 
         // A click there while the field has the keys keeps its editing as it is: the caret stays where it was.
         editor.insertText("beta", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "beta" }
         let current = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        toolbar.layoutSubtreeIfNeeded()
+        let fieldPoint = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+        let fieldHit = window.contentView?.hitTest(fieldPoint)
+        XCTAssertTrue(fieldHit === field || fieldHit === current, "The field keeps its native hit")
+        let clear = search.clearButton
+        XCTAssertFalse(clear.isHidden)
+        let clearPoint = clear.convert(NSPoint(x: clear.bounds.midX, y: clear.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(clearPoint) === clear, "The clear button keeps its native hit")
         current.setSelectedRange(NSRange(location: 1, length: 0))
         try click(at: search.convert(magnifier, to: nil), in: window)
         XCTAssertTrue(field.currentEditor() === current)
@@ -630,7 +641,7 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testTheRebuildNoticeShowsAtTheToolbarsLeftAndLeavesTheCopyHint() async throws {
+    func testTheRebuildNoticeShowsAfterTheFiltersAndLeavesTheCopyHint() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -649,8 +660,8 @@ final class AppLaunchTests: XCTestCase {
         let band = try bandRect(in: window)
         let underTheClips = NSRect(x: band.midX - 100, y: band.minY + 4, width: 200, height: 8)
 
-        // While the index rebuilds, a search that finds clips says so at the toolbar's left end, in its row and left of
-        // the search. The right end has nothing to say, so it keeps Return's hint, word and all.
+        // While the index rebuilds, a search that finds clips says so after the filters in the toolbar's row.
+        // The right end keeps Return's hint, word and all.
         harness.status.update(.rebuilding)
         editor.insertText("deploy", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
@@ -669,7 +680,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(notice.stringValue, QuickAccessStatus.rebuilding)
         XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessIndexNotice")
         XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, "In the toolbar's row")
-        XCTAssertLessThan(notice.frame.maxX, toolbar.search.frame.minX, "Left of the search")
+        XCTAssertGreaterThanOrEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12 - 0.5)
+        XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.copyHint.frame.minX - 12 + 0.5)
         // The clips have nothing under them; the band draws them in full first.
         _ = try await clipStrip(in: window)
         window.contentView?.layoutSubtreeIfNeeded()
@@ -804,12 +816,29 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(isEditing(field, in: window))
     }
 
-    func testAnInputMethodsFirstKeyUnfoldsTheSearch() async throws {
-        let (controller, _) = try await makePanelWithClips(["alpha", "beta"], shown: true)
+    func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheLeft() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["beta one", "beta two", "beta three"], into: harness)
+        try await harness.consumer.synchronize()
+        let gate = ScanGate()
+        addTeardownBlock { gate.open() }
+        let search = SearchService(index: harness.index, status: harness.status, scanChunkSize: 2,
+                                   onScanProgress: { _ in gate.pass() })
+        let controller = try makePanel(over: harness, pasteboard: board, search: search)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 3 }
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
         XCTAssertFalse(controller.state.isSearchExpanded)
+        var moved: [NSTextView] = []
+        controller.fieldCharactersMoved = { editor in
+            moved.append(editor)
+            editor.inputContext?.invalidateCharacterCoordinates()
+        }
 
         // The first key of a composition, as an input method gives it: marked text, before any change is reported.
         editor.setMarkedText("b", selectedRange: NSRange(location: 1, length: 0),
@@ -819,11 +848,57 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.state.isSearchExpanded)
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.search.frame.width, 300)
+        let band = try bandRect(in: window)
+        let pill = toolbar.search.convert(toolbar.search.bounds, to: nil)
+        let pillOnScreen = window.convertToScreen(pill)
+        XCTAssertEqual(pill.minX - band.minX, 16, accuracy: 0.5)
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertTrue(moved.first === editor)
+        let marked = editor.firstRect(forCharacterRange: editor.markedRange(), actualRange: nil)
+        XCTAssertGreaterThanOrEqual(marked.minX, pillOnScreen.minX + 34 - 1)
+        XCTAssertLessThanOrEqual(marked.maxX, pillOnScreen.maxX)
+        XCTAssertTrue(marked.intersects(pillOnScreen))
         XCTAssertEqual(field.alphaValue, 1)
         XCTAssertTrue(editor.hasMarkedText())
         XCTAssertEqual(editor.markedRange(), NSRange(location: 0, length: 1))
         XCTAssertTrue(isEditing(field, in: window))
         XCTAssertEqual(controller.state.query, "", "Nothing is searched for until the composition is committed")
+
+        // Committing a short query starts a progressive scan; its status changes only the right end.
+        editor.insertText("be", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { toolbar.note == .status("Searching…") }
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertTrue(field.currentEditor() === editor)
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertEqual(toolbar.search.convert(toolbar.search.bounds, to: nil).minX - band.minX, 16, accuracy: 0.5)
+    }
+
+    func testTheSearchsRingStaysInsideTheBandsCorner() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        controller.perform(.focusResults)
+        try XCTUnwrap(window.firstResponder as? QuickAccessStripView).keyDown(with: try key(kVK_Tab, "\t"))
+        for expanded in [false, true] {
+            if expanded {
+                XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
+            }
+            toolbar.layoutSubtreeIfNeeded()
+            XCTAssertTrue(isEditing(field, in: window))
+            XCTAssertEqual(controller.state.isSearchExpanded, expanded)
+            let halo = toolbar.focusHalo
+            XCTAssertFalse(halo.isHidden)
+            let haloFrame = halo.convert(halo.bounds, to: nil)
+            let band = QuickAccessBandBackdrop.outline(in: try bandRect(in: window))
+            let outline = RoundedRectangle(cornerRadius: 19, style: .continuous).path(in: haloFrame)
+            // Forty-eight points on the continuous outline, including its curved corners, not just its bounds.
+            for sample in 1...48 {
+                let point = outline.trimmedPath(from: 0, to: CGFloat(sample) / 48).cgPath.currentPoint
+                XCTAssertTrue(band.contains(point), "expanded \(expanded), sample \(sample): \(point)")
+            }
+        }
     }
 
     func testTheClearButtonEmptiesTheQueryAndUndoBringsItBack() async throws {
@@ -857,6 +932,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(undo.canUndo)
         undo.undo()
         XCTAssertEqual(field.stringValue, "beta")
+        try await SearchTestSupport.waitUntil { controller.state.query == "beta" }
         XCTAssertEqual(controller.state.query, "beta")
     }
 
@@ -986,9 +1062,10 @@ final class AppLaunchTests: XCTestCase {
         // running to its right.
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 0") == true, selectedClipLabel(in: strip) ?? "")
-        let newest = try frame(of: "clip 0", in: strip)
+        let newest = try drawnFrame(of: "clip 0", in: strip)
         XCTAssertEqual(newest.minX - left, metrics.dockInset, accuracy: 0.5)
-        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX - newest.minX, metrics.step, accuracy: 1)
+        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX - frame(of: "clip 0", in: strip).minX,
+                       metrics.step + metrics.neighbourPush, accuracy: 1)
         controller.state.close()
     }
 
@@ -1016,18 +1093,18 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testStepsInTheDockMoveTheSelectionNotTheFrames() async throws {
+    func testStepsInTheDockKeepTheNewestCardsEdgeAtTheDock() async throws {
         let (controller, _) = try await makePanelWithClips((0..<40).reversed().map { "clip \($0)" })
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try await clipStrip(in: window)
-        let docked = try frame(of: "clip 0", in: strip)
+        let docked = try drawnFrame(of: "clip 0", in: strip).minX
 
-        // Near the newest end the selection walks along the film, which stays where it is.
+        // Near the newest end the selection walks along the film while the newest visible edge stays docked.
         editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows[1].ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 1") == true, selectedClipLabel(in: strip) ?? "")
-        XCTAssertEqual(try frame(of: "clip 0", in: strip), docked)
+        XCTAssertEqual(try drawnFrame(of: "clip 0", in: strip).minX, docked, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -1069,7 +1146,7 @@ final class AppLaunchTests: XCTestCase {
         editor.doCommand(by: #selector(NSResponder.moveRight(_:)))
         XCTAssertEqual(controller.state.selection.selection, controller.state.selection.rows.first?.ref)
         XCTAssertTrue(selectedClipLabel(in: strip)?.hasSuffix(": clip 1") == true, selectedClipLabel(in: strip) ?? "")
-        XCTAssertEqual(try frame(of: "clip 1", in: strip).minX, dock.minX, accuracy: 0.5)
+        XCTAssertEqual(try drawnFrame(of: "clip 1", in: strip).minX, dock.minX, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -1115,8 +1192,9 @@ final class AppLaunchTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
-        // The film slides whatever Reduce Motion is set to on the Mac that runs the test.
-        strip.reducesMotion = { false }
+        // Establish the first page and the long jump without an unrelated selection spring. Motion is enabled
+        // below only for the page arrival this test measures, whatever the Mac's Reduce Motion setting is.
+        strip.reducesMotion = { true }
         let metrics = try stripMetrics(in: window)
         let left = strip.bounds.midX - metrics.bandWidth / 2
         editor.insertText("ab", replacementRange: NSRange(location: NSNotFound, length: 0))
@@ -1125,6 +1203,7 @@ final class AppLaunchTests: XCTestCase {
                 && controller.state.selection.isComplete
         }
         XCTAssertEqual(controller.state.selection.rows.count, 60)
+        XCTAssertTrue(controller.state.hasMoreRows)
 
         // The last row of the first page is not the oldest match: the film keeps it in the middle while the next
         // page is on its way. The strip shows the first page before the step is taken, so the step starts from it.
@@ -1134,11 +1213,16 @@ final class AppLaunchTests: XCTestCase {
         }
         controller.perform(.move(59))
         let title = controller.state.selection.rows[59].title
+        CATransaction.flush()
+        // No await separates the step and the frozen clock: the next page cannot arrive during this setup.
+        XCTAssertEqual(controller.state.selection.rows.count, 60)
+        XCTAssertTrue(controller.state.hasMoreRows)
         XCTAssertEqual(try frame(of: title, in: strip).midX - left, metrics.bandWidth / 2, accuracy: 0.5)
 
         // Time stands still from here, so a slide that the next page starts stays at its beginning.
         strip.wantsLayer = true
         strip.layer?.speed = 0
+        strip.reducesMotion = { false }
         defer { strip.layer?.speed = 1 }
         // The next page brings the last match. With no more to fetch, the film comes to rest with it at the right
         // dock, and slides there: the selected clip is still drawn in the middle, where it was.
@@ -1146,7 +1230,7 @@ final class AppLaunchTests: XCTestCase {
             controller.state.selection.rows.count == 61 && !controller.state.hasMoreRows
                 && self.hasFrame(titled: controller.state.selection.rows[60].title, in: strip)
         }
-        let oldest = try frame(of: controller.state.selection.rows[60].title, in: strip)
+        let oldest = try drawnFrame(of: controller.state.selection.rows[60].title, in: strip)
         XCTAssertEqual(oldest.maxX - left, metrics.bandWidth - metrics.dockInset, accuracy: 0.5)
         CATransaction.flush()
         let drawn = try frame(of: title, in: strip).midX + (try filmOffset(in: strip))
@@ -1199,7 +1283,7 @@ final class AppLaunchTests: XCTestCase {
 
         // The rest of the scan may bring more clips, so the two found so far are not centred as a group: they rest
         // at the left dock.
-        let first = try frame(of: controller.state.selection.rows[0].title, in: strip)
+        let first = try drawnFrame(of: controller.state.selection.rows[0].title, in: strip)
         XCTAssertEqual(first.minX - left, metrics.dockInset, accuracy: 0.5)
 
         // The finished scan is all there is, and three clips fit: they are centred as a group.
@@ -1207,9 +1291,9 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil {
             controller.state.selection.isComplete && self.framesOnScreen(in: strip).count == 3
         }
-        let film = 3 * metrics.step - metrics.gap
-        let newest = try frame(of: controller.state.selection.rows[0].title, in: strip)
-        XCTAssertEqual(newest.minX - left, (metrics.bandWidth - film) / 2, accuracy: 0.5)
+        let newest = try drawnFrame(of: controller.state.selection.rows[0].title, in: strip)
+        let oldest = try drawnFrame(of: controller.state.selection.rows[2].title, in: strip)
+        XCTAssertEqual((newest.minX + oldest.maxX) / 2 - left, metrics.bandWidth / 2, accuracy: 0.5)
         controller.state.close()
     }
 
@@ -1372,10 +1456,12 @@ final class AppLaunchTests: XCTestCase {
         let content = try XCTUnwrap(window.contentView)
         XCTAssertLessThanOrEqual(card.maxY, content.bounds.maxY + 0.5, "Inside the window")
 
-        // Where the card lies over the toolbar it takes the pointer too: a click on the search beneath it is the card's.
-        let search = try XCTUnwrap(views(QuickAccessSearchControl.self, in: content).first)
-        let middle = search.convert(NSPoint(x: search.bounds.midX, y: search.bounds.midY), to: nil)
-        XCTAssertTrue(card.contains(middle))
+        // Where the centered card lies over the toolbar it takes the pointer too. The search now stays at the left.
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: content).first)
+        let overlap = card.intersection(toolbar.convert(toolbar.rowFrame, to: nil))
+        XCTAssertGreaterThan(overlap.width, 0)
+        XCTAssertGreaterThan(overlap.height, 0)
+        let middle = NSPoint(x: overlap.midX, y: overlap.midY)
         let scroll = try XCTUnwrap(views(NSTextView.self, in: content).first { !$0.isFieldEditor }?.enclosingScrollView)
         let hit = content.hitTest(middle)
         XCTAssertTrue(hit?.isDescendant(of: scroll) == true, "\(hit.map { "\(type(of: $0))" } ?? "nothing")")
@@ -1393,7 +1479,7 @@ final class AppLaunchTests: XCTestCase {
         // ⌘K opens the selected clip's actions beside it, level with its top edge.
         XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "k", modifiers: .command)))
         let commandK = try XCTUnwrap(shown.first)
-        let selected = try frame(of: "newer", in: strip)
+        let selected = try drawnFrame(of: "newer", in: strip)
         XCTAssertTrue(commandK.view === strip)
         XCTAssertEqual(commandK.point.x, selected.maxX, accuracy: try stripMetrics(in: window).gap)
         XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
@@ -1575,16 +1661,16 @@ final class AppLaunchTests: XCTestCase {
         let mostUsedFrame = strip.convert(mostUsed.bounds, from: mostUsed)
         let secondFrame = strip.convert(secondMostUsed.bounds, from: secondMostUsed)
         XCTAssertEqual(newestFrame.midX, strip.bounds.midX, accuracy: 0.5)
-        XCTAssertEqual(newestFrame.minX - mostUsedFrame.maxX, metrics.gap + metrics.dividerExtra, accuracy: 1)
+        XCTAssertEqual(newestFrame.minX - mostUsedFrame.maxX, metrics.gap + metrics.dividerExtra + metrics.neighbourPush, accuracy: 1)
         XCTAssertEqual(mostUsedFrame.minX - secondFrame.maxX, metrics.gap, accuracy: 1)
 
-        // The band has room below the cards for the section icons: 28 instead of 22, so it is 346 high. Both icons
+        // The band has room below the cards for the section icons: 43 instead of 37, so it is 376 high. Both icons
         // show there, below the cards and inside the band, the flame left of the divider and the clock right of it.
         window.contentView?.layoutSubtreeIfNeeded()
         let band = try bandRect(in: window)
         let card = strip.convert(newestFrame, to: nil)
-        XCTAssertEqual(band.height, 346)
-        XCTAssertEqual(card.minY - band.minY, 28, accuracy: 0.5)
+        XCTAssertEqual(band.height, 376)
+        XCTAssertEqual(card.minY - band.minY, 43, accuracy: 0.5)
         let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
         XCTAssertFalse(divider.isHidden)
         let line = divider.convert(divider.bounds, to: nil)
@@ -1676,17 +1762,17 @@ final class AppLaunchTests: XCTestCase {
         // and the frames are the list's own children.
         XCTAssertEqual(state.selection.frequentCount, 0)
         XCTAssertEqual(state.selection.rows.map(\.title), Array(Self.wingTitles.reversed()))
-        XCTAssertEqual(try frame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(try drawnFrame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
         let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
         let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
         let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
         XCTAssertTrue(frequentIcon.isHidden && recentIcon.isHidden && divider.isHidden)
         XCTAssertNotNil(strip.accessibilityChildren() as? [NSView])
-        // The band is 340 high, as it was, with 22 below the cards.
+        // The band is 370 high, with 37 below the cards: the room the enlarged selected card needs, and none for icons.
         window.contentView?.layoutSubtreeIfNeeded()
         let band = try bandRect(in: window)
-        XCTAssertEqual(band.height, 340)
-        XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 22, accuracy: 0.5)
+        XCTAssertEqual(band.height, 370)
+        XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 37, accuracy: 0.5)
     }
 
     func testWithFrequentClipsOnButNoneUsedTwiceTheStripListsOnlyRecentClips() async throws {
@@ -1702,19 +1788,19 @@ final class AppLaunchTests: XCTestCase {
         // frames are the list's own children, in no groups.
         XCTAssertEqual(state.selection.frequentCount, 0)
         XCTAssertEqual(state.selection.rows.map(\.title), Array(Self.wingTitles.reversed()))
-        XCTAssertEqual(try frame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
+        XCTAssertEqual(try drawnFrame(of: "clip 0", in: strip).minX - left, metrics.dockInset, accuracy: 0.5)
         let frequentIcon = try view(identifiedAs: "QuickAccessFrequentLabel", in: window)
         let recentIcon = try view(identifiedAs: "QuickAccessRecentLabel", in: window)
         let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
         XCTAssertTrue(frequentIcon.isHidden && recentIcon.isHidden && divider.isHidden)
         let frames = try XCTUnwrap(strip.accessibilityChildren() as? [NSView], "The list's own children, in no groups")
         XCTAssertFalse(frames.isEmpty)
-        // The setting is on, so the band keeps the room below the cards that the icons would have: 346 high, with 28
+        // The setting is on, so the band keeps the room below the cards that the icons would have: 376 high, with 43
         // below the cards.
         window.contentView?.layoutSubtreeIfNeeded()
         let band = try bandRect(in: window)
-        XCTAssertEqual(band.height, 346)
-        XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 28, accuracy: 0.5)
+        XCTAssertEqual(band.height, 376)
+        XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 43, accuracy: 0.5)
     }
 
     func testWithAFrequentWingSpaceOpensTheNewestClipsPreviewAboveTheBand() async throws {
@@ -1723,7 +1809,7 @@ final class AppLaunchTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         let strip = try await clipStrip(in: window)
         try await waitForWingFrames(in: strip)
-        // The band is 346 high, with the room below the cards for the section icons.
+        // The band is 376 high, with the room below the cards for the section icons.
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width, showsFrequentClips: true)
         let band = StripLayout.bandFrame(metrics, in: Self.wingScreen)
         assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
@@ -1761,7 +1847,7 @@ final class AppLaunchTests: XCTestCase {
         let state = controller.state
         let window = try XCTUnwrap(controller.window)
         let strip = try await clipStrip(in: window)
-        // Frames go straight to their places, so a click lands where a frame rests.
+        // Disable springs; clicks still use the drawn face while AppKit commits the new model geometry.
         strip.reducesMotion = { true }
         try await waitForWingFrames(in: strip)
         // clip 11 is listed twice: last in the wing, beside the divider, and as the oldest of the recent clips, off the
@@ -1770,7 +1856,11 @@ final class AppLaunchTests: XCTestCase {
         let recentCopy = try XCTUnwrap(state.selection.rows.first { !$0.isFrequent && $0.title == "clip 11" })
         XCTAssertEqual(wingCopy.ref, recentCopy.ref)
         func rightClick(on frame: NSView) throws -> NSEvent {
-            let rect = strip.convert(frame.bounds, from: frame)
+            let layer = try XCTUnwrap(frame.layer)
+            let film = try XCTUnwrap(frame.superview)
+            let shift = (film.layer?.presentation()?.position.x ?? film.layer?.position.x ?? 0)
+                - (film.layer?.position.x ?? 0)
+            let rect = strip.convert((layer.presentation() ?? layer).frame.offsetBy(dx: shift, dy: 0), from: film)
             return try XCTUnwrap(NSEvent.mouseEvent(
                 with: .rightMouseDown, location: strip.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil),
                 modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
@@ -1799,6 +1889,12 @@ final class AppLaunchTests: XCTestCase {
         controller.perform(.move(10))
         XCTAssertEqual(state.selection.selectedRow?.title, "clip 10")
         XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        // The list reports frames where they are drawn. Wait for AppKit to show this copy and remove the frequent
+        // wing from the visible group before asking VoiceOver for the recent copy.
+        try await SearchTestSupport.waitUntil {
+            self.framesOnScreen(in: strip).contains { $0.accessibilityLabel()?.hasSuffix(": clip 11") == true }
+                && (try? self.groups(in: strip).map(\.name)) == ["Recent"]
+        }
         let recentFrame = try XCTUnwrap(framesOnScreen(in: strip).first {
             $0.accessibilityLabel()?.hasSuffix(": clip 11") == true
         })
@@ -1849,14 +1945,85 @@ final class AppLaunchTests: XCTestCase {
 
     func testAPanelMadeWithFrequentClipsOnHasRoomForTheirIconsBeforeItOpens() throws {
         // The panel lays the band out for its settings as it is made, so a session opened on it at once, without the
-        // shortcut, also has the room below the cards for the section icons: 346 high, not 340.
+        // shortcut, also has the room below the cards for the section icons: 376 high, not 370.
         let controller = PanelController(preferences: try makePreferences(.medium, showsFrequent: true),
                                          visibleFrame: Self.wingScreen)
         let window = try XCTUnwrap(controller.window)
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width, showsFrequentClips: true)
-        XCTAssertEqual(try bandRect(in: window).height, 346)
+        XCTAssertEqual(try bandRect(in: window).height, 376)
         let band = StripLayout.bandFrame(metrics, in: Self.wingScreen)
         assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
+    }
+
+    func testTheFadeSettingTakesEffectWhenThePanelNextOpens() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips((0..<40).reversed().map { "clip \($0)" }, into: harness)
+        try await harness.consumer.synchronize()
+        let preferences = try makePreferences(.medium)
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: Self.wingScreen,
+                                       preferences: preferences)
+        addTeardownBlock { controller.close() }
+        controller.show()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: controller.window?.contentView).first)
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
+        XCTAssertNotNil(strip.layer?.mask)
+        preferences.fadesStripEnds = false
+        controller.perform(.move(1))
+        settleLayout()
+        XCTAssertNotNil(strip.layer?.mask)
+        controller.close()
+        controller.show()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        XCTAssertNil(strip.layer?.mask)
+        XCTAssertFalse(strip.isFollowingMotion)
+    }
+
+    func testTheEnlargementTakesEffectWhenThePanelNextOpens() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older", "newer"], into: harness)
+        try await harness.consumer.synchronize()
+        let preferences = try makePreferences(.medium, showsFrequent: true)
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: Self.wingScreen,
+                                       preferences: preferences)
+        addTeardownBlock { controller.close() }
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        // Where the panel puts the band and itself on `wingScreen` for an enlargement of `scale`.
+        func expectedFrame(scale: CGFloat) -> NSRect {
+            let metrics = StripLayout.metrics(for: .medium, visibleWidth: Self.wingScreen.width,
+                                              showsFrequentClips: true, style: StripStyle(selectedScale: scale))
+            return StripLayout.panelFrame(band: StripLayout.bandFrame(metrics, in: Self.wingScreen), preview: nil,
+                                          in: Self.wingScreen)
+        }
+
+        // Settings enlarges the selected card the most before the panel opens. The band makes room for it as the panel
+        // opens: 410 high, with the frequent clips' room below the cards.
+        preferences.selectedCardScale = 1.25
+        controller.show()
+        try await SearchTestSupport.waitUntil { state.selection.rows.count == 2 }
+        XCTAssertEqual(try bandRect(in: window).height, 410)
+        assertFrame(window.frame, places: expectedFrame(scale: 1.25))
+
+        // Turned off while the panel is open, it changes nothing there: as the panel follows a step to the older clip,
+        // and after a turn of the run loop, the band keeps its height.
+        preferences.selectedCardScale = 1
+        controller.perform(.move(1))
+        XCTAssertEqual(state.selection.selectedRow?.title, "older")
+        settleLayout()
+        XCTAssertEqual(try bandRect(in: window).height, 410)
+        assertFrame(window.frame, places: expectedFrame(scale: 1.25))
+
+        // The next time it opens, the band is as it was before the selected card was enlarged.
+        controller.close()
+        controller.show()
+        try await SearchTestSupport.waitUntil { state.selection.rows.count == 2 }
+        XCTAssertEqual(try bandRect(in: window).height, 346)
+        assertFrame(window.frame, places: expectedFrame(scale: 1))
     }
 
     func testABandTooNarrowForACardLeavesNoRecentClipOutOfTheWing() async throws {
@@ -3495,6 +3662,13 @@ final class AppLaunchTests: XCTestCase {
         let frames = framesOnScreen(in: strip)
         let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
         return strip.convert(frame.bounds, from: frame)
+    }
+
+    /// The resting drawn face, including the host layer's centered scale but no running film spring.
+    private func drawnFrame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
+        let host = try XCTUnwrap(framesOnScreen(in: strip).first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true })
+        let scale = host.layer?.transform.m11 ?? 1
+        return StripLayout.scaled(try frame(of: title, in: strip), by: scale)
     }
 
     /// Where the band is in the panel's window: as wide as the screen's visible area less the margins, and as tall

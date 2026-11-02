@@ -3,9 +3,9 @@ import SwiftUI
 import XCTest
 @testable import Keeptide
 
-/// Renders the strip's cards, and the whole panel, to PNG files for a person to compare with the design. It runs only
-/// when `KEEPTIDE_SNAPSHOT_DIR` names a folder, which `xcodebuild` passes on from `TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR`;
-/// otherwise it is skipped and writes nothing. The tests run inside the sandboxed app, which may not write to a folder
+/// Renders the strip's cards, and the whole panel, to PNG files for a person to compare with the design. The renders run
+/// only when `KEEPTIDE_SNAPSHOT_DIR` names a folder, passed on from `TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR`; otherwise they
+/// are skipped. The synthetic compositing checks always run. The tests run inside the sandboxed app, which may not write to a folder
 /// outside its container: the files then go to a folder of the same name in the app's temporary directory, and the
 /// log says where. Each file is attached to the test's result as well.
 ///
@@ -66,6 +66,80 @@ final class QuickAccessSnapshotTests: XCTestCase {
         print("Card snapshots written to \(output.directory.path)")
     }
 
+    func testTheSnapshotFadesOnlyTheStripAndKeepsItsVerticalOverflow() throws {
+        for dark in [true, false] {
+            let level: CGFloat = dark ? 0 : 1
+            let band = NSColor(srgbRed: level, green: level, blue: level, alpha: 1)
+            let card = NSColor(srgbRed: 1, green: 0, blue: 0, alpha: 1)
+            let content = SnapshotColorView(frame: NSRect(x: 0, y: 0, width: 160, height: 120), color: band, flipped: !dark)
+            let window = NSWindow(contentRect: content.frame, styleMask: [.borderless],
+                                  backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            defer { window.close() }
+            window.contentView = content
+            let strip = NSView(frame: NSRect(x: 20, y: 40, width: 120, height: 40))
+            strip.wantsLayer = true
+            strip.clipsToBounds = false
+            content.addSubview(strip)
+            strip.addSubview(SnapshotColorView(frame: NSRect(x: 0, y: 10, width: 120, height: 20), color: card))
+            // Like the ring and shadows, this extends beyond the strip's own bounds.
+            strip.addSubview(SnapshotColorView(frame: NSRect(x: 50, y: -8, width: 20, height: 8), color: card))
+            // A toolbar/section-label stand-in outside the masked subtree.
+            content.addSubview(SnapshotColorView(frame: NSRect(x: 20, y: 90, width: 120, height: 10), color: card))
+            let mask = CAGradientLayer()
+            mask.frame = strip.bounds.insetBy(dx: 0, dy: -strip.bounds.height)
+            mask.startPoint = CGPoint(x: 0, y: 0.5)
+            mask.endPoint = CGPoint(x: 1, y: 0.5)
+            mask.colors = [NSColor.clear.cgColor, NSColor.black.cgColor, NSColor.clear.cgColor]
+            mask.locations = [0, 0.5, 1]
+            strip.layer?.mask = mask
+            content.layoutSubtreeIfNeeded()
+
+            let faded = try panelBitmap(content, strip: strip)
+            XCTAssertTrue(strip.layer?.mask === mask)
+            XCTAssertFalse(strip.isHidden)
+            strip.layer?.mask = nil
+            let hard = try panelBitmap(content, strip: strip)
+            strip.layer?.mask = mask
+            func pixel(_ image: NSBitmapImageRep, _ x: Int, _ y: Int) -> [Int] {
+                var components = [Int](repeating: 0, count: 4)
+                image.getPixel(&components, atX: x * 2, y: (content.isFlipped ? y : 120 - y) * 2)
+                return components
+            }
+            // Read stored sRGB bytes: NSBitmapImageRep.colorAt may apply the display's HDR color conversion.
+            let channel = dark ? 0 : 2
+            // Twelve points into a 120-point strip: this mask has alpha 0.2, applied exactly once.
+            XCTAssertEqual(CGFloat(pixel(faded, 32, 60)[channel]) / 255, dark ? 0.2 : 0.8, accuracy: 0.015)
+            XCTAssertGreaterThan(abs(pixel(faded, 32, 60)[channel] - pixel(hard, 32, 60)[channel]), 12)
+            for point in [(32, 44), (32, 95)] {
+                XCTAssertEqual(pixel(faded, point.0, point.1), pixel(hard, point.0, point.1))
+                XCTAssertEqual(pixel(faded, point.0, point.1)[3], 255)
+            }
+            XCTAssertEqual(pixel(faded, 32, 44)[0], dark ? 0 : 255)
+            let overflow = strip.convert(NSPoint(x: 60, y: -4), to: content)
+            XCTAssertEqual(pixel(faded, Int(overflow.x), Int(overflow.y))[0], 255, accuracy: 4)
+            XCTAssertEqual(faded.pixelsWide, 320)
+            XCTAssertEqual(faded.pixelsHigh, 240)
+        }
+    }
+
+    func testTheSnapshotRestoresItsMaskAndVisibilityWhenCompositingFails() throws {
+        let content = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 120))
+        let window = NSWindow(contentRect: content.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = content
+        let strip = NSView(frame: NSRect(x: 20, y: 40, width: 120, height: 40))
+        strip.wantsLayer = true
+        content.addSubview(strip)
+        let mask = CAGradientLayer()
+        mask.colors = []
+        strip.layer?.mask = mask
+        XCTAssertThrowsError(try panelBitmap(content, strip: strip))
+        XCTAssertTrue(strip.layer?.mask === mask)
+        XCTAssertFalse(strip.isHidden)
+    }
+
     func testRenderPanel() async throws {
         guard let folder = ProcessInfo.processInfo.environment["KEEPTIDE_SNAPSHOT_DIR"], !folder.isEmpty else {
             throw XCTSkip("Set TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR to render the panel")
@@ -101,6 +175,11 @@ final class QuickAccessSnapshotTests: XCTestCase {
             return rows.count == 8 && rows.prefix(6).allSatisfy { controller.state.details[$0.ref] != nil }
         }
         try await write(window, as: "panel-open", into: output)
+        controller.perform(.move(3))
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            controller.state.selection.rows.allSatisfy { controller.state.details[$0.ref] != nil }
+        }
+        try await write(window, as: "panel-middle", into: output)
 
         // Searching "rebase": the search open with the query, and the three clips that match.
         let field = try XCTUnwrap(window.contentView.flatMap { views(QuickAccessSearchField.self, in: $0).first })
@@ -115,7 +194,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
         XCTAssertEqual(controller.state.selection.rows.count, 3)
         try await write(window, as: "panel-search", into: output)
 
-        // The same search while the index rebuilds: the notice at the toolbar's left end, Return's hint at its right.
+        // The same search while the index rebuilds: the notice after the filters, Return's hint at the right end.
         harness.status.update(.rebuilding)
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.deleteBackward(nil)
@@ -146,6 +225,24 @@ final class QuickAccessSnapshotTests: XCTestCase {
                 && state.indexNotice == .rebuilding && state.selection.rows.allSatisfy { state.details[$0.ref] != nil }
         }
         try await write(narrowWindow, as: "panel-rebuilding-1024", into: output)
+        narrow.state.close()
+        harness.status.update(.ready)
+        for (name, scale, fades) in [("panel-scale-100", 1.0, true), ("panel-scale-125", 1.25, true),
+                                     ("panel-fades-off", 1.12, false)] {
+            preferences.selectedCardScale = scale
+            preferences.fadesStripEnds = fades
+            // A controller takes its metrics at creation; each setting gets a new session and controller.
+            let panel = PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
+                                        visibleFrame: screen)
+            addTeardownBlock { panel.state.close() }
+            panel.state.open()
+            try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+                let rows = panel.state.selection.rows
+                return rows.count == 8 && rows.prefix(6).allSatisfy { panel.state.details[$0.ref] != nil }
+            }
+            try await write(try XCTUnwrap(panel.window), as: name, into: output)
+            panel.state.close()
+        }
         print("Panel snapshots written to \(output.directory.path)")
     }
 
@@ -577,30 +674,105 @@ final class QuickAccessSnapshotTests: XCTestCase {
         // SwiftUI draws on the next turn of the run loop.
         try await Task.sleep(for: .milliseconds(300))
         let backdrop = try XCTUnwrap(views(QuickAccessBandBackdrop.self, in: content).first)
+        let previousTransparency = backdrop.reducesTransparency
+        defer { backdrop.reducesTransparency = previousTransparency }
         backdrop.reducesTransparency = true
         content.layoutSubtreeIfNeeded()
         let size = content.bounds.size
-        func bitmap() throws -> NSBitmapImageRep {
-            let rep = try XCTUnwrap(NSBitmapImageRep(
-                bitmapDataPlanes: nil, pixelsWide: Int(size.width) * 2, pixelsHigh: Int(size.height) * 2,
-                bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
-                bytesPerRow: 0, bitsPerPixel: 0)?.retagging(with: .sRGB))
-            rep.size = size
-            return rep
-        }
-        let panel = try bitmap()
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: content).first)
+        var panel: NSBitmapImageRep?
+        var failure: Error?
         appearance.performAsCurrentDrawingAppearance {
-            content.cacheDisplay(in: content.bounds, to: panel)
+            do { panel = try panelBitmap(content, strip: strip) }
+            catch { failure = error }
         }
-        let picture = try bitmap()
+        if let failure { throw failure }
+        let renderedPanel = try XCTUnwrap(panel)
+        let picture = try snapshotBitmap(size: size)
         let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: picture))
         NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = graphics
         drawDesktop(in: NSRect(origin: .zero, size: size), screenOrigin: window.frame.origin, dark: dark)
-        panel.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1,
+        renderedPanel.draw(in: NSRect(origin: .zero, size: size), from: .zero, operation: .sourceOver, fraction: 1,
                    respectFlipped: false, hints: nil)
-        NSGraphicsContext.restoreGraphicsState()
         return try XCTUnwrap(picture.representation(using: .png, properties: [:]))
+    }
+
+    private func snapshotBitmap(size: NSSize) throws -> NSBitmapImageRep {
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0)?.retagging(with: .sRGB))
+        rep.size = size
+        return rep
+    }
+
+    /// Caches only the strip subtree into transparency, then masks that content, never the band's backdrop.
+    private func panelBitmap(_ content: NSView, strip: NSView) throws -> NSBitmapImageRep {
+        let mask = strip.layer?.mask
+        let wasHidden = strip.isHidden
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer {
+            strip.layer?.mask = mask
+            strip.isHidden = wasHidden
+            CATransaction.commit()
+        }
+        strip.layer?.mask = nil
+        // The production strip does not clip its enlarged card, ring or shadows to its own bounds.
+        let capture = strip.bounds.insetBy(dx: 0, dy: -strip.bounds.height)
+        let foreground = try snapshotBitmap(size: capture.size)
+        strip.cacheDisplay(in: capture, to: foreground)
+        strip.isHidden = true
+        let panel = try snapshotBitmap(size: content.bounds.size)
+        content.cacheDisplay(in: content.bounds, to: panel)
+        if let mask = mask as? CAGradientLayer {
+            guard let colors = mask.colors as? [CGColor], colors.count >= 2,
+                  let locations = mask.locations, locations.count == colors.count,
+                  let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB),
+                                            colors: colors as CFArray, locations: locations.map { CGFloat($0.doubleValue) })
+            else { throw SnapshotError.invalidGradient }
+            let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: foreground))
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = graphics
+            let context = graphics.cgContext
+            context.setBlendMode(.destinationIn)
+            func point(_ p: CGPoint) -> CGPoint {
+                CGPoint(x: mask.frame.minX + p.x * mask.frame.width - capture.minX,
+                        y: mask.frame.minY + p.y * mask.frame.height - capture.minY)
+            }
+            context.drawLinearGradient(gradient, start: point(mask.startPoint), end: point(mask.endPoint),
+                                       options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: panel))
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = graphics
+        var destination = strip.convert(capture, to: content)
+        if content.isFlipped { destination.origin.y = content.bounds.maxY - destination.maxY }
+        foreground.draw(in: destination, from: .zero, operation: .sourceOver, fraction: 1,
+                        respectFlipped: false, hints: nil)
+        return panel
+    }
+
+    private enum SnapshotError: Error { case invalidGradient }
+
+    private final class SnapshotColorView: NSView {
+        let color: NSColor
+        let drawsFlipped: Bool
+        override var isFlipped: Bool { drawsFlipped }
+        init(frame: NSRect, color: NSColor, flipped: Bool = false) {
+            self.color = color
+            self.drawsFlipped = flipped
+            super.init(frame: frame)
+        }
+        required init?(coder: NSCoder) { nil }
+        override func draw(_ dirtyRect: NSRect) {
+            color.setFill()
+            bounds.fill()
+        }
     }
 
     /// The boards' desktop: a diagonal wash, with a document window over it. `screenOrigin` is where the panel's
@@ -702,7 +874,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
     private func render(_ cards: [Card], cardSize: CardSize, dark: Bool, now: Date,
                         names: ApplicationNames) async throws -> Data {
         let metrics = StripLayout.metrics(for: cardSize, visibleWidth: 1440)
-        // Room above and below the cards for the selection ring and the cards' shadows.
+        // Room above and below the cards for their shadows; the strip alone draws the selection ring.
         let (above, below): (CGFloat, CGFloat) = (24, 36)
         let size = NSSize(width: 2 * metrics.dockInset + CGFloat(cards.count) * metrics.step - metrics.gap,
                           height: above + metrics.frameSize.height + below)
@@ -729,7 +901,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
                 isSelected: card.isSelected)
             let host = NSHostingView(rootView: view)
             host.sizingOptions = []
-            // The ring and the shadow are drawn outside the card.
+            // The shadow is drawn outside the card; these isolated cards have no strip selection ring.
             host.clipsToBounds = false
             host.frame = NSRect(x: metrics.dockInset + CGFloat(index) * metrics.step, y: below,
                                 width: metrics.frameSize.width, height: metrics.frameSize.height)

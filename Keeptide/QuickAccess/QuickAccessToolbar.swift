@@ -1,10 +1,10 @@
 import AppKit
 
-/// The band's top row. In the middle, the search, folded to a round icon until it is wanted, and the filters; at the
+/// The band's top row. At the left end, the search, folded to a round icon until it is wanted, and the filters; at the
 /// right end what Return does, with why it only copies when the user can do something about it, or in its place what
-/// the panel has to say, and the ⋯ menu; at the left end, while the index rebuilds, that results may be incomplete. The search field is in the row all the time and keeps the keys while
-/// it is folded, its caret hidden with it, so the first key typed goes straight into it, an input method's composition
-/// included.
+/// the panel has to say, and the ⋯ menu; between them, while the index rebuilds, that results may be incomplete.
+/// The search field is in the row all the time and keeps the keys while it is folded, its caret hidden with it, so
+/// the first key typed goes straight into it, an input method's composition included.
 @MainActor
 final class QuickAccessToolbar: NSView {
     /// What the right end says before the ⋯ button.
@@ -25,12 +25,11 @@ final class QuickAccessToolbar: NSView {
     static let height = StripLayout.toolbarHeight + 2 * focusRoom
     /// Between the search and the filters.
     static let searchGap: CGFloat = 12
-    /// The right end keeps this far from the row's edge, and its parts this far from each other and from the filters;
-    /// the rebuild notice at the left end keeps as far from the search's ring.
+    /// The right end keeps this far from the row's edge, and its parts this far from each other and from the filters.
+    /// The rebuild notice keeps the same gap from the filters and the first visible part of the right end.
     static let trailingInset: CGFloat = 16
     static let trailingGap: CGFloat = 12
-    /// The rebuild notice starts this far from the row's left edge, and a note at the right end that needs the room
-    /// moves the search and the filters left no nearer than this to it.
+    /// The search starts this far from the row's left edge, whatever the right end says.
     static let leadingInset: CGFloat = 16
     /// A status, a reason or the action's word cut shorter than this would say nothing, so it is left out.
     private static let shortestStatus: CGFloat = 24
@@ -46,13 +45,13 @@ final class QuickAccessToolbar: NSView {
     let directPasteHint = NSTextField(labelWithString: "")
     let statusLabel = NSTextField(labelWithString: "")
     let moreButton = QuickAccessMoreButton()
-    /// The rebuild notice at the row's left end, in a status's type.
+    /// The rebuild notice after the filters, in a status's type.
     let indexNoticeLabel = NSTextField(labelWithString: QuickAccessStatus.rebuilding)
     var note = Note.none {
         didSet { if note != oldValue { showNote() } }
     }
     /// Whether there are clips, and what the index says about itself. While there are clips and the index rebuilds,
-    /// the row's left end says so; with no clips the empty state says it instead.
+    /// the gap after the filters says so; with no clips the empty state says it instead.
     var hasClips = false {
         didSet { if hasClips != oldValue { needsLayout = true } }
     }
@@ -76,7 +75,7 @@ final class QuickAccessToolbar: NSView {
     init(field: QuickAccessSearchField) {
         search = QuickAccessSearchControl(field: field)
         super.init(frame: .zero)
-        // Layers let the search grow and shrink, and the filters move with it, as one animation.
+        // Layers let the search grow and shrink, and the filters and notice move with it, as one animation.
         wantsLayer = true
         for label in [statusLabel, indexNoticeLabel, directPasteHint] {
             label.font = .systemFont(ofSize: 13)
@@ -84,6 +83,7 @@ final class QuickAccessToolbar: NSView {
             label.maximumNumberOfLines = 1
             label.isHidden = true
         }
+        indexNoticeLabel.wantsLayer = true
         indexNoticeLabel.textColor = ToolbarPalette.secondary
         indexNoticeLabel.setAccessibilityIdentifier("QuickAccessIndexNotice")
         directPasteHint.textColor = ToolbarPalette.secondary
@@ -99,11 +99,11 @@ final class QuickAccessToolbar: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Folds or unfolds the search. The views take their new places at once, and on screen the pill grows out of the
-    /// circle while the filters move over to make room, in a fifth of a second. Off screen, as when the panel opens
-    /// again, and with Reduce Motion it all switches at once.
+    /// circle while the filters and rebuild notice move over to make room, in a fifth of a second. Off screen, as
+    /// when the panel opens again, and with Reduce Motion it all switches at once.
     func setSearchExpanded(_ expanded: Bool) {
         guard expanded != search.isExpanded else { return }
-        let moving = [search, focusHalo, filters] + search.subviews
+        let moving = [search, focusHalo, filters, indexNoticeLabel] + search.subviews
         let before = moving.map { ($0.layer, $0.layer?.position, $0.layer?.bounds, $0.layer?.opacity) }
         search.isExpanded = expanded
         updateHalo()
@@ -126,40 +126,31 @@ final class QuickAccessToolbar: NSView {
         layer.add(animation, forKey: "fold \(keyPath)")
     }
 
-    /// The search and the filters are centred together; the right end is laid out from the edge in. A note that the
-    /// centred pair leaves too little room moves them left, as far as `leadingInset` from the row's edge, before any of
-    /// it is cut short.
+    /// The search and filters start at the left inset. The right end is laid out from the edge in, and the rebuild
+    /// notice takes the room between them.
     override func layout() {
         super.layout()
         let row = rowFrame
         let searchWidth = search.isExpanded ? QuickAccessSearchControl.openWidth : QuickAccessSearchControl.foldedWidth
         let filtersSize = filters.intrinsicContentSize
-        let groupWidth = searchWidth + Self.searchGap + filtersSize.width
         let side = QuickAccessMoreButton.side
         let moreFrame = NSRect(x: bounds.width - Self.trailingInset - side, y: row.midY - side / 2, width: side,
                                height: side)
         let end = moreFrame.minX - Self.trailingGap
-        var left = ((bounds.width - groupWidth) / 2).rounded()
-        if let wanted = noteWidth {
-            let short = wanted - (end - Self.trailingGap - (left + groupWidth))
-            left -= max(0, min(short, left - Self.leadingInset))
-        }
-        let searchFrame = NSRect(x: left, y: row.minY, width: searchWidth, height: row.height)
+        let searchFrame = NSRect(x: Self.leadingInset, y: row.minY, width: searchWidth, height: row.height)
         let filtersFrame = NSRect(x: searchFrame.maxX + Self.searchGap, y: row.midY - filtersSize.height / 2,
                                   width: filtersSize.width, height: filtersSize.height)
-        let fieldMoves = search.frame.origin != searchFrame.origin
         search.frame = searchFrame
         focusHalo.frame = searchFrame.insetBy(dx: -QuickAccessFocusHalo.width, dy: -QuickAccessFocusHalo.width)
         filters.frame = filtersFrame
         moreButton.frame = moreFrame
-        // The field has moved, as it does when a note moves it aside, so an input method's candidates move with it.
-        if fieldMoves { (search.field.currentEditor() as? NSTextView)?.inputContext?.invalidateCharacterCoordinates() }
         layoutNote(endingAt: end, room: end - (filtersFrame.maxX + Self.trailingGap))
-        layoutIndexNotice(endingBefore: focusHalo.frame.minX - Self.trailingGap)
+        let firstRight = [directPasteHint, copyHint, statusLabel].filter { !$0.isHidden }.map { $0.frame.minX }.min()
+        layoutIndexNotice(endingBefore: firstRight.map { $0 - Self.trailingGap } ?? end)
     }
 
-    /// The rebuild notice starts `leadingInset` from the row's left edge and ends by `end`, `trailingGap` before the
-    /// search's ring: it takes only the room the search and the filters leave once the right end has what it needs.
+    /// The rebuild notice starts `trailingGap` after the filters and ends by `end`, before the first visible part of
+    /// the right end: it takes only the room left once the right end has what it needs.
     /// Short of that room it is cut short with an ellipsis, its whole text in its help tag; below `shortestStatus` it is
     /// left out. VoiceOver reads its whole text either way.
     private func layoutIndexNotice(endingBefore end: CGFloat) {
@@ -167,24 +158,14 @@ final class QuickAccessToolbar: NSView {
         label.isHidden = true
         label.toolTip = nil
         guard hasClips, indexNotice == .rebuilding else { return }
+        let start = filters.frame.maxX + Self.trailingGap
         let full = Self.fullWidth(of: label)
-        let width = min(full, end - Self.leadingInset)
+        let width = min(full, end - start)
         if width < full { label.toolTip = label.stringValue }
         guard width >= Self.shortestStatus else { return }
         let height = label.intrinsicContentSize.height
-        label.frame = NSRect(x: Self.leadingInset, y: rowFrame.midY - height / 2, width: width, height: height)
+        label.frame = NSRect(x: start, y: rowFrame.midY - height / 2, width: width, height: height)
         label.isHidden = false
-    }
-
-    /// How wide the note is in full: a status or a failure, or what Return does, word and all, with its reason; nil
-    /// for none.
-    private var noteWidth: CGFloat? {
-        switch note {
-        case .status, .failure: Self.fullWidth(of: statusLabel)
-        case .action(_, _, let hint):
-            copyHint.fullWidth + (hint == nil ? 0 : Self.trailingGap + Self.fullWidth(of: directPasteHint))
-        case .none: nil
-        }
     }
 
     /// How wide a label must be to show its whole text: the text's own width, which is the label's intrinsic one, and
@@ -367,6 +348,13 @@ final class QuickAccessSearchControl: NSView {
 
     /// Open, a click on the pill outside the field and the clear button, on its magnifier as well, gives the field the
     /// keys, as one on the field would.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return hit === magnifier ? self : hit
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard isExpanded else { return super.mouseDown(with: event) }
         onUnfold?()
