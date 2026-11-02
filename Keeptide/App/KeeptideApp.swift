@@ -85,6 +85,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         environment?.showSettings()
     }
 
+    @objc func exportLibrary(_ sender: Any?) {
+        environment?.exportLibrary()
+    }
+
     /// Opening Keeptide again, as with a click on its Dock icon, shows the Library. While a window is on screen,
     /// such as Settings, the app comes forward with the windows it has instead.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -125,5 +129,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func searchLibrary(_ sender: Any?) {
         environment?.showLibrary()
         environment?.libraryWindowController.searchLibrary(sender)
+    }
+}
+
+extension AppDelegate: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(exportLibrary(_:)) {
+            guard let session = environment?.captureSession else { return false }
+            return session.exportCoordinator?.canStart == true
+                && environment?.libraryIsRecentlyDeleted != true
+        }
+        return true
     }
 }

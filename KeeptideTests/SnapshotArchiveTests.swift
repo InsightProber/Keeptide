@@ -4,6 +4,222 @@ import XCTest
 
 @MainActor
 final class SnapshotArchiveTests: XCTestCase {
+    func testSelectedScopePreservesRequestedOrderDeduplicatesExactRefsAndKeepsOnlyTheirSupportGraph() async throws {
+        let store = try makeStore()
+        let firstCapture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("first history".utf8))]
+        ])
+        let firstItem = ContentStoreFixtures.item(firstCapture)
+        try await ContentStoreFixtures.insert(firstItem, firstCapture, into: store)
+
+        let secondCapture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("second history".utf8))]
+        ])
+        let secondItemID = ItemID()
+        let memoBody = Data("selected memo".utf8)
+        let memo = MemoValue(
+            itemID: secondItemID,
+            bodyMode: .ownedMarkdown,
+            body: memoBody,
+            version: ContentVersion(),
+            digest: ContentDigest.sha256(memoBody)
+        )
+        let collection = CollectionValue(name: "Selected collection", color: "blue", sortOrder: 1)
+        let secondItem = ItemValue(
+            id: secondItemID,
+            title: "second",
+            captureID: secondCapture.id,
+            memoID: memo.id,
+            collectionID: collection.id,
+            historyEligible: true,
+            copyCount: 1
+        )
+        _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
+            identity: try await store.identity(),
+            mutations: [
+                .insert(.capture(secondCapture)), .insert(.memo(memo)),
+                .insert(.collection(collection)), .insert(.item(secondItem))
+            ]
+        ))
+
+        let firstHistory = ContentStoreFixtures.ref(firstItem, firstCapture)
+        let selectedMemo = ContentRef(
+            itemID: secondItem.id,
+            facet: .memo,
+            version: try XCTUnwrap(memo.version),
+            digest: try XCTUnwrap(memo.digest)
+        )
+        let reader = ContentSnapshotReader(controller: store)
+        let lease = try await reader.begin(SnapshotRequest(
+            pageSize: 1,
+            permit: try await StoreSafetyGate(controller: store).permit(.completeArchive),
+            scope: .selected([selectedMemo, firstHistory, selectedMemo])
+        ))
+
+        let firstPage = try await reader.page(lease, after: nil)
+        XCTAssertEqual(firstPage.contents.map(\.ref), [selectedMemo])
+        XCTAssertTrue(firstPage.portableRecords.contains(.item(secondItem)))
+        XCTAssertTrue(firstPage.portableRecords.contains(.capture(secondCapture)))
+        XCTAssertTrue(firstPage.portableRecords.contains(.memo(memo)))
+        XCTAssertTrue(firstPage.portableRecords.contains(.collection(collection)))
+        XCTAssertFalse(firstPage.portableRecords.contains(.item(firstItem)))
+
+        let secondPage = try await reader.page(lease, after: try XCTUnwrap(firstPage.next))
+        XCTAssertEqual(secondPage.contents.map(\.ref), [firstHistory])
+        XCTAssertNil(secondPage.next)
+        XCTAssertTrue(secondPage.portableRecords.contains(.item(firstItem)))
+        XCTAssertFalse(secondPage.portableRecords.contains(.item(secondItem)))
+        await reader.end(lease)
+    }
+
+    func testSelectedScopeRejectsEmptyConflictingStaleAndHiddenRefsAsWholeRequests() async throws {
+        let store = try makeStore()
+        let capture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("selected validation".utf8))]
+        ])
+        var item = ContentStoreFixtures.item(capture)
+        try await ContentStoreFixtures.insert(item, capture, into: store)
+        let ref = ContentStoreFixtures.ref(item, capture)
+        let gate = StoreSafetyGate(controller: store)
+        let reader = ContentSnapshotReader(controller: store)
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await reader.begin(SnapshotRequest(
+                permit: try await gate.permit(.completeArchive),
+                scope: .selected([])
+            ))
+        } verify: { error in
+            XCTAssertEqual(error as? StoreError, .invalidTransaction)
+        }
+
+        var conflicting = ref
+        conflicting.version = ContentVersion()
+        await XCTAssertThrowsErrorAsync {
+            _ = try await reader.begin(SnapshotRequest(
+                permit: try await gate.permit(.completeArchive),
+                scope: .selected([ref, conflicting])
+            ))
+        } verify: { error in
+            XCTAssertEqual(error as? StoreError, .invalidTransaction)
+        }
+
+        await XCTAssertThrowsErrorAsync {
+            _ = try await reader.begin(SnapshotRequest(
+                permit: try await gate.permit(.completeArchive),
+                scope: .selected([conflicting])
+            ))
+        } verify: { error in
+            XCTAssertEqual(error as? StoreError, .snapshotUnavailable)
+        }
+
+        var stale = ref
+        stale.digest = ContentDigest.sha256(Data("wrong digest".utf8))
+        await XCTAssertThrowsErrorAsync {
+            _ = try await reader.begin(SnapshotRequest(
+                permit: try await gate.permit(.completeArchive),
+                scope: .selected([stale])
+            ))
+        } verify: { error in
+            XCTAssertEqual(error as? StoreError, .snapshotUnavailable)
+        }
+
+        let repository = ContentRepository(controller: store)
+        let itemState = try await repository.recordState(.item(item.id))
+        item.historyDeletedAt = Date()
+        _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
+            identity: try await store.identity(),
+            preconditions: [.recordUnchanged(.item(item.id), fingerprint: itemState.fingerprint)],
+            mutations: [.update(.item(item))]
+        ))
+        await XCTAssertThrowsErrorAsync {
+            _ = try await reader.begin(SnapshotRequest(
+                permit: try await gate.permit(.completeArchive),
+                scope: .selected([ref])
+            ))
+        } verify: { error in
+            XCTAssertEqual(error as? StoreError, .snapshotUnavailable)
+        }
+    }
+
+    func testSelectedBoundaryUsesTheExactDeduplicatedScopeInsteadOfAllVisibleRefs() async throws {
+        let store = try makeStore()
+        let firstCapture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("boundary one".utf8))]
+        ])
+        let secondCapture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("boundary two".utf8))]
+        ])
+        let firstItem = ContentStoreFixtures.item(firstCapture)
+        let secondItem = ContentStoreFixtures.item(secondCapture)
+        try await ContentStoreFixtures.insert(firstItem, firstCapture, into: store)
+        try await ContentStoreFixtures.insert(secondItem, secondCapture, into: store)
+        let firstRef = ContentStoreFixtures.ref(firstItem, firstCapture)
+        let reader = ContentSnapshotReader(controller: store)
+        let gate = StoreSafetyGate(controller: store)
+
+        let selected = try await reader.begin(SnapshotRequest(
+            permit: try await gate.permit(.completeArchive),
+            scope: .selected([firstRef, firstRef])
+        ))
+        let allVisible = try await reader.begin(SnapshotRequest(
+            permit: try await gate.permit(.completeArchive)
+        ))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let expectedBoundary = ContentDigest.sha256(try encoder.encode([firstRef]))
+        XCTAssertEqual(selected.boundary, expectedBoundary)
+        XCTAssertNotEqual(selected.boundary, allVisible.boundary)
+        await reader.end(selected)
+        await reader.end(allVisible)
+    }
+
+    func testSelectedScopeDoesNotInspectAnUnrelatedLegacyLocalReference() async throws {
+        let store = try makeStore()
+        let safeCapture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("safe selection".utf8))]
+        ])
+        let safeItem = ContentStoreFixtures.item(safeCapture)
+        try await ContentStoreFixtures.insert(safeItem, safeCapture, into: store)
+
+        let localBytes = Data("file:///Users/example/Private.txt".utf8)
+        let legacyCaptureID = UUID()
+        let legacyRepresentation = RepresentationValue(
+            snapshotID: legacyCaptureID,
+            itemIndex: 0,
+            representationIndex: 0,
+            typeIdentifier: "public.file-url",
+            storage: .localReference,
+            byteCount: Int64(localBytes.count),
+            digest: ContentDigest.sha256(localBytes),
+            bytes: nil
+        )
+        let legacyManifest = CaptureManifest(
+            version: LocalReferencePrivacy.legacyManifestVersion,
+            itemCount: 1,
+            entries: [ManifestEntry(legacyRepresentation)]
+        )
+        let legacyCapture = CaptureValue(
+            id: legacyCaptureID,
+            manifest: legacyManifest,
+            digest: ContentDigest.sha256(try legacyManifest.canonicalData()),
+            representations: [legacyRepresentation]
+        )
+        let legacyItem = ContentStoreFixtures.item(legacyCapture)
+        try await insertDirectly(legacyItem, capture: legacyCapture, into: store)
+
+        let safeRef = ContentStoreFixtures.ref(safeItem, safeCapture)
+        let reader = ContentSnapshotReader(controller: store)
+        let lease = try await reader.begin(SnapshotRequest(
+            permit: try await StoreSafetyGate(controller: store).permit(.completeArchive),
+            scope: .selected([safeRef])
+        ))
+        let page = try await reader.page(lease, after: nil)
+        XCTAssertEqual(page.contents.map(\.ref), [safeRef])
+        XCTAssertFalse(page.portableRecords.contains(.item(legacyItem)))
+        XCTAssertFalse(page.portableRecords.contains(.capture(legacyCapture)))
+        await reader.end(lease)
+    }
+
     func testArchiveNeverExportsLocalReferenceBytesOrPartialExecutableContent() async throws {
         let store = try makeStore()
         let fixture = try makeMixedStorageCapture()
@@ -616,6 +832,28 @@ private extension SnapshotArchiveTests {
         }
     }
 
+    func insertDirectly(
+        _ item: ItemValue,
+        capture: CaptureValue,
+        into store: PersistenceController
+    ) async throws {
+        try await store.perform { context in
+            let captureObject = NSEntityDescription.insertNewObject(
+                forEntityName: RecordKey.capture(capture.id).entity,
+                into: context
+            )
+            try StoredRecords.write(.capture(capture), to: captureObject, in: context)
+            let itemObject = NSEntityDescription.insertNewObject(
+                forEntityName: RecordKey.item(item.id).entity,
+                into: context
+            )
+            try StoredRecords.write(.item(item), to: itemObject, in: context)
+            try StoredRecords.link(item, in: context)
+            try context.save()
+            context.reset()
+        }
+    }
+
     func makeStore() throws -> PersistenceController {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let controller = try PersistenceController(directory: directory)
@@ -629,4 +867,19 @@ private extension SnapshotArchiveTests {
 
 private enum SnapshotArchiveTestFailure: Error {
     case missingFixture
+}
+
+@MainActor
+private func XCTAssertThrowsErrorAsync(
+    _ expression: () async throws -> Void,
+    verify: (Error) -> Void,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async {
+    do {
+        try await expression()
+        XCTFail("Expected an error", file: file, line: line)
+    } catch {
+        verify(error)
+    }
 }
