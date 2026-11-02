@@ -97,10 +97,21 @@ final class SnapshotLeaseTests: XCTestCase {
             identity: try await store.identity(),
             mutations: [.insert(.memo(memo)), .insert(.item(item))]
         ))
-        let externalDirectory = try XCTUnwrap(store.contentStore.url?.deletingLastPathComponent())
-            .appendingPathComponent("Content_SUPPORT/_EXTERNAL_DATA", isDirectory: true)
-        let externalFiles = FileManager.default.enumerator(at: externalDirectory, includingPropertiesForKeys: nil)?
-            .compactMap { $0 as? URL } ?? []
+        // Core Data owns the support-directory spelling (including a leading
+        // dot on some OS versions). Inspect the isolated fixture without
+        // assuming that private name or modifying its files.
+        let directory = try XCTUnwrap(store.contentStore.url?.deletingLastPathComponent())
+        let files = try XCTUnwrap(FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let externalFiles = try files.compactMap { element -> URL? in
+            guard let url = element as? URL,
+                  url.pathComponents.contains("_EXTERNAL_DATA"),
+                  try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                return nil
+            }
+            return url
+        }
         XCTAssertFalse(externalFiles.isEmpty, "The fixture did not exercise Core Data external payload storage")
 
         let gate = StoreSafetyGate(controller: store)

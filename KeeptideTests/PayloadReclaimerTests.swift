@@ -67,10 +67,11 @@ final class PayloadReclaimerTests: XCTestCase {
                 expecting: fixture.identity
             )
             XCTAssertEqual(blocked.phase, .blocked)
-            let preservedEvidence = try await FileAccessStore(controller: controller).read(
-                representationID: fixture.representationID
+            let preservedEvidence = try await rawFileAccessEnvelope(
+                representationID: fixture.representationID,
+                in: controller
             )
-            XCTAssertNotNil(preservedEvidence)
+            XCTAssertEqual(preservedEvidence, Data("tampered envelope".utf8))
             try await controller.close()
             try FileManager.default.removeItem(at: directory)
         } catch {
@@ -326,7 +327,8 @@ final class PayloadReclaimerTests: XCTestCase {
         let capture = try ContentStoreFixtures.localReferenceCapture()
         let representation = try XCTUnwrap(capture.representations.first)
         var item = ContentStoreFixtures.item(capture)
-        item.collectionID = CollectionID()
+        let collection = CollectionValue(name: "Retained collection", color: "blue")
+        item.collectionID = collection.id
         item.isFavorite = true
         let memo = MemoValue(itemID: item.id, bodyMode: .inheritedCapture)
         item.memoID = memo.id
@@ -340,7 +342,10 @@ final class PayloadReclaimerTests: XCTestCase {
         )
         _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
             identity: identity,
-            mutations: [.insert(.capture(capture)), .insert(.memo(memo)), .insert(.item(item))]
+            mutations: [
+                .insert(.capture(capture)), .insert(.memo(memo)),
+                .insert(.collection(collection)), .insert(.item(item)),
+            ]
         ))
         let historyRef = ContentStoreFixtures.ref(item, capture)
         let memoRef = ContentStoreFixtures.ref(item, capture, facet: .memo)
@@ -429,6 +434,20 @@ final class PayloadReclaimerTests: XCTestCase {
                 throw StoreError.corruptStore
             }
             return id
+        }
+    }
+
+    private func rawFileAccessEnvelope(
+        representationID: UUID,
+        in controller: PersistenceController
+    ) async throws -> Data? {
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+            request.predicate = NSPredicate(format: "id == %@", representationID as NSUUID)
+            request.fetchLimit = 2
+            let rows = try context.fetch(request)
+            guard rows.count <= 1 else { throw StoreError.corruptStore }
+            return rows.first?.value(forKey: "bytes") as? Data
         }
     }
 
