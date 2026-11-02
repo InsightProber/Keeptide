@@ -31,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arguments: processInfo.arguments,
             environment: processInfo.environment
         )
-        let environment = AppEnvironment()
+        // The one place that wires direct paste to the system. A test session pastes only into the system test host.
+        let environment = AppEnvironment(captureSession: CaptureSession(directPaste: .live))
         self.environment = environment
 
         if launchConfiguration.shouldInitializeCaptureSession {
@@ -39,26 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await environment.captureSession.initialize(
                     testSessionID: launchConfiguration.captureTestSessionID,
                     cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
-                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
+                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips,
+                    manualPasteQA: launchConfiguration.shouldStartManualPasteQA
                 )
             }
         }
-        menuBarController = MenuBarController(
-            showQuickAccess: { environment.panelController.show() },
-            toggleQuickAccess: { environment.panelController.toggle() },
-            showLibrary: { environment.showLibrary() },
-            showSettings: { environment.showSettings() },
-            captureIsReady: { environment.captureSession.isReady && !environment.captureSession.isPausing },
-            captureIsEnabled: { environment.captureSession.isRecording },
-            captureStatus: { environment.captureSession.status },
-            toggleCapture: {
-                environment.captureSession.preferences.isEnabled.toggle()
-            },
-            canRequestQuit: { [weak self] in self?.isShuttingDown == false },
-            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
-            registration: launchConfiguration.usesSyntheticHotKey
-                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
-                : .system()
+        menuBarController = Self.makeMenuBarController(
+            environment: environment, launchConfiguration: launchConfiguration,
+            canRequestQuit: { [weak self] in self?.isShuttingDown == false }
         )
 
         if launchConfiguration.shouldShowQuickAccess {
@@ -67,6 +56,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if launchConfiguration.shouldShowLibrary {
             environment.showLibrary()
         }
+    }
+
+    /// The status menu, wired to `environment`'s panel, windows and capture session.
+    static func makeMenuBarController(environment: AppEnvironment, launchConfiguration: LaunchConfiguration,
+                                      canRequestQuit: @escaping () -> Bool) -> MenuBarController {
+        MenuBarController(
+            showQuickAccess: { environment.panelController.show() },
+            toggleQuickAccess: { environment.panelController.toggle() },
+            showLibrary: { environment.showLibrary() },
+            showSettings: { environment.showSettings() },
+            captureIsReady: { environment.captureSession.canToggleRecording },
+            captureIsEnabled: { environment.captureSession.isRecording },
+            captureStatus: { environment.captureSession.status },
+            toggleCapture: {
+                environment.captureSession.preferences.isEnabled.toggle()
+            },
+            canRequestQuit: canRequestQuit,
+            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
+            registration: launchConfiguration.usesSyntheticHotKey
+                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
+                : .system()
+        )
     }
 
     /// The application menu's Settings… (⌘,), which reaches the delegate through the responder chain.

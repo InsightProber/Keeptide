@@ -26,8 +26,15 @@ as a snippet, or write one directly.
 > The panel browses recent clips, searches all content through a rebuildable local
 > full-text index (including one- and two-character Chinese queries), previews
 > text and images, and copies the selected item in its original formats or as
-> plain text. Direct paste into other apps, snippet workflows, and iCloud saving
-> are still planned. There is no end-user release yet.
+> plain text. With the Accessibility (send keys) permission, it can paste the
+> selected clip directly into the app window it was opened from; without it,
+> Return copies. If that window changed, or anything is uncertain, it copies
+> instead and says so. Keeptide sends the paste and does not confirm that the app
+> received it. In a terminal, text is pasted as plain text without its trailing
+> newline, and a multi-line command, or one with control or invisible
+> characters, is confirmed first. Keeptide never runs commands. Snippet
+> workflows and iCloud saving are still planned. There is no end-user release
+> yet.
 
 ## Designed for the Mac
 

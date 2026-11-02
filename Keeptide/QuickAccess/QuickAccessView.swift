@@ -3,6 +3,8 @@ import Carbon.HIToolbox
 
 /// What Escape may peel in the panel besides the search field's own text.
 struct QuickAccessEscapeContext {
+    /// A command waits on the review card, which lies in the preview's place.
+    var hasCommandReview = false
     var isPreviewExpanded = false
     var hasFilters = false
     var isSearchExpanded = false
@@ -17,7 +19,8 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     var onType: (() -> Void)?
     /// Commands from keys the field does not handle natively.
     var onCommand: ((QuickAccessCommand) -> Void)?
-    /// Escape layers handled outside the field: collapsing the preview, clearing filters, folding the search.
+    /// Escape layers handled outside the field: cancelling a command review, collapsing the preview, clearing filters,
+    /// folding the search.
     var onEscape: ((QuickAccessEscapeAction) -> Void)?
     var escapeContext: () -> QuickAccessEscapeContext = { QuickAccessEscapeContext() }
 
@@ -114,6 +117,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     private func escape(_ textView: NSTextView) -> Bool {
         let context = escapeContext()
         let action = QuickAccessEscapePolicy.action(hasMarkedText: textView.hasMarkedText(),
+                                                    hasCommandReview: context.hasCommandReview,
                                                     isPreviewExpanded: context.isPreviewExpanded,
                                                     hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters,
                                                     isSearchExpanded: context.isSearchExpanded)
@@ -124,7 +128,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
             textView.insertText("", replacementRange: textView.markedRange())
             textView.inputContext?.discardMarkedText()
             return true
-        case .collapsePreview, .foldSearch:
+        case .cancelCommandReview, .collapsePreview, .foldSearch:
             onEscape?(action)
             return true
         case .clearQuery:
@@ -197,15 +201,18 @@ final class QuickAccessFieldEditor: NSTextView {
 }
 
 enum QuickAccessEscapeAction: Equatable {
-    case cancelComposition, collapsePreview, clearQuery, foldSearch, closePanel
+    case cancelComposition, cancelCommandReview, collapsePreview, clearQuery, foldSearch, closePanel
 }
 
-/// Escape handles only the top layer: composition, then preview, then the query and filters, which folds the
-/// search with them, then an open search with nothing in it, then the panel.
+/// Escape handles only the top layer: composition, then the command review, whose card lies in the preview's place, then
+/// the preview, then the query and filters, which folds the search with them, then an open search with nothing in it,
+/// then the panel.
 enum QuickAccessEscapePolicy {
-    static func action(hasMarkedText: Bool, isPreviewExpanded: Bool = false, hasQuery: Bool, hasFilters: Bool = false,
+    static func action(hasMarkedText: Bool, hasCommandReview: Bool = false, isPreviewExpanded: Bool = false,
+                       hasQuery: Bool, hasFilters: Bool = false,
                        isSearchExpanded: Bool = false) -> QuickAccessEscapeAction {
         if hasMarkedText { return .cancelComposition }
+        if hasCommandReview { return .cancelCommandReview }
         if isPreviewExpanded { return .collapsePreview }
         if hasQuery || hasFilters { return .clearQuery }
         return isSearchExpanded ? .foldSearch : .closePanel

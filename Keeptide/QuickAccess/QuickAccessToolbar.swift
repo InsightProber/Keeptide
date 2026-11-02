@@ -1,16 +1,17 @@
 import AppKit
 
 /// The band's top row. In the middle, the search, folded to a round icon until it is wanted, and the filters; at the
-/// right end what Return does, or in its place what the panel has to say, and the ⋯ menu; at the left end, while the
-/// index rebuilds, that results may be incomplete. The search field is in the row all the time and keeps the keys while
+/// right end what Return does, with why it only copies when the user can do something about it, or in its place what
+/// the panel has to say, and the ⋯ menu; at the left end, while the index rebuilds, that results may be incomplete. The search field is in the row all the time and keeps the keys while
 /// it is folded, its caret hidden with it, so the first key typed goes straight into it, an input method's composition
 /// included.
 @MainActor
 final class QuickAccessToolbar: NSView {
     /// What the right end says before the ⋯ button.
     enum Note: Equatable {
-        /// "⏎ Copy", which copies when `enabled`.
-        case copy(enabled: Bool)
+        /// "⏎ <title>": what Return does, such as "Copy" or "Paste into TextEdit", which it does when `enabled`. Left of
+        /// it, `hint` says why Return only copies, when the user can do something about that.
+        case action(title: String, enabled: Bool, hint: String?)
         /// Such as "Searching…".
         case status(String)
         /// Why the last copy failed.
@@ -31,7 +32,7 @@ final class QuickAccessToolbar: NSView {
     /// The rebuild notice starts this far from the row's left edge, and a note at the right end that needs the room
     /// moves the search and the filters left no nearer than this to it.
     static let leadingInset: CGFloat = 16
-    /// A status cut shorter than this would say nothing, so it is left out.
+    /// A status, a reason or the action's word cut shorter than this would say nothing, so it is left out.
     private static let shortestStatus: CGFloat = 24
 
     let search: QuickAccessSearchControl
@@ -39,7 +40,10 @@ final class QuickAccessToolbar: NSView {
     /// in it, so that nothing between them can cut it off.
     let focusHalo = QuickAccessFocusHalo()
     let filters = QuickAccessFilterRow()
+    /// "⏎ <title>", the button for what Return does. Its identifier stays the one it had when it only copied.
     let copyHint = QuickAccessCopyHint()
+    /// Why Return only copies, left of it, in a status's type.
+    let directPasteHint = NSTextField(labelWithString: "")
     let statusLabel = NSTextField(labelWithString: "")
     let moreButton = QuickAccessMoreButton()
     /// The rebuild notice at the row's left end, in a status's type.
@@ -74,7 +78,7 @@ final class QuickAccessToolbar: NSView {
         super.init(frame: .zero)
         // Layers let the search grow and shrink, and the filters move with it, as one animation.
         wantsLayer = true
-        for label in [statusLabel, indexNoticeLabel] {
+        for label in [statusLabel, indexNoticeLabel, directPasteHint] {
             label.font = .systemFont(ofSize: 13)
             label.lineBreakMode = .byTruncatingTail
             label.maximumNumberOfLines = 1
@@ -82,9 +86,12 @@ final class QuickAccessToolbar: NSView {
         }
         indexNoticeLabel.textColor = ToolbarPalette.secondary
         indexNoticeLabel.setAccessibilityIdentifier("QuickAccessIndexNotice")
+        directPasteHint.textColor = ToolbarPalette.secondary
+        directPasteHint.setAccessibilityIdentifier("QuickAccessDirectPasteHint")
         copyHint.isHidden = true
         focusHalo.isHidden = true
-        for view in [focusHalo, indexNoticeLabel, search, filters, copyHint, statusLabel, moreButton] as [NSView] {
+        for view in [focusHalo, indexNoticeLabel, search, filters, directPasteHint, copyHint, statusLabel,
+                     moreButton] as [NSView] {
             addSubview(view)
         }
     }
@@ -119,9 +126,9 @@ final class QuickAccessToolbar: NSView {
         layer.add(animation, forKey: "fold \(keyPath)")
     }
 
-    /// The search and the filters are centred together; the right end is laid out from the edge in. A status or a
-    /// failure that the centred pair leaves too little room moves them left, as far as `leadingInset` from the row's
-    /// edge, before it is cut short.
+    /// The search and the filters are centred together; the right end is laid out from the edge in. A note that the
+    /// centred pair leaves too little room moves them left, as far as `leadingInset` from the row's edge, before any of
+    /// it is cut short.
     override func layout() {
         super.layout()
         let row = rowFrame
@@ -133,7 +140,7 @@ final class QuickAccessToolbar: NSView {
                                height: side)
         let end = moreFrame.minX - Self.trailingGap
         var left = ((bounds.width - groupWidth) / 2).rounded()
-        if let wanted = statusWidth {
+        if let wanted = noteWidth {
             let short = wanted - (end - Self.trailingGap - (left + groupWidth))
             left -= max(0, min(short, left - Self.leadingInset))
         }
@@ -169,11 +176,14 @@ final class QuickAccessToolbar: NSView {
         label.isHidden = false
     }
 
-    /// How wide a status or a failure is in full; nil for any other note.
-    private var statusWidth: CGFloat? {
+    /// How wide the note is in full: a status or a failure, or what Return does, word and all, with its reason; nil
+    /// for none.
+    private var noteWidth: CGFloat? {
         switch note {
         case .status, .failure: Self.fullWidth(of: statusLabel)
-        case .copy, .none: nil
+        case .action(_, _, let hint):
+            copyHint.fullWidth + (hint == nil ? 0 : Self.trailingGap + Self.fullWidth(of: directPasteHint))
+        case .none: nil
         }
     }
 
@@ -184,38 +194,57 @@ final class QuickAccessToolbar: NSView {
         return ceil(label.intrinsicContentSize.width + insets.left + insets.right)
     }
 
-    /// The note ends `trailingGap` before the ⋯ button and takes at most `room`. Short of room, "⏎ Copy" first drops
-    /// its word, then goes; a status is cut short with an ellipsis, its whole text in its help tag.
+    /// The note ends `trailingGap` before the ⋯ button and takes at most `room`. A status is cut short with an
+    /// ellipsis, its whole text in its help tag. What Return does gives way in steps, each with the whole text in its
+    /// help tag: first its reason is cut and then left out, then its word is cut, then only the key cap is left, and
+    /// last it goes.
     private func layoutNote(endingAt end: CGFloat, room: CGFloat) {
-        let row = rowFrame
         copyHint.isHidden = true
+        copyHint.toolTip = nil
+        directPasteHint.isHidden = true
+        directPasteHint.toolTip = nil
         statusLabel.isHidden = true
         statusLabel.toolTip = nil
         switch note {
-        case .copy(let enabled):
-            copyHint.isEnabled = enabled
+        case .action(let title, _, let hint):
+            let width: CGFloat
             if room >= copyHint.fullWidth {
+                width = copyHint.fullWidth
+                copyHint.showsTitle = true
+            } else if room - copyHint.compactWidth - QuickAccessCopyHint.spacing >= Self.shortestStatus {
+                width = room
                 copyHint.showsTitle = true
             } else if room >= copyHint.compactWidth {
+                width = copyHint.compactWidth
                 copyHint.showsTitle = false
             } else {
                 return
             }
-            let width = copyHint.showsTitle ? copyHint.fullWidth : copyHint.compactWidth
+            if width < copyHint.fullWidth { copyHint.toolTip = title }
             let height = QuickAccessKeycap.minimumSize.height
-            copyHint.frame = NSRect(x: end - width, y: row.midY - height / 2, width: width, height: height)
+            copyHint.frame = NSRect(x: end - width, y: rowFrame.midY - height / 2, width: width, height: height)
             copyHint.isHidden = false
+            if hint != nil {
+                place(directPasteHint, endingAt: copyHint.frame.minX - Self.trailingGap,
+                      room: room - width - Self.trailingGap)
+            }
         case .status, .failure:
-            let full = Self.fullWidth(of: statusLabel)
-            let width = min(full, room)
-            if width < full { statusLabel.toolTip = statusLabel.stringValue }
-            guard width >= Self.shortestStatus else { return }
-            let height = statusLabel.intrinsicContentSize.height
-            statusLabel.frame = NSRect(x: end - width, y: row.midY - height / 2, width: width, height: height)
-            statusLabel.isHidden = false
+            place(statusLabel, endingAt: end, room: room)
         case .none:
             break
         }
+    }
+
+    /// Puts `label` in the row, ending at `end` and taking at most `room`: cut short with an ellipsis where that is
+    /// less than it needs, its whole text in its help tag, and left out below `shortestStatus`.
+    private func place(_ label: NSTextField, endingAt end: CGFloat, room: CGFloat) {
+        let full = Self.fullWidth(of: label)
+        let width = min(full, room)
+        if width < full { label.toolTip = label.stringValue }
+        guard width >= Self.shortestStatus else { return }
+        let height = label.intrinsicContentSize.height
+        label.frame = NSRect(x: end - width, y: rowFrame.midY - height / 2, width: width, height: height)
+        label.isHidden = false
     }
 
     private func updateHalo() {
@@ -232,7 +261,11 @@ final class QuickAccessToolbar: NSView {
             statusLabel.stringValue = text
             statusLabel.textColor = ToolbarPalette.failure
             statusLabel.setAccessibilityIdentifier("QuickAccessFailure")
-        case .copy, .none:
+        case .action(let title, let enabled, let hint):
+            copyHint.title = title
+            copyHint.isEnabled = enabled
+            directPasteHint.stringValue = hint ?? ""
+        case .none:
             break
         }
         needsLayout = true
@@ -621,11 +654,13 @@ final class QuickAccessKeycap: NSView {
     }
 }
 
-/// "⏎ Copy" at the toolbar's right end: what Return does, and a button that does it for the pointer. Short of room it
-/// keeps only its key cap.
+/// "⏎ Copy" at the toolbar's right end, or "⏎ Paste into TextEdit": what Return does, and a button that does it for the
+/// pointer. Its word is the title, which VoiceOver reads whole. Given less room than it needs, the word is cut at its
+/// tail; with less still, only the key cap is left.
 @MainActor
 final class QuickAccessCopyHint: NSButton {
-    private static let spacing: CGFloat = 7
+    /// Between the key cap and the word.
+    static let spacing: CGFloat = 7
     let keycap = QuickAccessKeycap(symbol: "⏎")
     var showsTitle = true {
         didSet { if showsTitle != oldValue { needsDisplay = true } }
@@ -639,6 +674,14 @@ final class QuickAccessCopyHint: NSButton {
         setAccessibilityLabel("Copy")
         setAccessibilityIdentifier("QuickAccessCopyButton")
         addSubview(keycap)
+    }
+
+    override var title: String {
+        didSet {
+            guard title != oldValue else { return }
+            setAccessibilityLabel(title)
+            needsDisplay = true
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -665,10 +708,14 @@ final class QuickAccessCopyHint: NSButton {
 
     override func draw(_ dirtyRect: NSRect) {
         guard showsTitle else { return }
-        let attributes = titleAttributes
-        let size = (title as NSString).size(withAttributes: attributes)
-        (title as NSString).draw(at: NSPoint(x: compactWidth + Self.spacing, y: bounds.midY - size.height / 2),
-                                 withAttributes: attributes)
+        let height = (title as NSString).size(withAttributes: titleAttributes).height
+        let style = NSMutableParagraphStyle()
+        style.lineBreakMode = .byTruncatingTail
+        var attributes = titleAttributes
+        attributes[.paragraphStyle] = style
+        let x = compactWidth + Self.spacing
+        (title as NSString).draw(in: NSRect(x: x, y: bounds.midY - height / 2, width: max(0, bounds.width - x),
+                                            height: height), withAttributes: attributes)
     }
 }
 

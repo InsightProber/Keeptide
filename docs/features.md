@@ -8,8 +8,10 @@ in a wide band, in small, medium or large sizes as set in a minimal Settings
 window, and steps through them with the arrow keys or a trackpad swipe, one clip
 per detent with a haptic tick on a Force Touch trackpad. It searches all content
 with a local full-text index from a search that folds into an icon until you
-type, filters by type, and previews text and images. Other capabilities, including
-direct paste into other apps, remain planned. There is no application release yet.
+type, filters by type, previews text and images, and can paste the selected clip
+directly into the app window it was opened from. Other capabilities, including
+editable snippets and iCloud saving, remain planned. There is no application
+release yet.
 
 ## First release
 
@@ -40,6 +42,15 @@ direct paste into other apps, remain planned. There is no application release ye
 - Permanent retention avoids automatic age, count or capacity eviction. If the
   disk cannot safely accept new content, recording must pause visibly.
 - Saved commands are content. Reusing them must not automatically execute them.
+- Direct paste needs the Accessibility (send keys) permission, granted in System
+  Settings; without it, Return copies. Keeptide checks the front app and window
+  before it sends the paste and again after the panel hides. When they changed,
+  or anything is uncertain, it copies instead and says so. It sends the paste and
+  does not confirm that the app received it.
+- When the target is a terminal, text is pasted as plain text only, and its
+  trailing newline is removed. A multi-line command, or one with control or
+  invisible characters, needs confirmation first, and **Copy As-Is** in the
+  actions menu copies a clip complete. Keeptide never runs commands.
 - Detailed implementation notes and internal delivery checklists are maintained
   separately from these public product documents.
 

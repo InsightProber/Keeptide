@@ -3,6 +3,30 @@ import Foundation
 
 enum PasteMode: Equatable, Sendable {
     case original, plainText
+    /// The menu's Copy As-Is: the clip as captured, never a command and never a paste.
+    case asIs
+}
+
+/// What a request writes.
+enum PasteFormat: Equatable, Sendable {
+    case original, plainText
+    /// The clip's plain text without one trailing line break, reviewed first when it needs it: `TerminalCommand`.
+    case command
+    /// Only the clip's images and file references (`PasteboardWriter.prepareWithoutText`): never its text, its links
+    /// or any other data, nor an image that is text as well, such as SVG. A file reference whose path breaks the line
+    /// or holds a control or invisible character refuses the clip.
+    case originalWithoutText
+
+    /// For a terminal, text reaches the clipboard only as a command, so no request can paste it another way:
+    /// - text and links are a command in either mode;
+    /// - any other clip is a command as plain text, and otherwise keeps only its images and file references.
+    ///
+    /// Copy As-Is keeps the clip as captured, and every other target gets the format asked for.
+    static func resolve(mode: PasteMode, target: PasteTarget?, kind: ContentKind) -> PasteFormat {
+        guard mode != .asIs, target?.isTerminal == true else { return mode == .plainText ? .plainText : .original }
+        if kind == .text || kind == .url || mode == .plainText { return .command }
+        return .originalWithoutText
+    }
 }
 
 enum PasteRefusal: Error, Equatable, Sendable {
@@ -12,10 +36,39 @@ enum PasteRefusal: Error, Equatable, Sendable {
     case contentUnavailable
     case noPlainText
     case writeFailed
+    /// A command longer than the confirmation card shows whole. Copy As-Is still copies it.
+    case commandTooLong
+    /// A terminal's session has nothing of the clip to take: no text to make a command of, and no image or file
+    /// reference. Copy As-Is still copies it.
+    case terminalCannotTake
+}
+
+enum PasteDelivery: Equatable, Sendable {
+    case copy, paste
+}
+
+/// Why a paste that was asked for became a copy.
+enum DirectPasteFallback: Equatable, Sendable {
+    case noTarget, testSessionTarget, notPermitted, targetChanged, secureInput, cannotSendKeystroke
+    /// Return or keypad Enter was down as the panel was about to hide: hidden, it would have left the key's repeats
+    /// to the target.
+    case returnHeld
+}
+
+enum DirectPasteAvailability: Equatable, Sendable {
+    case paste(PasteTarget)
+    case copy(DirectPasteFallback)
 }
 
 enum PasteOutcome: Equatable, Sendable {
     case copied
+    /// ⌘V was posted to the checked target. It does not prove the target pasted.
+    case dispatched(PasteTarget)
+    /// A paste was asked for and a check failed, so the clip was only copied.
+    case copiedInstead(DirectPasteFallback)
+    /// The command needs a review first. Nothing was written or sent; confirming sends the request again with the
+    /// review's confirmation.
+    case needsConfirmation(CommandReview)
     case refused(PasteRefusal)
 }
 
@@ -25,8 +78,21 @@ enum PasteOutcome: Equatable, Sendable {
 final class PasteSession {
     /// Shared by every session, so a number from one session never matches another's.
     private static var lastGeneration: UInt64 = 0
+    /// The app window recorded for this session, by `beginSession()` or carried over by `beginSession(target:)`;
+    /// nil means copy only.
+    let target: PasteTarget?
+    let sessionGeneration: UInt64
     private(set) var queryGeneration: UInt64 = 0
     private(set) var isOpen = true
+    /// The one command confirmation this session accepts. Each review replaces it, and the write it lets through
+    /// uses it up.
+    fileprivate var pendingConfirmation: CommandConfirmation?
+
+    fileprivate init(target: PasteTarget?) {
+        self.target = target
+        Self.lastGeneration += 1
+        sessionGeneration = Self.lastGeneration
+    }
 
     @discardableResult
     func advanceQueryGeneration() -> UInt64 {
@@ -50,30 +116,91 @@ struct PasteRequest {
     let queryGeneration: UInt64
     let mode: PasteMode
     let session: PasteSession
+    var delivery: PasteDelivery = .copy
+    /// Hides the panel for a paste. Called once, after the clipboard is written and before the last check.
+    /// It hides the panel before the keystroke without ending the session, which the last check still needs.
+    var dismiss: (@MainActor () -> Void)? = nil
+    /// Whether Return or keypad Enter is down in the panel now. A paste asks once, after the clipboard is written and
+    /// just before `dismiss`, and with one down it copies instead: nothing is hidden or sent.
+    var returnIsDown: (@MainActor () -> Bool)? = nil
+    /// The confirmation from the review of this command, once the user confirms it.
+    var confirmation: CommandConfirmation? = nil
 }
 
 /// The one path from a selected row to the clipboard. It re-reads the content,
 /// re-checks the request after every suspension, and records one use receipt
-/// per successful action.
+/// per successful action. A paste also needs every target check to pass, both
+/// before the clipboard is written and after the panel hides, and Return to be up
+/// as the panel hides; otherwise the clip is only copied. Text for a terminal is a
+/// command, and a command that needs a review is written only once the user
+/// confirms it.
 @MainActor
 final class PasteService {
+    /// The longest command, in UTF-8 bytes once its trailing line break is removed. Every command is held to it,
+    /// whether or not it needs a review, and a longer one is refused before it is reviewed or encoded: the
+    /// confirmation card shows a command's whole text, so a command is never reviewed in part. Copy As-Is is not a
+    /// command and has no limit.
+    private static let maximumCommandByteCount = 262_144
+
     private let pasteboard: NSPasteboard
     private let read: @Sendable (ContentRef) async throws -> ResolvedContent
     private let recordUse: @Sendable (UseReceipt) async throws -> Void
     private let didWrite: @MainActor (OwnWriteToken) -> Void
+    private let system: DirectPasteSystem
+    /// The one bundle identifier a test session may paste into: other apps read the general clipboard, not
+    /// the session's.
+    private let directPasteOnlyTo: String?
+    /// Only the newest session may paste.
+    private var latestSessionGeneration: UInt64 = 0
+    /// Called on a caller's programming error. Debug builds stop here; tests replace it to watch for a call.
+    var reportProgrammingError: @MainActor (String) -> Void = { assertionFailure($0) }
 
     init(pasteboard: NSPasteboard,
          read: @escaping @Sendable (ContentRef) async throws -> ResolvedContent,
          recordUse: @escaping @Sendable (UseReceipt) async throws -> Void,
-         didWrite: @escaping @MainActor (OwnWriteToken) -> Void) {
+         didWrite: @escaping @MainActor (OwnWriteToken) -> Void,
+         system: DirectPasteSystem = .unavailable,
+         directPasteOnlyTo: String? = nil) {
         self.pasteboard = pasteboard
         self.read = read
         self.recordUse = recordUse
         self.didWrite = didWrite
+        self.system = system
+        self.directPasteOnlyTo = directPasteOnlyTo
     }
 
+    /// A session whose target is the app window in front now, if any. Finder is never the target, so with it in front
+    /// the session only copies: the window check cannot tell its desktop from one of its windows, and a paste into
+    /// Finder copies files.
     func beginSession() -> PasteSession {
-        PasteSession()
+        let front = system.frontmostTarget()
+        return beginSession(target: front?.isFinder == true ? nil : front)
+    }
+
+    /// A session with a target recorded earlier, or none. The system is not asked.
+    func beginSession(target: PasteTarget?) -> PasteSession {
+        let session = PasteSession(target: target)
+        latestSessionGeneration = session.sessionGeneration
+        return session
+    }
+
+    /// Whether a paste in this session could be sent now: the first failing check, in order, or the target.
+    /// It only asks the system and changes nothing.
+    func availability(for session: PasteSession) -> DirectPasteAvailability {
+        guard let target = session.target else { return .copy(.noTarget) }
+        if let directPasteOnlyTo, target.bundleIdentifier != directPasteOnlyTo { return .copy(.testSessionTarget) }
+        guard system.canPostEvents() else { return .copy(.notPermitted) }
+        guard session.isOpen, session.sessionGeneration == latestSessionGeneration,
+              system.frontmostTarget() == target else { return .copy(.targetChanged) }
+        guard !system.isSecureInputEnabled() else { return .copy(.secureInput) }
+        guard system.commandVKeyCode() != nil else { return .copy(.cannotSendKeystroke) }
+        return .paste(target)
+    }
+
+    /// Asks the system for access, and opens Accessibility settings when it is not granted: once the user has
+    /// denied it, the system no longer asks.
+    func requestDirectPasteAccess() {
+        if !system.requestPostEventAccess() { system.openAccessibilitySettings() }
     }
 
     func execute(_ request: PasteRequest) async -> PasteOutcome {
@@ -90,20 +217,75 @@ final class PasteService {
         guard session.accepts(generation) else { return .refused(.stale) }
 
         let mode = request.mode
-        let prepared: PreparedPasteboardContent
+        let target = session.target
+        let maximumCommandByteCount = Self.maximumCommandByteCount
+        let prepared: (content: PreparedPasteboardContent, command: TerminalCommand?)
         do {
             prepared = try await Task.detached(priority: .userInitiated) {
-                switch mode {
-                case .original: try PasteboardWriter.prepare(content)
-                case .plainText: try PasteboardWriter.preparePlainText(content)
+                // The kind comes from the content read, never from the row the panel shows.
+                let representations = content.representations
+                let hasLocalReference = representations.contains { $0.storage == .localReference }
+                let kind = ContentKind.classify(typeIdentifiers: representations.map(\.typeIdentifier),
+                                                hasLocalReference: hasLocalReference)
+                switch PasteFormat.resolve(mode: mode, target: target, kind: kind) {
+                case .original: return (try PasteboardWriter.prepare(content), nil)
+                case .originalWithoutText: return (try PasteboardWriter.prepareWithoutText(content), nil)
+                case .plainText: return (try PasteboardWriter.preparePlainText(content), nil)
+                case .command:
+                    return try PasteboardWriter.prepareCommand(content, maximumByteCount: maximumCommandByteCount)
                 }
             }.value
         } catch {
             guard session.accepts(generation) else { return .refused(.stale) }
-            return .refused(error as? PasteboardWriterError == .noPlainText ? .noPlainText : .contentUnavailable)
+            switch error as? PasteboardWriterError {
+            case .noPlainText?: return .refused(.noPlainText)
+            case .noImageOrFileReference?, .unsafeFileReference?: return .refused(.terminalCannotTake)
+            case .commandTooLong?: return .refused(.commandTooLong)
+            default: return .refused(.contentUnavailable)
+            }
         }
         guard session.accepts(generation) else { return .refused(.stale) }
+        return deliver(prepared.content, command: prepared.command, of: content.ref, for: request)
+    }
 
+    /// Writes the clip and, for a paste whose checks all pass before the write and again after the panel hides,
+    /// posts one ⌘V. With Return or keypad Enter down just before the panel would hide, the clip is only copied. A
+    /// command that needs a review is written only with the session's pending confirmation for exactly this content,
+    /// mode and delivery. `ref` is the content read: the confirmation and the use receipt both name it. It is
+    /// synchronous so that the compiler rejects any suspension here: nothing else on the main actor runs between the
+    /// checks, the confirmation, the write, hiding the panel and the keystroke, so no key event either.
+    private func deliver(_ prepared: PreparedPasteboardContent, command: TerminalCommand?, of ref: ContentRef,
+                         for request: PasteRequest) -> PasteOutcome {
+        let session = request.session
+        let check: DirectPasteAvailability?
+        // Copy As-Is only ever copies, whatever delivery was asked for.
+        switch request.mode == .asIs ? .copy : request.delivery {
+        case .copy:
+            check = nil
+        case .paste where request.dismiss == nil:
+            // Never post while the panel may still be key: the keystroke could reach Keeptide's own panel.
+            reportProgrammingError("A paste request must be able to hide the panel before ⌘V is posted.")
+            check = .copy(.cannotSendKeystroke)
+        case .paste:
+            check = availability(for: session)
+        }
+        if let command, command.needsConfirmation {
+            // The delivery is part of what was confirmed, so a command confirmed for a copy is never pasted.
+            let delivery: PasteDelivery = if case .paste? = check { .paste } else { .copy }
+            if let presented = request.confirmation, presented == session.pendingConfirmation,
+               presented.sessionGeneration == session.sessionGeneration, presented.ref == ref,
+               presented.mode == request.mode, presented.delivery == delivery {
+                session.pendingConfirmation = nil
+            } else {
+                // Nothing is written, hidden, sent or counted until the user confirms this review.
+                let confirmation = CommandConfirmation(id: UUID(), sessionGeneration: session.sessionGeneration,
+                                                       ref: ref, mode: request.mode, delivery: delivery)
+                session.pendingConfirmation = confirmation
+                return .needsConfirmation(CommandReview(confirmation: confirmation, command: command,
+                                                        targetName: session.target?.name,
+                                                        isRenewal: request.confirmation != nil))
+            }
+        }
         let token: OwnWriteToken
         do {
             token = try PasteboardWriter(pasteboard: pasteboard).write(prepared)
@@ -111,11 +293,30 @@ final class PasteService {
             return .refused(.writeFailed)
         }
         didWrite(token)
-        // The copy is done once the clipboard is written: the receipt is stored without
-        // holding up the caller, and one that cannot be stored never undoes the copy.
+        // The copy is done once the clipboard is written, whatever happens to the paste: one receipt per
+        // action, stored without holding up the caller. One that cannot be stored never undoes the copy.
         let recordUse = recordUse
-        let receipt = UseReceipt(ref: request.ref, outcome: .success)
+        let receipt = UseReceipt(ref: ref, outcome: .success)
         Task { try? await recordUse(receipt) }
-        return .copied
+        switch check {
+        case nil: return .copied
+        case .copy(let fallback)?: return .copiedInstead(fallback)
+        case .paste?: break
+        }
+        // Hidden with Return or keypad Enter down, the panel would leave the key's repeats to the target, where a
+        // terminal would run what it holds. The panel stays, and closes once the key is up.
+        if request.returnIsDown?() == true { return .copiedInstead(.returnHeld) }
+        request.dismiss?()
+        // Hiding the panel can bring another window forward, so every check runs again.
+        switch availability(for: session) {
+        case .copy(let fallback):
+            return .copiedInstead(fallback)
+        case .paste(let target):
+            // Resolved again here, after `dismiss`: the keyboard layout can change while the panel hides.
+            guard let keyCode = system.commandVKeyCode(), system.postCommandV(keyCode) else {
+                return .copiedInstead(.cannotSendKeystroke)
+            }
+            return .dispatched(target)
+        }
     }
 }
