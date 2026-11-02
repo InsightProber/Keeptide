@@ -82,7 +82,7 @@ final class StoreChangeReaderTests: XCTestCase {
 
         XCTAssertEqual(summaries.map(\.useCount), [1])
         XCTAssertTrue(batch.transactions.isEmpty)
-        XCTAssertNil(batch.token)
+        XCTAssertEqual(batch.token, checkpoint, "Local-only writes must not advance the content checkpoint")
     }
 
     func testPersistentHistoryResumesAfterReopenAndRejectsForeignStoreAndGeneration() async throws {
