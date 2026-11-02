@@ -135,11 +135,14 @@ final class MemoCollectionTests: XCTestCase {
             let capture = try ContentStoreFixtures.capture([[
                 ("public.utf8-plain-text", Data("inherited".utf8)),
             ]])
-            var sourceItem = ContentStoreFixtures.item(capture)
-            sourceItem.collectionID = collection.id
+            let sourceItem = ContentStoreFixtures.item(capture)
             try await ContentStoreFixtures.insert(sourceItem, capture, into: controller)
             let service = LibraryService(controller: controller)
             let original = try await service.saveAsMemo(sourceItem.id).ref
+            let collections = CollectionService(controller: controller)
+            let available = try await collections.list()
+            let target = try XCTUnwrap(available.first { $0.value.id == collection.id })
+            _ = try await collections.move([original], to: target)
             let stale = try await service.editingSnapshot(original)
             _ = try await service.commit(MemoEdit(
                 title: "winner", note: "winner",
