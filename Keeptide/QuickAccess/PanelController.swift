@@ -890,8 +890,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             confirmCommand()
             return true
         }
-        guard (window?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return false }
-        switch event.charactersIgnoringModifiers?.lowercased() {
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        // Library commands must not interrupt composition. Existing panel
+        // commands keep their own composition behavior; in particular, Command-F
+        // in the active search editor leaves its marked text and caret intact.
+        if ["s", "e", "n"].contains(key),
+           (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
+        switch key {
         case "s":
             saveSelectedSnippet()
             return true
