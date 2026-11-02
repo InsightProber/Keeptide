@@ -1872,6 +1872,32 @@ final class AppLaunchTests: XCTestCase {
         assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
     }
 
+    func testTheFadeSettingTakesEffectWhenThePanelNextOpens() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips((0..<40).reversed().map { "clip \($0)" }, into: harness)
+        try await harness.consumer.synchronize()
+        let preferences = try makePreferences(.medium)
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: Self.wingScreen,
+                                       preferences: preferences)
+        addTeardownBlock { controller.close() }
+        controller.show()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: controller.window?.contentView).first)
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
+        XCTAssertNotNil(strip.layer?.mask)
+        preferences.fadesStripEnds = false
+        controller.perform(.move(1))
+        settleLayout()
+        XCTAssertNotNil(strip.layer?.mask)
+        controller.close()
+        controller.show()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        XCTAssertNil(strip.layer?.mask)
+        XCTAssertFalse(strip.isFollowingMotion)
+    }
+
     func testTheEnlargementTakesEffectWhenThePanelNextOpens() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()

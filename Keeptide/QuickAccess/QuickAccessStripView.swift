@@ -76,6 +76,12 @@ final class QuickAccessStripView: NSView {
         return spring
     }
 
+    private(set) var edgeFades = StripEdgeFades()
+    /// Whether per-frame tracking keeps the mask with the drawn film.
+    private(set) var isFollowingMotion = false
+    private var motionLink: CADisplayLink?
+    private let endMask = CAGradientLayer()
+
     private var rows: [QuickAccessRow] = []
     /// How many rows lead the list as the frequent wing.
     private var frequentCount = 0
@@ -128,6 +134,7 @@ final class QuickAccessStripView: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
         clipsToBounds = false
         film.wantsLayer = true
         film.clipsToBounds = false
@@ -156,6 +163,8 @@ final class QuickAccessStripView: NSView {
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
         )
     }
+
+    isolated deinit { motionLink?.invalidate() }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
@@ -253,6 +262,7 @@ final class QuickAccessStripView: NSView {
                            ? displacement + dividerSpring + previousDividerPush - dividerPush : 0)
         if selectionChanged { announceSelection() }
         reportFramedRows()
+        updateEdgeFades()
     }
 
     /// The empty slot a vanished selection left between the wings goes as `index` is chosen among the same rows:
@@ -276,6 +286,7 @@ final class QuickAccessStripView: NSView {
         super.setFrameSize(newSize)
         film.frame = bounds.offsetBy(dx: pushed, dy: 0)
         placeFrames()
+        updateEdgeFades()
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -297,6 +308,7 @@ final class QuickAccessStripView: NSView {
     @objc private func displayOptionsDidChange(_ notification: Notification) {
         placeFrames()
         placeSectionLabels(from: labelPlaces, sliding: 0, settled: !slidesAreShown)
+        updateEdgeFades()
     }
 
     /// A swipe cannot go on in a window that is no longer key, as when the panel closes under the
@@ -614,6 +626,7 @@ final class QuickAccessStripView: NSView {
         springCount += 1
         layer.add(spring, forKey: "strip.\(name).\(springCount)")
         settle(after: spring.duration)
+        startFollowingMotion()
         return spring.duration
     }
 
@@ -622,6 +635,7 @@ final class QuickAccessStripView: NSView {
     }
 
     private func stopMotion() {
+        stopFollowingMotion()
         settling?.cancel()
         settling = nil
         settlingUntil = 0
@@ -644,6 +658,15 @@ final class QuickAccessStripView: NSView {
             self.slideStart = nil
             self.placeFrames()
             self.placeSectionLabels(from: self.labelPlaces, sliding: 0, settled: true)
+            self.updateEdgeFades()
+            // AppKit pauses display-link callbacks for hidden/offscreen views. The independent settle deadline
+            // still releases its run-loop source and target after the last spring's lifetime.
+            if self.window?.isVisible != true || self.isHiddenOrHasHiddenAncestor || self.visibleRect.isEmpty
+                || self.window?.occlusionState.contains(.visible) != true {
+                self.stopFollowingMotion()
+            } else {
+                self.finishFollowingMotionIfSettled()
+            }
         }
     }
 
@@ -662,6 +685,7 @@ final class QuickAccessStripView: NSView {
         if slide != 0 { springBack(film.layer, from: slide) }
         placeSectionLabels(from: labels, sliding: slide)
         fillWingGroups()
+        updateEdgeFades()
     }
 
     /// The fingers have carried the selection `progress` of a step past the selected clip and stretched an end by
@@ -676,6 +700,74 @@ final class QuickAccessStripView: NSView {
             offset += carried.firstOrigin - rest.firstOrigin
         }
         push(to: offset, springing: springing)
+    }
+
+    // MARK: Edge fades
+
+    /// Uses presentation geometry only while this strip owns a spring on that layer. AppKit can leave a stale
+    /// presentation after a direct model update, which must not hold an immediate (Reduce Motion) fade back.
+    private static func hasSprings(_ layer: CALayer?) -> Bool {
+        layer?.animationKeys()?.contains { $0.hasPrefix("strip.") } == true
+    }
+
+    private var hasMotion: Bool {
+        ([film.layer, divider.layer, ring.layer, frequentLabel.layer, recentLabel.layer]
+            + frames.values.map(\.layer)).contains { Self.hasSprings($0) }
+    }
+
+    /// Takes the fades from where the film is drawn now, and sets the mask to them.
+    func updateEdgeFades() {
+        guard let metrics else { return }
+        if !metrics.fadesEnds { stopFollowingMotion() }
+        let bandMinX = bounds.midX - metrics.bandWidth / 2
+        func edge(of row: QuickAccessRow?, leading: Bool) -> CGFloat {
+            guard let row, let host = frames[row.id] else {
+                return leading ? -StripLayout.fadeRamp : metrics.bandWidth + StripLayout.fadeRamp
+            }
+            let layer = host.layer
+            let rect = Self.hasSprings(layer) ? host.drawnFrame : layer?.frame ?? host.frame
+            let drawn = convert(rect.offsetBy(dx: drawnOffset, dy: 0), from: film)
+            return (leading ? drawn.minX : drawn.maxX) - bandMinX
+        }
+        edgeFades = rows.isEmpty ? StripEdgeFades()
+            : StripLayout.edgeFades(metrics, filmLeft: edge(of: rows.first, leading: true),
+                                    filmRight: edge(of: rows.last, leading: false))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard bounds.width > 0, let stops = StripLayout.fadeStops(metrics, fades: edgeFades) else {
+            layer?.mask = nil
+            return
+        }
+        endMask.startPoint = CGPoint(x: 0, y: 0.5)
+        endMask.endPoint = CGPoint(x: 1, y: 0.5)
+        endMask.frame = bounds.insetBy(dx: 0, dy: -bounds.height)
+        endMask.colors = stops.map { NSColor.black.withAlphaComponent($0.opacity).cgColor }
+        endMask.locations = stops.map { NSNumber(value: Double((bandMinX + $0.x) / bounds.width)) }
+        layer?.mask = endMask
+    }
+
+    private func startFollowingMotion() {
+        guard metrics?.fadesEnds == true, motionLink == nil else { return }
+        let link = displayLink(target: self, selector: #selector(followMotion(_:)))
+        motionLink = link
+        isFollowingMotion = true
+        link.add(to: .main, forMode: .common)
+    }
+
+    private func stopFollowingMotion() {
+        motionLink?.invalidate()
+        motionLink = nil
+        isFollowingMotion = false
+    }
+
+    private func finishFollowingMotionIfSettled() {
+        if !hasMotion { stopFollowingMotion() }
+    }
+
+    @objc private func followMotion(_ link: CADisplayLink) {
+        updateEdgeFades()
+        finishFollowingMotionIfSettled()
     }
 
     // MARK: Scrolling

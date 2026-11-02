@@ -6,6 +6,43 @@ import XCTest
 
 @MainActor
 final class SettingsTests: XCTestCase {
+    func testTheEndsFadeUntilTurnedOff() throws {
+        let defaults = try makeDefaults()
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.fadesStripEnds)
+        XCTAssertNil(defaults.object(forKey: "quickAccess.fadesStripEnds"))
+        preferences.fadesStripEnds = false
+        XCTAssertEqual(defaults.object(forKey: "quickAccess.fadesStripEnds") as? Bool, false)
+        XCTAssertEqual(QuickAccessPreferences.fadesStripEndsKey, "quickAccess.fadesStripEnds")
+        XCTAssertFalse(preferences.stripStyle.fadesEnds)
+        XCTAssertFalse(QuickAccessPreferences(defaults: defaults).fadesStripEnds)
+    }
+
+    func testTheFadeSwitchReadsWithItsTitle() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let hosting = NSHostingView(rootView: SettingsView(preferences: preferences))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 600), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        var applicationRole: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        func fadeSwitch() -> NSObject? {
+            accessibilityElements(in: hosting).first {
+                role(of: $0) == .checkBox && name(of: $0) == "Fade the ends of the strip"
+            }
+        }
+        let built = waitUntil { fadeSwitch() != nil }
+        if !built, status != .success { throw XCTSkip("Accessibility is not available to the test host") }
+        func value() -> Int? { (fadeSwitch()?.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }
+        XCTAssertEqual(value(), 1)
+        preferences.fadesStripEnds = false
+        XCTAssertTrue(waitUntil { value() == 0 })
+    }
+
     func testEnlargementTextUsesTheNormalizedScaleWithoutAccessibilityPermission() {
         for (scale, expected) in [(1.0, "None"), (1.13, "13% larger"), (0.9, "None"), (1.3, "25% larger"),
                                   (Double.nan, "12% larger"), (.infinity, "12% larger"), (-.infinity, "12% larger")] {
@@ -161,8 +198,9 @@ final class SettingsTests: XCTestCase {
 
         XCTAssertEqual(isOn(), 1, "On to begin with: \(described)")
         // Below the card sizes and their picture, above the trackpad's ticks.
-        XCTAssertEqual(switches().map(named(title)), [true, false], "\(described)")
-        XCTAssertEqual(switches().map(named("Tick on the trackpad")), [false, true], "\(described)")
+        XCTAssertEqual(switches().map(named(title)), [false, true, false], "\(described)")
+        XCTAssertEqual(switches().map(named("Tick on the trackpad")), [false, false, true], "\(described)")
+        XCTAssertEqual(switches().map(named("Fade the ends of the strip")), [true, false, false])
         // The explanation is read too: here as a text of its own, and on a release that reads it with the switch, in
         // the switch's label or help.
         XCTAssertTrue(accessibilityElements(in: hosting).contains { element in

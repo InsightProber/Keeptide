@@ -12,6 +12,37 @@ final class StripLayoutTests: XCTestCase {
 
     private var focused: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
 
+    func testAnEndFadesAsTheFilmReachesPastIt() {
+        XCTAssertTrue(focused.fadesEnds)
+        XCTAssertFalse(metrics.fadesEnds)
+        var disabled = focused
+        disabled.fadesEnds = false
+        for (left, right, leading, trailing) in [(20, 1356, 0, 0), (0, 1376, 0, 0), (-16, 1392, 0.5, 0.5),
+                                                (-32, 1408, 1, 1), (-900, 4000, 1, 1), (40, 1400, 0, 0.75)]
+            as [(CGFloat, CGFloat, CGFloat, CGFloat)] {
+            XCTAssertEqual(StripLayout.edgeFades(focused, filmLeft: left, filmRight: right),
+                           StripEdgeFades(leading: leading, trailing: trailing))
+            XCTAssertEqual(StripLayout.edgeFades(disabled, filmLeft: left, filmRight: right), StripEdgeFades())
+        }
+        XCTAssertFalse(StripLayout.metrics(for: .medium, visibleWidth: 1440,
+                                           style: StripStyle(selectedScale: 1.12, fadesEnds: false)).fadesEnds)
+    }
+
+    func testTheMaskRampsOverFourteenPercentOfTheBandInSmoothSteps() throws {
+        let stops = try XCTUnwrap(StripLayout.fadeStops(focused, fades: StripEdgeFades(leading: 1, trailing: 0.5)))
+        let positions: [CGFloat] = [0, 32.107, 64.213, 96.32, 128.427, 160.533, 192.64, 1183.36,
+                                    1215.467, 1247.573, 1279.68, 1311.787, 1343.893, 1376]
+        let alphas: [CGFloat] = [0, 0.074074, 0.259259, 0.5, 0.740741, 0.925926, 1, 1,
+                                 0.962963, 0.870370, 0.75, 0.629630, 0.537037, 0.5]
+        XCTAssertEqual(stops.count, 14)
+        for ((stop, x), alpha) in zip(zip(stops, positions), alphas) {
+            XCTAssertEqual(stop.x, x, accuracy: 0.001)
+            XCTAssertEqual(stop.opacity, alpha, accuracy: 0.0001)
+        }
+        XCTAssertNil(StripLayout.fadeStops(focused, fades: StripEdgeFades(leading: 0.0009, trailing: 0)))
+        XCTAssertNotNil(StripLayout.fadeStops(focused, fades: StripEdgeFades(leading: 0.001, trailing: 0)))
+    }
+
     func testTheNeighboursStandAsideAndOnlyTheSelectedCardIsEnlarged() {
         XCTAssertEqual((0..<5).map { StripLayout.push(of: $0, selected: 2, focused) }, [-18, -18, 0, 18, 18])
         XCTAssertEqual((0..<5).map { StripLayout.scale(of: $0, selected: 2, focused) }, [1, 1, 1.12, 1, 1])

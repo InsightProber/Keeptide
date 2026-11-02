@@ -11,6 +11,7 @@ final class QuickAccessPreferences {
     static let clipsPerRowKey = "quickAccessClipsPerRow"
     static let ticksKey = "quickAccessTrackpadTicks"
     static let showsFrequentClipsKey = "quickAccess.showsFrequentClips"
+    static let fadesStripEndsKey = "quickAccess.fadesStripEnds"
     static let selectedCardScaleKey = "quickAccess.selectedCardScale"
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -26,6 +27,10 @@ final class QuickAccessPreferences {
     var showsFrequentClips: Bool {
         didSet { defaults.set(showsFrequentClips, forKey: Self.showsFrequentClipsKey) }
     }
+    /// Whether content continuing beyond the strip's ends fades there. Absent means on.
+    var fadesStripEnds: Bool {
+        didSet { defaults.set(fadesStripEnds, forKey: Self.fadesStripEndsKey) }
+    }
     /// How much larger the strip draws the selected card than the others, from 1.00, as large, to 1.25, as the
     /// Settings slider moves it in steps of 0.01. It is stored kept to that range and to hundredths. Absent means 1.12.
     var selectedCardScale: Double {
@@ -35,7 +40,7 @@ final class QuickAccessPreferences {
     /// The strip's style as these settings make it, with the enlargement as it is stored. The panel takes it as it
     /// opens.
     var stripStyle: StripStyle {
-        StripStyle(selectedScale: CGFloat(Self.keptCardScale(selectedCardScale)))
+        StripStyle(selectedScale: CGFloat(Self.keptCardScale(selectedCardScale)), fadesEnds: fadesStripEnds)
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -45,6 +50,7 @@ final class QuickAccessPreferences {
         trackpadTicks = defaults.object(forKey: Self.ticksKey) as? Bool ?? true
         showsFrequentClips = defaults.object(forKey: Self.showsFrequentClipsKey) as? Bool ?? true
         selectedCardScale = Self.storedCardScale(in: defaults)
+        fadesStripEnds = defaults.object(forKey: Self.fadesStripEndsKey) as? Bool ?? true
     }
 
     /// Stored values are not trusted: a number is kept to 1.00–1.25 and to hundredths, and anything else gives the

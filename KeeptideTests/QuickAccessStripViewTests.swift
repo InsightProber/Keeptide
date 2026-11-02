@@ -19,6 +19,170 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     private var focused: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
 
+    func testADockedEndIsHardWhileTheFarEndFades() {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        for (index, expected) in [(0, StripEdgeFades(leading: 0, trailing: 1)),
+                                  (10, StripEdgeFades(leading: 1, trailing: 1)),
+                                  (19, StripEdgeFades(leading: 1, trailing: 0))] {
+            strip.show(rows, selection: rows[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertEqual(strip.edgeFades, expected)
+            if index == 10 {
+                let loaded = drawings(in: strip).compactMap { title(of: $0) }
+                XCTAssertFalse(loaded.contains("Row 0"))
+                XCTAssertFalse(loaded.contains("Row 19"))
+            }
+        }
+        let wing = makeWing(frequent: 3, recent: 20)
+        for (index, leading) in [(3, CGFloat(1)), (0, CGFloat(0))] {
+            strip.show(wing, selection: wing[index].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: leading, trailing: 1))
+        }
+        strip.show(rows, selection: rows[19].id, details: [:], metrics: focused, applicationNames: ApplicationNames(),
+                   oldestIsLoaded: false)
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 1, trailing: 0))
+    }
+
+    func testAShortFilteredListHasHardEnds() {
+        let strip = makeStrip(focused)
+        for count in [0, 3, 5, 6] {
+            let rows = makeRows(count)
+            strip.show(rows, selection: rows.first?.id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: count == 6 ? 1 : 0))
+            XCTAssertEqual(strip.layer?.mask == nil, count < 6)
+        }
+    }
+
+    func testTheFadeFollowsTheFilmWhileItSlides() async throws {
+        let rows = makeRows(20), frozen = makeStrip(focused)
+        frozen.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(frozen)
+        frozen.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        CATransaction.flush()
+        frozen.updateEdgeFades()
+        XCTAssertEqual(frozen.edgeFades.leading, 1)
+        XCTAssertTrue(frozen.isFollowingMotion)
+        // Let the shown window/link register its first frames before timing the intermediate update.
+        try await Task.sleep(for: .milliseconds(40))
+        // Move the frozen render clock into the fade ramp. Only a display-link frame may now update the mask.
+        frozen.superview?.layer?.timeOffset = 0.195
+        CATransaction.flush()
+        let expected = min(1, max(0, -(try drawnRect(of: "Row 0", in: frozen)).minX / StripLayout.fadeRamp))
+        XCTAssertGreaterThan(expected, 0)
+        XCTAssertLessThan(expected, 1)
+        let deadline = Date().addingTimeInterval(0.2)
+        while abs(frozen.edgeFades.leading - expected) >= 0.001 && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(frozen.edgeFades.leading, expected, accuracy: 0.001,
+                       "A display-link frame must update the mask before the settle deadline")
+        frozen.removeFromSuperview()
+        XCTAssertFalse(frozen.isFollowingMotion)
+
+        let strip = makeStrip(focused)
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.isFollowingMotion)
+        try await waitUntil { strip.edgeFades.leading == 0 && !strip.isFollowingMotion }
+    }
+
+    func testTheFadeFollowsTheFingersWithoutStartingALink() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.haptics = RecordingHaptics()
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades.leading, 0)
+        strip.scrollWheel(with: try swipe(dx: -12, phase: .began, at: 1))
+        let expected = -(try drawnRect(of: "Row 0", in: strip)).minX / StripLayout.fadeRamp
+        XCTAssertGreaterThan(expected, 0)
+        XCTAssertLessThan(expected, 1)
+        XCTAssertEqual(strip.edgeFades.leading, expected, accuracy: 0.001)
+        XCTAssertFalse(strip.isFollowingMotion)
+    }
+
+    func testTheMotionFollowerStopsEvenWhenItsWindowIsHidden() async throws {
+        for hidesView in [false, true] {
+            let rows = makeRows(20), strip = makeStrip(focused)
+            strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            strip.window?.orderFront(nil)
+            CATransaction.flush()
+            strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+            XCTAssertTrue(strip.isFollowingMotion)
+            if hidesView { strip.isHidden = true } else { strip.window?.orderOut(nil) }
+            let deadline = Date().addingTimeInterval(2)
+            while strip.isFollowingMotion && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+            XCTAssertFalse(strip.isFollowingMotion, "The link must release even when AppKit suspends callbacks")
+            XCTAssertEqual(strip.edgeFades.leading, 0)
+        }
+    }
+
+    func testTheMotionFollowerStopsWhenTheStripIsOutsideTheWindow() async throws {
+        let rows = makeRows(20), strip = makeStrip(focused)
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.window?.orderFront(nil)
+        CATransaction.flush()
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.isFollowingMotion)
+        strip.setFrameOrigin(NSPoint(x: 10000, y: 10000))
+        try await waitUntil { !strip.isFollowingMotion }
+    }
+
+    func testTheEndsDoNotFadeWhenTurnedOff() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertTrue(strip.isFollowingMotion)
+        var disabled = focused
+        disabled.fadesEnds = false
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: disabled, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades())
+        XCTAssertNil(strip.layer?.mask)
+        XCTAssertFalse(strip.isFollowingMotion)
+    }
+
+    func testTheMaskReachesWellPastTheCardsAboveAndBelow() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.show(rows, selection: rows[10].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.setFrameSize(NSSize(width: focused.bandWidth + 64, height: strip.bounds.height + 10))
+        let mask = try XCTUnwrap(strip.layer?.mask as? CAGradientLayer)
+        XCTAssertEqual(mask.frame, strip.bounds.insetBy(dx: 0, dy: -strip.bounds.height))
+        XCTAssertEqual(mask.startPoint, NSPoint(x: 0, y: 0.5))
+        XCTAssertEqual(mask.endPoint, NSPoint(x: 1, y: 0.5))
+        let rects = drawings(in: strip).compactMap { $0.superview }.map { drawnRect(of: $0, in: strip) }
+            + [drawnRect(of: try ringView(in: strip), in: strip)]
+        for rect in rects {
+            XCTAssertLessThanOrEqual(mask.frame.minY, rect.minY - 24)
+            XCTAssertGreaterThanOrEqual(mask.frame.maxY, rect.maxY + 24)
+        }
+        let stops = try XCTUnwrap(StripLayout.fadeStops(focused, fades: strip.edgeFades))
+        let colors = try XCTUnwrap(mask.colors as? [CGColor]), locations = try XCTUnwrap(mask.locations)
+        XCTAssertEqual(colors.count, 14)
+        XCTAssertEqual(locations.count, 14)
+        for ((stop, color), location) in zip(zip(stops, colors), locations) {
+            XCTAssertEqual(color.alpha, stop.opacity, accuracy: 0.0001)
+            XCTAssertEqual(location.doubleValue, Double((32 + stop.x) / strip.bounds.width), accuracy: 0.0001)
+        }
+        XCTAssertNil(strip.sectionLabels.layer?.mask)
+        XCTAssertNil(strip.superview?.layer?.mask)
+        NSWorkspace.shared.notificationCenter.post(name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil)
+        XCTAssertNotNil(strip.layer?.mask, "Reduce Transparency must not remove the content mask")
+    }
+
+    func testReduceMotionUpdatesTheFadeWithoutWaitingForPresentation() throws {
+        let strip = makeStrip(focused), rows = makeRows(20)
+        strip.reducesMotion = { true }
+        strip.show(rows, selection: rows[4].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        try freeze(strip)
+        strip.show(rows, selection: rows[1].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
+        strip.show(rows, selection: rows[18].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        strip.show(rows, selection: rows[19].id, details: [:], metrics: focused, applicationNames: ApplicationNames())
+        XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 1, trailing: 0))
+        XCTAssertFalse(strip.isFollowingMotion)
+        XCTAssertTrue(motionLayers(in: strip).allSatisfy { $0.animationKeys()?.isEmpty != false })
+    }
+
     // These exercise model-first additive retargeting: replacing a spring, sampling presentation for its offset,
     // or dropping either the push or scale compensation makes a previously drawn frame jump.
     func testEverythingTheStripMovesSharesOneSpring() throws {

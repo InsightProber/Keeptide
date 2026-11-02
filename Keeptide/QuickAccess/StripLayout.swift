@@ -13,9 +13,11 @@ struct StripStyle: Equatable, Sendable {
     static let standard = StripStyle(selectedScale: 1.12)
     /// How much larger the selected card is drawn than the others, kept within `scaleRange`.
     let selectedScale: CGFloat
+    var fadesEnds: Bool = true
 
     /// A scale outside `scaleRange` is taken to its nearer end, and one that is not a number to no enlargement.
-    init(selectedScale: CGFloat) {
+    init(selectedScale: CGFloat, fadesEnds: Bool = true) {
+        self.fadesEnds = fadesEnds
         self.selectedScale = selectedScale.isNaN ? Self.scaleRange.lowerBound
             : min(max(selectedScale, Self.scaleRange.lowerBound), Self.scaleRange.upperBound)
     }
@@ -49,6 +51,8 @@ struct StripMetrics: Equatable {
     /// How far each neighbour of the selected card stands aside from its place, to keep clear of the enlarged card's
     /// ring.
     var neighbourPush: CGFloat = 0
+    /// Whether content continuing past the band fades at its ends.
+    var fadesEnds: Bool = false
 
     /// How far the enlarged selected card reaches past an unscaled card's top and bottom edges.
     var selectionGrowth: CGFloat { StripLayout.selectionGrowth(scale: selectedScale, cardHeight: frameSize.height) }
@@ -60,6 +64,17 @@ struct StripMetrics: Equatable {
     var contentSize: CGSize {
         CGSize(width: frameSize.width, height: max(0, frameSize.height - headerHeight - footerHeight))
     }
+}
+
+/// How strongly each end of the band fades: 0 is a hard edge, 1 the whole fade.
+struct StripEdgeFades: Equatable, Sendable {
+    var leading: CGFloat = 0
+    var trailing: CGFloat = 0
+}
+
+struct StripFadeStop: Equatable, Sendable {
+    var x: CGFloat
+    var opacity: CGFloat
 }
 
 /// Where the film of frames lies in the band.
@@ -84,6 +99,29 @@ struct StripSectionLabels: Equatable {
 /// Geometry of the quick access strip. The band is the bar holding the toolbar and the frames; the panel is the
 /// window around it. All values are in points.
 enum StripLayout {
+    static let fadeShare: CGFloat = 0.14
+    static let fadeRamp: CGFloat = 32
+
+    /// The film's drawn edges, including push and scale, in the band's coordinates.
+    static func edgeFades(_ m: StripMetrics, filmLeft: CGFloat, filmRight: CGFloat) -> StripEdgeFades {
+        guard m.fadesEnds else { return StripEdgeFades() }
+        return StripEdgeFades(leading: min(1, max(0, -filmLeft / fadeRamp)),
+                              trailing: min(1, max(0, (filmRight - m.bandWidth) / fadeRamp)))
+    }
+
+    /// Fourteen smooth steps across the two ends, absent when both ends are effectively hard.
+    static func fadeStops(_ m: StripMetrics, fades: StripEdgeFades) -> [StripFadeStop]? {
+        guard fades.leading >= 0.001 || fades.trailing >= 0.001 else { return nil }
+        let width = fadeShare * m.bandWidth
+        func stop(_ j: Int, trailing: Bool) -> StripFadeStop {
+            let t = CGFloat(j) / 6
+            let strength = trailing ? fades.trailing : fades.leading
+            return StripFadeStop(x: trailing ? m.bandWidth - t * width : t * width,
+                                 opacity: 1 - strength * (1 - t * t * (3 - 2 * t)))
+        }
+        return (0...6).map { stop($0, trailing: false) } + (0...6).reversed().map { stop($0, trailing: true) }
+    }
+
     /// From the band's top edge to its toolbar, and the toolbar's height. Below the toolbar, `StripMetrics.toolbarGap`
     /// lies between it and the cards, and below the cards `StripMetrics.bottomPadding`.
     static let toolbarTop: CGFloat = 16
@@ -134,7 +172,8 @@ enum StripLayout {
             cornerRadius: card.radius, dockInset: 20, headerHeight: card.header, footerHeight: card.footer,
             iconSize: card.icon, toolbarGap: 20 + growth, bottomPadding: (showsFrequentClips ? 28 : 22) + growth,
             selectedScale: style.selectedScale,
-            neighbourPush: neighbourPush(scale: style.selectedScale, cardWidth: card.frame.width, gap: gap)
+            neighbourPush: neighbourPush(scale: style.selectedScale, cardWidth: card.frame.width, gap: gap),
+            fadesEnds: style.fadesEnds
         )
     }
 

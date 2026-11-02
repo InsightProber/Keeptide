@@ -22,6 +22,8 @@ struct SettingsView: View {
                     Text("More")
                 }
                 .accessibilityValue(Text(Self.enlargement(preferences.selectedCardScale)))
+                Toggle("Fade the ends of the strip", isOn: $preferences.fadesStripEnds)
+                    .controlSize(.mini)
                 Toggle(isOn: $preferences.showsFrequentClips) {
                     Text("Show frequent clips in the strip")
                     Text("Clips you've copied or pasted from Keeptide more than once, and used in the last 90 days, appear to the left of the newest clip.")
