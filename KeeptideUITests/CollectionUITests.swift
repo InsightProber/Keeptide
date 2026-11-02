@@ -121,12 +121,23 @@ final class CollectionUITests: XCTestCase {
         actions.click()
         app.menuItems["Add to Favorites"].click()
 
-        actions.click()
-        app.menuItems["Move To"].click()
-        app.menuItems["Move to Prompts"].click()
+        openSelectionActions(actions, expecting: "Remove from Favorites", in: app)
+        let moveTo = app.menuItems["Move To"]
+        XCTAssertTrue(moveTo.waitForExistence(timeout: 5), app.debugDescription)
+        moveTo.click()
+        let prompts = app.menuItems["Move to Prompts"]
+        XCTAssertTrue(prompts.waitForExistence(timeout: 5), app.debugDescription)
+        prompts.click()
         app.descendants(matching: .menuButton)["LibraryScopeMenu"].click()
         app.menuItems["Prompts"].click()
         waitForScope("Prompts", in: app)
+        XCTAssertTrue(snippetRow(containing: "Selected Alpha", in: app).waitForExistence(timeout: 8))
+        XCTAssertTrue(snippetRow(containing: "Selected Beta", in: app).waitForExistence(timeout: 8))
+        XCTAssertTrue(snippetRow(containing: "Unselected Gamma", in: app).waitForNonExistence(timeout: 8))
+
+        app.descendants(matching: .menuButton)["LibraryScopeMenu"].click()
+        app.menuItems["Favorites"].click()
+        waitForScope("Favorites", in: app)
         XCTAssertTrue(snippetRow(containing: "Selected Alpha", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Selected Beta", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Unselected Gamma", in: app).waitForNonExistence(timeout: 8))
@@ -224,6 +235,23 @@ final class CollectionUITests: XCTestCase {
         )
         expectation(for: selected, evaluatedWith: menu)
         waitForExpectations(timeout: 8)
+    }
+
+    private func openSelectionActions(
+        _ actions: XCUIElement,
+        expecting itemName: String,
+        in app: XCUIApplication
+    ) {
+        let expectedItem = app.menuItems[itemName]
+        let deadline = Date().addingTimeInterval(8)
+        repeat {
+            guard actions.waitForExistence(timeout: 1) else { continue }
+            actions.click()
+            if expectedItem.waitForExistence(timeout: 1) { return }
+            app.typeKey(.escape, modifierFlags: [])
+        } while Date() < deadline
+
+        XCTFail("Selection actions never reflected \(itemName). \(app.debugDescription)")
     }
 
     private func removeTestSession(_ sessionID: UUID, app: XCUIApplication) {
