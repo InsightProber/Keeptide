@@ -478,7 +478,7 @@ final class SettingsTests: XCTestCase {
         XCTAssertNil(releasedModel, "Closing the store must release its lifecycle model")
     }
 
-    func testSettingsWindowIs600PointsWideAndFitsItsForm() throws {
+    func testSettingsWindowIs600PointsWideAndFitsVisibleScreen() throws {
         let controller = try makeController()
         let window = try XCTUnwrap(controller.window)
         defer { window.close() }
@@ -491,7 +491,12 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(content.width, 600)
         // A form that took no height of its own would leave a bare title bar.
         XCTAssertGreaterThan(form.height, 150)
-        XCTAssertEqual(content.height, form.height, accuracy: 1)
+        // Pages scroll: their intrinsic form height may exceed the screen-bounded viewport.
+        let screen = try XCTUnwrap(window.screen)
+        XCTAssertGreaterThanOrEqual(content.height, 420)
+        XCTAssertLessThanOrEqual(content.height, screen.visibleFrame.height * 0.85 + 1)
+        XCTAssertTrue(screen.visibleFrame.insetBy(dx: -1, dy: -1).contains(window.frame))
+        XCTAssertTrue(window.styleMask.contains(.resizable))
     }
 
     func testSettingsWindowOpensWithoutFocusingAControl() throws {

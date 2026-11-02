@@ -7,6 +7,8 @@ final class SettingsUITests: XCTestCase {
         defer { removeTestSession(sessionID, app: app) }
         XCTAssertTrue(app.windows["KeeptideSettingsWindow"].waitForExistence(timeout: 8))
 
+        // The form can be taller than the bounded window on a small display.
+        XCTAssertTrue(app.scrollViews["GeneralSettingsPage"].waitForExistence(timeout: 3))
         for title in ["General", "Shortcuts", "Recording & Privacy", "iCloud"] {
             XCTAssertTrue(app.tabs[title].exists, "Missing settings page \(title)")
         }
