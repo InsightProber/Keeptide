@@ -115,7 +115,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
         XCTAssertEqual(controller.state.selection.rows.count, 3)
         try await write(window, as: "panel-search", into: output)
 
-        // The same search while the index rebuilds: the notice at the toolbar's left end, Return's hint at its right.
+        // The same search while the index rebuilds: the notice after the filters, Return's hint at the right end.
         harness.status.update(.rebuilding)
         let editor = try XCTUnwrap(field.currentEditor() as? NSTextView)
         editor.deleteBackward(nil)

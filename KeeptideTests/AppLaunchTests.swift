@@ -437,7 +437,16 @@ final class AppLaunchTests: XCTestCase {
 
         // A click there while the field has the keys keeps its editing as it is: the caret stays where it was.
         editor.insertText("beta", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "beta" }
         let current = try XCTUnwrap(field.currentEditor() as? NSTextView)
+        toolbar.layoutSubtreeIfNeeded()
+        let fieldPoint = field.convert(NSPoint(x: field.bounds.midX, y: field.bounds.midY), to: nil)
+        let fieldHit = window.contentView?.hitTest(fieldPoint)
+        XCTAssertTrue(fieldHit === field || fieldHit === current, "The field keeps its native hit")
+        let clear = search.clearButton
+        XCTAssertFalse(clear.isHidden)
+        let clearPoint = clear.convert(NSPoint(x: clear.bounds.midX, y: clear.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(clearPoint) === clear, "The clear button keeps its native hit")
         current.setSelectedRange(NSRange(location: 1, length: 0))
         try click(at: search.convert(magnifier, to: nil), in: window)
         XCTAssertTrue(field.currentEditor() === current)
@@ -632,7 +641,7 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testTheRebuildNoticeShowsAtTheToolbarsLeftAndLeavesTheCopyHint() async throws {
+    func testTheRebuildNoticeShowsAfterTheFiltersAndLeavesTheCopyHint() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -651,8 +660,8 @@ final class AppLaunchTests: XCTestCase {
         let band = try bandRect(in: window)
         let underTheClips = NSRect(x: band.midX - 100, y: band.minY + 4, width: 200, height: 8)
 
-        // While the index rebuilds, a search that finds clips says so at the toolbar's left end, in its row and left of
-        // the search. The right end has nothing to say, so it keeps Return's hint, word and all.
+        // While the index rebuilds, a search that finds clips says so after the filters in the toolbar's row.
+        // The right end keeps Return's hint, word and all.
         harness.status.update(.rebuilding)
         editor.insertText("deploy", replacementRange: NSRange(location: NSNotFound, length: 0))
         try await SearchTestSupport.waitUntil {
@@ -671,7 +680,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(notice.stringValue, QuickAccessStatus.rebuilding)
         XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessIndexNotice")
         XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, "In the toolbar's row")
-        XCTAssertLessThan(notice.frame.maxX, toolbar.search.frame.minX, "Left of the search")
+        XCTAssertGreaterThanOrEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12 - 0.5)
+        XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.copyHint.frame.minX - 12 + 0.5)
         // The clips have nothing under them; the band draws them in full first.
         _ = try await clipStrip(in: window)
         window.contentView?.layoutSubtreeIfNeeded()
@@ -806,12 +816,29 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(isEditing(field, in: window))
     }
 
-    func testAnInputMethodsFirstKeyUnfoldsTheSearch() async throws {
-        let (controller, _) = try await makePanelWithClips(["alpha", "beta"], shown: true)
+    func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheLeft() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["beta one", "beta two", "beta three"], into: harness)
+        try await harness.consumer.synchronize()
+        let gate = ScanGate()
+        addTeardownBlock { gate.open() }
+        let search = SearchService(index: harness.index, status: harness.status, scanChunkSize: 2,
+                                   onScanProgress: { _ in gate.pass() })
+        let controller = try makePanel(over: harness, pasteboard: board, search: search)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 3 }
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
         XCTAssertFalse(controller.state.isSearchExpanded)
+        var moved: [NSTextView] = []
+        controller.fieldCharactersMoved = { editor in
+            moved.append(editor)
+            editor.inputContext?.invalidateCharacterCoordinates()
+        }
 
         // The first key of a composition, as an input method gives it: marked text, before any change is reported.
         editor.setMarkedText("b", selectedRange: NSRange(location: 1, length: 0),
@@ -821,11 +848,57 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.state.isSearchExpanded)
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.search.frame.width, 300)
+        let band = try bandRect(in: window)
+        let pill = toolbar.search.convert(toolbar.search.bounds, to: nil)
+        let pillOnScreen = window.convertToScreen(pill)
+        XCTAssertEqual(pill.minX - band.minX, 16, accuracy: 0.5)
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertTrue(moved.first === editor)
+        let marked = editor.firstRect(forCharacterRange: editor.markedRange(), actualRange: nil)
+        XCTAssertGreaterThanOrEqual(marked.minX, pillOnScreen.minX + 34 - 1)
+        XCTAssertLessThanOrEqual(marked.maxX, pillOnScreen.maxX)
+        XCTAssertTrue(marked.intersects(pillOnScreen))
         XCTAssertEqual(field.alphaValue, 1)
         XCTAssertTrue(editor.hasMarkedText())
         XCTAssertEqual(editor.markedRange(), NSRange(location: 0, length: 1))
         XCTAssertTrue(isEditing(field, in: window))
         XCTAssertEqual(controller.state.query, "", "Nothing is searched for until the composition is committed")
+
+        // Committing a short query starts a progressive scan; its status changes only the right end.
+        editor.insertText("be", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { toolbar.note == .status("Searching…") }
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(moved.count, 1)
+        XCTAssertTrue(field.currentEditor() === editor)
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertEqual(toolbar.search.convert(toolbar.search.bounds, to: nil).minX - band.minX, 16, accuracy: 0.5)
+    }
+
+    func testTheSearchsRingStaysInsideTheBandsCorner() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        controller.perform(.focusResults)
+        try XCTUnwrap(window.firstResponder as? QuickAccessStripView).keyDown(with: try key(kVK_Tab, "\t"))
+        for expanded in [false, true] {
+            if expanded {
+                XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
+            }
+            toolbar.layoutSubtreeIfNeeded()
+            XCTAssertTrue(isEditing(field, in: window))
+            XCTAssertEqual(controller.state.isSearchExpanded, expanded)
+            let halo = toolbar.focusHalo
+            XCTAssertFalse(halo.isHidden)
+            let haloFrame = halo.convert(halo.bounds, to: nil)
+            let band = QuickAccessBandBackdrop.outline(in: try bandRect(in: window))
+            let outline = RoundedRectangle(cornerRadius: 19, style: .continuous).path(in: haloFrame)
+            // Forty-eight points on the continuous outline, including its curved corners, not just its bounds.
+            for sample in 1...48 {
+                let point = outline.trimmedPath(from: 0, to: CGFloat(sample) / 48).cgPath.currentPoint
+                XCTAssertTrue(band.contains(point), "expanded \(expanded), sample \(sample): \(point)")
+            }
+        }
     }
 
     func testTheClearButtonEmptiesTheQueryAndUndoBringsItBack() async throws {
@@ -859,6 +932,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(undo.canUndo)
         undo.undo()
         XCTAssertEqual(field.stringValue, "beta")
+        try await SearchTestSupport.waitUntil { controller.state.query == "beta" }
         XCTAssertEqual(controller.state.query, "beta")
     }
 
@@ -1375,10 +1449,12 @@ final class AppLaunchTests: XCTestCase {
         let content = try XCTUnwrap(window.contentView)
         XCTAssertLessThanOrEqual(card.maxY, content.bounds.maxY + 0.5, "Inside the window")
 
-        // Where the card lies over the toolbar it takes the pointer too: a click on the search beneath it is the card's.
-        let search = try XCTUnwrap(views(QuickAccessSearchControl.self, in: content).first)
-        let middle = search.convert(NSPoint(x: search.bounds.midX, y: search.bounds.midY), to: nil)
-        XCTAssertTrue(card.contains(middle))
+        // Where the centered card lies over the toolbar it takes the pointer too. The search now stays at the left.
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: content).first)
+        let overlap = card.intersection(toolbar.convert(toolbar.rowFrame, to: nil))
+        XCTAssertGreaterThan(overlap.width, 0)
+        XCTAssertGreaterThan(overlap.height, 0)
+        let middle = NSPoint(x: overlap.midX, y: overlap.midY)
         let scroll = try XCTUnwrap(views(NSTextView.self, in: content).first { !$0.isFieldEditor }?.enclosingScrollView)
         let hit = content.hitTest(middle)
         XCTAssertTrue(hit?.isDescendant(of: scroll) == true, "\(hit.map { "\(type(of: $0))" } ?? "nothing")")
