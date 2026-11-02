@@ -816,6 +816,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(isEditing(field, in: window))
     }
 
+    func testLibraryShortcutsDoNotInterruptMarkedSearchText() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        var opens = 0
+        var creates = 0
+        controller.onOpenInLibrary = { _ in opens += 1 }
+        controller.onNewSnippet = { creates += 1 }
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        let marked = editor.markedRange()
+        let caret = editor.selectedRange()
+        let query = controller.state.query
+        for (code, character) in [(kVK_ANSI_S, "s"), (kVK_ANSI_E, "e"), (kVK_ANSI_N, "n")] {
+            // Consumed without acting, so AppKit cannot offer it to New/Save in
+            // the main menu after this window returns.
+            XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)))
+            XCTAssertTrue(editor.hasMarkedText())
+            XCTAssertEqual(editor.markedRange(), marked)
+            XCTAssertEqual(editor.selectedRange(), caret)
+            XCTAssertEqual(controller.state.query, query)
+            XCTAssertTrue(isEditing(field, in: window))
+        }
+        XCTAssertEqual(opens, 0)
+        XCTAssertEqual(creates, 0)
+    }
+
     func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheLeft() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -1489,8 +1516,8 @@ final class AppLaunchTests: XCTestCase {
             "Save as Snippet", "Open in Library", "New Snippet",
         ])
         XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent), ["\r", "\r", "", " ", "", "s", "e", "n"])
-        XCTAssertEqual(commandK.menu.items.map(\.keyEquivalentModifierMask), [
-            [], .shift, [], [], [], .command, .command, .command,
+        XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem }.map(\.keyEquivalentModifierMask), [
+            [], .shift, [], .command, .command, .command,
         ])
         XCTAssertTrue(commandK.menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled })
         // A right-click on the selected clip gives the same menu.
