@@ -333,15 +333,15 @@ private extension ExportTests {
         let mixedItem = ContentStoreFixtures.item(mixedCapture)
 
         let identity = try await controller.identity()
+        let privateBytes = Data("bookmark:file:///Users/alice/Secret/private.txt".utf8)
+        try await FileAccessStore(controller: controller).put(
+            LocalFileAccess(id: local.id, snapshotID: mixedCaptureID, bytes: privateBytes), expecting: identity)
         _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(identity: identity,
             mutations: [
                 .insert(.capture(sharedCapture)), .insert(.memo(inheritedMemo)), .insert(.item(sharedItem)),
                 .insert(.memo(markdownMemo)), .insert(.item(markdownItem)),
                 .insert(.capture(mixedCapture)), .insert(.item(mixedItem)),
             ]))
-        let privateBytes = Data("bookmark:file:///Users/alice/Secret/private.txt".utf8)
-        try await FileAccessStore(controller: controller).put(
-            LocalFileAccess(id: local.id, snapshotID: mixedCaptureID, bytes: privateBytes), expecting: identity)
 
         return MixedLibrary(sharedItem: sharedItem, markdownItem: markdownItem, mixedItem: mixedItem,
             markdownBody: markdownBody,
