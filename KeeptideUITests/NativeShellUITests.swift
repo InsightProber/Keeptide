@@ -69,11 +69,19 @@ final class NativeShellUITests: XCTestCase {
         XCTAssertEqual(queryField.value as? String, "plain input")
         queryField.typeKey("z", modifierFlags: [.command, .shift])
         XCTAssertEqual(queryField.value as? String, "")
+        // Undo brought text back, which opened the search again. Open and empty, it folds at the first Escape and the
+        // panel closes at the next.
         queryField.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(quickAccessPanel.exists)
+        app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(quickAccessPanel.waitForNonExistence(timeout: 5))
     }
 
     func testGlobalHotKeySessionsReturnFocusAndDoNotResurrect() throws {
+        // Each key is typed through the host, which stays active while Keeptide's panel takes the keys. XCUITest then
+        // waits about ten seconds per key for the host to handle an event it never gets, so this test runs for some
+        // fourteen minutes on CI: more than the five minutes `verify.sh` allows each test.
+        executionTimeAllowance = 1200
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--synthetic-hotkey"]
