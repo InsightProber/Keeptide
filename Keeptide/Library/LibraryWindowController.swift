@@ -48,10 +48,10 @@ final class LibraryWindowController: NSWindowController {
         window.makeKeyAndOrderFront(nil)
     }
 
-    @objc func newDocument(_ sender: Any?) { commands.newSnippetRequest += 1 }
+    @objc func newDocument(_ sender: Any?) { commands.requestNewSnippet() }
     @objc func saveDocument(_ sender: Any?) { commands.saveRequest += 1 }
     @objc func copyEntireItem(_ sender: Any?) { commands.copyRequest += 1 }
-    @objc func searchLibrary(_ sender: Any?) { commands.searchRequest += 1 }
+    @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
 
     func open(_ ref: ContentRef) {
         commands.openRequest = LibraryOpenRequest(
@@ -88,11 +88,24 @@ extension LibraryWindowController: NSWindowDelegate {
 
 @MainActor @Observable
 final class LibraryWindowCommands {
-    var newSnippetRequest = 0
+    private(set) var newSnippetRequest = 0
     var saveRequest = 0
     var copyRequest = 0
-    var searchRequest = 0
+    private(set) var searchRequest = 0
+    private(set) var focusGeneration = 0
+    private(set) var newSnippetFocusGeneration = 0
     var openRequest: LibraryOpenRequest?
+
+    func requestNewSnippet() {
+        focusGeneration &+= 1
+        newSnippetFocusGeneration = focusGeneration
+        newSnippetRequest &+= 1
+    }
+
+    func requestSearch() {
+        focusGeneration &+= 1
+        searchRequest &+= 1
+    }
 }
 
 struct LibraryOpenRequest: Equatable {

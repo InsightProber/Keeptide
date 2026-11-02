@@ -40,8 +40,8 @@ struct LibraryView: View {
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var bodyFocusRequest = 0
     @State private var bodyFocusSessionID: UUID?
+    @State private var bodyFocusGeneration = 0
     @State private var availableWidth: CGFloat = 1_120
-    @FocusState private var searchIsFocused: Bool
 
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
         _session = Bindable(wrappedValue: session)
@@ -98,10 +98,11 @@ struct LibraryView: View {
             guard let section else { return }
             Task { await session.libraryWorkspace?.setScope(section.scope) }
         }
-        .onChange(of: commands.newSnippetRequest) { _, _ in startNewSnippet() }
+        .onChange(of: commands.newSnippetRequest) { _, _ in
+            startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
+        }
         .onChange(of: commands.saveRequest) { _, _ in saveCurrentEditor() }
         .onChange(of: commands.copyRequest) { _, _ in copyCurrentEditor() }
-        .onChange(of: commands.searchRequest) { _, _ in searchIsFocused = true }
         .onChange(of: commands.openRequest) { _, request in
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }
@@ -189,7 +190,10 @@ struct LibraryView: View {
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
-                bodyFocusRequest: bodyFocusSessionID == editor.sessionID ? bodyFocusRequest : 0
+                bodyFocusRequest: bodyFocusSessionID == editor.sessionID ? bodyFocusRequest : 0,
+                shouldFocusBody: {
+                    commands.focusGeneration == bodyFocusGeneration
+                }
             )
             .id(editor.sessionID)
         } else {
@@ -292,16 +296,14 @@ struct LibraryView: View {
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            TextField("Search", text: searchBinding)
-                .textFieldStyle(.roundedBorder)
+            LibrarySearchField(text: searchBinding, focusRequest: commands.searchRequest)
                 .frame(width: 220)
-                .focused($searchIsFocused)
-                .accessibilityIdentifier("LibrarySearchField")
 
-            Button(action: startNewSnippet) {
+            Button {
+                commands.requestNewSnippet()
+            } label: {
                 Label("New Snippet", systemImage: "square.and.pencil")
             }
-            .keyboardShortcut("n", modifiers: .command)
             .accessibilityIdentifier("NewSnippet")
             .disabled(session.libraryWorkspace == nil)
 
@@ -315,7 +317,7 @@ struct LibraryView: View {
     private var searchBinding: Binding<String> {
         Binding(
             get: { session.libraryWorkspace?.query ?? "" },
-            set: { value in Task { await session.libraryWorkspace?.setQuery(value) } }
+            set: { value in session.libraryWorkspace?.updateQuery(value) }
         )
     }
 
@@ -329,10 +331,12 @@ struct LibraryView: View {
         splitVisibility = next == .visible ? .all : .doubleColumn
     }
 
-    private func startNewSnippet() {
+    private func startNewSnippet(focusGeneration: Int) {
         Task {
             await session.libraryWorkspace?.startNew()
+            guard commands.focusGeneration == focusGeneration else { return }
             bodyFocusSessionID = session.libraryWorkspace?.editor?.sessionID
+            bodyFocusGeneration = focusGeneration
             bodyFocusRequest += 1
         }
     }
@@ -550,6 +554,7 @@ private struct MemoEditorView: View {
     @Bindable var editor: MemoEditorSession
     @Bindable var workspace: LibraryWorkspace
     let bodyFocusRequest: Int
+    let shouldFocusBody: @MainActor () -> Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -562,6 +567,7 @@ private struct MemoEditorView: View {
                     isCode: editor.kind == .code,
                     isEditable: !editor.isReadOnly && !workspace.isClosing,
                     focusRequest: bodyFocusRequest,
+                    shouldFocus: shouldFocusBody,
                     onChange: { value, isComposing in
                         editor.setBody(value, isComposing: isComposing)
                     },

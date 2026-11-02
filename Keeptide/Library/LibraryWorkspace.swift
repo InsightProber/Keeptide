@@ -63,6 +63,7 @@ final class LibraryWorkspace {
     @ObservationIgnored private var undoSave: UndoSave?
     @ObservationIgnored private var isClosed = false
     @ObservationIgnored private var refreshedRevisionByDraft: [UUID: UInt64] = [:]
+    @ObservationIgnored private var queryTask: Task<Void, Never>?
 
     private struct UndoSave {
         let itemID: ItemID
@@ -190,9 +191,28 @@ final class LibraryWorkspace {
     }
 
     func setQuery(_ value: String) async {
+        updateQuery(value)
+        await queryTask?.value
+    }
+
+    /// Publish native input synchronously, before SwiftUI can render the old value.
+    /// Only result loading is asynchronous; every edit invalidates older loads.
+    func updateQuery(_ value: String) {
+        guard !isClosing, !isClosed else { return }
         guard query != value else { return }
         query = value
-        await reload(refreshIndex: false)
+        scheduleQueryLoad()
+    }
+
+    private func scheduleQueryLoad() {
+        queryTask?.cancel()
+        loadGeneration &+= 1
+        let generation = loadGeneration
+        queryTask = Task { [weak self] in
+            guard !Task.isCancelled, let self,
+                  self.loadGeneration == generation else { return }
+            await self.reload(refreshIndex: false)
+        }
     }
 
     func select(_ itemID: ItemID) async {
@@ -406,6 +426,9 @@ final class LibraryWorkspace {
         if isClosed { return true }
         guard !isClosing else { return false }
         isClosing = true
+        queryTask?.cancel()
+        loadGeneration &+= 1
+        isLoading = false
         pasteSession?.end()
         do {
             while let editor, !editor.isReadOnly {
@@ -427,6 +450,7 @@ final class LibraryWorkspace {
             message = "The draft could not be saved before closing."
             isClosing = false
             pasteSession = pasteService?.beginSession()
+            scheduleQueryLoad()
             return false
         }
     }
@@ -438,6 +462,7 @@ final class LibraryWorkspace {
         isClosing = false
         isClosed = false
         pasteSession = pasteService?.beginSession()
+        scheduleQueryLoad()
     }
 
     private func install(_ session: MemoEditorSession, preservingUndo: Bool = false) {

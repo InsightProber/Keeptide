@@ -73,6 +73,8 @@ final class LibraryLayoutTests: XCTestCase {
         XCTAssertEqual(commands.saveRequest, 1)
         XCTAssertEqual(commands.copyRequest, 1)
         XCTAssertEqual(commands.searchRequest, 1)
+        XCTAssertEqual(commands.focusGeneration, 3)
+        XCTAssertEqual(commands.newSnippetFocusGeneration, 2)
         XCTAssertEqual(controller.window?.contentMinSize, NSSize(width: 840, height: 560))
     }
 

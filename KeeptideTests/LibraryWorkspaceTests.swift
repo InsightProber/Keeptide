@@ -411,6 +411,42 @@ final class LibraryWorkspaceTests: XCTestCase {
         )
     }
 
+    func testNativeQueryPublishesSynchronouslyAndLatestInputWins() async throws {
+        let harness = try SearchHarness.make(in: self)
+        _ = try await insertHistory("abc final query", into: harness)
+        _ = try await insertHistory("ab intermediate query", into: harness)
+        try await harness.consumer.synchronize()
+        let workspace = try await makeWorkspace(harness)
+
+        workspace.updateQuery("a")
+        XCTAssertEqual(workspace.query, "a")
+        workspace.updateQuery("ab")
+        XCTAssertEqual(workspace.query, "ab")
+        workspace.updateQuery("abc")
+        XCTAssertEqual(workspace.query, "abc")
+        await workspace.setQuery("abc")
+        XCTAssertEqual(workspace.query, "abc")
+        XCTAssertEqual(workspace.entries.count, 1)
+        XCTAssertEqual(workspace.entries.first?.title, "abc final query")
+    }
+
+    func testReopenRestartsQueryCancelledDuringClose() async throws {
+        let harness = try SearchHarness.make(in: self)
+        _ = try await insertHistory("abc target", into: harness)
+        _ = try await insertHistory("other item", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        XCTAssertEqual(workspace.entries.count, 2)
+
+        workspace.updateQuery("abc")
+        let closed = await workspace.prepareToClose()
+        XCTAssertTrue(closed)
+        workspace.resumeAfterCloseCancellation()
+        await workspace.setQuery("abc")
+        XCTAssertEqual(workspace.query, "abc")
+        XCTAssertEqual(workspace.entries.map(\.title), ["abc target"])
+    }
+
     private func insertHistory(
         _ text: String, into harness: SearchHarness
     ) async throws -> (ItemValue, CaptureValue) {

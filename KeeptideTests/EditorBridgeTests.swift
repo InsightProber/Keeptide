@@ -81,7 +81,7 @@ final class EditorBridgeTests: XCTestCase {
         XCTAssertFalse(window.firstResponder === editor)
     }
 
-    func testFocusChangesOnlyForANewExplicitFocusRequest() {
+    func testFocusChangesOnlyForANewExplicitFocusRequest() async {
         let documentID = UUID()
         let (controller, window) = hostedController()
         defer { window.close() }
@@ -92,15 +92,17 @@ final class EditorBridgeTests: XCTestCase {
 
         controller.update(documentID: documentID, text: "text", isCode: false,
                           isEditable: true, focusRequest: 1)
+        await drainDeferredFocus()
         XCTAssertTrue(window.firstResponder === controller.textView)
 
         XCTAssertTrue(window.makeFirstResponder(nil))
         controller.update(documentID: documentID, text: "text", isCode: false,
                           isEditable: true, focusRequest: 1)
+        await drainDeferredFocus()
         XCTAssertFalse(window.firstResponder === controller.textView)
     }
 
-    func testFocusRequestMadeBeforeAttachmentIsAppliedWhenTheEditorJoinsAWindow() {
+    func testFocusRequestMadeBeforeAttachmentIsAppliedWhenTheEditorJoinsAWindow() async {
         let controller = EditorTextController()
         controller.update(documentID: UUID(), text: "text", isCode: false,
                           isEditable: true, focusRequest: 1)
@@ -113,7 +115,69 @@ final class EditorBridgeTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
 
+        await drainDeferredFocus()
         XCTAssertTrue(window.firstResponder === controller.textView)
+    }
+
+    func testDeferredFocusIsCancelledWhenTheDocumentChangesOrBecomesReadOnly() async {
+        let controller = EditorTextController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = controller.scrollView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(nil))
+
+        controller.update(documentID: UUID(), text: "first", isCode: false,
+                          isEditable: true, focusRequest: 1)
+        controller.update(documentID: UUID(), text: "second", isCode: false,
+                          isEditable: false, focusRequest: 1)
+        await drainDeferredFocus()
+
+        XCTAssertFalse(window.firstResponder === controller.textView)
+    }
+
+    func testDeferredBodyFocusDoesNotStealFocusFromANewerSearchIntent() async {
+        let controller = EditorTextController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentView?.bounds ?? .zero)
+        container.addSubview(controller.scrollView)
+        let searchField = NSSearchField(frame: NSRect(x: 20, y: 270, width: 220, height: 24))
+        container.addSubview(searchField)
+        window.contentView = container
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        var bodyFocusIsCurrent = true
+        controller.update(documentID: UUID(), text: "", isCode: false,
+                          isEditable: true, focusRequest: 1,
+                          shouldFocus: { bodyFocusIsCurrent })
+        bodyFocusIsCurrent = false
+        XCTAssertTrue(window.makeFirstResponder(searchField))
+
+        await drainDeferredFocus()
+
+        XCTAssertTrue(window.firstResponder === searchField.currentEditor())
+        XCTAssertFalse(window.firstResponder === controller.textView)
+    }
+
+    func testResettingFocusRequestCancelsPendingFocusForTheSameDocument() async {
+        let documentID = UUID()
+        let (controller, window) = hostedController()
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(nil))
+
+        controller.update(documentID: documentID, text: "", isCode: false,
+                          isEditable: true, focusRequest: 1)
+        controller.update(documentID: documentID, text: "", isCode: false,
+                          isEditable: true, focusRequest: 0)
+
+        await drainDeferredFocus()
+
+        XCTAssertFalse(window.firstResponder === controller.textView)
     }
 
     func testCodeEditorInsertsTabAndDisablesTypographicSubstitution() {
@@ -166,6 +230,60 @@ final class EditorBridgeTests: XCTestCase {
         XCTAssertEqual(focusLosses, 1)
     }
 
+    func testLibrarySearchFocusRequestWorksAcrossToolbarWindowAttachmentAndOnlyOnce() {
+        let controller = LibrarySearchController()
+        controller.update(text: "", focusRequest: 1)
+        XCTAssertNil(controller.searchField.window)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 120),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = controller.searchField
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        XCTAssertTrue(window.firstResponder === controller.searchField.currentEditor())
+
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        controller.update(text: "", focusRequest: 1)
+        XCTAssertFalse(window.firstResponder === controller.searchField.currentEditor())
+    }
+
+    func testLibrarySearchReportsNativeTextChangesWithoutEchoingProgrammaticUpdates() {
+        var changes: [String] = []
+        let controller = LibrarySearchController(onChange: { changes.append($0) })
+        controller.update(text: "initial", focusRequest: 0)
+        XCTAssertEqual(controller.searchField.stringValue, "initial")
+        XCTAssertEqual(changes, [])
+
+        controller.searchField.stringValue = "合成 query"
+        controller.controlTextDidChange(
+            Notification(name: NSControl.textDidChangeNotification, object: controller.searchField)
+        )
+
+        XCTAssertEqual(changes, ["合成 query"])
+    }
+
+    func testLibrarySearchDoesNotReplaceMarkedTextDuringExternalQueryRefresh() throws {
+        let controller = LibrarySearchController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 120),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = controller.searchField
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(controller.searchField))
+
+        let editor = try XCTUnwrap(controller.searchField.currentEditor() as? NSTextView)
+        editor.setMarkedText("候选", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        let markedText = controller.searchField.stringValue
+
+        controller.update(text: "stale external query", focusRequest: 0)
+
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertEqual(controller.searchField.stringValue, markedText)
+    }
+
     private func hostedController() -> (EditorTextController, NSWindow) {
         let controller = EditorTextController()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
@@ -174,6 +292,11 @@ final class EditorBridgeTests: XCTestCase {
         window.contentView = controller.scrollView
         window.makeKeyAndOrderFront(nil)
         return (controller, window)
+    }
+
+    private func drainDeferredFocus() async {
+        await Task.yield()
+        await Task.yield()
     }
 }
 
