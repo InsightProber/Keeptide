@@ -11,11 +11,20 @@ final class LifecycleCleanupPlannerTests: XCTestCase {
         let store = try makeStore()
         let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("history".utf8))]])
         var item = ContentStoreFixtures.item(capture)
-        item.collectionID = CollectionID()
+        let collection = CollectionValue(name: "Pinned commands")
+        item.collectionID = collection.id
         item.isFavorite = true
-        var memo = ownedMemo(itemID: item.id, body: "old")
+        let memo = ownedMemo(itemID: item.id, body: "old")
         item.memoID = memo.id
-        try await insert(item: item, capture: capture, memo: memo, into: store)
+        _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
+            identity: try await store.identity(),
+            mutations: [
+                .insert(.capture(capture)),
+                .insert(.memo(memo)),
+                .insert(.collection(collection)),
+                .insert(.item(item)),
+            ]
+        ))
         let identity = try await store.identity()
         let gate = StoreSafetyGate(controller: store)
         let target = try await LifecycleService(controller: store).remove(
@@ -26,18 +35,19 @@ final class LifecycleCleanupPlannerTests: XCTestCase {
             permit: try await gate.permit(.maintenance)
         ).target
 
-        let oldVersion = try XCTUnwrap(memo.version)
         let memoState = try await ContentRepository(controller: store).recordState(.memo(memo.id))
+        guard case .memo(var revisedMemo) = memoState.value else { return XCTFail("Missing soft-deleted memo") }
+        let oldVersion = try XCTUnwrap(revisedMemo.version)
         let newBody = Data("new body revision".utf8)
-        memo.body = newBody
-        memo.version = ContentVersion()
-        memo.digest = ContentDigest.sha256(newBody)
+        revisedMemo.body = newBody
+        revisedMemo.version = ContentVersion()
+        revisedMemo.digest = ContentDigest.sha256(newBody)
         _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
             identity: identity,
             preconditions: [.recordUnchanged(.memo(memo.id), fingerprint: memoState.fingerprint)],
-            mutations: [.update(.memo(memo))]
+            mutations: [.update(.memo(revisedMemo))]
         ))
-        XCTAssertNotEqual(memo.version, oldVersion)
+        XCTAssertNotEqual(revisedMemo.version, oldVersion)
 
         let completed = try await LifecycleCleanupService(controller: store).purgeFacet(
             target,

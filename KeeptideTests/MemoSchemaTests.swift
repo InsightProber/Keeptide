@@ -22,9 +22,18 @@ final class MemoSchemaTests: XCTestCase {
         var item = ContentStoreFixtures.item(capture)
         let memo = MemoValue(itemID: item.id, title: "Before", bodyMode: .inheritedCapture)
         item.memoID = memo.id
-        _ = try await WriteCoordinator(controller: old).commit(StoreTransaction(identity: old.identity(), mutations: [
-            .insert(.capture(capture)), .insert(.memo(memo)), .insert(.item(item))
-        ]))
+        // Seed through the source model itself. The current writer intentionally consults V4's
+        // durable cleanup fence, which cannot exist in a V1/V2 model and is not part of creating
+        // a historical on-disk fixture.
+        let seededItem = item
+        try await old.perform { context in
+            for value in [RecordValue.capture(capture), .memo(memo), .item(seededItem)] {
+                let object = NSEntityDescription.insertNewObject(forEntityName: value.key.entity, into: context)
+                try StoredRecords.write(value, to: object, in: context)
+            }
+            try StoredRecords.link(seededItem, in: context)
+            try context.save()
+        }
         try await old.close()
 
         let migrated = try PersistenceController(directory: directory)
