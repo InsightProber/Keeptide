@@ -18,16 +18,17 @@ as a snippet, or write one directly.
 > The quick-access panel browses recent clips, searches all content through a
 > rebuildable local full-text index (including one- and two-character Chinese
 > queries), previews text, and copies the selected item in its original formats
-> or as plain text. The snippet service foundation is implemented; its editor,
-> direct paste into other apps, and iCloud saving remain planned. There is no
+> or as plain text. The native library now supports editing and saving snippets;
+> direct paste into other apps and iCloud saving remain planned. There is no
 > end-user release yet.
 
 The snippet service foundation supports saving a capture without duplicating its
 payload, independent text and Markdown snippets, explicit copies, and edits that
 preserve the original capture. Local drafts support restart recovery and protect
 concurrent edits by saving conflicting content separately. These services are
-covered by native tests; the library editor and its user-facing save actions are
-still planned.
+used by the native three-column library, with recoverable editing, document-local
+find, paginated library search, and explicit whole-item copying. Native UI
+acceptance is tracked separately from service and editor contract tests.
 
 ## Designed for the Mac
 
@@ -77,8 +78,8 @@ transient content is skipped when the source marks it accordingly. A copy above
 visible status. Clipboard bodies are read in an isolated helper process so a
 slow or faulty provider does not block the interface. Rapidly replaced clipboard
 contents may not be captured. Detail text previews show a bounded prefix.
-The current library shows recent clips; full-library search and retention
-controls are forthcoming. File references remain local and are not backups of
+The library searches recent clips and saved snippets. Retention controls are
+forthcoming. File references remain local and are not backups of
 the referenced files. Persistent file-access authorization is not implemented.
 
 Automated capture tests use isolated named pasteboards and temporary libraries.

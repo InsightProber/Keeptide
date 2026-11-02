@@ -1,7 +1,7 @@
 import AppKit
 
 enum ActionMenuCommand {
-    case copy, copyPlainText, togglePreview
+    case copy, copyPlainText, togglePreview, saveSnippet, openLibrary, newSnippet
 }
 
 /// Cmd-K: the actions for the current selection only. Unavailable actions are
@@ -24,6 +24,14 @@ enum ActionMenu {
         menu.addItem(plainText)
         menu.addItem(.separator())
         menu.addItem(preview)
+        menu.addItem(.separator())
+        let save = ActionMenuItem("Save as Snippet", key: "s", modifiers: .command) { perform(.saveSnippet) }
+        save.isEnabled = canAct
+        menu.addItem(save)
+        let open = ActionMenuItem("Open in Library", key: "e", modifiers: .command) { perform(.openLibrary) }
+        open.isEnabled = canAct
+        menu.addItem(open)
+        menu.addItem(ActionMenuItem("New Snippet", key: "n", modifiers: .command) { perform(.newSnippet) })
         return menu
     }
 }

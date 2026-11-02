@@ -9,8 +9,10 @@ direct paste into other apps, remain planned. There is no application release ye
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
-recoverable local drafts, and independent conflict copies. The editor interface,
-collections and Markdown reading mode remain planned.
+recoverable local drafts, and independent conflict copies. The native library
+provides text editing, document-local find, explicit capture saving and safe
+undo of a newly saved capture. Collections and Markdown reading mode remain
+planned. Full input-method and accessibility acceptance remains a release gate.
 
 ## First release
 

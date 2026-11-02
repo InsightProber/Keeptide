@@ -10,6 +10,8 @@ final class CaptureSession {
     private(set) var selectionIsLoading = false
     private(set) var selectionError: String?
     private(set) var isReady = false
+    private(set) var libraryWorkspace: LibraryWorkspace?
+    private(set) var libraryInitializationError: String?
     private(set) var actionMessage: String?
     private var message: String?
     private var monitor: PasteboardMonitor?
@@ -39,6 +41,7 @@ final class CaptureSession {
     var isPausing: Bool { monitor?.isPausing ?? false }
     var isRecording: Bool { isReady && (monitor?.isRecording ?? false) }
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
+    var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
 
     init(readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil) {
@@ -113,6 +116,17 @@ final class CaptureSession {
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
                                         didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) })
             await startSearch(store: store, directory: directory)
+            let consumer = historyConsumer
+            do {
+                libraryWorkspace = try await LibraryWorkspace.make(
+                    controller: store, draftDirectory: directory.appendingPathComponent("Drafts"),
+                    searchService: searchService, pasteService: pasteService,
+                    refreshSearch: { try await consumer?.synchronize() }
+                )
+                libraryInitializationError = nil
+            } catch {
+                libraryInitializationError = "The editor could not be opened. Your saved content is preserved."
+            }
             isReady = true
             message = nil
             await refresh()
@@ -150,6 +164,7 @@ final class CaptureSession {
             let rows = try await ContentRepository(controller: controller).recent(limit: 200)
             guard generation == refreshGeneration else { return }
             recent = rows.filter { $0.history != nil }
+            await libraryWorkspace?.reload()
             actionMessage = nil
             onRecentClipsChanged?()
         } catch {
@@ -228,6 +243,7 @@ final class CaptureSession {
         searchIndex?.close()
         searchIndex = nil
         searchService = nil
+        libraryWorkspace = nil
         readContent = nil
         pasteService = nil
         usageStore = nil

@@ -6,6 +6,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private static let defaultSize = NSSize(width: 680, height: 496)
     static let expandedSize = NSSize(width: 960, height: 560)
     let state: QuickAccessState
+    var onOpenInLibrary: ((ContentRef) -> Void)?
+    var onNewSnippet: (() -> Void)?
     private let searchField = QuickAccessSearchField()
     private let results = QuickAccessResultsTableView()
     private lazy var fieldEditor: QuickAccessFieldEditor = {
@@ -248,6 +250,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .copy: self?.perform(.primary)
             case .copyPlainText: self?.perform(.plainText)
             case .togglePreview: self?.togglePreview()
+            case .saveSnippet: self?.saveSelectedSnippet()
+            case .openLibrary: self?.openSelectedInLibrary()
+            case .newSnippet: self?.onNewSnippet?()
             }
         }
         menu.popUp(positioning: nil, at: NSPoint(x: content.bounds.maxX - 200, y: 44), in: content)
@@ -281,7 +286,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard isSessionOpen, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else {
             return false
         }
+        guard (window?.firstResponder as? NSTextView)?.hasMarkedText() != true else { return false }
         switch event.charactersIgnoringModifiers?.lowercased() {
+        case "s": saveSelectedSnippet(); return true
+        case "e": openSelectedInLibrary(); return true
+        case "n": onNewSnippet?(); return true
         case "k":
             openActions()
             return true
@@ -291,6 +300,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         default:
             return false
         }
+    }
+
+    private func saveSelectedSnippet() {
+        guard let target = state.copyTarget else { return }
+        Task { await state.saveSelection(target) }
+    }
+
+    private func openSelectedInLibrary() {
+        guard let ref = state.copyTarget?.ref else { return }
+        onOpenInLibrary?(ref)
     }
 }
 

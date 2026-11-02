@@ -24,7 +24,8 @@ full-text index consumes persistent history, and the quick-access panel browses
 recent clips, searches all content, previews text, and copies the selected item.
 The snippet service foundation preserves capture identity during saving and body
 edits, retains conflicting edits separately, and recovers local drafts. Its native
-editor interface remains planned. Direct paste into other apps, persistent file
+editor supports recoverable editing, document find, search and explicit saving.
+Direct paste into other apps, persistent file
 authorization, and cloud integration remain planned.
 Planned capabilities must stay labelled until implemented and verified.
 

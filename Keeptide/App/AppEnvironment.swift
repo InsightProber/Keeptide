@@ -25,6 +25,14 @@ final class AppEnvironment {
     var panelController: PanelController {
         if let panel { return panel }
         let panel = makePanel()
+        panel.onOpenInLibrary = { [weak self] ref in
+            self?.showLibrary()
+            self?.libraryWindowController.open(ref)
+        }
+        panel.onNewSnippet = { [weak self] in
+            self?.showLibrary()
+            self?.libraryWindowController.newDocument(nil)
+        }
         self.panel = panel
         captureSession.onServicesChanged = { [weak panel] in panel?.state.servicesDidChange() }
         captureSession.onRecentClipsChanged = { [weak panel] in panel?.state.recentClipsChanged() }
@@ -47,6 +55,7 @@ final class AppEnvironment {
 private extension CaptureSession {
     var quickAccessServices: QuickAccessServices? {
         guard let contentRepository, let pasteService else { return nil }
-        return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService)
+        return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService,
+                                   library: libraryService)
     }
 }

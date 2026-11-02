@@ -8,6 +8,7 @@ struct QuickAccessServices {
     let repository: ContentRepository
     let search: SearchService?
     let paste: PasteService
+    var library: LibraryService? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -56,6 +57,8 @@ final class QuickAccessState {
     private(set) var isPreviewExpanded = false
     private(set) var preview: PreviewContent?
     private(set) var failure: PasteRefusal?
+    private(set) var saveMessage: String?
+    private(set) var canUndoSave = false
     @ObservationIgnored var onCopied: (@MainActor () -> Void)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
@@ -71,6 +74,8 @@ final class QuickAccessState {
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
     @ObservationIgnored private var previewing: Task<Void, Never>?
+    @ObservationIgnored private var saving = false
+    @ObservationIgnored private var savedUndo: (itemID: ItemID, memoID: UUID, fingerprint: Data, identity: StoreIdentity)?
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -88,6 +93,9 @@ final class QuickAccessState {
     }
 
     func open() {
+        saveMessage = nil
+        savedUndo = nil
+        canUndoSave = false
         isOpen = true
         query = ""
         kinds = []
@@ -189,6 +197,56 @@ final class QuickAccessState {
     func copySelection(_ mode: PasteMode) async {
         guard let target = copyTarget else { return }
         await copy(target, mode: mode)
+    }
+
+    func saveSelection(_ target: CopyTarget) async {
+        guard isOpen, !saving, copyTarget == target, let currentSession = session,
+              let services = services(), let library = services.library else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            let identity = try await library.controller.identity()
+            let content = try await services.repository.read(target.ref)
+            guard content.integrity == .complete, isOpen, session === currentSession,
+                  copyTarget == target else { return }
+            let outcome = try await library.saveAsMemo(target.ref.itemID, expecting: identity)
+            guard isOpen, session === currentSession, copyTarget == target else { return }
+            switch outcome {
+            case .created(let ref):
+                let snapshot = try await library.editingSnapshot(ref)
+                guard isOpen, session === currentSession, copyTarget == target else { return }
+                savedUndo = (target.ref.itemID, snapshot.memoID, snapshot.memoFingerprint, identity)
+                canUndoSave = true
+                saveMessage = "Saved to Snippets"
+            case .existing:
+                savedUndo = nil
+                canUndoSave = false
+                saveMessage = "Already in Snippets"
+            }
+        } catch {
+            if isOpen, session === currentSession, copyTarget == target {
+                saveMessage = "This item could not be saved. Try again."
+            }
+        }
+    }
+
+    func undoSaveSelection() async {
+        guard isOpen, !saving, let savedUndo, let currentSession = session,
+              let library = services()?.library else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            try await library.undoSaveAsMemo(savedUndo.itemID, memoID: savedUndo.memoID,
+                                            expectedFingerprint: savedUndo.fingerprint,
+                                            expecting: savedUndo.identity)
+            guard isOpen, session === currentSession else { return }
+            self.savedUndo = nil
+            canUndoSave = false
+            saveMessage = "Save undone"
+        } catch {
+            guard isOpen, session === currentSession else { return }
+            saveMessage = "This snippet changed and cannot be undone safely."
+        }
     }
 
     func loadMoreIfNeeded(visibleRow index: Int) {

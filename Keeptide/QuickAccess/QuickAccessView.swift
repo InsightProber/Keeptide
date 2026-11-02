@@ -28,6 +28,19 @@ struct QuickAccessView: View {
             .frame(height: 58)
             .background(.regularMaterial)
             scopeBar
+            if let message = state.saveMessage {
+                HStack {
+                    Text(message).accessibilityIdentifier("QuickAccessSaveStatus")
+                    Spacer()
+                    if state.canUndoSave {
+                        Button("Undo") { Task { await state.undoSaveSelection() } }
+                            .accessibilityIdentifier("QuickAccessUndoSave")
+                    }
+                }
+                .font(.callout)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 6)
+            }
             Divider()
             GeometryReader { proxy in
                 content(width: proxy.size.width)
