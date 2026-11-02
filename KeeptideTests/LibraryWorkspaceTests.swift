@@ -413,7 +413,7 @@ final class LibraryWorkspaceTests: XCTestCase {
 
     func testNativeQueryPublishesSynchronouslyAndLatestInputWins() async throws {
         let harness = try SearchHarness.make(in: self)
-        _ = try await insertHistory("abc final query", into: harness)
+        let (item, capture) = try await insertHistory("abc final query", into: harness)
         _ = try await insertHistory("ab intermediate query", into: harness)
         try await harness.consumer.synchronize()
         let workspace = try await makeWorkspace(harness)
@@ -427,12 +427,12 @@ final class LibraryWorkspaceTests: XCTestCase {
         await workspace.setQuery("abc")
         XCTAssertEqual(workspace.query, "abc")
         XCTAssertEqual(workspace.entries.count, 1)
-        XCTAssertEqual(workspace.entries.first?.title, "abc final query")
+        XCTAssertEqual(workspace.entries.map(\.ref), [ContentStoreFixtures.ref(item, capture)])
     }
 
     func testReopenRestartsQueryCancelledDuringClose() async throws {
         let harness = try SearchHarness.make(in: self)
-        _ = try await insertHistory("abc target", into: harness)
+        let (item, capture) = try await insertHistory("abc target", into: harness)
         _ = try await insertHistory("other item", into: harness)
         let workspace = try await makeWorkspace(harness)
         await workspace.reload()
@@ -444,7 +444,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         workspace.resumeAfterCloseCancellation()
         await workspace.setQuery("abc")
         XCTAssertEqual(workspace.query, "abc")
-        XCTAssertEqual(workspace.entries.map(\.title), ["abc target"])
+        XCTAssertEqual(workspace.entries.map(\.ref), [ContentStoreFixtures.ref(item, capture)])
     }
 
     private func insertHistory(

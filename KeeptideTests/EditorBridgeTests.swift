@@ -92,13 +92,13 @@ final class EditorBridgeTests: XCTestCase {
 
         controller.update(documentID: documentID, text: "text", isCode: false,
                           isEditable: true, focusRequest: 1)
-        await drainDeferredFocus()
+        await controller.settlePendingFocus()
         XCTAssertTrue(window.firstResponder === controller.textView)
 
         XCTAssertTrue(window.makeFirstResponder(nil))
         controller.update(documentID: documentID, text: "text", isCode: false,
                           isEditable: true, focusRequest: 1)
-        await drainDeferredFocus()
+        await controller.settlePendingFocus()
         XCTAssertFalse(window.firstResponder === controller.textView)
     }
 
@@ -115,7 +115,7 @@ final class EditorBridgeTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
 
-        await drainDeferredFocus()
+        await controller.settlePendingFocus()
         XCTAssertTrue(window.firstResponder === controller.textView)
     }
 
@@ -133,7 +133,7 @@ final class EditorBridgeTests: XCTestCase {
                           isEditable: true, focusRequest: 1)
         controller.update(documentID: UUID(), text: "second", isCode: false,
                           isEditable: false, focusRequest: 1)
-        await drainDeferredFocus()
+        await controller.settlePendingFocus()
 
         XCTAssertFalse(window.firstResponder === controller.textView)
     }
@@ -158,7 +158,7 @@ final class EditorBridgeTests: XCTestCase {
         bodyFocusIsCurrent = false
         XCTAssertTrue(window.makeFirstResponder(searchField))
 
-        await drainDeferredFocus()
+        await controller.settlePendingFocus()
 
         XCTAssertTrue(window.firstResponder === searchField.currentEditor())
         XCTAssertFalse(window.firstResponder === controller.textView)
@@ -175,7 +175,7 @@ final class EditorBridgeTests: XCTestCase {
         controller.update(documentID: documentID, text: "", isCode: false,
                           isEditable: true, focusRequest: 0)
 
-        await drainDeferredFocus()
+        await controller.settlePendingFocus()
 
         XCTAssertFalse(window.firstResponder === controller.textView)
     }
@@ -294,10 +294,6 @@ final class EditorBridgeTests: XCTestCase {
         return (controller, window)
     }
 
-    private func drainDeferredFocus() async {
-        await Task.yield()
-        await Task.yield()
-    }
 }
 
 private final class RecordingFindTextView: NSTextView {

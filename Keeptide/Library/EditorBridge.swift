@@ -85,6 +85,7 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
         textView.textContainerInset = NSSize(width: 18, height: 16)
         textView.textContainer?.widthTracksTextView = true
         textView.setAccessibilityLabel("Snippet body")
+        textView.setAccessibilityIdentifier("SnippetBodyTextView")
         textView.delegate = self
     }
 
@@ -130,6 +131,12 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
         guard lastReportedChange != change else { return }
         lastReportedChange = change
         onChange(change.text, change.isComposing)
+    }
+
+    /// Wait for the focus work already requested by this editor, without guessing
+    /// how many scheduler turns a native window needs.
+    func settlePendingFocus() async {
+        await deferredFocusTask?.value
     }
 
     func textDidEndEditing(_ notification: Notification) {

@@ -33,7 +33,7 @@ final class LibraryUITests: XCTestCase {
         let library = requireLibrary(in: app)
         app.typeKey("n", modifierFlags: .command)
         let titleEditor = library.descendants(matching: .any)["SnippetTitleEditor"]
-        let bodyEditor = library.descendants(matching: .any)["SnippetBodyEditor"]
+        let bodyEditor = library.textViews["SnippetBodyTextView"]
         XCTAssertTrue(titleEditor.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(bodyEditor.waitForExistence(timeout: 5), app.debugDescription)
         replaceText(in: titleEditor, with: title)
@@ -102,7 +102,7 @@ final class LibraryUITests: XCTestCase {
         let app = launchKeeptide(sessionID: UUID())
         let library = requireLibrary(in: app)
         app.typeKey("n", modifierFlags: .command)
-        let bodyEditor = library.descendants(matching: .any)["SnippetBodyEditor"]
+        let bodyEditor = library.textViews["SnippetBodyTextView"]
         XCTAssertTrue(bodyEditor.waitForExistence(timeout: 5), app.debugDescription)
         replaceText(in: bodyEditor, with: "alpha native-needle omega")
 
@@ -130,7 +130,7 @@ final class LibraryUITests: XCTestCase {
         let title = "Close flush \(UUID().uuidString.prefix(8))"
         app.typeKey("n", modifierFlags: .command)
         let titleEditor = library.descendants(matching: .any)["SnippetTitleEditor"]
-        let bodyEditor = library.descendants(matching: .any)["SnippetBodyEditor"]
+        let bodyEditor = library.textViews["SnippetBodyTextView"]
         XCTAssertTrue(titleEditor.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(bodyEditor.waitForExistence(timeout: 5), app.debugDescription)
         replaceText(in: titleEditor, with: title)
@@ -208,6 +208,11 @@ final class LibraryUITests: XCTestCase {
 
     private func replaceText(in element: XCUIElement, with value: String) {
         element.click()
+        let focused = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: element
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [focused], timeout: 5), .completed,
+                       "The intended native editor must own keyboard input before replacing text.")
         element.typeKey("a", modifierFlags: .command)
         element.typeText(value)
     }
