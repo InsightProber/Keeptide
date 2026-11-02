@@ -52,7 +52,7 @@ struct LibraryView: View {
         _commands = Bindable(wrappedValue: commands)
     }
 
-    var body: some View {
+    private var libraryLayout: some View {
         GeometryReader { geometry in
             NavigationSplitView(columnVisibility: $splitVisibility) {
                 librarySidebar
@@ -84,6 +84,10 @@ struct LibraryView: View {
             sidebarVisibility = next
             sidebarPreference = next == .visible ? .shown : .hidden
         }
+    }
+
+    private var presentedLibrary: some View {
+        libraryLayout
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
         }
@@ -118,6 +122,10 @@ struct LibraryView: View {
         } message: { _ in
             Text("Items will move to Uncategorized. Their content and history will not be deleted.")
         }
+    }
+
+    private var selectionLibrary: some View {
+        presentedLibrary
         .task(id: selectedItemID) {
             let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
             await session.select(ref)
@@ -137,6 +145,10 @@ struct LibraryView: View {
         .onChange(of: session.libraryWorkspace?.entries.map(\.ref) ?? []) { _, _ in
             updateExportContext()
         }
+    }
+
+    var body: some View {
+        selectionLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }

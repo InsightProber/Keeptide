@@ -58,10 +58,10 @@ final class ExportCoordinator {
     @ObservationIgnored private let chooseFolder: ChooseFolder
     @ObservationIgnored private let cancelFolderChoice: @MainActor () -> Void
     @ObservationIgnored private let reveal: @MainActor (URL) -> Void
-    @ObservationIgnored private var operation: Task<Void, Never>?
+    private var operation: Task<Void, Never>?
     @ObservationIgnored private var runID: UUID?
     @ObservationIgnored private var acceptsProgress = false
-    @ObservationIgnored private var closed = false
+    private var closed = false
 
     private(set) var phase: ExportCoordinatorPhase = .idle
 
