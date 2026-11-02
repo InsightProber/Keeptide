@@ -72,6 +72,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNil(session.quickAccessServices)
     }
 
+    #if DEBUG
     func testSyntheticSeedListsClipsNewestFirst() async throws {
         let configuration = try makeIsolatedSession()
         let session = CaptureSession()
@@ -102,6 +103,8 @@ final class CaptureSessionTests: XCTestCase {
         try await SearchTestSupport.waitUntil { try await usage.summaries(for: [ref]).map(\.useCount) == [1] }
         await session.shutdown()
     }
+
+    #endif
 
     func testTestSessionsPasteOnlyIntoTheSystemTestHost() async throws {
         let configuration = try makeIsolatedSession()
@@ -140,6 +143,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(system.probes, 0)
     }
 
+    #if DEBUG
     func testManualPasteQASeedsAreHarmlessAndCoverTheChecklist() throws {
         let clips = ManualPasteQASession.clips()
         XCTAssertEqual(clips.count, 6)
@@ -186,6 +190,8 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(recent.map(\.kind), [.text, .text, .text, .text, .text, .url])
     }
 
+    #endif
+
     func testChoosingALibraryOpensNothingAndATestSessionWinsOverQA() throws {
         let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
         var lookups = 0
@@ -206,6 +212,7 @@ final class CaptureSessionTests: XCTestCase {
             XCTAssertEqual(library.directPasteOnlyTo, CaptureTestConfiguration.systemTestHostBundleIdentifier)
             XCTAssertTrue(library.recordsClipboard)
         }
+        #if DEBUG
         // QA only with its flag: a folder and preferences of its own, no recording, and the user's library is not even
         // looked up.
         let qaLibrary = try XCTUnwrap(choose(nil, manualPasteQA: true))
@@ -215,6 +222,11 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNil(qaLibrary.directPasteOnlyTo)
         XCTAssertFalse(qaLibrary.recordsClipboard)
         XCTAssertEqual(lookups, 0)
+        #else
+        // Release excludes manual QA, even if a caller supplies its launch flag.
+        XCTAssertNil(try choose(nil, manualPasteQA: true))
+        XCTAssertEqual(lookups, 0)
+        #endif
         // Otherwise the user's library, with the standard defaults.
         let user = try XCTUnwrap(choose(nil, manualPasteQA: false))
         guard case .user = user else { return XCTFail("Chose \(user)") }
@@ -225,6 +237,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(lookups, 1)
     }
 
+    #if DEBUG
     func testTheQALibraryIsNeverTheUsersLibrary() throws {
         // Only the path: nothing in it is opened or read.
         let userLibrary = try CaptureLibrary.userLibraryDirectory()
@@ -318,6 +331,8 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: other.directory.appendingPathComponent("marker").path))
         XCTAssertTrue(otherDefaults.bool(forKey: "captureEnabled"))
     }
+
+    #endif
 
     private func makeIsolatedSession() throws -> CaptureTestConfiguration {
         let configuration = CaptureTestConfiguration(id: UUID())
