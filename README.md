@@ -48,7 +48,11 @@ payload, independent text and Markdown snippets, explicit copies, and edits that
 preserve the original capture. Local drafts support restart recovery and protect
 concurrent edits by saving conflicting content separately. These services are
 covered by native tests. The library adds recoverable editing, document find,
-search, explicit saving, and quick-access save and open actions.
+search, explicit saving, collections, favorites, and quick-access save and open
+actions. Markdown has a native reading mode that preserves its editable source.
+Image previews offer fitted and actual-size views, with explicit loading for
+larger originals. URL previews use stored information and open links only when
+requested. File previews use local authorization and system Quick Look.
 
 ## Designed for the Mac
 
@@ -100,7 +104,9 @@ slow or faulty provider does not block the interface. Rapidly replaced clipboard
 contents may not be captured. Detail text previews show a bounded prefix.
 The library searches recent clips and saved snippets. Retention controls are
 forthcoming. File references remain local and are not backups of
-the referenced files. Persistent file-access authorization is not implemented.
+the referenced files. File preview permissions stay on this Mac. When a local
+reference is missing, supported references can be explicitly reattached; older
+references that cannot be validated must be copied again.
 
 Automated capture tests use isolated named pasteboards and temporary libraries.
 They verify local format preservation, capture policy, and copying. The general

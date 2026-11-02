@@ -30,6 +30,9 @@ struct QuickAccessServices {
     var usage: (any QuickAccessUsage)? = nil
     /// Saving a capture as a snippet uses the same service and transaction rules as the library.
     var library: LibraryService? = nil
+    /// Local-only file authorization. These never leave the active store generation.
+    var fileAccess: FileAccessStore? = nil
+    var fileAccessIdentity: StoreIdentity? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -42,7 +45,10 @@ enum IndexNotice: Equatable {
 
 enum PreviewContent: Equatable {
     case text(String, isTruncated: Bool)
+    case markdown(MarkdownPreviewDocument, isTruncated: Bool)
+    case url(title: String?, address: String)
     case image(CGImage, pixelSize: CGSize)
+    case files([FilePreviewReference])
     case info(kind: ContentKind, sourceApp: String?)
     case failed(PasteRefusal)
 }
@@ -71,7 +77,7 @@ extension ContentKind {
 final class QuickAccessState {
     static let recentLimit = 200
     static let pageSize = 60
-    nonisolated static let previewByteLimit = 262_144
+    nonisolated static let previewByteLimit = PreviewService.fullPreviewByteLimit
     /// The preview card is at most 760 pt wide, which is 1520 px at 2x.
     static let previewImagePixels = 1520
     /// Clip details read at once. Each read takes the whole clip through the store's one writer context, which a
@@ -93,6 +99,8 @@ final class QuickAccessState {
     private(set) var indexNotice: IndexNotice?
     private(set) var isPreviewExpanded = false
     private(set) var preview: PreviewContent?
+    private(set) var isLoadingOriginalPreview = false
+    private(set) var previewMessage: String?
     private(set) var failure: PasteRefusal?
     private(set) var saveMessage: String?
     private(set) var canUndoSave = false
@@ -132,12 +140,14 @@ final class QuickAccessState {
     @ObservationIgnored private var reviewedAction: (target: CopyTarget, mode: PasteMode, delivery: PasteDelivery)?
     private var totalMatches = 0
     @ObservationIgnored private var previewedRef: ContentRef?
+    @ObservationIgnored private var previewGeneration: UInt64 = 0
     @ObservationIgnored private var loading: Task<Void, Never>?
     @ObservationIgnored private var refreshing: Task<Void, Never>?
     @ObservationIgnored private var loadingMore: Task<Void, Never>?
     /// Set once a page of the current generation added no rows; the generation asks for no more pages.
     private var pagingStopped = false
     @ObservationIgnored private var previewing: Task<Void, Never>?
+    @ObservationIgnored private var loadingOriginalPreview: Task<Void, Never>?
     @ObservationIgnored private var saving = false
     @ObservationIgnored private var savedUndo: (
         itemID: ItemID,
@@ -231,6 +241,8 @@ final class QuickAccessState {
         directPaste = nil
         isPreviewExpanded = false
         preview = nil
+        previewMessage = nil
+        isLoadingOriginalPreview = false
         failure = nil
         dropCommandReview()
     }
@@ -338,6 +350,61 @@ final class QuickAccessState {
     func togglePreview() {
         isPreviewExpanded.toggle()
         loadPreview()
+    }
+
+    var fileAccessStore: FileAccessStore? { services()?.fileAccess }
+    var fileAccessIdentity: StoreIdentity? { services()?.fileAccessIdentity }
+
+    /// Explicitly requests source-resolution decoding for the image currently in
+    /// the open preview. A failure leaves the fitted preview in place.
+    func loadOriginalPreview() {
+        guard isPreviewExpanded,
+              !isLoadingOriginalPreview,
+              case .image = preview,
+              let ref = previewedRef,
+              let service = services()?.preview else { return }
+        let generation = previewGeneration
+        isLoadingOriginalPreview = true
+        previewMessage = nil
+        loadingOriginalPreview?.cancel()
+        loadingOriginalPreview = Task {
+            defer {
+                if self.previewedRef == ref, self.previewGeneration == generation {
+                    self.isLoadingOriginalPreview = false
+                    self.loadingOriginalPreview = nil
+                }
+            }
+            do {
+                guard let loaded = try await service.originalImage(for: ref) else {
+                    guard !Task.isCancelled,
+                          self.previewedRef == ref,
+                          self.previewGeneration == generation,
+                          self.isPreviewExpanded else { return }
+                    self.previewMessage = "The original image could not be decoded."
+                    return
+                }
+                guard !Task.isCancelled,
+                      self.previewedRef == ref,
+                      self.previewGeneration == generation,
+                      self.selection.selection == ref,
+                      self.isPreviewExpanded else { return }
+                self.preview = .image(loaded.image, pixelSize: loaded.pixelSize)
+            } catch is CancellationError {
+                // Selection, closing, or a newer preview owns the result.
+            } catch PreviewLoadError.originalImageTooLarge {
+                guard !Task.isCancelled,
+                      self.previewedRef == ref,
+                      self.previewGeneration == generation,
+                      self.isPreviewExpanded else { return }
+                self.previewMessage = "This image is too large to load at full resolution. The fitted preview remains available."
+            } catch {
+                guard !Task.isCancelled,
+                      self.previewedRef == ref,
+                      self.previewGeneration == generation,
+                      self.isPreviewExpanded else { return }
+                self.previewMessage = "The original image could not be loaded. The fitted preview remains available."
+            }
+        }
     }
 
     /// What a key press may act on, captured when the key is pressed.
@@ -703,29 +770,40 @@ final class QuickAccessState {
     }
 
     private func loadPreview() {
+        previewGeneration &+= 1
+        let generation = previewGeneration
         previewing?.cancel()
         previewing = nil
+        loadingOriginalPreview?.cancel()
+        loadingOriginalPreview = nil
+        isLoadingOriginalPreview = false
+        previewMessage = nil
         preview = nil
         previewedRef = nil
         guard isPreviewExpanded, let ref = selection.selection, let repository = services()?.repository else { return }
         previewedRef = ref
         let row = selection.rows.first { $0.ref == ref }
         let kind = row?.kind ?? .other
-        let imageService = kind == .image ? services()?.preview : nil
-        // Text is decoded, and so is an image when there is a preview service; other kinds show what the
-        // row already knows.
-        guard kind == .text || kind == .url || imageService != nil else {
+        let previewService = services()?.preview
+        // A store-backed preview service handles every supported type. The fallback
+        // preserves text preview for lightweight test sessions without one.
+        guard kind == .text || kind == .url || previewService != nil else {
             preview = .info(kind: kind, sourceApp: row?.sourceApp)
             return
         }
         previewing = Task {
             let content: PreviewContent
             do {
-                if let imageService {
-                    if let loaded = try await imageService.image(for: ref, maximumPixels: Self.previewImagePixels) {
-                        content = .image(loaded.image, pixelSize: loaded.pixelSize)
+                if let previewService {
+                    let loaded = try await previewService.preview(
+                        for: ref,
+                        kind: kind,
+                        maximumImagePixels: Self.previewImagePixels
+                    )
+                    if case .info(let loadedKind, nil) = loaded {
+                        content = .info(kind: loadedKind, sourceApp: row?.sourceApp)
                     } else {
-                        content = .info(kind: kind, sourceApp: row?.sourceApp)
+                        content = loaded
                     }
                 } else {
                     let resolved = try await repository.read(ref)
@@ -734,12 +812,16 @@ final class QuickAccessState {
             } catch {
                 content = .failed(.contentUnavailable)
             }
-            guard !Task.isCancelled, self.previewedRef == ref, self.isPreviewExpanded else { return }
+            guard !Task.isCancelled,
+                  self.previewedRef == ref,
+                  self.previewGeneration == generation,
+                  self.isPreviewExpanded else { return }
             self.preview = content
         }
     }
 
     private func cancelLoads() {
+        previewGeneration &+= 1
         loading?.cancel()
         loading = nil
         refreshing?.cancel()
@@ -748,6 +830,10 @@ final class QuickAccessState {
         loadingMore = nil
         previewing?.cancel()
         previewing = nil
+        loadingOriginalPreview?.cancel()
+        loadingOriginalPreview = nil
+        isLoadingOriginalPreview = false
+        previewMessage = nil
         previewedRef = nil
     }
 

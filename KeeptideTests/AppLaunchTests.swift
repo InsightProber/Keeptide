@@ -2002,7 +2002,11 @@ final class AppLaunchTests: XCTestCase {
         addTeardownBlock { controller.close() }
         controller.show()
         try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: controller.window?.contentView).first)
+        let window = try XCTUnwrap(controller.window)
+        // The state receives the rows before PanelController's observation task
+        // applies them to AppKit. Judge the fade only once a real frame is in the
+        // strip, as the other panel-rendering tests do.
+        let strip = try await clipStrip(in: window)
         XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
         XCTAssertNotNil(strip.layer?.mask)
         preferences.fadesStripEnds = false
@@ -2011,7 +2015,9 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(strip.layer?.mask)
         controller.close()
         controller.show()
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == 40 && !self.framesOnScreen(in: strip).isEmpty
+        }
         XCTAssertNil(strip.layer?.mask)
         XCTAssertFalse(strip.isFollowingMotion)
     }
@@ -2475,6 +2481,26 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.isSessionOpen)
         XCTAssertNil(controller.state.commandReview)
         XCTAssertEqual(fake.sent, [])
+    }
+
+    func testFilePermissionSheetKeepsThePreviewSessionUntilItEnds() async throws {
+        let (controller, _) = try await makePanelWithClips(["synthetic file"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let sheet = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 120),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        window.beginSheet(sheet, completionHandler: { _ in })
+        defer {
+            if window.attachedSheet === sheet { window.endSheet(sheet) }
+            sheet.orderOut(nil)
+        }
+        XCTAssertTrue(window.attachedSheet === sheet)
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        XCTAssertTrue(controller.isSessionOpen)
+
+        window.endSheet(sheet)
+        try await SearchTestSupport.waitUntil { window.attachedSheet == nil }
+        controller.windowDidResignKey(Notification(name: NSWindow.didResignKeyNotification, object: window))
+        XCTAssertFalse(controller.isSessionOpen)
     }
 
     func testThePanelHidesBeforeTheKeystrokeWithoutEndingItsSession() async throws {

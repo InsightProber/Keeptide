@@ -330,6 +330,10 @@ struct LibraryView: View {
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
+                contentKind: editorContentKind(editor, in: workspace),
+                previewService: session.previewService,
+                fileAccessStore: session.fileAccessStore,
+                fileAccessIdentity: session.fileAccessIdentity,
                 bodyFocusRequest: bodyFocusSessionID == editor.sessionID ? bodyFocusRequest : 0,
                 shouldFocusBody: {
                     commands.focusGeneration == bodyFocusGeneration
@@ -384,35 +388,16 @@ struct LibraryView: View {
                     Divider()
                     if !content.isActionable {
                         unavailableContent(content.integrity)
-                    } else if let preview = session.selectedPreview {
-                        Text(preview.text)
-                            .textSelection(.enabled)
-                            .font(.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if preview.isTruncated {
-                            Label("Preview limited to the first 8 KiB", systemImage: "ellipsis.circle")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .accessibilityIdentifier("CapturePreviewTruncated")
-                        }
-                    } else if content.representations.contains(where: isImage) {
-                        ContentUnavailableView(
-                            "Image capture",
-                            systemImage: "photo",
-                            description: Text("The original image representations are preserved for copying.")
-                        )
-                    } else if content.representations.contains(where: { $0.storage == .localReference }) {
-                        ContentUnavailableView(
-                            "File reference",
-                            systemImage: "doc",
-                            description: Text("The file remains local to this Mac and may require relocation later.")
-                        )
                     } else {
-                        ContentUnavailableView(
-                            "Original formats preserved",
-                            systemImage: "doc.on.clipboard",
-                            description: Text("This capture has no directly readable text preview.")
+                        LibraryContentPreview(
+                            ref: ref,
+                            kind: summary.kind,
+                            service: session.previewService,
+                            fileAccessStore: session.fileAccessStore,
+                            fileAccessIdentity: session.fileAccessIdentity,
+                            applicationName: summary.sourceApp
                         )
+                        .frame(minHeight: 360)
                     }
                 }
                 .padding(24)
@@ -792,15 +777,20 @@ struct LibraryView: View {
         }
     }
 
-    private func isImage(_ representation: RepresentationValue) -> Bool {
-        let type = representation.typeIdentifier.lowercased()
-        return type == "public.png" || type == "public.jpeg" || type == "public.tiff" || type == "public.heic"
-    }
-
     private func formatSummary(_ content: ResolvedContent) -> String {
         let itemCount = Set(content.representations.map(\.itemIndex)).count
         let formatCount = content.representations.count
         return "\(itemCount) item\(itemCount == 1 ? "" : "s") • \(formatCount) format\(formatCount == 1 ? "" : "s")"
+    }
+
+    private func editorContentKind(
+        _ editor: MemoEditorSession,
+        in workspace: LibraryWorkspace
+    ) -> ContentKind {
+        guard let ref = editor.ref else { return .text }
+        return workspace.entries.first(where: { $0.ref == ref })?.kind
+            ?? workspace.entries.first(where: { $0.id == ref.itemID })?.kind
+            ?? .text
     }
 }
 
@@ -856,30 +846,53 @@ private struct LibraryEntryRow: View {
 private struct MemoEditorView: View {
     @Bindable var editor: MemoEditorSession
     @Bindable var workspace: LibraryWorkspace
+    let contentKind: ContentKind
+    let previewService: PreviewService?
+    let fileAccessStore: FileAccessStore?
+    let fileAccessIdentity: StoreIdentity?
     let bodyFocusRequest: Int
     let shouldFocusBody: @MainActor () -> Bool
+    @State private var markdownMode = MarkdownReadingMode.source
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if let body = editor.body {
-                EditorBridge(
-                    documentID: editor.draftID,
-                    text: body,
-                    isCode: editor.kind == .code,
-                    isEditable: !editor.isReadOnly && !workspace.isClosing,
-                    focusRequest: bodyFocusRequest,
-                    shouldFocus: shouldFocusBody,
-                    onChange: { value, isComposing in
-                        editor.setBody(value, isComposing: isComposing)
-                    },
-                    onFocusLost: {
-                        Task { _ = try? await workspace.focusLost() }
-                    }
+            if let ref = editor.ref, showsTypedPreview {
+                LibraryContentPreview(
+                    ref: ref,
+                    kind: contentKind,
+                    service: previewService,
+                    fileAccessStore: fileAccessStore,
+                    fileAccessIdentity: fileAccessIdentity
                 )
-                .id(editor.sessionID)
-                .accessibilityIdentifier("SnippetBodyEditor")
+            } else if let body = editor.body {
+                ZStack {
+                    EditorBridge(
+                        documentID: editor.draftID,
+                        text: body,
+                        isCode: editor.kind == .code,
+                        isEditable: canEditSource,
+                        focusRequest: bodyFocusRequest,
+                        shouldFocus: { canEditSource && shouldFocusBody() },
+                        onChange: { value, isComposing in
+                            editor.setBody(value, isComposing: isComposing)
+                        },
+                        onFocusLost: {
+                            Task { _ = try? await workspace.focusLost() }
+                        }
+                    )
+                    .id(editor.sessionID)
+                    .opacity(isShowingMarkdownPreview ? 0 : 1)
+                    .allowsHitTesting(!isShowingMarkdownPreview)
+                    .accessibilityHidden(isShowingMarkdownPreview)
+                    .accessibilityIdentifier("SnippetBodyEditor")
+
+                    if isShowingMarkdownPreview {
+                        MarkdownReadingView(documentID: editor.draftID, source: body)
+                            .background(Color(nsColor: .textBackgroundColor))
+                    }
+                }
             } else {
                 ContentUnavailableView(
                     "Original content preserved",
@@ -892,6 +905,9 @@ private struct MemoEditorView: View {
             footer
         }
         .background(Color(nsColor: .textBackgroundColor))
+        .onChange(of: editor.kind) { _, kind in
+            if kind != .markdown { markdownMode = .source }
+        }
     }
 
     private var header: some View {
@@ -944,6 +960,28 @@ private struct MemoEditorView: View {
                 .pickerStyle(.menu)
                 .frame(width: 150)
                 .disabled(editor.isReadOnly)
+                .accessibilityIdentifier("SnippetKindPicker")
+
+                if editor.kind == .markdown, editor.body != nil {
+                    Picker("Markdown view", selection: markdownModeBinding) {
+                        Text("Source")
+                            .tag(MarkdownReadingMode.source)
+                            .accessibilityIdentifier("MarkdownModeSource")
+                        Text("Preview")
+                            .tag(MarkdownReadingMode.preview)
+                            .accessibilityIdentifier("MarkdownModePreview")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 180)
+                    .disabled(editor.isComposing || activeTextViewIsComposing)
+                    .accessibilityIdentifier("MarkdownModePicker")
+                    .help(
+                        editor.isComposing || activeTextViewIsComposing
+                            ? "Finish text composition before changing view"
+                            : "Switch Markdown view"
+                    )
+                }
 
                 statusLabel
 
@@ -1004,6 +1042,48 @@ private struct MemoEditorView: View {
 
     private var kindBinding: Binding<MemoKind> {
         Binding(get: { editor.kind }, set: { editor.setKind($0) })
+    }
+
+    private var markdownModeBinding: Binding<MarkdownReadingMode> {
+        Binding(
+            get: { markdownMode },
+            set: { mode in
+                guard !editor.isComposing, !activeTextViewIsComposing else { return }
+                markdownMode = mode
+            }
+        )
+    }
+
+    private var activeTextViewIsComposing: Bool {
+        (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true
+    }
+
+    private var isShowingMarkdownPreview: Bool {
+        editor.kind == .markdown && markdownMode == .preview
+    }
+
+    private var canEditSource: Bool {
+        !editor.isReadOnly && !workspace.isClosing && !isShowingMarkdownPreview
+    }
+
+    private var showsTypedPreview: Bool {
+        LibraryContentPresentation.showsTypedPreview(
+            isReadOnly: editor.isReadOnly,
+            hasBody: editor.body != nil,
+            kind: contentKind
+        )
+    }
+}
+
+enum LibraryContentPresentation {
+    nonisolated static func showsTypedPreview(
+        isReadOnly: Bool,
+        hasBody: Bool,
+        kind: ContentKind
+    ) -> Bool {
+        guard hasBody else { return true }
+        guard isReadOnly else { return false }
+        return kind == .url || kind == .image || kind == .file
     }
 }
 

@@ -3,6 +3,31 @@ import XCTest
 @testable import Keeptide
 
 final class MemoTextExtractorTests: XCTestCase {
+    func testExplicitMarkdownTypesPreserveExactUTF8Source() throws {
+        let source = "# 标题\n\n- [ ] keep  two spaces  \n`echo $HOME`\n"
+
+        for type in ["net.daringfireball.markdown", "text/markdown"] {
+            let extracted = try XCTUnwrap(MemoTextExtractor.editableText(from: resolved([
+                representation(0, type, Data(source.utf8)),
+                representation(1, "public.utf8-plain-text", Data("fallback".utf8)),
+            ])))
+
+            XCTAssertEqual(extracted.text, source, type)
+            XCTAssertEqual(extracted.sourceRepresentationType, type, type)
+            XCTAssertTrue(ContentKind.isMarkdown(type), type)
+        }
+        XCTAssertFalse(ContentKind.isMarkdown("public.utf8-plain-text"))
+        XCTAssertFalse(ContentKind.isMarkdown("public.html"))
+    }
+
+    func testInvalidUTF8MarkdownDoesNotBecomeEditableSource() throws {
+        for type in ["net.daringfireball.markdown", "text/markdown"] {
+            XCTAssertNil(try MemoTextExtractor.editableText(from: resolved([
+                representation(0, type, Data([0xC3, 0x28])),
+            ])), type)
+        }
+    }
+
     func testPlainTextWinsOverRTFAndHTMLAndIsNeverPreviewTruncated() throws {
         let text = String(repeating: "完整正文🙂", count: 2_000)
         let content = resolved([

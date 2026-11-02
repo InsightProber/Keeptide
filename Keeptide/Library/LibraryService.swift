@@ -22,10 +22,13 @@ struct LibraryService: Sendable {
         let content = try await repository.read(historyRef)
         guard content.integrity == .complete else { throw StoreError.staleReference }
         let extracted = try MemoTextExtractor.editableText(from: content)
+        let displayKind: MemoKind = extracted.map {
+            ContentKind.isMarkdown($0.sourceRepresentationType) ? .markdown : .plainText
+        } ?? .plainText
         let memo = MemoValue(
             itemID: itemID, bodyMode: .inheritedCapture,
             sourceRepresentationType: extracted?.sourceRepresentationType,
-            displayKind: MemoKind.plainText.rawValue
+            displayKind: displayKind.rawValue
         )
         item.memoID = memo.id
         do {
