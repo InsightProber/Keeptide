@@ -74,6 +74,8 @@ enum StorePrecondition: Codable, Equatable, Sendable {
     case candidateSet(digest: Data, fingerprint: Data)
     case localCaptureSet(digest: Data, fingerprint: Data)
     case referenceSet(snapshotID: UUID, fingerprint: Data)
+    case collectionMembership(CollectionID, fingerprint: Data)
+    case collectionActive(CollectionID)
 }
 
 enum StoreMutation: Codable, Equatable, Sendable {
@@ -86,12 +88,14 @@ struct StoreTransaction: Sendable {
     var preconditions: [StorePrecondition] = []
     var mutations: [StoreMutation]
     var permit: StorePermit?
+    var receiptFingerprintKeys: Set<RecordKey> = []
 }
 
 struct StoreReceipt: Sendable {
     let transactionID: UUID
     let identity: StoreIdentity
     let changed: [RecordKey]
+    var postMutationFingerprints: [RecordKey: Data] = [:]
 }
 
 struct SnapshotRequest: Sendable {

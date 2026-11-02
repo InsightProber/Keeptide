@@ -401,6 +401,26 @@ enum StoredRecords {
         }
     }
 
+    /// Includes every raw reference, including soft-deleted and marked owners.
+    /// Record CAS separately protects member metadata; this fence detects phantoms.
+    static func collectionMemberIDs(_ id: CollectionID, in context: NSManagedObjectContext) throws -> [ItemID] {
+        let request = NSFetchRequest<NSManagedObject>(entityName: "LibraryItem")
+        request.predicate = NSPredicate(format: "collectionID == %@", id.rawValue as NSUUID)
+        request.includesPendingChanges = true
+        let ids = try context.fetch(request).map { object -> ItemID in
+            guard let uuid = object.value(forKey: "id") as? UUID else { throw StoreError.corruptStore }
+            return ItemID(rawValue: uuid)
+        }
+        guard Set(ids).count == ids.count else { throw StoreError.corruptStore }
+        return ids.sorted { $0.rawValue.uuidString < $1.rawValue.uuidString }
+    }
+
+    static func collectionMembershipFingerprint(
+        _ id: CollectionID, in context: NSManagedObjectContext
+    ) throws -> Data {
+        try canonicalDigest(collectionMemberIDs(id, in: context).map { $0.rawValue.uuidString })
+    }
+
     static func candidateFingerprint(digest candidateDigest: Data, in context: NSManagedObjectContext) throws -> Data {
         let captureRequest = dictionaryRequest(
             entity: "CaptureSnapshot",
@@ -567,6 +587,7 @@ extension StoredRecords {
             return SearchProjectionInput(
                 itemID: entry.item.id, title: entry.item.title, sourceApp: entry.row["sourceApp"] as? String,
                 collectionID: (entry.row["collectionID"] as? UUID).map(CollectionID.init(rawValue:)),
+                isFavorite: entry.item.isFavorite,
                 lastCopiedAt: entry.item.lastCopiedAt, history: entry.history, memo: memo,
                 captureID: entry.item.captureID, representationTypes: manifest?.entries.map(\.typeIdentifier) ?? [],
                 hasLocalReference: manifest?.entries.contains { $0.storage == .localReference } ?? false,
@@ -880,12 +901,13 @@ private extension StoredRecords {
               historyPurgeAfter?.timeIntervalSinceReferenceDate.isFinite ?? true,
               deletedAt?.timeIntervalSinceReferenceDate.isFinite ?? true,
               copyCount >= 0 else { throw StoreError.corruptStore }
-        _ = (sourceApp, collectionID, historyPurgeAfter, isFavorite)
+        _ = (sourceApp, collectionID, historyPurgeAfter)
         return ValidatedItemMetadata(
             id: id,
             title: title,
             captureID: captureID,
             memoID: memoID,
+            isFavorite: isFavorite,
             historyEligible: historyEligible,
             historyDeletedAt: historyDeletedAt,
             deletedAt: deletedAt,
@@ -1543,6 +1565,7 @@ private struct ValidatedItemMetadata {
     let title: String
     let captureID: UUID?
     let memoID: UUID?
+    let isFavorite: Bool
     let historyEligible: Bool
     let historyDeletedAt: Date?
     let deletedAt: Date?

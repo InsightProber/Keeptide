@@ -35,6 +35,7 @@ struct SearchRequest: Sendable {
     /// Collections hold memos only, so any collection filter searches memos.
     var collection: CollectionFilter?
     var sourceApp: String?
+    var favoritesOnly = false
     var generation: UInt64
     var offset = 0
     var limit = 200
@@ -57,6 +58,7 @@ struct SearchResult: Equatable, Sendable {
     let sourceApp: String?
     let lastCopiedAt: Date
     let savedAsMemo: Bool
+    let isFavorite: Bool
     let isPartiallyIndexed: Bool
     let isTextUnavailable: Bool
 }
@@ -306,7 +308,7 @@ struct SearchService: Sendable {
     /// Filters shared by counting, ranking and scanning. Every value is bound.
     private func conditions(_ query: ParsedQuery, _ request: SearchRequest, _ builder: inout SQLBuilder) -> String {
         var conditions: [String] = []
-        switch request.collection == nil ? request.scope : .memo {
+        switch request.collection == nil && !request.favoritesOnly ? request.scope : .memo {
         case .all: conditions.append("d.merged = 0")
         case .history: conditions.append("d.facet = 'history'")
         case .memo: conditions.append("d.facet = 'memo'")
@@ -316,6 +318,7 @@ struct SearchService: Sendable {
         case .uncategorized?: conditions.append("d.collection_id IS NULL")
         case nil: break
         }
+        if request.favoritesOnly { conditions.append("d.is_favorite = 1") }
         if !request.kinds.isEmpty {
             let kinds = request.kinds.map(\.rawValue).sorted().map { builder.bind(.text($0)) }
             conditions.append("d.kind IN (\(kinds.joined(separator: ", ")))")
@@ -374,25 +377,26 @@ struct SearchService: Sendable {
         let start = "max(1, instr(d.n_body, \(longest)) - 200)"
         let rows = try reader.rows("""
             SELECT d.id, d.item_id, d.facet, d.version, d.digest, d.saved_as_memo, d.kind, d.source_app,
-                   d.last_copied_at, d.title, d.body_partial, \(hits.joined(separator: ", ")),
+                   d.last_copied_at, d.title, d.body_partial, d.is_favorite, \(hits.joined(separator: ", ")),
                    \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable
             FROM doc d WHERE d.id IN (\(ids))
             """, builder.bindings)
         var byID: [Int64: SearchResult] = [:]
         let tiers = Dictionary(keys.map { ($0.id, $0.tier) }, uniquingKeysWith: { first, _ in first })
         for row in rows {
-            guard row.count == 19, case .integer(let id) = row[0], let itemID = row[1].uuid,
+            guard row.count == 20, case .integer(let id) = row[0], let itemID = row[1].uuid,
                   case .text(let facetText) = row[2], let facet = ContentFacet(rawValue: facetText),
                   let version = row[3].uuid, case .blob(let digest) = row[4],
                   case .integer(let savedAsMemo) = row[5], case .text(let kindText) = row[6],
                   let kind = ContentKind(rawValue: kindText), case .real(let copiedAt) = row[8],
                   case .text(let title) = row[9], case .integer(let partial) = row[10],
-                  case .integer(let windowStart) = row[15], case .text(let window) = row[16],
-                  case .integer(let bodyLength) = row[17], case .integer(let unavailable) = row[18] else {
+                  case .integer(let favorite) = row[11],
+                  case .integer(let windowStart) = row[16], case .text(let window) = row[17],
+                  case .integer(let bodyLength) = row[18], case .integer(let unavailable) = row[19] else {
                 throw SearchIndexError.corrupt
             }
             let fields: [SearchMatchField] = [.title, .body, .url, .note]
-            let matched = Set(zip(fields, row[11...14]).compactMap { field, value in
+            let matched = Set(zip(fields, row[12...15]).compactMap { field, value in
                 value == .integer(1) ? field : nil
             })
             byID[id] = SearchResult(
@@ -405,7 +409,7 @@ struct SearchService: Sendable {
                 relevance: SearchRelevance(rawValue: Int(tiers[id] ?? 4)) ?? .allTermsAnywhere,
                 kind: kind, sourceApp: row[7].text,
                 lastCopiedAt: Date(timeIntervalSinceReferenceDate: copiedAt),
-                savedAsMemo: savedAsMemo != 0, isPartiallyIndexed: partial != 0,
+                savedAsMemo: savedAsMemo != 0, isFavorite: favorite != 0, isPartiallyIndexed: partial != 0,
                 isTextUnavailable: unavailable != 0
             )
         }

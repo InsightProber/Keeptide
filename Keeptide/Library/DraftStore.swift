@@ -27,6 +27,8 @@ struct RecoverableDraft: Codable, Equatable, Sendable {
     var storageRevision: UInt64 = 1
     var revision: UInt64
     var savedAt: Date
+    /// Captured when a new-draft session opens; nil means uncategorized.
+    var collectionID: CollectionID? = nil
 }
 
 struct DraftRestoreResult: Equatable, Sendable {

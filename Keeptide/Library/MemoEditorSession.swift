@@ -32,6 +32,7 @@ final class MemoEditorSession {
     @ObservationIgnored private(set) var storeIdentity: StoreIdentity
     @ObservationIgnored private(set) var baseMemoFingerprint: Data?
     @ObservationIgnored private(set) var languageHint: String?
+    @ObservationIgnored private(set) var collectionID: CollectionID?
     @ObservationIgnored private var onChange: (() -> Void)?
     @ObservationIgnored private var lastAppliedReceiptRevision: UInt64?
 
@@ -53,7 +54,8 @@ final class MemoEditorSession {
         storeIdentity: StoreIdentity,
         baseMemoFingerprint: Data? = nil,
         languageHint: String? = nil,
-        onChange: (() -> Void)? = nil
+        onChange: (() -> Void)? = nil,
+        collectionID: CollectionID? = nil
     ) {
         self.draftID = draftID
         self.sessionID = sessionID
@@ -76,6 +78,7 @@ final class MemoEditorSession {
         self.storeIdentity = storeIdentity
         self.baseMemoFingerprint = baseMemoFingerprint
         self.languageHint = languageHint
+        self.collectionID = collectionID
         self.onChange = onChange
         lastAppliedReceiptRevision = nil
     }
