@@ -323,11 +323,11 @@ private extension ExportTests {
         let image = RepresentationValue(snapshotID: mixedCaptureID, itemIndex: 0, representationIndex: 1,
             typeIdentifier: "public.png", storage: .portable,
             byteCount: Int64(imageBytes.count), digest: ContentDigest.sha256(imageBytes), bytes: imageBytes)
-        let local = RepresentationValue(snapshotID: mixedCaptureID, itemIndex: 0, representationIndex: 2,
+        let local = RepresentationValue(snapshotID: mixedCaptureID, itemIndex: 1, representationIndex: 0,
             typeIdentifier: "public.file-url", storage: .localReference, byteCount: 0,
             digest: LocalReferencePrivacy.makeRelocationToken(), bytes: nil)
         let mixedManifest = CaptureManifest(version: LocalReferencePrivacy.opaqueLocalReferenceManifestVersion,
-            itemCount: 1, entries: [text, image, local].map(ManifestEntry.init))
+            itemCount: 2, entries: [text, image, local].map(ManifestEntry.init))
         let mixedCapture = CaptureValue(id: mixedCaptureID, manifest: mixedManifest,
             digest: ContentDigest.sha256(try mixedManifest.canonicalData()), representations: [text, image, local])
         let mixedItem = ContentStoreFixtures.item(mixedCapture)
