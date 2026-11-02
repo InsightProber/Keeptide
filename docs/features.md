@@ -17,6 +17,11 @@ previews text and images, and can paste the selected clip directly into the app
 window it was opened from. Other capabilities, including editable snippets and
 iCloud saving, remain planned. There is no application release yet.
 
+The reusable-library service foundation also supports saving captures, creating
+plain text, prompt, code and Markdown content, preserving originals during edits,
+recoverable local drafts, and independent conflict copies. The editor interface,
+collections and Markdown reading mode remain planned.
+
 ## First release
 
 | Area | Planned capability |

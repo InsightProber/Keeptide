@@ -34,7 +34,7 @@ final class ModelCompatibilityTests: XCTestCase {
         XCTAssertEqual(customConfigurations, ["CloudContent", "LocalState"])
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent")).compactMap(\.name)), cloudEntities)
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "LocalState")).compactMap(\.name)), localEntities)
-        XCTAssertEqual(model.versionIdentifiers, ["2"])
+        XCTAssertEqual(model.versionIdentifiers, ["3"])
     }
 
     func testCloudEntitiesExposeTheFrozenAttributes() throws {
@@ -61,7 +61,7 @@ final class ModelCompatibilityTests: XCTestCase {
             "id": .UUIDAttributeType, "itemID": .UUIDAttributeType, "title": .stringAttributeType,
             "bodyMode": .stringAttributeType, "sourceRepresentationType": .stringAttributeType,
             "body": .binaryDataAttributeType, "version": .UUIDAttributeType, "digest": .binaryDataAttributeType,
-            "languageHint": .stringAttributeType, "note": .stringAttributeType,
+            "languageHint": .stringAttributeType, "displayKind": .stringAttributeType, "note": .stringAttributeType,
             "deletedAt": .dateAttributeType, "purgeAfter": .dateAttributeType
         ])
         assertAttributes(model, entity: "Collection", expected: [

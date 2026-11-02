@@ -113,6 +113,7 @@ struct MemoValue: Codable, Equatable, Sendable {
     var version: ContentVersion?
     var digest: Data?
     var languageHint: String?
+    var displayKind: String?
     var note: String
     var deletedAt: Date?
     var purgeAfter: Date?
@@ -121,7 +122,7 @@ struct MemoValue: Codable, Equatable, Sendable {
         id: UUID = UUID(), itemID: ItemID, title: String = "", bodyMode: MemoBodyMode,
         sourceRepresentationType: String? = nil, body: Data? = nil, version: ContentVersion? = nil,
         digest: Data? = nil, languageHint: String? = nil, note: String = "",
-        deletedAt: Date? = nil, purgeAfter: Date? = nil
+        deletedAt: Date? = nil, purgeAfter: Date? = nil, displayKind: String? = nil
     ) {
         self.id = id
         self.itemID = itemID
@@ -132,6 +133,7 @@ struct MemoValue: Codable, Equatable, Sendable {
         self.version = version
         self.digest = digest
         self.languageHint = languageHint
+        self.displayKind = displayKind
         self.note = note
         self.deletedAt = deletedAt
         self.purgeAfter = purgeAfter

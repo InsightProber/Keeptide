@@ -39,9 +39,16 @@ as a snippet, or write one directly.
 > instead and says so. Keeptide sends the paste and does not confirm that the app
 > received it. In a terminal, text is pasted as plain text without its trailing
 > newline, and a multi-line command, or one with control or invisible
-> characters, is confirmed first. Keeptide never runs commands. Snippet
-> workflows and iCloud saving are still planned. There is no end-user release
+> characters, is confirmed first. Keeptide never runs commands. The native
+> snippet editor and iCloud saving are still planned. There is no end-user release
 > yet.
+
+The snippet service foundation supports saving a capture without duplicating its
+payload, independent text and Markdown snippets, explicit copies, and edits that
+preserve the original capture. Local drafts support restart recovery and protect
+concurrent edits by saving conflicting content separately. These services are
+covered by native tests; the library editor and its user-facing save actions are
+still planned.
 
 ## Designed for the Mac
 
