@@ -11,6 +11,36 @@ describe capability outcomes, not released features or delivery dates.
 | M3 — Recovery and user control | Full background cloud integration, account isolation, settings and exports | Clean-install recovery, account transition checks and independently verified exports | Planned |
 | M4 — First release | A signed, accessible and responsive application suitable for daily use | Integrated regression checks, representative large libraries, supported-OS validation and sustained use | Planned |
 
+## Current foundation
+
+The repository currently contains a native menu-bar application, quick access,
+clipboard recording, validated local persistence, a rebuildable search index,
+editable text and Markdown snippets, collections, favorites, typed previews,
+local retention and Recently Deleted, settings, and independently verifiable
+local archive export. Deterministic native tests exercise these application and
+storage boundaries with synthetic temporary data.
+
+Search benchmark tooling records a fixed synthetic dataset, seed, configuration,
+Git SHA, toolchain, and machine. Its performance gate applies to the first batch
+from SearchService in a Release test build. It is not evidence of quick-access
+rendering or end-to-end UI latency.
+
+## Remaining first-release gates
+
+- Complete signed manual validation for keyboard focus, input methods,
+  Accessibility permission states, multi-display/Spaces behavior, and real
+  destination applications.
+- Run representative Release benchmarks and sustained-use observation on the
+  exact candidate SHA; the presence of benchmark tooling is not a passing run.
+- Complete Developer ID signing, notarization, supported-macOS checks, and the
+  release packaging path.
+- Validate iCloud account isolation, background persistence, and clean-install
+  recovery with a real provisioned container before enabling or claiming cloud
+  support.
+- Finish the documented disk-capacity, migration-failure, accessibility, and
+  long-duration acceptance matrix. Automated tests and mocks do not substitute
+  for these system-level checks.
+
 ## Release principles
 
 - Local workflow development can proceed while cloud feasibility awaits the

@@ -27,9 +27,9 @@ as a snippet, or write one directly.
 > a search lists them all together. The search folds into an icon at the band's
 > left end until you type. The arrow keys step one card at a time, and a
 > trackpad swipe moves one card per detent with a haptic tick on a Force Touch
-> trackpad. A minimal Settings window chooses small, medium or large cards, how
-> much larger the selected card is drawn, and whether the ends fade. It can
-> also turn the frequent clips off.
+> trackpad. Settings covers the quick-access appearance, global shortcut,
+> recording and privacy, local retention, and the truthful availability of
+> features that are not enabled in the current build.
 > The panel browses recent clips, searches all content through a rebuildable local
 > full-text index (including one- and two-character Chinese queries), previews
 > text and images, and copies the selected item in its original formats or as
@@ -95,10 +95,26 @@ Open `Keeptide.xcodeproj` in full Xcode with the macOS 26 SDK or later and selec
 the shared `Keeptide` scheme. The project uses Swift 6 and Apple frameworks;
 Command Line Tools alone cannot run its XCTest suite.
 
-Run `./scripts/verify.sh all` for native tests, a Release build, and a Debug build
-with Swift warnings treated as errors. See [Contributing](CONTRIBUTING.md) for focused
-commands and validation
-boundaries. Recording is disabled on first launch. Open the library or menu-bar
+The main developer checks are:
+
+```sh
+./scripts/verify.sh all
+./scripts/verify.sh analyze
+./scripts/benchmark.sh
+./scripts/benchmark.sh --million
+```
+
+`verify.sh all` runs native tests, a Release build, and a Debug build with Swift
+warnings treated as errors. `analyze` runs Xcode's static analyzer. The default
+benchmark uses a fixed 10,000-item correctness oracle and measures SearchService
+with 100,000 synthetic items in a Release test build. The one-million-item run is
+an explicit stress-test opt-in. It is service-level evidence only: it does not
+measure quick-access rendering, input latency, or UI first-frame time. Detailed
+benchmark logs, result bundles, and JSON reports stay under the ignored
+`.local/benchmarks/` directory. See [Contributing](CONTRIBUTING.md) for focused
+commands and validation boundaries.
+
+Recording is disabled on first launch. Open the library or menu-bar
 menu and choose **Start Recording** to record new copies; **Pause Recording**
 stops collection. Ignored applications can be configured in the library. Source
 attribution uses observed foreground-application changes and is best effort;
@@ -110,8 +126,9 @@ transient content is skipped when the source marks it accordingly. A copy above
 visible status. Clipboard bodies are read in an isolated helper process so a
 slow or faulty provider does not block the interface. Rapidly replaced clipboard
 contents may not be captured. Detail text previews show a bounded prefix.
-The library searches recent clips and saved snippets. Retention controls are
-forthcoming. File references remain local and are not backups of
+The library searches recent clips and saved snippets. History retention, Recently
+Deleted, restoration, and explicit permanent removal are implemented locally.
+File references remain local and are not backups of
 the referenced files. File preview permissions stay on this Mac. When a local
 reference is missing, supported references can be explicitly reattached; older
 references that cannot be validated must be copied again.

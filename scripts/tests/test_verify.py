@@ -128,6 +128,15 @@ class VerifyScriptTests(unittest.TestCase):
             self.assertIn("Debug", arguments)
             self.assertIn("SWIFT_TREAT_WARNINGS_AS_ERRORS=YES", arguments)
 
+    def test_analyze_runs_static_analyzer_without_signing(self):
+        with self.fake_xcode() as (env, capture):
+            result = self.run_verify("analyze", environment=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = capture.read_text().splitlines()
+            self.assertIn("analyze", arguments)
+            self.assertIn("Debug", arguments)
+            self.assertIn("CODE_SIGNING_ALLOWED=NO", arguments)
+
     def test_malformed_result_fails(self):
         with self.fake_xcode() as (env, _):
             env["TEST_SUMMARY"] = "not json"

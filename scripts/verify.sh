@@ -13,6 +13,7 @@ Usage:
   ./scripts/verify.sh ui [CLASS]
   ./scripts/verify.sh release-build
   ./scripts/verify.sh warnings-build
+  ./scripts/verify.sh analyze
   ./scripts/verify.sh all
 EOF
 }
@@ -121,6 +122,10 @@ case "$command_name" in
   warnings-build)
     [ "$#" -eq 1 ] || { usage; exit 64; }
     run_xcodebuild build -configuration Debug SWIFT_TREAT_WARNINGS_AS_ERRORS=YES CODE_SIGNING_ALLOWED=NO
+    ;;
+  analyze)
+    [ "$#" -eq 1 ] || { usage; exit 64; }
+    run_xcodebuild analyze -configuration Debug CODE_SIGNING_ALLOWED=NO
     ;;
   all)
     [ "$#" -eq 1 ] || { usage; exit 64; }

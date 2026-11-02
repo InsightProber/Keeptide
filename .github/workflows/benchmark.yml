@@ -1,0 +1,86 @@
+name: Release search benchmark
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/benchmark.yml
+      - scripts/benchmark.sh
+      - scripts/validate_benchmark_report.py
+      - scripts/check_test_result.py
+      - scripts/tests/test_benchmark_report.py
+      - scripts/tests/test_benchmark_script.py
+      - scripts/tests/test_benchmark_workflow.py
+      - KeeptideTests/SearchPerformanceTests.swift
+      - KeeptideTests/SearchOracleTests.swift
+      - KeeptideTests/SearchFixtureLibrary.swift
+      - Keeptide/Search/HistoryConsumer.swift
+      - Keeptide/Search/QueryNormalizer.swift
+      - Keeptide/Search/SQLiteSearchIndex.swift
+      - Keeptide/Search/SearchProjection.swift
+      - Keeptide/Search/SearchService.swift
+      - Keeptide/Persistence/ContentRepository.swift
+      - Keeptide/Persistence/LocalUsageStore.swift
+      - Keeptide/Persistence/PersistenceController.swift
+      - Keeptide/Persistence/StoreChangeReader.swift
+      - Keeptide/Persistence/StoreSafetyGate.swift
+      - Keeptide/Persistence/StoredRecords.swift
+      - Keeptide/Persistence/WriteCoordinator.swift
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: Search benchmark dataset size
+        required: true
+        default: standard
+        type: choice
+        options:
+          - standard
+          - million
+
+permissions:
+  contents: read
+
+jobs:
+  release-search-benchmark:
+    runs-on: macos-26
+    timeout-minutes: 240
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Report benchmark environment
+        run: |
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          uname -m
+          sw_vers
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Verify benchmark tooling
+        run: >-
+          python3 -m unittest
+          scripts.tests.test_benchmark_report
+          scripts.tests.test_benchmark_script
+          scripts.tests.test_benchmark_workflow
+          -v
+
+      - name: Run selected Release benchmark
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] &&
+             [ "${{ inputs.dataset }}" = "million" ]; then
+            ./scripts/benchmark.sh --million
+          else
+            ./scripts/benchmark.sh
+          fi
+
+      - name: Upload synthetic benchmark evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: search-benchmark-evidence-${{ github.event_name }}-${{ inputs.dataset || 'standard' }}-${{ github.sha }}
+          path: .local/benchmarks/
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
