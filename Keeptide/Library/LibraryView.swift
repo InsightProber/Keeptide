@@ -198,6 +198,7 @@ struct LibraryView: View {
                 .accessibilityHidden(true)
             Text(collection.value.name)
                 .lineLimit(1)
+                .accessibilityLabel(collection.value.name)
                 .help(collection.value.name)
         }
         .accessibilityLabel(collection.value.name)

@@ -36,7 +36,7 @@ final class CollectionUITests: XCTestCase {
 
         renamed.rightClick()
         app.menuItems["Delete Collection"].click()
-        let confirm = app.buttons["Delete Collection"].firstMatch
+        let confirm = app.sheets.buttons["Delete Collection"].firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), app.debugDescription)
         confirm.click()
         XCTAssertTrue(renamed.waitForNonExistence(timeout: 5), app.debugDescription)
@@ -51,12 +51,12 @@ final class CollectionUITests: XCTestCase {
     func testTwentyLongCollectionsRemainAvailableFromScopeMenu() {
         let app = launchKeeptide()
         let library = requireLibrary(in: app)
-        let names = (1...20).map { "分类 \($0) — 很长的中文分类名称用于验证完整筛选" }
+        let names = (1...20).map { "Group \($0) — 很长的中文名称用于验证完整筛选" }
         for name in names { createCollection(named: name, in: app) }
 
         let filter = app.textFields["CollectionFilterField"]
         XCTAssertTrue(filter.waitForExistence(timeout: 5), app.debugDescription)
-        replaceText(in: filter, with: "分类 20")
+        replaceText(in: filter, with: "Group 20")
         XCTAssertTrue(collectionRow(named: names.last!, in: library).waitForExistence(timeout: 5),
                       app.debugDescription)
         XCTAssertFalse(collectionRow(named: names.first!, in: library).exists)
@@ -116,7 +116,7 @@ final class CollectionUITests: XCTestCase {
         alpha.click()
         XCUIElement.perform(withKeyModifiers: [.command]) { beta.click() }
 
-        let actions = app.buttons["SelectionActions"]
+        let actions = app.descendants(matching: .menuButton)["SelectionActions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 5), app.debugDescription)
         actions.click()
         app.menuItems["Add to Favorites"].click()
