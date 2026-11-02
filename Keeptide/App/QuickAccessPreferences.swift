@@ -10,6 +10,7 @@ final class QuickAccessPreferences {
     /// card size is stored.
     static let clipsPerRowKey = "quickAccessClipsPerRow"
     static let ticksKey = "quickAccessTrackpadTicks"
+    static let showsFrequentClipsKey = "quickAccess.showsFrequentClips"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -20,12 +21,17 @@ final class QuickAccessPreferences {
     var trackpadTicks: Bool {
         didSet { defaults.set(trackpadTicks, forKey: Self.ticksKey) }
     }
+    /// Whether the strip opens with the frequent clips at its left. Absent means on.
+    var showsFrequentClips: Bool {
+        didSet { defaults.set(showsFrequentClips, forKey: Self.showsFrequentClipsKey) }
+    }
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         cardSize = Self.storedCardSize(in: defaults)
         // Absent means on; `bool(forKey:)` would read it as off.
         trackpadTicks = defaults.object(forKey: Self.ticksKey) as? Bool ?? true
+        showsFrequentClips = defaults.object(forKey: Self.showsFrequentClipsKey) as? Bool ?? true
     }
 
     /// Stored values are not trusted: one that is not a card size gives the default. Where none is stored, the

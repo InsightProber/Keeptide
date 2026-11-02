@@ -10,6 +10,8 @@ enum StripMarker: Equatable {
 /// One piece of the line under a card's kind, in the colour band.
 enum StripHeaderItem: Equatable {
     case time(String)
+    /// How often a frequent clip was used, in place of its time.
+    case uses(String)
     case marker(StripMarker)
     /// How many more items than the shown one the clip holds.
     case extraItems(Int)
@@ -34,6 +36,8 @@ struct StripFrameContent: Equatable {
     var kind: ContentKind
     /// How long ago the clip was copied, as the colour band says it.
     var time: String
+    /// A frequent clip's "Used N times", shown in the colour band in place of its time; nil otherwise.
+    var uses: String?
     /// The app the clip came from. Its icon gives the colour band its colour.
     var sourceApp: String?
     /// What VoiceOver names the clip by, after the band and the footer: the title a link's card shows, and the clip's
@@ -54,9 +58,11 @@ struct StripFrameContent: Equatable {
     /// shape from here and not from the thumbnail.
     var imageAspectRatio: CGFloat?
 
-    /// The colour band's second line, left to right: the time, the marks, and how many more items there are.
+    /// The colour band's second line, left to right: the time, or how often a frequent clip was used, then the marks,
+    /// and how many more items there are.
     var headerLine: [StripHeaderItem] {
-        [.time(time)] + markers.map(StripHeaderItem.marker) + (extraItems > 0 ? [.extraItems(extraItems)] : [])
+        [uses.map(StripHeaderItem.uses) ?? .time(time)] + markers.map(StripHeaderItem.marker)
+            + (extraItems > 0 ? [.extraItems(extraItems)] : [])
     }
 
     /// `detail` is nil until the details have arrived, and when they could not be read. A text search
@@ -65,7 +71,8 @@ struct StripFrameContent: Equatable {
     static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
                      now: Date = Date()) -> StripFrameContent {
         var content = StripFrameContent(
-            kind: row.kind, time: QuickAccessRowContent.time(of: row.date, relativeTo: now), sourceApp: row.sourceApp,
+            kind: row.kind, time: QuickAccessRowContent.time(of: row.date, relativeTo: now),
+            uses: row.frequentUses.map { ClipInfoFormatter.uses($0) }, sourceApp: row.sourceApp,
             accessibilityTitle: row.displayTitle,
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
             extraItems: 0, markers: [], isTextUnavailable: row.isTextUnavailable
@@ -321,8 +328,9 @@ struct StripFrameView: View {
     @ViewBuilder
     private func headerItem(_ item: StripHeaderItem, color: Color) -> some View {
         switch item {
-        case .time(let time):
-            Text(time)
+        // How often a frequent clip was used is drawn as the time it stands in for.
+        case .time(let text), .uses(let text):
+            Text(text)
                 .font(.system(size: 12))
                 .foregroundStyle(color)
         case .marker(let marker):

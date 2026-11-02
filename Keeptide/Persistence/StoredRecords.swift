@@ -226,6 +226,32 @@ enum StoredRecords {
         return summaries
     }
 
+    /// The summaries of `itemIDs`, in the order asked and each item once. An item that is unknown, deleted, or has
+    /// neither a history nor a memo facet to show is left out, as it is from `summaries(limit:in:)`.
+    static func summaries(itemIDs: [ItemID], in context: NSManagedObjectContext) throws -> [ItemSummary] {
+        var seen = Set<ItemID>()
+        let asked = itemIDs.filter { seen.insert($0).inserted }
+        var found: [ItemID: ItemSummary] = [:]
+        for ids in batches(asked.map(\.rawValue), size: 400) {
+            let rows = try context.fetch(dictionaryRequest(
+                entity: "LibraryItem",
+                properties: itemMetadataProperties,
+                predicate: NSPredicate(format: "deletedAt == nil AND id IN %@", ids)
+            ))
+            guard !rows.isEmpty else { continue }
+
+            let projection = try readProjection(items: rows, strict: false, in: context)
+            let manifests = try captureManifests(
+                captureIDs: Set(projection.items.compactMap { $0["captureID"] as? UUID }), in: context
+            )
+            for row in projection.items {
+                guard let summary = summary(row, projection: projection, manifests: manifests) else { continue }
+                found[summary.itemID] = summary
+            }
+        }
+        return asked.compactMap { found[$0] }
+    }
+
     static func snapshotReferences(
         in context: NSManagedObjectContext
     ) throws -> (refs: [ContentRef], protectedCaptures: Set<UUID>) {

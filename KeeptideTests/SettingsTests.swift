@@ -101,6 +101,74 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(waitUntil { chosen() == [0, 0, 1] }, "\(chosen())")
     }
 
+    func testFrequentClipsShowUntilTurnedOff() throws {
+        let defaults = try makeDefaults()
+        // Absent means on, and reading it stores nothing.
+        XCTAssertTrue(QuickAccessPreferences(defaults: defaults).showsFrequentClips)
+        XCTAssertNil(defaults.object(forKey: "quickAccess.showsFrequentClips"))
+
+        // Turned off, it is stored as a flag under its own key, and the next launch reads it back.
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        preferences.showsFrequentClips = false
+
+        XCTAssertEqual(defaults.object(forKey: "quickAccess.showsFrequentClips") as? Bool, false)
+        XCTAssertFalse(QuickAccessPreferences(defaults: defaults).showsFrequentClips)
+        // The other settings keep their own keys.
+        XCTAssertNil(defaults.object(forKey: "quickAccessTrackpadTicks"))
+    }
+
+    func testTheFrequentSwitchReadsWithItsExplanation() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let hosting = NSHostingView(rootView: SettingsView(preferences: preferences))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        // As in the card size test: SwiftUI builds what VoiceOver reads once an assistive client asks the app for
+        // anything, and a host that may not use accessibility at all cannot run this test.
+        var applicationRole: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        let title = "Show frequent clips in the strip"
+        let explanation = "Clips you've copied or pasted from Keeptide more than once, and used in the last 90 days, "
+            + "appear to the left of the newest clip."
+        // The switches, in the order the form shows them. A switch reads as a checkbox. Its name is its label, or where
+        // it has none, as here, the text that titles it; the explanation is a text of its own.
+        func switches() -> [NSObject] { accessibilityElements(in: hosting).filter { role(of: $0) == .checkBox } }
+        func named(_ title: String) -> (NSObject) -> Bool {
+            { self.name(of: $0)?.hasPrefix(title) == true }
+        }
+        func isOn() -> Int? {
+            switches().first(where: named(title))
+                .flatMap { ($0.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }
+        }
+        let built = waitUntil { switches().contains(where: named(title)) }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let described = accessibilityElements(in: hosting).map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+
+        XCTAssertEqual(isOn(), 1, "On to begin with: \(described)")
+        // Below the card sizes and their picture, above the trackpad's ticks.
+        XCTAssertEqual(switches().map(named(title)), [true, false], "\(described)")
+        XCTAssertEqual(switches().map(named("Tick on the trackpad")), [false, true], "\(described)")
+        // The explanation is read too: here as a text of its own, and on a release that reads it with the switch, in
+        // the switch's label or help.
+        XCTAssertTrue(accessibilityElements(in: hosting).contains { element in
+            ["accessibilityLabel", "accessibilityValue", "accessibilityHelp"].contains {
+                (attribute(of: element, $0) as? String)?.contains(explanation) == true
+            }
+        }, "\(described)")
+
+        // The switch follows the preference: once the frequent clips are turned off, it reads as off.
+        preferences.showsFrequentClips = false
+        XCTAssertTrue(waitUntil { isOn() == 0 }, "\(String(describing: isOn()))")
+    }
+
     func testChangesPersistImmediately() throws {
         let defaults = try makeDefaults()
         let preferences = QuickAccessPreferences(defaults: defaults)
@@ -244,6 +312,21 @@ final class SettingsTests: XCTestCase {
 
     private func label(of element: NSObject) -> String? {
         element.value(forKey: "accessibilityLabel") as? String
+    }
+
+    /// What VoiceOver names an element by: its label, or where it has none, the text of the element that titles it.
+    private func name(of element: NSObject) -> String? {
+        if let label = label(of: element), !label.isEmpty { return label }
+        guard let title = attribute(of: element, "accessibilityTitleUIElement") as? NSObject else { return nil }
+        if let label = label(of: title), !label.isEmpty { return label }
+        return attribute(of: title, "accessibilityValue") as? String
+    }
+
+    /// An accessibility attribute asked for by its getter's name, or nil where the element has no such getter.
+    private func attribute(of element: NSObject, _ getter: String) -> Any? {
+        let selector = NSSelectorFromString(getter)
+        guard element.responds(to: selector) else { return nil }
+        return element.perform(selector)?.takeUnretainedValue()
     }
 
     /// Each test reads and writes its own suite, removed when the test ends.

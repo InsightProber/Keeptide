@@ -6,7 +6,8 @@ final class StripLayoutTests: XCTestCase {
     /// the placement numbers below were worked out for. It is no card size's own.
     private var metrics: StripMetrics {
         StripMetrics(cardSize: .medium, bandWidth: 1360, frameSize: CGSize(width: 164, height: 109), gap: 12,
-                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40)
+                     cornerRadius: 12, dockInset: 24, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 20,
+                     bottomPadding: 22)
     }
 
     func testCardSizesMatchTheSpec() {
@@ -53,15 +54,37 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testTheBandIsTheToolbarTheCardsAndTheirPadding() {
-        // 16 above the toolbar, the toolbar's 32, 20 down to the cards, the cards, and 22 below them.
+        // 16 above the toolbar, the toolbar's 32, 20 down to the cards, the cards, and 22 below them. Without the
+        // frequent wing, which is how the metrics come unless asked, the band is as it always was.
         for (size, height) in [(CardSize.small, 310), (.medium, 340), (.large, 376)] as [(CardSize, CGFloat)] {
             let m = StripLayout.metrics(for: size, visibleWidth: 1440)
+            XCTAssertEqual(m, StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: false), "\(size)")
+            XCTAssertEqual(m.toolbarGap, 20, "\(size)")
+            XCTAssertEqual(m.bottomPadding, 22, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
-            XCTAssertEqual(StripLayout.cardTop, 68)
-            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop - m.frameSize.height, 22, "\(size)")
+            XCTAssertEqual(StripLayout.cardTop(m), 68, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 22, "\(size)")
         }
         // Its corners are rounder than the cards'.
         XCTAssertEqual(StripLayout.cornerRadius, 36)
+    }
+
+    func testTheFrequentWingMakesRoomForItsIconsBelowTheCards() {
+        // With the frequent wing, the section icons lie below the cards, so the room there is 28 instead of 22 and the
+        // band is 6 taller. The gap between the toolbar and the cards stays 20, so the cards start 68 below the band's
+        // top edge, as without the wing. The cards and the band's width are the same.
+        for (size, height) in [(CardSize.small, 316), (.medium, 346), (.large, 382)] as [(CardSize, CGFloat)] {
+            let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true)
+            let plain = StripLayout.metrics(for: size, visibleWidth: 1440)
+            XCTAssertEqual(m.toolbarGap, 20, "\(size)")
+            XCTAssertEqual(m.bottomPadding, 28, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
+            XCTAssertEqual(StripLayout.cardTop(m), 68, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 28, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.bandHeight(plain), 6, "\(size)")
+            XCTAssertEqual(m.frameSize, plain.frameSize, "\(size)")
+            XCTAssertEqual(m.bandWidth, plain.bandWidth, "\(size)")
+        }
     }
 
     func testOpenDocksTheNewestAtTheLeftEnd() {
@@ -129,23 +152,200 @@ final class StripLayoutTests: XCTestCase {
         XCTAssertEqual(StripLayout.frameOrigins(metrics, count: 3, placement: placement), [24, 200, 376])
     }
 
+    // MARK: The frequent wing
+
+    // m is StripLayout.metrics(for: .medium, visibleWidth: 1440): band 1376, card 228, gap 14, step 242, dock 20.
+    private var medium: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+
+    func testFirstScreenCountsTheCardsTheBandShowsWhole() {
+        // Without a frequent wing the newest clip rests at the left dock, and the band shows
+        // floor((bandWidth − 2·dockInset + gap) / step) whole.
+        for (size, visible, count) in [(CardSize.medium, 1440, 5), (.medium, 1300, 5), (.medium, 1299, 4),
+                                       (.medium, 1024, 3), (.medium, 2560, 10), (.small, 1440, 6),
+                                       (.large, 1440, 4)] as [(CardSize, CGFloat, Int)] {
+            let m = StripLayout.metrics(for: size, visibleWidth: visible)
+            XCTAssertEqual(StripLayout.recentShownWhole(m, frequentCount: 0), count, "\(size) \(visible)")
+        }
+        // A band too narrow for a single card shows none, never fewer: the panel drops the clips it shows whole from
+        // the frequent wing by this count. So narrow a band puts the newest clip in its middle with a wing or without.
+        for (visible, count) in [(332, 1), (331, 0), (64, 0)] as [(CGFloat, Int)] {
+            let narrow = StripLayout.metrics(for: .medium, visibleWidth: visible)
+            for wing in [0, 1, 3] {
+                XCTAssertEqual(StripLayout.recentShownWhole(narrow, frequentCount: wing), count, "\(visible), \(wing)")
+            }
+        }
+    }
+
+    func testAWingThatReachesTheMiddleLeavesFewerNewestClipsWhole() {
+        // The strip opens on the newest clip. Beside a wing long enough to put it in the middle, the band shows it and
+        // the cards wholly right of the middle: floor((bandWidth/2 + W/2 + gap − dockInset) / step), 3 at 1440 and 2 at
+        // 1024. A shorter wing rests at the left dock with the newest clip left of the middle, and more of the newest
+        // are whole: 4 at 1440 beside one frequent card. At 1024 one frequent card leaves two whole, as a longer wing.
+        for (visible, counts) in [(1440, [5, 4, 3, 3, 3]), (1024, [3, 2, 2, 2, 2])] as [(CGFloat, [Int])] {
+            let m = StripLayout.metrics(for: .medium, visibleWidth: visible)
+            let wings = [0, 1, 2, 3, 20]
+            XCTAssertEqual(wings.map { StripLayout.recentShownWhole(m, frequentCount: $0) }, counts, "\(visible)")
+            XCTAssertEqual(Int(((m.bandWidth / 2 + m.frameSize.width / 2 + m.gap - m.dockInset) / m.step)
+                .rounded(.down)), counts[4], "\(visible)")
+            // Where the newest clip rests beside each wing, the last card counted ends short of the right dock and the
+            // next one does not.
+            for (wing, count) in zip(wings, counts) where count > 0 {
+                let film = StripLayout.placement(m, count: wing + 30, position: CGFloat(wing), oldestIsLoaded: true,
+                                                 frequentCount: wing)
+                let origins = StripLayout.frameOrigins(m, count: wing + 30, placement: film)
+                let dock = m.bandWidth - m.dockInset
+                XCTAssertLessThanOrEqual(origins[wing + count - 1] + m.frameSize.width, dock, "\(visible), \(wing)")
+                XCTAssertGreaterThan(origins[wing + count] + m.frameSize.width, dock, "\(visible), \(wing)")
+            }
+        }
+    }
+
+    func testTheDividerWidensOneGapByAThirdOfACard() {
+        XCTAssertEqual(CardSize.allCases.map { StripLayout.metrics(for: $0, visibleWidth: 1440).dividerExtra },
+                       [67, 76, 87])
+        // Three frequent clips, then the recent ones a third of a card further right. The line stands in the middle of
+        // the wider gap, from 732 to 822.
+        let placed = StripPlacement(firstOrigin: 20, dividerBefore: 3)
+        XCTAssertEqual(StripLayout.frameOrigins(medium, count: 6, placement: placed), [20, 262, 504, 822, 1064, 1306])
+        XCTAssertEqual(StripLayout.dividerX(medium, placement: placed), 777)
+        XCTAssertNil(StripLayout.dividerX(medium, placement: StripPlacement(firstOrigin: 20)))
+    }
+
+    func testAShortFrequentWingDocksTheWholeFilmLeft() {
+        // One frequent clip leaves the newest short of the middle, so the film rests at the left dock and the
+        // selection stands on the newest clip left of the middle.
+        let p = StripLayout.placement(medium, count: 31, position: 1, oldestIsLoaded: true, frequentCount: 1)
+        XCTAssertEqual(p, StripPlacement(firstOrigin: 20, dividerBefore: 1))
+        XCTAssertEqual(StripLayout.frameOrigins(medium, count: 31, placement: p)[1], 338)
+    }
+
+    func testAFrequentWingOfTwoOrMoreCentresTheNewestClip() {
+        for (k, origin) in [(2, 14), (3, -228)] as [(Int, CGFloat)] {
+            let p = StripLayout.placement(medium, count: k + 30, position: CGFloat(k), oldestIsLoaded: true,
+                                          frequentCount: k)
+            XCTAssertEqual(p.firstOrigin, origin, "\(k)")
+            XCTAssertEqual(StripLayout.frameOrigins(medium, count: k + 30, placement: p)[k] + 114, 688, "\(k)")
+        }
+    }
+
+    func testCrossingTheDividerUnderTheFingersMovesSmoothly() {
+        // Carried from the last frequent clip to the newest one, the selection crosses the wider gap a share at a time,
+        // so the film follows the fingers without a jump.
+        for (position, origin) in [(2, 20), (2.5, -69), (3, -228)] as [(CGFloat, CGFloat)] {
+            XCTAssertEqual(StripLayout.placement(medium, count: 33, position: position, oldestIsLoaded: true,
+                                                 frequentCount: 3).firstOrigin, origin, accuracy: 0.5, "\(position)")
+        }
+    }
+
+    func testWithoutRecentClipsThereIsNoDivider() {
+        let p = StripLayout.placement(medium, count: 3, position: 0, oldestIsLoaded: true, frequentCount: 3)
+        XCTAssertNil(p.dividerBefore)
+        // Nor does the film take the divider's room: three frames are 712 wide, centred.
+        XCTAssertEqual(p.firstOrigin, 332)
+        XCTAssertNil(StripLayout.placement(medium, count: 3, position: 0, oldestIsLoaded: true).dividerBefore)
+    }
+
+    func testTheDividerWidensTheFilmItself() {
+        // The oldest clip still comes to rest at the right dock.
+        let docked = StripLayout.placement(medium, count: 33, position: 32, oldestIsLoaded: true, frequentCount: 3)
+        XCTAssertEqual(StripLayout.frameOrigins(medium, count: 33, placement: docked)[32] + 228,
+                       medium.bandWidth - medium.dockInset)
+        // A short loaded film is centred as a group with the divider in it: 788 wide, 294 from either end.
+        let group = StripLayout.placement(medium, count: 3, position: 0, oldestIsLoaded: true, frequentCount: 1)
+        let origins = StripLayout.frameOrigins(medium, count: 3, placement: group)
+        XCTAssertEqual(origins, [294, 612, 854])
+        XCTAssertEqual(medium.bandWidth - (origins[2] + 228), 294)
+    }
+
+    func testAVanishedSelectionKeepsItsSlotAtTheDivider() {
+        // The empty slot stands just past the divider, where the newest clip rests as the strip opens: in the middle,
+        // with the wing to its left, the most used clip beside the divider, and the newest clip a step to its right.
+        let p = StripLayout.placement(medium, count: 33, position: -1, oldestIsLoaded: true, frequentCount: 3)
+        XCTAssertEqual(p, StripPlacement(firstOrigin: -228, dividerBefore: 3, slotBefore: 3))
+        XCTAssertEqual(StripLayout.slotOrigin(medium, placement: p), 574)
+        XCTAssertEqual(StripLayout.frameOrigins(medium, count: 5, placement: p), [-228, 14, 256, 816, 1058])
+        XCTAssertEqual(StripLayout.dividerX(medium, placement: p), 529)
+        // A short loaded film is centred with the slot and the divider in it: 1030 wide, from 173, with the slot at
+        // 491 between the frequent clip and the newest one.
+        let group = StripLayout.placement(medium, count: 3, position: -1, oldestIsLoaded: true, frequentCount: 1)
+        XCTAssertEqual(group, StripPlacement(firstOrigin: 173, dividerBefore: 1, slotBefore: 1))
+        XCTAssertEqual(StripLayout.slotOrigin(medium, placement: group), 491)
+        XCTAssertEqual(StripLayout.frameOrigins(medium, count: 3, placement: group), [173, 733, 975])
+        // Without a wing the slot stays before index 0, which the first origin leaves room for: the slot at the dock.
+        let plain = StripLayout.placement(medium, count: 30, position: -1, oldestIsLoaded: true)
+        XCTAssertEqual(plain, StripPlacement(firstOrigin: 262, slotBefore: 0))
+        XCTAssertEqual(StripLayout.slotOrigin(medium, placement: plain), medium.dockInset)
+        XCTAssertEqual(StripLayout.frameOrigins(medium, count: 2, placement: plain), [262, 504])
+        // A selected row has no slot.
+        XCTAssertNil(StripLayout.placement(medium, count: 33, position: 3, oldestIsLoaded: true, frequentCount: 3)
+            .slotBefore)
+        XCTAssertNil(StripLayout.slotOrigin(medium, placement: StripPlacement(firstOrigin: 20)))
+    }
+
+    func testSectionLabelsSitBesideTheDividerAndStickAtTheEnds() {
+        // Icons 70 and 60 wide here, so that their edges tell apart. Each stands 8 from the line, but never closer than
+        // 42 to an end of the band: it follows the line until it reaches that inset, then stays there, until the line
+        // passes it and its wing has gone off that end. The other icon then rests at that end.
+        let cases: [(CGFloat, StripSectionLabels)] = [
+            (600, .init(frequent: 522, recent: 608)),
+            // At the left end "Frequent" reaches 42 with the line at 120, stays there, and goes once the line passes
+            // its right edge, at 112; "Recent" goes on beside the line until it too reaches 42, and stays there.
+            (120, .init(frequent: 42, recent: 128)), (119, .init(frequent: 42, recent: 127)),
+            (112, .init(frequent: 42, recent: 120)), (111, .init(frequent: nil, recent: 119)),
+            (45, .init(frequent: nil, recent: 53)), (34, .init(frequent: nil, recent: 42)),
+            (33, .init(frequent: nil, recent: 42)), (-500, .init(frequent: nil, recent: 42)),
+            // The mirror at the right end, 1376 wide: "Recent" stays at 1274, 42 short of the end, from the line at
+            // 1266 until the line passes its left edge.
+            (1266, .init(frequent: 1188, recent: 1274)), (1267, .init(frequent: 1189, recent: 1274)),
+            (1274, .init(frequent: 1196, recent: 1274)), (1275, .init(frequent: 1197, recent: nil)),
+            (1342, .init(frequent: 1264, recent: nil)), (1343, .init(frequent: 1264, recent: nil)),
+            (2000, .init(frequent: 1264, recent: nil)),
+        ]
+        for (divider, expected) in cases {
+            let origins = StripLayout.sectionLabelOrigins(medium, dividerX: divider, frequentWidth: 70, recentWidth: 60)
+            XCTAssertEqual(origins, expected, "\(divider)")
+            // Neither ever stands within 42 of an end, nor on the other side of the line from its wing.
+            if let frequent = origins.frequent {
+                XCTAssertGreaterThanOrEqual(frequent, 42, "\(divider)")
+                XCTAssertLessThanOrEqual(frequent + 70, min(divider, medium.bandWidth - 42), "\(divider)")
+            }
+            if let recent = origins.recent {
+                XCTAssertGreaterThanOrEqual(recent, max(divider, 42), "\(divider)")
+                XCTAssertLessThanOrEqual(recent + 60, medium.bandWidth - 42, "\(divider)")
+            }
+        }
+        // They keep 42 from the band's ends whatever the dock inset is: 24 in a band 1360 wide here.
+        let custom: [(CGFloat, StripSectionLabels)] = [
+            (33, .init(frequent: nil, recent: 42)), (111, .init(frequent: nil, recent: 119)),
+            (112, .init(frequent: 42, recent: 120)),
+            (1258, .init(frequent: 1180, recent: 1258)), (1259, .init(frequent: 1181, recent: nil)),
+            (1327, .init(frequent: 1248, recent: nil)),
+        ]
+        for (divider, expected) in custom {
+            let origins = StripLayout.sectionLabelOrigins(metrics, dividerX: divider, frequentWidth: 70,
+                                                          recentWidth: 60)
+            XCTAssertEqual(origins, expected, "\(divider)")
+        }
+    }
+
     func testPanelAndPreviewStayInsideOddVisibleFrames() {
         for visible in [NSRect(x: 0, y: 25, width: 1280, height: 760), NSRect(x: 0, y: 0, width: 1100, height: 680),
                         NSRect(x: -1800, y: 30, width: 1600, height: 1000), NSRect(x: 0, y: 900, width: 400, height: 640),
                         NSRect(x: 0, y: 0, width: 1440, height: 875), NSRect(x: 0, y: 0, width: 2560, height: 1415)] {
-            for size in CardSize.allCases {
-                let m = StripLayout.metrics(for: size, visibleWidth: visible.width)
+            // The band the frequent wing makes taller stays inside as well.
+            for (size, wing) in CardSize.allCases.flatMap({ size in [(size, false), (size, true)] }) {
+                let m = StripLayout.metrics(for: size, visibleWidth: visible.width, showsFrequentClips: wing)
+                let label = "\(size) wing \(wing) \(visible)"
                 let band = StripLayout.bandFrame(m, in: visible)
-                XCTAssertEqual(band.midX, visible.midX, accuracy: 0.5, "\(size) \(visible)")
-                XCTAssertEqual(band.midY, visible.midY, accuracy: 0.5, "\(size) \(visible)")
-                XCTAssertEqual(band.size, NSSize(width: m.bandWidth, height: StripLayout.bandHeight(m)))
-                XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: band, preview: nil, in: visible)),
-                              "\(size) \(visible)")
+                XCTAssertEqual(band.midX, visible.midX, accuracy: 0.5, label)
+                XCTAssertEqual(band.midY, visible.midY, accuracy: 0.5, label)
+                XCTAssertEqual(band.size, NSSize(width: m.bandWidth, height: StripLayout.bandHeight(m)), label)
+                XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: band, preview: nil, in: visible)), label)
                 let (preview, moved) = StripLayout.previewLayout(band: band, in: visible)
                 XCTAssertTrue(visible.contains(StripLayout.panelFrame(band: moved, preview: preview, in: visible)),
-                              "\(size) \(visible)")
+                              label)
                 // The card sits above the band.
-                XCTAssertGreaterThanOrEqual(preview.minY, moved.maxY + StripLayout.previewGap - 0.5, "\(size) \(visible)")
+                XCTAssertGreaterThanOrEqual(preview.minY, moved.maxY + StripLayout.previewGap - 0.5, label)
             }
         }
     }

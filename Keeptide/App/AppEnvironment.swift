@@ -96,10 +96,12 @@ final class AppEnvironment {
     }
 }
 
-private extension CaptureSession {
+extension CaptureSession {
+    /// What the quick access panel reads and acts through while the library is open; nil while it is not. The frequent
+    /// wing reads the same usage store that the session's copies and pastes record their uses in.
     var quickAccessServices: QuickAccessServices? {
         guard let contentRepository, let pasteService else { return nil }
         return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService,
-                                   preview: previewService)
+                                   preview: previewService, usage: usageStore)
     }
 }

@@ -59,6 +59,19 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(changes.count, 2)
     }
 
+    func testQuickAccessServicesReadUsesFromTheSessionsStore() async throws {
+        let configuration = try makeIsolatedSession()
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id)
+
+        // The strip's frequent wing reads the very store that the session's copies and pastes record uses in.
+        let usage = try XCTUnwrap(session.quickAccessServices?.usage as? LocalUsageStore)
+        XCTAssertTrue(usage === session.usageStore)
+
+        await session.shutdown()
+        XCTAssertNil(session.quickAccessServices)
+    }
+
     func testSyntheticSeedListsClipsNewestFirst() async throws {
         let configuration = try makeIsolatedSession()
         let session = CaptureSession()

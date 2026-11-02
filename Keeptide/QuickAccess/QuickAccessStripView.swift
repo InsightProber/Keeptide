@@ -3,21 +3,25 @@ import Carbon.HIToolbox
 import SwiftUI
 
 /// The strip of clips in the quick access panel. AppKit lays the frames out and owns focus, keys,
-/// scrolling, clicks and what VoiceOver reads; SwiftUI draws each frame. The newest clip is at the left
-/// and older clips run to its right. The film of frames keeps the selected clip in the middle of the band,
-/// but near either end of the clips it stops at the band's end and the selection walks along it instead.
+/// scrolling, clicks and what VoiceOver reads; SwiftUI draws each frame. Index 0 is at the left and the rest
+/// run to its right: with a frequent wing, the wing runs from the least used frequent clip to the most used, and the
+/// newest clip follows it, beside the most used; without one, index 0 is the newest clip (or the best match). Older
+/// clips run to the newest one's right. A divider stands in the wider gap after the wing, and below the cards a section
+/// icon marks each wing beside it. The film of frames keeps the selected clip in the middle of the band, but near
+/// either end of the clips it stops at the band's end and the selection walks along it instead.
 ///
 /// The strip shows the selection it is given and nothing else. A click, a key or a swipe only asks for
 /// a change through `onSelect` or `onCommand`; the frames move when `show` brings the new selection.
 /// A selected frame's ring is drawn outside the frame, so nothing in the strip clips to its bounds.
+/// Each row has a frame of its own, so a clip listed in both wings has two, told apart by row ID.
 @MainActor
 final class QuickAccessStripView: NSView {
-    var onSelect: ((ContentRef) -> Void)?
+    var onSelect: ((QuickAccessRow.ID) -> Void)?
     var onCommand: ((QuickAccessCommand) -> Void)?
-    /// The rows that have a frame, the selected one first, and the last row on screen, which decides
-    /// when to load more. Called when either changes, and again while a framed row has no details.
+    /// The clips of the rows that have a frame, each once and the selected one first, and the last row on screen,
+    /// which decides when to load more. Called when either changes, and again while a framed row has no details.
     var onVisibleRefsChanged: (([ContentRef], Int) -> Void)?
-    var onContextMenu: ((ContentRef) -> NSMenu?)?
+    var onContextMenu: ((QuickAccessRow.ID) -> NSMenu?)?
     var haptics: any HapticPerforming = SystemHaptics()
     /// Whether the trackpad ticks for each step of the selection. The strip moves the same either way.
     var ticksEnabled = true
@@ -26,17 +30,23 @@ final class QuickAccessStripView: NSView {
     /// With Reduce Motion the frames go straight to their places instead of sliding. Asked each time, since the
     /// setting can change while the app runs.
     var reducesMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// With Increase Contrast the divider between the wings is 2 pt wide instead of 1. Asked each time the frames are
+    /// placed, and again when the system's display options change.
+    var increasesContrast: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
+    /// The two section icons. The band places this view below the cards, as wide as the band and reaching down to its
+    /// bottom edge; it takes no clicks and VoiceOver does not read it.
+    let sectionLabels: NSView = StripSectionLabelsView()
     /// While the preview is open, the frames beside the selected one step back to half strength.
     var dimsSideFrames = false {
         didSet { if dimsSideFrames != oldValue { dimSideFrames() } }
     }
     /// Where ⌘K's menu is anchored, in the strip's coordinates: the selected clip's frame where it rests, even in
-    /// mid-slide, since the menu does not follow the film. With the selection vanished it is the empty slot just before
-    /// the newest clip; nil without clips.
+    /// mid-slide, since the menu does not follow the film. With the selection vanished it is the empty slot where the
+    /// newest clip rests as the strip opens: past the divider, just before the newest clip, or before it at the left
+    /// dock without a frequent wing. nil without clips.
     var selectionAnchorFrame: NSRect? {
         guard let metrics, let rest = restingPlacement else { return nil }
-        let origin = rest.firstOrigin + CGFloat(selectedIndex) * metrics.step
-        return convert(frameRect(origin: origin, metrics), from: film)
+        return convert(frameRect(origin: origin(of: selectedIndex, metrics, in: rest), metrics), from: film)
     }
 
     /// Frames kept beyond each end of the ones on screen, so a step or a push never shows a gap.
@@ -46,8 +56,11 @@ final class QuickAccessStripView: NSView {
     private static let slideBounce: CGFloat = 0.15
 
     private var rows: [QuickAccessRow] = []
-    private var selection: ContentRef?
-    /// The selected row, or -1 when the selection vanished and its place at the dock stays empty.
+    /// How many rows lead the list as the frequent wing.
+    private var frequentCount = 0
+    private var selection: QuickAccessRow.ID?
+    /// The selected row, or -1 when the selection vanished and its place stays empty: beside the divider, or at the
+    /// dock without a frequent wing.
     private var selectedIndex = -1
     /// Whether the last row is the oldest there is. Until it is, the film does not stop at its right end.
     private var oldestIsLoaded = true
@@ -56,7 +69,15 @@ final class QuickAccessStripView: NSView {
     private var applicationNames: ApplicationNames?
     /// Holds the frames and moves them as one: it follows the fingers and carries each slide.
     private let film = NSView()
-    private var frames: [ContentRef: StripFrameHost] = [:]
+    private var frames: [QuickAccessRow.ID: StripFrameHost] = [:]
+    /// The line between the frequent wing and the recent clips. It lies in the film, so it moves with the frames.
+    private let divider = StripDivider()
+    private let frequentLabel = StripSectionLabel.hosted("Frequent", symbol: "flame",
+                                                         identifier: "QuickAccessFrequentLabel")
+    private let recentLabel = StripSectionLabel.hosted("Recent", symbol: "clock", identifier: "QuickAccessRecentLabel")
+    /// The groups VoiceOver reads the two wings in, made once and kept.
+    private let frequentGroup = QuickAccessStripView.wingGroup("Frequent", identifier: "QuickAccessFrequentGroup")
+    private let recentGroup = QuickAccessStripView.wingGroup("Recent", identifier: "QuickAccessRecentGroup")
     private var scroller = DetentScroller()
     /// How far past the selected clip the fingers have carried the selection, as a share of a step.
     private var progress: CGFloat = 0
@@ -76,9 +97,9 @@ final class QuickAccessStripView: NSView {
     /// Springs get names so that `drawnOffset` can tell one is running, since a layer does not list nameless
     /// animations. Each name is new: a spring added under a running one's name would replace it.
     private var springCount = 0
-    private var hovered: ContentRef?
-    /// The clip chosen by the click that began the current run of clicks.
-    private var clickedRef: ContentRef?
+    private var hovered: QuickAccessRow.ID?
+    /// The row chosen by the click that began the current run of clicks.
+    private var clickedRow: QuickAccessRow.ID?
     private var reported: (refs: [ContentRef], lastOnScreen: Int)?
 
     override init(frame frameRect: NSRect) {
@@ -88,6 +109,12 @@ final class QuickAccessStripView: NSView {
         film.clipsToBounds = false
         film.frame = bounds
         addSubview(film)
+        divider.wantsLayer = true
+        divider.isHidden = true
+        divider.setAccessibilityIdentifier("QuickAccessDivider")
+        film.addSubview(divider)
+        sectionLabels.addSubview(frequentLabel)
+        sectionLabels.addSubview(recentLabel)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways,
                                                                 .inVisibleRect], owner: self))
         setAccessibilityElement(true)
@@ -95,12 +122,17 @@ final class QuickAccessStripView: NSView {
         setAccessibilityLabel("Clips")
         setAccessibilityIdentifier("QuickAccessStrip")
         setAccessibilityOrientation(.horizontal)
+        for group in [frequentGroup, recentGroup] { group.setAccessibilityParent(self) }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(displayOptionsDidChange(_:)),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
+        )
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// `oldestIsLoaded` is false while more rows may follow the last one, so the film does not stop there.
-    func show(_ rows: [QuickAccessRow], selection: ContentRef?, details: [ContentRef: ClipDetail],
+    func show(_ rows: [QuickAccessRow], selection: QuickAccessRow.ID?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
@@ -109,13 +141,19 @@ final class QuickAccessStripView: NSView {
         let start = metrics == self.metrics ? selection.flatMap { frames[$0]?.frame.midX }.map { $0 + pushed } : nil
         let running = drawnOffset
         let previousIndex = selectedIndex
+        let labelsBefore = labelPlaces
+        // The row the empty slot of a vanished selection stood before, which goes once a row is chosen among the rows
+        // it opened in.
+        let closingSlot = previousIndex < 0 ? restingPlacement?.slotBefore : nil
+        let rowsBefore = previousIndex < 0 ? self.rows.map(\.id) : nil
         self.rows = rows
+        frequentCount = rows.prefix { $0.isFrequent }.count
         self.selection = selection
         self.details = details
         self.metrics = metrics
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
-        let index = selection.flatMap { selected in rows.firstIndex { $0.ref == selected } } ?? -1
+        let index = selection.flatMap { selected in rows.firstIndex { $0.id == selected } } ?? -1
         if index != previousIndex {
             // The fingers carried the clip selected before; their next event measures from this one.
             progress = 0
@@ -136,9 +174,10 @@ final class QuickAccessStripView: NSView {
         // the fingers take follows them instead, except one that leaves the empty dock, whose slot goes at once; the
         // springs add up, so the step stays smooth.
         var displacement: CGFloat = 0
+        var slides = false
         if let rest, let start, index >= 0, slidesAreShown, !(fingersDown && showingScrollStep) || previousIndex < 0 {
-            displacement = start - pushed
-                - frameRect(origin: rest.firstOrigin + CGFloat(index) * metrics.step, metrics).midX
+            slides = true
+            displacement = start - pushed - frameRect(origin: origin(of: index, metrics, in: rest), metrics).midX
         }
         if displacement != 0, let rest {
             settling?.cancel()
@@ -146,7 +185,7 @@ final class QuickAccessStripView: NSView {
             // screen anywhere from there stay until the slides settle.
             slideStart = rest.firstOrigin + displacement + running
             placeFrames()
-            settle(after: springBack(from: displacement))
+            settle(after: springBack(film.layer, from: displacement))
         } else {
             // A new selection that moves nothing, such as a step along a docked film, keeps the frames for the springs
             // still running, and the settle already on its way lets them go.
@@ -160,8 +199,34 @@ final class QuickAccessStripView: NSView {
             }
             placeFrames()
         }
+        // New rows, such as a new query's, select their first row from scratch: the slot went with the rows it opened
+        // in, and nothing closes.
+        var dividerSpring: CGFloat = 0
+        if slides, let closingSlot, closingSlot > 0, rowsBefore == rows.map(\.id) {
+            dividerSpring = closeSlot(before: closingSlot, selecting: index, metrics)
+        }
+        // The icons beside the divider slide as far as it starts out from its place: with the film, and with its own
+        // spring as a slot closes.
+        placeSectionLabels(from: labelsBefore, sliding: displacement + dividerSpring)
         if selectionChanged { announceSelection() }
         reportFramedRows()
+    }
+
+    /// The empty slot a vanished selection left between the wings goes as `index` is chosen among the same rows:
+    /// from `slot` on, the frames close up a step within the film. The film slides with the chosen clip, so the frames
+    /// on its side of the slot slide with it from where they were drawn. Those on the other side, and the divider when
+    /// it is one of them, would then start a step off, so each springs that step back on its own, and starts out where
+    /// it was drawn too. Returns how far the divider's own spring starts it from its place.
+    private func closeSlot(before slot: Int, selecting index: Int, _ metrics: StripMetrics) -> CGFloat {
+        let chosenAfter = index >= slot
+        let places = Dictionary(uniqueKeysWithValues: rows.enumerated().map { ($1.id, $0) })
+        for (id, host) in frames {
+            guard let place = places[id], (place >= slot) != chosenAfter else { continue }
+            springBack(host.layer, from: place >= slot ? metrics.step : -metrics.step)
+        }
+        guard chosenAfter else { return 0 }
+        springBack(divider.layer, from: -metrics.step)
+        return -metrics.step
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -184,6 +249,11 @@ final class QuickAccessStripView: NSView {
                                                name: NSWindow.didResignKeyNotification, object: window)
     }
 
+    /// Increase Contrast can be turned on or off while the panel is open; the divider takes its new width at once.
+    @objc private func displayOptionsDidChange(_ notification: Notification) {
+        placeFrames()
+    }
+
     /// A swipe cannot go on in a window that is no longer key, as when the panel closes under the
     /// fingers, so the frames go back to their places instead of waiting for a lift that never comes, and
     /// the scroller forgets the push it would otherwise report again with the next event.
@@ -199,7 +269,8 @@ final class QuickAccessStripView: NSView {
     /// while there are no clips: there is no film to place then.
     private func placement(at position: CGFloat) -> StripPlacement? {
         guard let metrics, !rows.isEmpty else { return nil }
-        return StripLayout.placement(metrics, count: rows.count, position: position, oldestIsLoaded: oldestIsLoaded)
+        return StripLayout.placement(metrics, count: rows.count, position: position, oldestIsLoaded: oldestIsLoaded,
+                                     frequentCount: frequentCount)
     }
 
     /// Where the film rests with the selected clip.
@@ -212,20 +283,41 @@ final class QuickAccessStripView: NSView {
         return selectedIndex < 0 ? position : max(0, position)
     }
 
+    /// The left edge within the band of the frame at `index` where the film lies at `placement`, the divider's room
+    /// included. Index -1 is the empty slot of a vanished selection.
+    private func origin(of index: Int, _ metrics: StripMetrics, in placement: StripPlacement) -> CGFloat {
+        guard index >= 0 else {
+            return StripLayout.slotOrigin(metrics, placement: placement) ?? placement.firstOrigin - metrics.step
+        }
+        return StripLayout.frameOrigins(metrics, count: index + 1, placement: placement)[index]
+    }
+
     /// A frame whose left edge is `origin` within the band, on whole pixels.
     private func frameRect(origin: CGFloat, _ metrics: StripMetrics) -> NSRect {
+        backingAlignedRect(cardRow(from: origin, width: metrics.frameSize.width, metrics),
+                           options: .alignAllEdgesNearest)
+    }
+
+    /// `width` from `x` within the band, as tall as the frames and level with them.
+    private func cardRow(from x: CGFloat, width: CGFloat, _ metrics: StripMetrics) -> NSRect {
         // The band is centred in the strip, in case the strip is the wider of the two.
-        let rect = NSRect(origin: NSPoint(x: bounds.midX - metrics.bandWidth / 2 + origin,
-                                          y: (bounds.height - metrics.frameSize.height) / 2), size: metrics.frameSize)
-        return backingAlignedRect(rect, options: .alignAllEdgesNearest)
+        NSRect(x: bounds.midX - metrics.bandWidth / 2 + x, y: (bounds.height - metrics.frameSize.height) / 2,
+               width: width, height: metrics.frameSize.height)
     }
 
     /// The first and the last index whose frames reach into the band while index 0's frame starts anywhere in
-    /// `origins`, which are measured from the band's left end. Either index may lie beyond the rows there are.
+    /// `origins`, which are measured from the band's left end. Either index may lie beyond the rows there are. The
+    /// frames from the divider on stand `dividerExtra` further right, and those from a vanished selection's slot
+    /// between the wings on a step further still, so both are reckoned at even steps: the last as if no frame stood
+    /// further right, and the first as if every frame did. Either may then take in a row or two more than the band
+    /// shows, never fewer, so the spare beyond each end stays spare.
     private func rowsOnScreen(_ metrics: StripMetrics, origins: ClosedRange<CGFloat>) -> (first: Int, last: Int) {
+        let rest = restingPlacement
+        let extra = (rest?.dividerBefore == nil ? 0 : metrics.dividerExtra)
+            + ((rest?.slotBefore ?? 0) > 0 ? metrics.step : 0)
         // A frame is on screen while its right edge is past the band's left end and its left edge short of the right.
-        (Int(((-origins.upperBound - metrics.frameSize.width) / metrics.step).rounded(.down)) + 1,
-         Int(((metrics.bandWidth - origins.lowerBound) / metrics.step).rounded(.up)) - 1)
+        return (Int(((-origins.upperBound - extra - metrics.frameSize.width) / metrics.step).rounded(.down)) + 1,
+                Int(((metrics.bandWidth - origins.lowerBound) / metrics.step).rounded(.up)) - 1)
     }
 
     /// The rows that get a frame while index 0's frame starts anywhere in `origins`: those on screen, and a spare
@@ -247,7 +339,7 @@ final class QuickAccessStripView: NSView {
             let start = slideStart ?? rest.firstOrigin
             return framedRows(metrics, origins: min(start, rest.firstOrigin)...max(start, rest.firstOrigin))
         } ?? 0..<0
-        let wanted = Set(rows[indices].map(\.ref))
+        let wanted = Set(rows[indices].map(\.id))
         var spare = frames.filter { !wanted.contains($0.key) }.map(\.value)
         frames = frames.filter { wanted.contains($0.key) }
         let origins = rest.map { StripLayout.frameOrigins(metrics, count: indices.upperBound, placement: $0) } ?? []
@@ -259,16 +351,90 @@ final class QuickAccessStripView: NSView {
                 applicationIcon: icon, metrics: metrics,
                 // The band takes its colour from the very icon the frame shows, worked out with the app's first frame.
                 headerTint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
-                isSelected: row.ref == selection
+                isSelected: row.id == selection
             )
-            let host = frames[row.ref] ?? spare.popLast() ?? addFrame(view)
-            frames[row.ref] = host
+            let host: StripFrameHost
+            if let kept = frames[row.id] {
+                host = kept
+            } else if let reused = spare.popLast() {
+                // A frame that takes another row lets go of any spring it ran for the one before.
+                reused.layer?.removeAllAnimations()
+                host = reused
+            } else {
+                host = addFrame(view)
+            }
+            frames[row.id] = host
             host.show(view, for: row, applicationName: row.sourceApp.flatMap(applicationNames.name(for:)),
-                      isHovered: row.ref == hovered)
+                      isHovered: row.id == hovered)
             host.frame = frameRect(origin: origins[index], metrics)
+            // VoiceOver finds a frame in its wing's group, or in the list itself without a wing.
+            host.setAccessibilityParent(frequentCount == 0 ? self : row.isFrequent ? frequentGroup : recentGroup)
         }
         spare.forEach { $0.removeFromSuperview() }
+        fillWingGroups()
+        placeDivider(metrics, at: rest)
         dimSideFrames()
+    }
+
+    /// The divider's line stands in the middle of the wider gap after the frequent wing, as tall as the frames and
+    /// level with them: 1 pt wide, and 2 pt with Increase Contrast. Without a wing there is none.
+    private func placeDivider(_ metrics: StripMetrics, at rest: StripPlacement?) {
+        guard let line = rest.flatMap({ StripLayout.dividerX(metrics, placement: $0) }) else {
+            divider.isHidden = true
+            return
+        }
+        let width: CGFloat = increasesContrast() ? 2 : 1
+        divider.frame = backingAlignedRect(cardRow(from: line - width / 2, width: width, metrics),
+                                           options: [.alignMinXNearest, .alignWidthNearest, .alignMinYNearest,
+                                                     .alignHeightNearest])
+        if divider.isHidden {
+            divider.isHidden = false
+            // It takes its colour when it is drawn, which it never is while hidden.
+            divider.needsDisplay = true
+        }
+    }
+
+    /// Where the section labels stand, springs aside; nil for a hidden one.
+    private var labelPlaces: StripSectionLabels {
+        StripSectionLabels(frequent: frequentLabel.isHidden ? nil : frequentLabel.frame.minX,
+                           recent: recentLabel.isHidden ? nil : recentLabel.frame.minX)
+    }
+
+    /// Puts the section icons beside the divider where the film lies, the fingers' push included, or one of them at an
+    /// end of the band once the divider has gone off that end; without a divider both are hidden. Each is centred
+    /// between the band's bottom edge and the ring around a selected card. `shown` is where they stood before the film
+    /// moved. While the divider slides from `slide` away, with the film or on its own as a vanished selection's slot
+    /// closes, an icon still shown slides from where it is drawn with the same spring, and one that comes into view
+    /// rides in with the divider; one that stays where it was, such as one resting at an end, does not move. Without a
+    /// slide, and with Reduce Motion, they go straight there. While the film is still sliding or springing back, an
+    /// icon still shown is not hidden when the divider leaves its end of the band: it stays beside the divider, with
+    /// the film, until the motion has `settled` and each icon goes where the divider puts it.
+    private func placeSectionLabels(from shown: StripSectionLabels, sliding slide: CGFloat, settled: Bool = false) {
+        var places = StripSectionLabels()
+        if let metrics, let rest = restingPlacement, let line = StripLayout.dividerX(metrics, placement: rest) {
+            let divider = line + pushed
+            places = StripLayout.sectionLabelOrigins(metrics, dividerX: divider,
+                                                     frequentWidth: frequentLabel.frame.width,
+                                                     recentWidth: recentLabel.frame.width)
+            if !settled, filmIsSliding {
+                let beside = StripLayout.sectionLabelsBeside(dividerX: divider,
+                                                             frequentWidth: frequentLabel.frame.width)
+                if shown.frequent != nil, places.frequent == nil { places.frequent = beside.frequent }
+                if shown.recent != nil, places.recent == nil { places.recent = beside.recent }
+            }
+        }
+        for (label, stood, place) in [(frequentLabel, shown.frequent, places.frequent),
+                                      (recentLabel, shown.recent, places.recent)] {
+            label.isHidden = place == nil
+            guard let place, let metrics else { continue }
+            let size = label.frame.size
+            label.frame = sectionLabels.backingAlignedRect(
+                NSRect(x: place, y: StripLayout.sectionLabelBottom(metrics, height: size.height), width: size.width,
+                       height: size.height),
+                options: [.alignMinXNearest, .alignWidthNearest, .alignMinYNearest, .alignHeightNearest]
+            )
+            if slide != 0 { springBack(label.layer, from: stood.map { $0 - label.frame.minX } ?? slide) }
+        }
     }
 
     private func dimSideFrames() {
@@ -287,8 +453,12 @@ final class QuickAccessStripView: NSView {
         guard let metrics else { return }
         let rest = restingPlacement.map { $0.firstOrigin...$0.firstOrigin }
         let framed = rest.map { framedRows(metrics, origins: $0) } ?? 0..<0
-        // The selected clip first and then outward, so the details nearest it are read first.
-        let refs = framed.sorted { (abs($0 - selectedIndex), $0) < (abs($1 - selectedIndex), $1) }.map { rows[$0].ref }
+        // The selected clip first and then outward, so the details nearest it are read first; with the selection
+        // gone, the clips nearest its empty slot. A clip framed in both wings is asked for once, where it is nearest.
+        var asked = Set<ContentRef>()
+        let centre = selectedIndex >= 0 ? selectedIndex : restingPlacement?.slotBefore ?? 0
+        let refs = framed.sorted { (abs($0 - centre), $0) < (abs($1 - centre), $1) }
+            .map { rows[$0].ref }.filter { asked.insert($0).inserted }
         let lastOnScreen = rest.map { min(rows.count - 1, rowsOnScreen(metrics, origins: $0).last) } ?? -1
         if let reported, reported.refs == refs, reported.lastOnScreen == lastOnScreen,
            refs.allSatisfy({ details[$0] != nil }) { return }
@@ -303,22 +473,27 @@ final class QuickAccessStripView: NSView {
         window?.isVisible == true && !reducesMotion()
     }
 
+    /// Whether a slide or a spring back is still moving the film.
+    private var filmIsSliding: Bool { film.layer?.animationKeys()?.isEmpty == false }
+
     /// How far the springs still running draw the film from its place. The presentation layer shows the film as of
     /// the start of the current transaction, so a spring added earlier in the same transaction is missing, and a move
     /// of the film's place made in it is included.
-    private var drawnOffset: CGFloat {
-        guard let layer = film.layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() else {
-            return 0
-        }
+    private var drawnOffset: CGFloat { drawnShift(of: film.layer) }
+
+    /// How far the springs still running on `layer`, the film's or a frame's own, draw it from its place.
+    private func drawnShift(of layer: CALayer?) -> CGFloat {
+        guard let layer, layer.animationKeys()?.isEmpty == false, let drawn = layer.presentation() else { return 0 }
         return drawn.position.x - layer.position.x
     }
 
-    /// Starts the frames `displacement` away from where they now belong and lets them spring into place.
-    /// Each spring adds to those still running, so a new target takes over at once from wherever the
-    /// frames are, without a jump and without waiting for the last one. Returns how long it runs.
+    /// Starts `layer` `displacement` away from where it now belongs and lets it spring into place: the film's, a
+    /// section label's, or that of a frame or of the divider closing a vanished selection's slot. Each spring adds to
+    /// those still running, so a new target takes over at once from wherever the layer is drawn, without a jump and
+    /// without waiting for the last one. Returns how long it runs.
     @discardableResult
-    private func springBack(from displacement: CGFloat) -> CFTimeInterval {
-        guard displacement != 0, let layer = film.layer else { return 0 }
+    private func springBack(_ layer: CALayer?, from displacement: CGFloat) -> CFTimeInterval {
+        guard displacement != 0, let layer else { return 0 }
         let spring = CASpringAnimation(perceptualDuration: Self.slideDuration, bounce: Self.slideBounce)
         spring.keyPath = "position.x"
         spring.isAdditive = true
@@ -330,7 +505,8 @@ final class QuickAccessStripView: NSView {
         return spring.duration
     }
 
-    /// Once a slide has come to rest, the frames kept around where it started go.
+    /// Once a slide or a spring back has come to rest, the frames kept around where it started go, and so does a label
+    /// kept beside the divider after the divider left the band.
     private func settle(after delay: CFTimeInterval) {
         settling?.cancel()
         settling = Task { [weak self] in
@@ -338,18 +514,24 @@ final class QuickAccessStripView: NSView {
             guard !Task.isCancelled, let self else { return }
             self.slideStart = nil
             self.placeFrames()
+            self.placeSectionLabels(from: self.labelPlaces, sliding: 0, settled: true)
         }
     }
 
-    /// Moves the frames off their places by what the fingers have pushed. When the fingers lift, the
-    /// frames spring back instead of jumping.
+    /// Moves the frames off their places by what the fingers have pushed, and the section labels with them. When the
+    /// fingers lift, the frames and the labels spring back instead of jumping. The wings' groups follow the frames, so
+    /// VoiceOver finds each group where its frames now are.
     private func push(to offset: CGFloat, springing: Bool) {
         guard offset != pushed else { return }
         let previous = pushed
+        let labels = labelPlaces
         pushed = offset
         setHovered(nil)
         film.frame = bounds.offsetBy(dx: offset, dy: 0)
-        if springing, slidesAreShown { springBack(from: previous - offset) }
+        let slide = springing && slidesAreShown ? previous - offset : 0
+        if slide != 0 { settle(after: springBack(film.layer, from: slide)) }
+        placeSectionLabels(from: labels, sliding: slide)
+        fillWingGroups()
     }
 
     /// The fingers have carried the selection `progress` of a step past the selected clip and stretched an end by
@@ -376,11 +558,13 @@ final class QuickAccessStripView: NSView {
         case .ended, .cancelled: fingersDown = false
         case .none: break
         }
-        // The scroller counts toward older clips, which lie to the right: content moving left brings them in.
+        // The scroller counts toward older clips, which lie to the right: content moving left brings them in. From a
+        // vanished selection's slot, the rows before it are the newer ones.
+        let slot = selectedIndex < 0 ? restingPlacement?.slotBefore ?? 0 : nil
         let output = scroller.handle(DetentInput(
             deltaX: -event.scrollingDeltaX, deltaY: event.scrollingDeltaY, isPrecise: event.hasPreciseScrollingDeltas,
             phase: phase, isMomentum: !event.momentumPhase.isEmpty, time: event.timestamp
-        ), olderRoom: rows.count - 1 - selectedIndex, newerRoom: max(0, selectedIndex))
+        ), olderRoom: rows.count - (slot ?? selectedIndex + 1), newerRoom: slot ?? selectedIndex)
         if output.steps != 0 {
             showingScrollStep = true
             onCommand?(.move(output.steps))
@@ -413,34 +597,35 @@ final class QuickAccessStripView: NSView {
     override func mouseDown(with event: NSEvent) {
         // A double click is a click: it never copies, and its second click goes to the clip the first one
         // chose, even after the film has slid and another frame lies under the pointer.
-        if event.clickCount <= 1 { clickedRef = ref(at: event) }
-        guard let ref = clickedRef else { return super.mouseDown(with: event) }
-        onSelect?(ref)
+        if event.clickCount <= 1 { clickedRow = row(at: event) }
+        guard let row = clickedRow else { return super.mouseDown(with: event) }
+        onSelect?(row)
         window?.makeFirstResponder(self)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        ref(at: event).flatMap { onContextMenu?($0) }
+        row(at: event).flatMap { onContextMenu?($0) }
     }
 
-    override func mouseEntered(with event: NSEvent) { setHovered(ref(at: event)) }
+    override func mouseEntered(with event: NSEvent) { setHovered(row(at: event)) }
 
-    override func mouseMoved(with event: NSEvent) { setHovered(ref(at: event)) }
+    override func mouseMoved(with event: NSEvent) { setHovered(row(at: event)) }
 
     override func mouseExited(with event: NSEvent) { setHovered(nil) }
 
-    /// The row whose frame is under the pointer where it is drawn at this moment, even in mid-slide.
-    private func ref(at event: NSEvent) -> ContentRef? {
+    /// The row whose frame is under the pointer where it is drawn at this moment, even in mid-slide, and even while a
+    /// frame closing a vanished selection's slot runs a spring of its own.
+    private func row(at event: NSEvent) -> QuickAccessRow.ID? {
         var point = film.convert(event.locationInWindow, from: nil)
         point.x -= drawnOffset
-        return frames.first { $0.value.frame.contains(point) }?.key
+        return frames.first { $0.value.frame.offsetBy(dx: drawnShift(of: $0.value.layer), dy: 0).contains(point) }?.key
     }
 
     /// A faint wash on the frame under the pointer. It only shows the pointer; it never selects.
-    private func setHovered(_ ref: ContentRef?) {
-        guard ref != hovered else { return }
-        hovered = ref
-        for (row, host) in frames { host.isHovered = row == ref }
+    private func setHovered(_ row: QuickAccessRow.ID?) {
+        guard row != hovered else { return }
+        hovered = row
+        for (framed, host) in frames { host.isHovered = framed == row }
     }
 
     // MARK: Keys
@@ -486,15 +671,48 @@ final class QuickAccessStripView: NSView {
 
     // MARK: Accessibility
 
+    /// The frames on screen, left to right: the frequent wing first, from the least used clip to the most used, and
+    /// then the newest clip, or the best match. With a frequent wing they are read in two groups, "Frequent" and
+    /// "Recent", and a group without a frame on screen is left out.
     override func accessibilityChildren() -> [Any]? {
-        // The spare frames beyond the ends of the band are not on screen, so they are not read. Left to right is
-        // newest first, the order of the rows.
+        frequentCount == 0 ? framesOnScreen.map(\.host) : fillWingGroups()
+    }
+
+    /// The frames VoiceOver reads, left to right, with the rows they show. The spare frames beyond the ends of the band
+    /// are not on screen, so they are not read.
+    private var framesOnScreen: [(row: QuickAccessRow.ID, host: StripFrameHost)] {
         guard let metrics else { return [] }
         let band = NSRect(x: bounds.midX - metrics.bandWidth / 2, y: bounds.minY, width: metrics.bandWidth,
                           height: bounds.height)
-        return frames.values
-            .filter { convert($0.frame, from: film).intersects(band) }
-            .sorted { $0.frame.minX < $1.frame.minX }
+        return frames.map { (row: $0.key, host: $0.value) }
+            .filter { convert($0.host.frame, from: film).intersects(band) }
+            .sorted { $0.host.frame.minX < $1.host.frame.minX }
+    }
+
+    /// A group VoiceOver reads one wing in, by the wing's name; UI tests find it by `identifier`. The strip is its
+    /// parent and gives it its frames.
+    private static func wingGroup(_ name: String, identifier: String) -> NSAccessibilityElement {
+        let group = NSAccessibilityElement()
+        group.setAccessibilityRole(.group)
+        group.setAccessibilityLabel(name)
+        group.setAccessibilityIdentifier(identifier)
+        return group
+    }
+
+    /// Gives each wing's group the wing's frames on screen and the room they take together in the strip, and returns
+    /// the groups that have any. Without a wing both are left empty. The groups are filled again each time the frames
+    /// are placed or pushed, so a group never holds a frame that has gone or now shows another row, and covers its
+    /// frames where the fingers have carried them.
+    @discardableResult
+    private func fillWingGroups() -> [Any] {
+        let onScreen = frequentCount == 0 ? [] : framesOnScreen
+        return [(frequentGroup, true), (recentGroup, false)].compactMap { group, frequent in
+            let hosts = onScreen.filter { $0.row.isFrequent == frequent }.map(\.host)
+            let rects = hosts.map { convert($0.frame, from: film) }
+            group.setAccessibilityChildren(hosts)
+            group.setAccessibilityFrameInParentSpace(rects.dropFirst().reduce(rects.first ?? .zero) { $0.union($1) })
+            return hosts.isEmpty ? nil : group
+        }
     }
 
     override func accessibilitySelectedChildren() -> [Any]? {
@@ -574,12 +792,15 @@ private final class StripFrameHost: NSView {
     /// "<kind>, <time>, from <App>, <footer>: <title>", then the frame's marks: the card's band and footer in the
     /// order the card shows them, then the title it shows, such as a link's page title rather than its address.
     /// Without a known source app the "from" part is left out, and the footer, such as "25 characters" or "2880 by
-    /// 1800", until the details have arrived.
+    /// 1800", until the details have arrived. A frequent clip says how often it was used in place of the time, as its
+    /// card does: "Text, used 12 times: <title>".
     override func accessibilityLabel() -> String? {
         guard let row else { return nil }
         let content = drawing.rootView.content
-        let card = [row.kind.accessibilityName, QuickAccessRowContent.time(of: row.date, spoken: true),
-                    applicationName.map { "from \($0)" }, content.info.map(ClipInfoFormatter.spoken)]
+        let when = row.frequentUses.map { ClipInfoFormatter.uses($0, spoken: true) }
+            ?? QuickAccessRowContent.time(of: row.date, spoken: true)
+        let card = [row.kind.accessibilityName, when, applicationName.map { "from \($0)" },
+                    content.info.map(ClipInfoFormatter.spoken)]
         let marks = [(row.savedAsMemo, "Saved as Memo"), (row.isPartiallyIndexed, "Partially indexed"),
                      (row.isTextUnavailable, "Text unavailable")].filter { $0.0 }.map { $0.1 }
         return ([card.compactMap { $0 }.joined(separator: ", ") + ": " + content.accessibilityTitle] + marks)
@@ -599,5 +820,62 @@ private final class HoverWash: NSView {
 
     override func updateLayer() {
         layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.08).cgColor
+    }
+}
+
+/// The line between the frequent wing and the recent clips, in the colour of the line over each card's footer.
+private final class StripDivider: NSView {
+    override var wantsUpdateLayer: Bool { true }
+
+    override func updateLayer() {
+        layer?.backgroundColor = ToolbarPalette.divider.cgColor
+    }
+}
+
+/// Holds the section icons where the band places it. It takes no clicks, and VoiceOver reads none of it. AppKit shows
+/// an icon's help tag all the same, since it finds help tags by where the pointer rests, not by hit-testing.
+private final class StripSectionLabelsView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func accessibilityChildren() -> [Any]? { [] }
+}
+
+/// A section icon below the strip: the wing's symbol alone, 12 pt semibold in the toolbar's secondary colour. No name
+/// is drawn beside it; its help tag and its accessibility label give the name. The tests measure the ink it draws, so
+/// it is not private.
+struct StripSectionLabel: View {
+    let symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+            .fixedSize()
+            // The hosting view carries the wing's name; the symbol itself is for the eye alone.
+            .accessibilityHidden(true)
+    }
+
+    /// The icon hosted for AppKit, hidden until it is placed: as wide and as high as its symbol in whole points, and
+    /// kept as far above the bottom of the view holding it as it is put, whatever height that view is given. `title`,
+    /// the wing's name, is its help tag and its accessibility label.
+    static func hosted(_ title: String, symbol: String, identifier: String) -> NSHostingView<StripSectionLabel> {
+        let label = NSHostingView(rootView: StripSectionLabel(symbol: symbol))
+        let size = label.fittingSize
+        label.sizingOptions = []
+        label.wantsLayer = true
+        label.frame.size = NSSize(width: size.width.rounded(.up), height: size.height.rounded(.up))
+        label.autoresizingMask = [.maxYMargin]
+        label.isHidden = true
+        label.toolTip = title
+        label.setAccessibilityLabel(title)
+        label.setAccessibilityIdentifier(identifier)
+        return label
     }
 }

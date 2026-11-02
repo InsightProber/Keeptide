@@ -11,8 +11,9 @@ import XCTest
 ///
 /// Each card is the real `StripFrameView` in its own `NSHostingView`, laid out in a row as the strip lays them out, on
 /// the band's colour and drawn at twice its size. The panel is the real `PanelController` over a temporary library,
-/// laid out for a 1440 × 875 screen. Every clip is made up here. Apps that ship with macOS stand in as the clips'
-/// sources, and only their icons and names are read.
+/// laid out for a 1440 × 875 screen. It is drawn with the frequent clips turned off, as it was before them, except in
+/// the frequent wing's own pictures, whose clips have uses recorded in the library's usage store. Every clip is made up
+/// here. Apps that ship with macOS stand in as the clips' sources, and only their icons and names are read.
 @MainActor
 final class QuickAccessSnapshotTests: XCTestCase {
     private enum App {
@@ -45,6 +46,8 @@ final class QuickAccessSnapshotTests: XCTestCase {
             ("states", try statesRow(now: now), everySize, [true, false]),
             // Text at its extremes, on the smallest card and the largest, in dark mode.
             ("extremes", extremesRow(now: now), [.small, .large], [true]),
+            // How often frequent clips were used, where the time goes; the small card shows what does not fit.
+            ("frequent", frequentRow(now: now), [.small, .medium], [true, false]),
         ]
 
         for (name, cards, sizes, appearances) in rows {
@@ -83,6 +86,8 @@ final class QuickAccessSnapshotTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         let preferences = QuickAccessPreferences(defaults: defaults)
         preferences.cardSize = .medium
+        // The band as it was before the frequent clips, with no room below the cards for their icons.
+        preferences.showsFrequentClips = false
         let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
         let controller = PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
                                          visibleFrame: screen)
@@ -161,6 +166,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         let preferences = QuickAccessPreferences(defaults: defaults)
         preferences.cardSize = .medium
+        preferences.showsFrequentClips = false
         // A panel whose session asks `fake` what is in front. The fake never posts a key.
         func panel(asking fake: FakeDirectPasteSystem) -> PanelController {
             let paste = PasteService(pasteboard: board, read: { try await repository.read($0) }, recordUse: { _ in },
@@ -208,6 +214,145 @@ final class QuickAccessSnapshotTests: XCTestCase {
         XCTAssertEqual(terminal.sent, [])
         print("Direct paste snapshots written to \(output.directory.path)")
     }
+
+    func testRenderFrequentWing() async throws {
+        guard let folder = ProcessInfo.processInfo.environment["KEEPTIDE_SNAPSHOT_DIR"], !folder.isEmpty else {
+            throw XCTSkip("Set TEST_RUNNER_KEEPTIDE_SNAPSHOT_DIR to render the frequent wing")
+        }
+        let output = SnapshotFolder(requested: URL(fileURLWithPath: folder, isDirectory: true))
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let now = Date()
+        try await seedPanelClips(into: harness, now: now)
+        // How often clips were used, as copies and pastes record it. The command is used often too, but it is among the
+        // three newest, which medium cards show whole beside a wing that puts the newest in the middle, so the wing
+        // leaves it out.
+        for (title, times) in [("Rebase checklist", 12), ("Thursday", 5), ("git-rebase", 3),
+                               ("git rebase origin/main", 9)] {
+            try await recordUses(of: title, times: times, in: harness, now: now)
+        }
+        try await harness.consumer.synchronize()
+        let repository = ContentRepository(controller: harness.controller)
+        let paste = PasteService(pasteboard: board, read: { try await repository.read($0) }, recordUse: { _ in },
+                                 didWrite: { _ in })
+        let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste,
+                                           preview: PreviewService(read: { try await repository.read($0) }),
+                                           usage: LocalUsageStore(controller: harness.controller))
+        let suite = "QuickAccessSnapshotTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        preferences.showsFrequentClips = true
+        let screen = NSRect(x: 0, y: 0, width: 1440, height: 875)
+        // A panel with `cardSize` cards, its session opened as the shortcut opens it: the wing leaves out the newest
+        // clips the band shows whole beside it.
+        func openPanel(_ cardSize: CardSize, over services: QuickAccessServices) -> PanelController {
+            preferences.cardSize = cardSize
+            let panel = PanelController(state: QuickAccessState(services: { services }), preferences: preferences,
+                                        visibleFrame: screen)
+            let metrics = StripLayout.metrics(for: cardSize, visibleWidth: screen.width, showsFrequentClips: true)
+            panel.state.open(frequentWingFirstScreen: { StripLayout.recentShownWhole(metrics, frequentCount: $0) })
+            return panel
+        }
+
+        // As it opens: the three clips used most, from the least used to the most used, then the divider and the newest
+        // clip, selected in the middle of the band, with the most used beside it.
+        let controller = openPanel(.medium, over: services)
+        addTeardownBlock { controller.state.close() }
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        try await waitForDetails(of: controller, rows: 11)
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.title),
+                       ["git-rebase", "Thursday", "Rebase checklist"])
+        XCTAssertEqual(state.selection.rows.prefix { $0.isFrequent }.map(\.frequentUses), [3, 5, 12])
+        XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
+        try await write(window, as: "panel-frequent-open", into: output)
+
+        // The search opened on an empty query, as a click on its icon leaves it: the wing stays.
+        let content = try XCTUnwrap(window.contentView)
+        try XCTUnwrap(views(QuickAccessSearchControl.self, in: content).first).onUnfold?()
+        XCTAssertTrue(state.isSearchExpanded)
+        XCTAssertEqual(state.query, "")
+        XCTAssertEqual(state.selection.frequentCount, 3)
+        try await write(window, as: "panel-frequent-search", into: output)
+
+        // Folded again, and six steps to the right: the divider has gone off the band's left end, where the clock rests,
+        // and the flame is hidden.
+        controller.perform(.escape)
+        XCTAssertFalse(state.isSearchExpanded)
+        for _ in 0..<6 { controller.perform(.move(1)) }
+        XCTAssertEqual(state.selection.selectedRow?.title, "Rebase checklist")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        let icons = try XCTUnwrap(views(QuickAccessStripView.self, in: content).first).sectionLabels.subviews
+        let flame = try XCTUnwrap(icons.first { $0.accessibilityIdentifier() == "QuickAccessFrequentLabel" })
+        let clock = try XCTUnwrap(icons.first { $0.accessibilityIdentifier() == "QuickAccessRecentLabel" })
+        XCTAssertTrue(flame.isHidden)
+        XCTAssertFalse(clock.isHidden)
+        XCTAssertEqual(clock.frame.minX, StripLayout.sectionLabelPinInset, accuracy: 0.5)
+        try await write(window, as: "panel-frequent-scrolled", into: output)
+
+        // Small cards: three frequent cards reach the middle, where the band shows the three newest whole, so the wing
+        // holds the same three and the newest clip is in the middle.
+        controller.state.close()
+        let small = openPanel(.small, over: services)
+        addTeardownBlock { small.state.close() }
+        try await waitForDetails(of: small, rows: 11)
+        XCTAssertEqual(small.state.selection.rows.prefix { $0.isFrequent }.map(\.title),
+                       ["git-rebase", "Thursday", "Rebase checklist"])
+        try await write(try XCTUnwrap(small.window), as: "panel-frequent-open", cardSize: .small, into: output)
+        small.state.close()
+
+        // A wing of twenty, in a library of its own: twenty more clips, older than the boards' and each used a
+        // different number of times. The most used, F1, and the next, F2, stand just left of the newest clip.
+        let twentyHarness = try SearchHarness.make(in: self)
+        try await seedPanelClips(into: twentyHarness, now: now)
+        let used = Self.twentyFrequent
+        for (rank, text) in used.enumerated() {
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(text.utf8))]])
+            let item = ItemValue(sourceApp: [App.notes, App.terminal, App.mail][rank % 3], title: text,
+                                 captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: now.addingTimeInterval(-Double(4 * 24 * 60 + rank) * 60), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: twentyHarness.controller)
+        }
+        for (rank, text) in used.enumerated() {
+            try await recordUses(of: text, times: 2 * (used.count - rank), in: twentyHarness, now: now)
+        }
+        try await twentyHarness.consumer.synchronize()
+        let twentyRepository = ContentRepository(controller: twentyHarness.controller)
+        let twentyServices = QuickAccessServices(
+            repository: twentyRepository, search: twentyHarness.service,
+            paste: PasteService(pasteboard: board, read: { try await twentyRepository.read($0) }, recordUse: { _ in },
+                                didWrite: { _ in }),
+            preview: PreviewService(read: { try await twentyRepository.read($0) }),
+            usage: LocalUsageStore(controller: twentyHarness.controller))
+        let twenty = openPanel(.medium, over: twentyServices)
+        addTeardownBlock { twenty.state.close() }
+        let twentyState = twenty.state
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let rows = twentyState.selection.rows
+            // The cards on the band: the three frequent ones nearest the divider and the newest four.
+            return twentyState.phase == .results && rows.count == 48
+                && rows[17..<24].allSatisfy { twentyState.details[$0.ref] != nil }
+        }
+        let wing = twentyState.selection.rows.prefix { $0.isFrequent }
+        XCTAssertEqual(wing.count, 20)
+        XCTAssertEqual(wing.map(\.title), used.reversed())
+        XCTAssertEqual(wing.suffix(2).map(\.frequentUses), [38, 40])
+        XCTAssertEqual(twentyState.selection.selectedRow?.title, "Screenshot")
+        try await write(try XCTUnwrap(twenty.window), as: "panel-frequent-twenty", into: output)
+        print("Frequent wing snapshots written to \(output.directory.path)")
+    }
+
+    /// Twenty made-up clips for a wing of twenty, the most used first.
+    private static let twentyFrequent = [
+        "git status --short", "Thanks, talk soon!", "ssh deploy@staging.example.com", "npm run build -- --watch",
+        "See you at 10 in the small room.", "rg --files | wc -l", "Best regards, Sam", "docker compose up -d",
+        "https://example.com/handbook", "SELECT * FROM orders LIMIT 20;", "Out of office until Monday.",
+        "make test", "Room 4B, second floor", "xcodebuild -list", "Can we move this to Thursday?",
+        "brew upgrade --cask", "Invoice #2027-114", "kubectl get pods -A", "Let me check and get back to you.",
+        "swift test --parallel",
+    ]
 
     // MARK: The clips
 
@@ -310,13 +455,33 @@ final class QuickAccessSnapshotTests: XCTestCase {
         ]
     }
 
+    /// Frequent clips, each saying how often it was used where the time would be: a checklist used 12 times, three files
+    /// saved as a memo and used 1,234 times, whose marks and count leave a small card's colour band too little room,
+    /// and a page used 3 times.
+    private func frequentRow(now: Date) -> [Card] {
+        let checklist = "Rebase checklist: fetch, rebase onto main, run tests, push with lease."
+        let page = "https://git-scm.com/docs/git-rebase"
+        return [
+            Card(row: row(.text, "Rebase checklist", from: App.notes, minutesAgo: 27 * 60, now: now, uses: 12),
+                 detail: ClipDetail(excerpt: checklist, characterCount: checklist.count), isSelected: true),
+            Card(row: row(.file, "Budget 2027.numbers", from: App.finder, minutesAgo: 3 * 24 * 60, now: now,
+                          savedAsMemo: true, uses: 1_234),
+                 detail: ClipDetail(fileNames: ["Budget 2027.numbers", "Notes.txt", "Photo.heic"], itemCount: 3)),
+            Card(row: row(.url, page, from: App.safari, minutesAgo: 2 * 24 * 60, now: now, uses: 3),
+                 detail: ClipDetail(excerpt: page, characterCount: page.count,
+                                    linkTitle: "Git - git-rebase Documentation")),
+        ]
+    }
+
+    /// `uses` makes the row a frequent one, used that many times.
     private func row(_ kind: ContentKind, _ title: String, from app: String?, minutesAgo: Double, now: Date,
                      snippet: SearchSnippet? = nil, savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false,
-                     isTextUnavailable: Bool = false) -> QuickAccessRow {
+                     isTextUnavailable: Bool = false, uses: Int64? = nil) -> QuickAccessRow {
         QuickAccessRow(
             ref: ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data(repeating: 5, count: 32)),
             title: title, snippet: snippet, kind: kind, sourceApp: app, date: now.addingTimeInterval(-minutesAgo * 60),
-            savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable
+            savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
+            frequentUses: uses
         )
     }
 
@@ -362,10 +527,34 @@ final class QuickAccessSnapshotTests: XCTestCase {
         try await store("Screenshot", [("public.png", picture)], from: App.preview, minutesAgo: 0)
     }
 
-    /// Draws the panel's window in dark and in light, at twice its size, over the design's desktop.
-    private func write(_ window: NSWindow, as name: String, into output: SnapshotFolder) async throws {
+    /// Records `times` successful uses of the stored clip with this title in the library's usage store, a second apart,
+    /// the last a minute before `now`, as copies and pastes record them.
+    private func recordUses(of title: String, times: Int, in harness: SearchHarness, now: Date) async throws {
+        let stored = try await ContentRepository(controller: harness.controller).recent(limit: 100)
+        let ref = try XCTUnwrap(stored.first { $0.title == title }?.history, "\(title) is not stored")
+        let usage = LocalUsageStore(controller: harness.controller)
+        for second in 0..<times {
+            try await usage.record(UseReceipt(ref: ref, occurredAt: now.addingTimeInterval(-60 - Double(second)),
+                                              outcome: .success))
+        }
+    }
+
+    /// Waits until the panel lists `count` rows and every clip listed has its details. The strip asks for them only for
+    /// the clips it frames, which here, in one wing or the other, are all of them as the panel opens.
+    private func waitForDetails(of controller: PanelController, rows count: Int) async throws {
+        try await SearchTestSupport.waitUntil(timeout: .seconds(20)) {
+            let state = controller.state
+            return state.phase == .results && state.selection.rows.count == count
+                && state.selection.rows.allSatisfy { state.details[$0.ref] != nil }
+        }
+    }
+
+    /// Draws the panel's window in dark and in light, at twice its size, over the design's desktop. `cardSize` is the
+    /// size the panel's settings give its cards, which names the files.
+    private func write(_ window: NSWindow, as name: String, cardSize: CardSize = .medium,
+                       into output: SnapshotFolder) async throws {
         for dark in [true, false] {
-            let file = "\(name)-medium-\(dark ? "dark" : "light").png"
+            let file = "\(name)-\(cardSize.rawValue)-\(dark ? "dark" : "light").png"
             let png = try await renderPanel(window, dark: dark)
             let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
             attachment.name = file

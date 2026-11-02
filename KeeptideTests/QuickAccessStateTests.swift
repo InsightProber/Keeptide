@@ -824,6 +824,485 @@ final class QuickAccessStateTests: XCTestCase {
                                                  detail: "Recent clips appear here once the library opens."))
     }
 
+    // MARK: The frequent wing
+
+    func testOpeningListsTheFrequentWingBeforeTheRecentClips() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<8 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        let now = Date()
+        try await use(clips[0], times: 5, lastAt: now - 3_600, in: fixture)
+        try await use(clips[1], times: 3, lastAt: now - 3_600, in: fixture)
+        try await use(clips[2], times: 3, lastAt: now - 7_200, in: fixture)
+        try await use(clips[3], times: 1, lastAt: now, in: fixture)
+        try await use(clips[4], times: 4, lastAt: now - 91 * 86_400, in: fixture)
+        try await use(clips[7], times: 9, lastAt: now, in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+
+        // c7 is used most, but it is among the first three recent clips; c3 was used once, and c4 not for 91 days. The
+        // wing runs from the least used to the most used, which stands beside the newest clip.
+        XCTAssertEqual(state.selection.rows.map(\.title),
+                       ["c2", "c1", "c0", "c7", "c6", "c5", "c4", "c3", "c2", "c1", "c0"])
+        XCTAssertEqual(state.selection.rows.prefix(3).map(\.frequentUses), [3, 3, 5])
+        XCTAssertEqual(state.selection.frequentCount, 3)
+        // The newest recent clip is selected, after the wing.
+        XCTAssertEqual(state.selection.selectedRow?.title, "c7")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        XCTAssertEqual(state.selection.executableSelection, state.selection.rows[3].ref)
+        // ← reaches the most used clip.
+        XCTAssertEqual(state.moveSelection(by: -1), .moved)
+        XCTAssertEqual(state.selection.selectedID, state.selection.rows[2].id)
+        XCTAssertEqual(state.selection.selectedRow?.title, "c0")
+        XCTAssertEqual(state.selection.selectedRow?.frequentUses, 5)
+    }
+
+    func testTheWingTakesTwentyAndSkipsWhatCannotShowWithoutRefilling() async throws {
+        let fixture = try makeFixture()
+        var used: [ItemValue] = []
+        for index in 0..<23 { used.append(try await insert("f\(index)", at: Double(index), into: fixture)) }
+        for index in 0..<5 { try await insert("n\(index)", at: Double(100 + index), into: fixture) }
+        let now = Date()
+        for (index, clip) in used.enumerated() {
+            try await use(clip, times: 2, lastAt: now - Double(index + 1) * 60, in: fixture)
+        }
+        // f3 leaves the history after its uses were counted.
+        var gone = used[3]
+        gone.historyDeletedAt = Date()
+        try await fixture.harness.update(.item(gone.id), to: .item(gone))
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+
+        state.open(frequentWingFirstScreen: 5)
+        try await settled(state)
+
+        // The first twenty ranks, without f3, which cannot show; f20 does not take its place. The most used, f0, stands
+        // last, beside the newest clip.
+        XCTAssertEqual(wing(state), (0..<20).filter { $0 != 3 }.reversed().map { "f\($0)" })
+
+        // A type filter takes twenty again, from every candidate that matches it: f20 comes in, f21 and f22 do not.
+        state.toggleKind(.text)
+        try await settled(state)
+        XCTAssertEqual(wing(state), (0...20).filter { $0 != 3 }.reversed().map { "f\($0)" })
+    }
+
+    func testATypeFilterFiltersBothWingsAndTakesTwentyAgain() async throws {
+        let fixture = try makeFixture()
+        var texts: [ItemValue] = []
+        for index in 0..<20 { texts.append(try await insert("t\(index)", at: Double(index), into: fixture)) }
+        var links: [ItemValue] = []
+        for index in 0..<2 {
+            links.append(try await insert("l\(index)", types: link("https://example.com/synthetic-l\(index)"),
+                                          at: Double(20 + index), into: fixture))
+        }
+        for index in 0..<5 {
+            try await insert("m\(index)", types: link("https://example.com/synthetic-m\(index)"), at: Double(30 + index),
+                             into: fixture)
+        }
+        for index in 0..<5 { try await insert("n\(index)", at: Double(40 + index), into: fixture) }
+        try await fixture.harness.consumer.synchronize()
+        let now = Date()
+        for (index, clip) in texts.enumerated() {
+            try await use(clip, times: 2, lastAt: now - Double(index + 1) * 60, in: fixture)
+        }
+        for (index, clip) in links.enumerated() {
+            try await use(clip, times: 2, lastAt: now - Double(31 + index) * 60, in: fixture)
+        }
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 5)
+        try await settled(state)
+        XCTAssertEqual(wing(state), (0..<20).reversed().map { "t\($0)" })
+
+        state.toggleKind(.url)
+        try await settled(state)
+
+        // l0 and l1 rank 21st and 22nd, so only a filter brings them into the wing, l0 beside the newest link. Neither
+        // is among the first five links, so each is listed in both wings.
+        XCTAssertEqual(state.selection.rows.map(\.title), ["l1", "l0", "m4", "m3", "m2", "m1", "m0", "l1", "l0"])
+        XCTAssertEqual(state.selection.selectedRow?.title, "m4")
+    }
+
+    func testAQueryHidesTheWingAndClearingBringsTheSameWingBack() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<8 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        // The index has the clips but not their uses, so c0 is the last result for "c": no wing hides among the first.
+        try await fixture.harness.consumer.synchronize()
+        try await use(clips[0], times: 2, lastAt: Date(), in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+
+        state.setQuery("c")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        XCTAssertEqual(state.selection.rows.count, 8)
+        XCTAssertFalse(state.selection.rows.contains { $0.isFrequent })
+
+        // A use recorded while the panel is open changes nothing until it opens again (c3 is off the first screen).
+        try await use(clips[3], times: 4, lastAt: Date(), in: fixture)
+        state.setQuery("  ")
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+        state.clearQueryAndFilters()
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+    }
+
+    func testWithoutAFirstScreenThereIsNoWing() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<4 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        try await use(clips[0], times: 2, lastAt: Date(), in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+
+        state.open()
+        try await settled(state)
+
+        XCTAssertEqual(state.selection.rows.count, 4)
+        XCTAssertEqual(state.selection.frequentCount, 0)
+    }
+
+    func testAFailedFrequentReadStillListsRecentClips() async throws {
+        let usage = FailingUsage()
+        let fixture = try makeFixture(usage: usage)
+        for index in 0..<4 { try await insert("c\(index)", at: Double(index), into: fixture) }
+        let state = QuickAccessState(services: { fixture.services })
+
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+
+        let calls = await usage.calls
+        XCTAssertEqual(calls, 1, "The read was asked for, and failed")
+        XCTAssertEqual(state.selection.rows.map(\.title), ["c3", "c2", "c1", "c0"])
+        XCTAssertEqual(state.phase, .results)
+    }
+
+    func testTheFrequentReadAsksForTwoUsesInNinetyDaysOncePerOpening() async throws {
+        let usage = RecordingUsage()
+        let fixture = try makeFixture(usage: usage)
+        for index in 0..<4 { try await insert("c\(index)", at: Double(index), into: fixture) }
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+
+        // The first page waits for the read, so once it is listed the read has been asked for.
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        var calls = await usage.calls
+        XCTAssertEqual(calls.count, 1)
+        let call = try XCTUnwrap(calls.first)
+        XCTAssertEqual(call.minimumCount, 2)
+        XCTAssertEqual(call.limit, 200)
+        XCTAssertEqual(call.since.timeIntervalSinceNow, -7_776_000, accuracy: 5)
+
+        // Nothing after the opening reads it again. Each step is waited for, so a read it asked for would be counted.
+        try await insert("c4", at: 4, into: fixture)
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { state.selection.rows.count == 5 }
+        state.setQuery("c")
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.selection.isComplete }
+        state.clearQueryAndFilters()
+        try await settled(state)
+        state.toggleKind(.text)
+        try await settled(state)
+        calls = await usage.calls
+        XCTAssertEqual(calls.count, 1)
+
+        state.close()
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        calls = await usage.calls
+        XCTAssertEqual(calls.count, 2)
+    }
+
+    func testFilterPagingCountsOnlyTheRecentRows() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for offset in 0..<70 { clips.append(try await insert("bulk \(offset)", at: Double(offset), into: fixture)) }
+        try await fixture.harness.consumer.synchronize()
+        let now = Date()
+        try await use(clips[0], times: 2, lastAt: now - 120, in: fixture)
+        try await use(clips[1], times: 2, lastAt: now - 60, in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 5)
+        try await settled(state)
+        state.toggleKind(.text)
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.count, 62)
+        XCTAssertTrue(state.hasMoreRows)
+
+        state.loadMoreIfNeeded(visibleRow: 61)
+        try await SearchTestSupport.waitUntil { state.selection.rows.count == 72 }
+
+        let recent = state.selection.rows.filter { !$0.isFrequent }
+        XCTAssertEqual(Set(recent.map(\.ref)).count, 70)
+        XCTAssertEqual(state.selection.frequentCount, 2)
+        XCTAssertFalse(state.hasMoreRows)
+    }
+
+    func testTheWingIsNoPartOfTheMatchesAFilterHasListed() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for offset in 0..<61 { clips.append(try await insert("bulk \(offset)", at: Double(offset), into: fixture)) }
+        try await fixture.harness.consumer.synchronize()
+        let now = Date()
+        try await use(clips[0], times: 2, lastAt: now - 120, in: fixture)
+        try await use(clips[1], times: 2, lastAt: now - 60, in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 5)
+        try await settled(state)
+        state.toggleKind(.text)
+        try await settled(state)
+
+        // Sixty-two rows are listed, but only sixty of the sixty-one matches: one more is to come.
+        XCTAssertEqual(state.selection.rows.count, 62)
+        XCTAssertTrue(state.hasMoreRows)
+        state.loadMoreIfNeeded(visibleRow: 61)
+        try await SearchTestSupport.waitUntil { state.selection.rows.count == 63 }
+        XCTAssertEqual(state.selection.rows.last?.title, "bulk 0")
+        XCTAssertFalse(state.hasMoreRows)
+    }
+
+    func testARefreshListsTheOpeningsCandidatesAgainstTheNewFirstScreen() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<6 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        let now = Date()
+        try await use(clips[0], times: 3, lastAt: now, in: fixture)
+        try await use(clips[3], times: 2, lastAt: now, in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        // c3 is the last of the first three recent clips, so the wing leaves it out.
+        XCTAssertEqual(wing(state), ["c0"])
+
+        // c1 is used most from now on, which the panel does not read again; three newer clips push c3 off the first
+        // screen.
+        try await use(clips[1], times: 4, lastAt: now, in: fixture)
+        for index in 0..<3 { try await insert("n\(index)", at: Double(10 + index), into: fixture) }
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { state.selection.rows.contains { $0.title == "n2" } }
+
+        XCTAssertEqual(wing(state), ["c3", "c0"])
+        XCTAssertEqual(state.selection.rows.prefix(2).map(\.frequentUses), [2, 3])
+        // The refresh keeps the clip selected as the panel opened.
+        XCTAssertEqual(state.selection.selectedRow?.title, "c5")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+    }
+
+    func testAFilterThatMatchesNoRecentClipListsNoWing() async throws {
+        let fixture = try makeFixture()
+        for index in 0..<4 { try await insert("c\(index)", at: Double(index), into: fixture) }
+        try await fixture.harness.consumer.synchronize()
+        // A link used twice, and a newer clip, neither of which the index has taken in yet.
+        let frequent = try await insert("l0", types: link("https://example.com/synthetic-frequent"), at: 10,
+                                        into: fixture)
+        try await insert("c4", at: 11, into: fixture)
+        try await use(frequent, times: 2, lastAt: Date(), in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 1)
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["l0", "c4", "l0", "c3", "c2", "c1", "c0"])
+
+        state.toggleKind(.url)
+        try await settled(state)
+
+        // The index finds no link, and a wing over no recent rows is not listed, though the link is a frequent one.
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.phase, .noResults)
+    }
+
+    func testASearchThatCannotRunListsNoWing() async throws {
+        let fixture = try makeFixture(withoutSearch: true)
+        var clips: [ItemValue] = []
+        for index in 0..<4 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        try await use(clips[0], times: 2, lastAt: Date(), in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+
+        state.toggleKind(.text)
+        try await settled(state)
+
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.indexNotice, .searchUnavailable)
+        XCTAssertEqual(state.phase, .noResults)
+    }
+
+    func testAReadStillRunningWhenThePanelClosesNeverShows() async throws {
+        let usage = HeldUsage(holding: [1, 2, 3])
+        let fixture = try makeFixture(usage: usage)
+        var clips: [ItemValue] = []
+        for index in 0..<5 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        let now = Date()
+        // The first opening's read finds c0, and the second's c1.
+        await usage.reply([
+            [UsageSummary(itemID: clips[0].id, facet: .history, lastUsedAt: now, useCount: 5)],
+            [UsageSummary(itemID: clips[1].id, facet: .history, lastUsedAt: now, useCount: 3)],
+        ])
+        let state = QuickAccessState(services: { fixture.services })
+
+        state.open(frequentWingFirstScreen: 2)
+        try await SearchTestSupport.waitUntil { await usage.calls == 1 }
+        // A store read made now returns after any the opening's load has asked for, on the store's one queue. The first
+        // page waits for the wing, so the two show together.
+        _ = try await fixture.services.repository.recent(limit: 1)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.phase, .loading)
+
+        // The panel closes and opens again while the first read is held, and that read comes back first: what it
+        // found goes nowhere, and the second opening still waits for its own.
+        state.close()
+        state.open(frequentWingFirstScreen: 2)
+        try await SearchTestSupport.waitUntil { await usage.calls == 2 }
+        await usage.release(1)
+        try await SearchTestSupport.waitUntil { await usage.returned == 1 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.phase, .loading)
+        var cancelled = await usage.returnedCancelled
+        XCTAssertEqual(cancelled, 1, "Closing cancelled the first read")
+        await usage.release(2)
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c1"])
+        // Nor does the first read show later: a refresh lists the wing this opening read.
+        try await insert("c5", at: 5, into: fixture)
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { state.selection.rows.contains { $0.title == "c5" } }
+        XCTAssertEqual(wing(state), ["c1"])
+
+        // A read still held when the panel closes is cancelled, with no opening after it.
+        state.close()
+        state.open(frequentWingFirstScreen: 2)
+        try await SearchTestSupport.waitUntil { await usage.calls == 3 }
+        state.close()
+        await usage.release(3)
+        try await SearchTestSupport.waitUntil { await usage.returned == 3 }
+        cancelled = await usage.returnedCancelled
+        XCTAssertEqual(cancelled, 2)
+    }
+
+    func testAClipThatArrivesWhileTheWingIsReadIsListedAndSelected() async throws {
+        let usage = HeldUsage(holding: [1])
+        let fixture = try makeFixture(usage: usage)
+        var clips: [ItemValue] = []
+        for index in 0..<5 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        await usage.reply([[UsageSummary(itemID: clips[0].id, facet: .history, lastUsedAt: Date(), useCount: 5)]])
+        let state = QuickAccessState(services: { fixture.services })
+
+        // The panel opens, and its read of the wing is held. A store read made now returns after any the opening's
+        // load has asked for, on the store's one queue.
+        state.open(frequentWingFirstScreen: 2)
+        try await SearchTestSupport.waitUntil { await usage.calls == 1 }
+        _ = try await fixture.services.repository.recent(limit: 1)
+        try await Task.sleep(for: .milliseconds(50))
+        // A clip arrives meanwhile, and the list refreshes before its first page has shown.
+        try await insert("c5", at: 5, into: fixture)
+        state.recentClipsChanged()
+        _ = try await fixture.services.repository.recent(limit: 1)
+        try await Task.sleep(for: .milliseconds(50))
+
+        // Once the wing is read, the opening's page and the refresh both apply, in the order they read the clips, so
+        // the last to apply has the new clip.
+        await usage.release(1)
+        try await settled(state)
+        try await Task.sleep(for: .milliseconds(200))
+
+        XCTAssertEqual(state.selection.rows.map(\.title), ["c0", "c5", "c4", "c3", "c2", "c1", "c0"])
+        XCTAssertEqual(state.selection.selectedRow?.title, "c5")
+        XCTAssertFalse(state.selection.selectionLost)
+    }
+
+    func testAServicesChangeReadsTheWingAgain() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<5 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        try await use(clips[0], times: 2, lastAt: Date(), in: fixture)
+        let box = ServicesBox()
+        let state = QuickAccessState(services: { box.services })
+
+        // The panel opens before the library: there is nothing to list or read.
+        state.open(frequentWingFirstScreen: 2)
+        XCTAssertEqual(state.phase, .libraryUnavailable)
+        // The library opens, which starts a session, and the session reads the wing.
+        box.services = fixture.services
+        state.servicesDidChange()
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+
+        // Each services change starts a session, which reads the uses recorded since.
+        try await use(clips[1], times: 3, lastAt: Date(), in: fixture)
+        state.servicesDidChange()
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0", "c1"])
+    }
+
+    func testTheWingLeavesOutTheNewestClipsTheBandShowsWholeBesideIt() async throws {
+        // As medium cards on a screen 1440 pt wide: the band shows the five newest clips whole without a wing, four
+        // beside a wing of one, which rests at the left end, and three beside a wing long enough to put the newest clip
+        // in the middle. Eight clips, c7 the newest, and the wing each set of uses lists.
+        let shownWhole = { (wing: Int) in wing == 0 ? 5 : wing == 1 ? 4 : 3 }
+        func wingFor(_ uses: [(index: Int, times: Int)]) async throws -> [String] {
+            let fixture = try makeFixture()
+            var clips: [ItemValue] = []
+            for index in 0..<8 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+            for use in uses { try await self.use(clips[use.index], times: use.times, lastAt: Date(), in: fixture) }
+            let state = QuickAccessState(services: { fixture.services })
+            state.open(frequentWingFirstScreen: shownWhole)
+            try await settled(state)
+            XCTAssertEqual(state.selection.rows.count, 8 + state.selection.frequentCount)
+            XCTAssertEqual(state.selection.selectedRow?.title, "c7")
+            let listed = wing(state)
+            state.close()
+            return listed
+        }
+
+        // c3 and c2, the fifth and sixth newest: with both, the wing puts the newest clip in the middle, where only the
+        // three newest are whole, so neither is left out. c3, the more used, stands beside the newest.
+        let reachesTheMiddle = try await wingFor([(3, 3), (2, 2)])
+        XCTAssertEqual(reachesTheMiddle, ["c2", "c3"])
+        // c3 alone: a wing of one rests at the left end, where the four newest are whole, and c3 is not among them.
+        let alone = try await wingFor([(3, 2)])
+        XCTAssertEqual(alone, ["c3"])
+        // c6 and c4, the second and fourth newest. Beside a wing that reaches the middle c6 is whole, which leaves c4
+        // alone, and alone it rests at the left end, where c4 is whole too: there is no wing.
+        let shortened = try await wingFor([(6, 3), (4, 2)])
+        XCTAssertEqual(shortened, [])
+    }
+
+    func testARefreshThatTakesTheSelectedClipOutOfTheWingKeepsItSelectedInItsRecentRow() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<6 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        try await use(clips[0], times: 3, lastAt: Date(), in: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 3)
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+        state.select(try XCTUnwrap(state.selection.rows.first).id)
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, true)
+
+        // c0 is copied again, which makes it the newest clip: on the first screen, so the wing no longer lists it.
+        var copied = clips[0]
+        copied.lastCopiedAt = Date(timeIntervalSince1970: 1_000 + 10)
+        try await fixture.harness.update(.item(copied.id), to: .item(copied))
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil {
+            state.selection.rows.first { !$0.isFrequent }?.title == "c0"
+        }
+
+        // Its recent row holds the same clip, so the selection is there, ready to act on.
+        XCTAssertEqual(state.selection.frequentCount, 0)
+        XCTAssertEqual(state.selection.selectedRow?.title, "c0")
+        XCTAssertEqual(state.selection.selectedRow?.isFrequent, false)
+        XCTAssertFalse(state.selection.selectionLost)
+        XCTAssertEqual(state.copyTarget?.ref, state.selection.rows.first?.ref)
+    }
+
     // MARK: Direct paste
 
     func testOpeningRecordsTheTargetAndOffersPaste() async throws {
@@ -1246,11 +1725,13 @@ final class QuickAccessStateTests: XCTestCase {
 
     /// `onScanProgress`, when given, gets the progress of every search that scans rather than looks its terms up.
     /// `system` and `directPasteOnlyTo` go to the paste service; by default it has no target and only copies.
+    /// The frequent wing reads the store's uses, or `usage` in their place.
     private func makeFixture(search: SearchService? = nil, withoutSearch: Bool = false, withoutPreview: Bool = false,
                              readGate: CopyGate? = nil, previewGate: CopyGate? = nil,
                              onScanProgress: (@Sendable (Int64) -> Void)? = nil,
                              system: DirectPasteSystem = .unavailable,
-                             directPasteOnlyTo: String? = nil) throws -> Fixture {
+                             directPasteOnlyTo: String? = nil,
+                             usage standIn: (any QuickAccessUsage)? = nil) throws -> Fixture {
         let harness = try SearchHarness.make(in: self)
         let scanning = onScanProgress.map {
             SearchService(index: harness.index, status: harness.status, onScanProgress: $0)
@@ -1272,7 +1753,8 @@ final class QuickAccessStateTests: XCTestCase {
         })
         let services = QuickAccessServices(repository: repository,
                                            search: withoutSearch ? nil : search ?? scanning ?? harness.service,
-                                           paste: paste, preview: withoutPreview ? nil : preview)
+                                           paste: paste, preview: withoutPreview ? nil : preview,
+                                           usage: standIn ?? usage)
         return Fixture(harness: harness, board: board, services: services)
     }
 
@@ -1314,6 +1796,29 @@ final class QuickAccessStateTests: XCTestCase {
         return item
     }
 
+    /// Records `times` successful uses of `item`'s clip in the fixture's store: the last at `lastAt`, and each earlier
+    /// one a second before the one after it.
+    private func use(_ item: ItemValue, times: Int, lastAt: Date, in fixture: Fixture) async throws {
+        let listed = try await fixture.services.repository.recent(limit: 1000)
+        let ref = try XCTUnwrap(listed.first { $0.itemID == item.id }?.history, "\(item.title) is not listed")
+        let usage = LocalUsageStore(controller: fixture.harness.controller)
+        for secondsBeforeLast in (0..<times).reversed() {
+            try await usage.record(UseReceipt(ref: ref, occurredAt: lastAt - TimeInterval(secondsBeforeLast),
+                                              outcome: .success))
+        }
+    }
+
+    /// A link clip: its address as a URL and as plain text.
+    private func link(_ address: String) -> [(String, Data)] {
+        let data = Data(address.utf8)
+        return [("public.url", data), ("public.utf8-plain-text", data)]
+    }
+
+    /// The titles of the frequent wing's rows, in order.
+    private func wing(_ state: QuickAccessState) -> [String] {
+        state.selection.rows.prefix { $0.isFrequent }.map(\.title)
+    }
+
     /// Waits until the current generation has a page.
     private func settled(_ state: QuickAccessState) async throws {
         try await SearchTestSupport.waitUntil { state.phase != .loading }
@@ -1331,6 +1836,13 @@ final class QuickAccessStateTests: XCTestCase {
     private func searchesFinished(in fixture: Fixture) async throws {
         await Task.yield()
         _ = try await fixture.harness.search("settle")
+    }
+}
+
+private extension QuickAccessState {
+    /// Opens with a first screen of `count` clips, however long the frequent wing is.
+    func open(frequentWingFirstScreen count: Int) {
+        open(frequentWingFirstScreen: { _ in count })
     }
 }
 
@@ -1393,6 +1905,70 @@ private struct SearchFailingAfterItsPages: QuickAccessSearch {
             }
             continuation.onTermination = { _ in search.cancel() }
         }
+    }
+}
+
+/// A read of the frequent clips that always fails, and counts how often it was asked.
+private actor FailingUsage: QuickAccessUsage {
+    private(set) var calls = 0
+
+    func frequent(minimumCount: Int64, since: Date, limit: Int) async throws -> [UsageSummary] {
+        calls += 1
+        throw StoreError.closed
+    }
+}
+
+/// Records each read of the frequent clips, and finds none.
+private actor RecordingUsage: QuickAccessUsage {
+    struct Call {
+        let minimumCount: Int64
+        let since: Date
+        let limit: Int
+    }
+
+    private(set) var calls: [Call] = []
+
+    func frequent(minimumCount: Int64, since: Date, limit: Int) async throws -> [UsageSummary] {
+        calls.append(Call(minimumCount: minimumCount, since: since, limit: limit))
+        return []
+    }
+}
+
+/// Answers each read of the frequent clips with the next of `replies`, or with none once they run out, and holds the
+/// reads `holding` numbers, counted from 1, until the test releases each. Counts the reads that arrived, those that
+/// came back, and those that came back cancelled.
+private actor HeldUsage: QuickAccessUsage {
+    private let holding: Set<Int>
+    private var replies: [[UsageSummary]] = []
+    private(set) var calls = 0
+    private(set) var returned = 0
+    private(set) var returnedCancelled = 0
+    private var held: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var released: Set<Int> = []
+
+    init(holding: Set<Int>) {
+        self.holding = holding
+    }
+
+    func reply(_ replies: [[UsageSummary]]) {
+        self.replies = replies
+    }
+
+    func frequent(minimumCount: Int64, since: Date, limit: Int) async throws -> [UsageSummary] {
+        calls += 1
+        let call = calls
+        let reply = replies.isEmpty ? [] : replies.removeFirst()
+        if holding.contains(call), !released.contains(call) {
+            await withCheckedContinuation { held[call] = $0 }
+        }
+        returned += 1
+        if Task.isCancelled { returnedCancelled += 1 }
+        return reply
+    }
+
+    func release(_ call: Int) {
+        released.insert(call)
+        held.removeValue(forKey: call)?.resume()
     }
 }
 
