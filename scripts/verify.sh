@@ -59,6 +59,10 @@ run_xcodebuild() {
     "$@"
 }
 
+# A test that runs longer than this many seconds fails on its own, with a spindump in its result, and the run
+# goes on. Without it, one hung test holds the whole run until the CI job's time limit ends it.
+test_time_allowance=300
+
 run_test() {
   target=$1
   class_name=${2:-}
@@ -68,6 +72,8 @@ run_test() {
   run_xcodebuild test \
     -resultBundlePath "$result_bundle" \
     "-only-testing:${selection}" \
+    -test-timeouts-enabled YES \
+    -default-test-execution-time-allowance "$test_time_allowance" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_ALLOWED=YES \
     CODE_SIGNING_REQUIRED=NO \
@@ -80,6 +86,8 @@ run_all_tests() {
   result_bundle="$result_root/${timestamp}-all-tests.xcresult"
   run_xcodebuild test \
     -resultBundlePath "$result_bundle" \
+    -test-timeouts-enabled YES \
+    -default-test-execution-time-allowance "$test_time_allowance" \
     CODE_SIGN_STYLE=Manual \
     CODE_SIGNING_ALLOWED=YES \
     CODE_SIGNING_REQUIRED=NO \

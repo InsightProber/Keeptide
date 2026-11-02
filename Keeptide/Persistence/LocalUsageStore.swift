@@ -212,25 +212,59 @@ struct UsageSummaryFingerprint: Equatable, Sendable {
 }
 
 extension LocalUsageStore {
+    private static let summaryProperties = ["itemID", "facet", "lastUsedAt", "useCount"]
+
+    private static func summary(_ row: NSDictionary) throws -> UsageSummary {
+        guard let itemID = row["itemID"] as? UUID,
+              let facetValue = row["facet"] as? String,
+              let facet = ContentFacet(rawValue: facetValue),
+              let lastUsedAt = row["lastUsedAt"] as? Date else {
+            throw StoreError.corruptStore
+        }
+        return UsageSummary(
+            itemID: ItemID(rawValue: itemID),
+            facet: facet,
+            lastUsedAt: lastUsedAt,
+            useCount: (row["useCount"] as? NSNumber)?.int64Value ?? 0
+        )
+    }
+
     func allSummaries() async throws -> [UsageSummary] {
         try await controller.perform { context in
             let request = NSFetchRequest<NSDictionary>(entityName: "UsageSummary")
             request.resultType = .dictionaryResultType
-            request.propertiesToFetch = ["itemID", "facet", "lastUsedAt", "useCount"]
-            return try context.fetch(request).map { row in
-                guard let itemID = row["itemID"] as? UUID,
-                      let facetValue = row["facet"] as? String,
-                      let facet = ContentFacet(rawValue: facetValue),
-                      let lastUsedAt = row["lastUsedAt"] as? Date else {
-                    throw StoreError.corruptStore
-                }
-                return UsageSummary(
-                    itemID: ItemID(rawValue: itemID),
-                    facet: facet,
-                    lastUsedAt: lastUsedAt,
-                    useCount: (row["useCount"] as? NSNumber)?.int64Value ?? 0
-                )
-            }
+            request.propertiesToFetch = Self.summaryProperties
+            return try context.fetch(request).map(Self.summary)
+        }
+    }
+
+    /// Clips (the history facet) used at least `minimumCount` times whose last use is at or after `since`: most used
+    /// first, then most recently used, then by item id ascending. At most `limit`, which must be 0...1000; a limit
+    /// outside that or a `since` that is not finite throws `StoreError.invalidTransaction`.
+    func frequent(minimumCount: Int64, since: Date, limit: Int) async throws -> [UsageSummary] {
+        guard (0...1000).contains(limit), since.timeIntervalSinceReferenceDate.isFinite else {
+            throw StoreError.invalidTransaction
+        }
+        // Core Data reads a fetch limit of 0 as no limit.
+        guard limit > 0 else { return [] }
+
+        return try await controller.perform { context in
+            let request = NSFetchRequest<NSDictionary>(entityName: "UsageSummary")
+            request.resultType = .dictionaryResultType
+            request.propertiesToFetch = Self.summaryProperties
+            request.predicate = NSPredicate(
+                format: "facet == %@ AND useCount >= %@ AND lastUsedAt >= %@",
+                ContentFacet.history.rawValue,
+                NSNumber(value: minimumCount),
+                since as NSDate
+            )
+            request.sortDescriptors = [
+                NSSortDescriptor(key: "useCount", ascending: false),
+                NSSortDescriptor(key: "lastUsedAt", ascending: false),
+                NSSortDescriptor(key: "itemID", ascending: true)
+            ]
+            request.fetchLimit = limit
+            return try context.fetch(request).map(Self.summary)
         }
     }
 

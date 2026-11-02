@@ -106,6 +106,19 @@ class VerifyScriptTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("-only-testing:KeeptideUITests", capture.read_text().splitlines())
 
+    def test_a_hung_test_fails_alone_instead_of_stalling_the_run(self):
+        for target in ("unit", "ui"):
+            with self.subTest(target=target), self.fake_xcode() as (env, capture):
+                result = self.run_verify(target, environment=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = capture.read_text().splitlines()
+                self.assertIn(["-test-timeouts-enabled", "YES"], self.pairs(arguments))
+                self.assertIn(["-default-test-execution-time-allowance", "300"], self.pairs(arguments))
+
+    @staticmethod
+    def pairs(arguments):
+        return [arguments[index:index + 2] for index in range(len(arguments) - 1)]
+
     def test_warnings_build_checks_swift_warnings(self):
         with self.fake_xcode() as (env, capture):
             result = self.run_verify("warnings-build", environment=env)

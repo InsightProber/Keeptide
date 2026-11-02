@@ -16,7 +16,8 @@ enum KeeptideApp {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var environment: AppEnvironment?
+    /// Made when the app finishes launching; a test gives a delegate its own.
+    var environment: AppEnvironment?
     private var menuBarController: MenuBarController?
     private var initializationTask: Task<Void, Never>?
     private var isShuttingDown = false
@@ -30,7 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arguments: processInfo.arguments,
             environment: processInfo.environment
         )
-        let environment = AppEnvironment()
+        // The one place that wires direct paste to the system. A test session pastes only into the system test host.
+        let environment = AppEnvironment(captureSession: CaptureSession(directPaste: .live))
         self.environment = environment
 
         if launchConfiguration.shouldInitializeCaptureSession {
@@ -38,25 +40,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await environment.captureSession.initialize(
                     testSessionID: launchConfiguration.captureTestSessionID,
                     cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
-                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
+                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips,
+                    manualPasteQA: launchConfiguration.shouldStartManualPasteQA
                 )
             }
         }
-        menuBarController = MenuBarController(
-            showQuickAccess: { environment.panelController.show() },
-            toggleQuickAccess: { environment.panelController.toggle() },
-            showLibrary: { environment.showLibrary() },
-            captureIsReady: { environment.captureSession.isReady && !environment.captureSession.isPausing },
-            captureIsEnabled: { environment.captureSession.isRecording },
-            captureStatus: { environment.captureSession.status },
-            toggleCapture: {
-                environment.captureSession.preferences.isEnabled.toggle()
-            },
-            canRequestQuit: { [weak self] in self?.isShuttingDown == false },
-            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
-            registration: launchConfiguration.usesSyntheticHotKey
-                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
-                : .system()
+        menuBarController = Self.makeMenuBarController(
+            environment: environment, launchConfiguration: launchConfiguration,
+            canRequestQuit: { [weak self] in self?.isShuttingDown == false }
         )
 
         if launchConfiguration.shouldShowQuickAccess {
@@ -67,7 +58,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The status menu, wired to `environment`'s panel, windows and capture session.
+    static func makeMenuBarController(environment: AppEnvironment, launchConfiguration: LaunchConfiguration,
+                                      canRequestQuit: @escaping () -> Bool) -> MenuBarController {
+        MenuBarController(
+            showQuickAccess: { environment.panelController.show() },
+            toggleQuickAccess: { environment.panelController.toggle() },
+            showLibrary: { environment.showLibrary() },
+            showSettings: { environment.showSettings() },
+            captureIsReady: { environment.captureSession.canToggleRecording },
+            captureIsEnabled: { environment.captureSession.isRecording },
+            captureStatus: { environment.captureSession.status },
+            toggleCapture: {
+                environment.captureSession.preferences.isEnabled.toggle()
+            },
+            canRequestQuit: canRequestQuit,
+            shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
+            registration: launchConfiguration.usesSyntheticHotKey
+                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
+                : .system()
+        )
+    }
+
+    /// The application menu's Settings… (⌘,), which reaches the delegate through the responder chain.
+    @objc func showSettings(_ sender: Any?) {
+        environment?.showSettings()
+    }
+
+    /// Opening Keeptide again, as with a click on its Dock icon, shows the Library. While a window is on screen,
+    /// such as Settings, the app comes forward with the windows it has instead.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
         environment?.showLibrary()
         return false
     }
