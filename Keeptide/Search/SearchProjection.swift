@@ -26,6 +26,7 @@ struct SearchProjectionInput: Equatable, Sendable {
     let title: String
     let sourceApp: String?
     let collectionID: CollectionID?
+    var isFavorite: Bool = false
     let lastCopiedAt: Date
     let history: ContentRef?
     let memo: MemoProjection?
@@ -47,6 +48,7 @@ struct SearchDocument: Equatable, Sendable {
     let kind: ContentKind
     let sourceApp: String?
     let collectionID: CollectionID?
+    var isFavorite: Bool = false
     let lastCopiedAt: Date
     let title: String
     let body: String
@@ -75,6 +77,7 @@ enum SearchDocumentBuilder {
             documents.append(document(
                 ref: history, input: input, captureID: input.captureID, memoID: memo?.memoID,
                 merged: false, savedAsMemo: merged, kind: captureKind, collectionID: nil,
+                isFavorite: false,
                 title: memo.map { title(of: $0, input: input) } ?? input.title,
                 text: capture, note: memo?.note ?? ""
             ))
@@ -84,6 +87,7 @@ enum SearchDocumentBuilder {
                 ref: memo.ref, input: input, captureID: memo.isInherited ? input.captureID : nil,
                 memoID: memo.memoID, merged: merged, savedAsMemo: false,
                 kind: memo.isInherited ? captureKind : .text, collectionID: input.collectionID,
+                isFavorite: input.isFavorite,
                 title: title(of: memo, input: input),
                 text: memo.isInherited ? capture : ownedText(memo.body), note: memo.note
             ))
@@ -100,12 +104,12 @@ enum SearchDocumentBuilder {
 
     private static func document(
         ref: ContentRef, input: SearchProjectionInput, captureID: UUID?, memoID: UUID?,
-        merged: Bool, savedAsMemo: Bool, kind: ContentKind, collectionID: CollectionID?,
+        merged: Bool, savedAsMemo: Bool, kind: ContentKind, collectionID: CollectionID?, isFavorite: Bool,
         title: String, text: ExtractedText, note: String
     ) -> SearchDocument {
         SearchDocument(
             ref: ref, captureID: captureID, memoID: memoID, merged: merged, savedAsMemo: savedAsMemo,
-            kind: kind, sourceApp: input.sourceApp, collectionID: collectionID,
+            kind: kind, sourceApp: input.sourceApp, collectionID: collectionID, isFavorite: isFavorite,
             lastCopiedAt: input.lastCopiedAt, title: title, body: text.body, url: text.url, note: note,
             bodyPartial: text.partial, textUnavailable: text.unavailable,
             normalizedTitle: SearchNormalizer.normalize(title),

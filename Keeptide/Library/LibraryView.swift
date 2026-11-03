@@ -32,9 +32,13 @@ enum LibraryLayoutPolicy {
 struct LibraryView: View {
     @Bindable private var session: CaptureSession
     @Bindable private var commands: LibraryWindowCommands
-    @State private var selectedSection: LibrarySection? = .recentClips
+    @State private var selectedScope: LibraryScope? = .recentClips
     @State private var selectedItemID: ItemID?
+    @State private var selectedEntryIDs: Set<ItemID> = []
     @State private var showsIgnoredApplications = false
+    @State private var collectionEditorMode: CollectionEditorMode?
+    @State private var collectionPendingDeletion: CollectionSnapshot?
+    @State private var collectionFilter = ""
     @State private var sidebarPreference: LibrarySidebarPreference = .automatic
     @State private var sidebarVisibility: LibrarySidebarVisibility = .visible
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
@@ -51,10 +55,7 @@ struct LibraryView: View {
     var body: some View {
         GeometryReader { geometry in
             NavigationSplitView(columnVisibility: $splitVisibility) {
-                List(LibrarySection.allCases, selection: $selectedSection) { section in
-                    Label(section.title, systemImage: section.symbolName)
-                        .tag(section)
-                }
+                librarySidebar
                 .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
             } content: {
                 contentColumn
@@ -86,17 +87,44 @@ struct LibraryView: View {
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
         }
+        .sheet(item: $collectionEditorMode) { mode in
+            CollectionEditorSheet(mode: mode) { name, color in
+                guard let workspace = session.libraryWorkspace else { return false }
+                switch mode {
+                case .create:
+                    return await workspace.createCollection(CollectionDraft(name: name, color: color))
+                case .edit(let snapshot):
+                    return await workspace.editCollection(snapshot, name: name, color: color)
+                }
+            }
+        }
+        .confirmationDialog(
+            collectionPendingDeletion.map { "Delete “\($0.value.name)”?" } ?? "Delete Collection?",
+            isPresented: Binding(
+                get: { collectionPendingDeletion != nil },
+                set: { if !$0 { collectionPendingDeletion = nil } }
+            ),
+            presenting: collectionPendingDeletion
+        ) { collection in
+            Button("Delete Collection", role: .destructive) {
+                deleteCollection(collection)
+            }
+            Button("Cancel", role: .cancel) { collectionPendingDeletion = nil }
+        } message: { _ in
+            Text("Items will move to Uncategorized. Their content and history will not be deleted.")
+        }
         .task(id: selectedItemID) {
             let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
             await session.select(ref)
-            if selectedSection == .recentClips, let selectedItemID {
+            if selectedScope == .recentClips, let selectedItemID {
                 await session.libraryWorkspace?.select(selectedItemID)
             }
         }
-        .onChange(of: selectedSection) { _, section in
+        .onChange(of: selectedScope) { _, scope in
             selectedItemID = nil
-            guard let section else { return }
-            Task { await session.libraryWorkspace?.setScope(section.scope) }
+            selectedEntryIDs.removeAll()
+            guard let scope else { return }
+            session.libraryWorkspace?.updateScope(scope)
         }
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
@@ -110,9 +138,122 @@ struct LibraryView: View {
         .disabled(session.libraryWorkspace?.isClosing == true)
     }
 
+    private var librarySidebar: some View {
+        VStack(spacing: 0) {
+            List(selection: $selectedScope) {
+                Section {
+                    Label("Recent Clips", systemImage: "clock")
+                        .tag(LibraryScope.recentClips)
+                    Label("Favorites", systemImage: "star")
+                        .tag(LibraryScope.favorites)
+                    Label("All Snippets", systemImage: "doc.text")
+                        .tag(LibraryScope.allSnippets)
+                    Label("Uncategorized", systemImage: "tray")
+                        .tag(LibraryScope.uncategorized)
+                }
+
+                if let workspace = session.libraryWorkspace {
+                    Section {
+                        TextField("Filter Collections", text: $collectionFilter)
+                            .textFieldStyle(.roundedBorder)
+                            .accessibilityIdentifier("CollectionFilterField")
+                        ForEach(filteredCollections(workspace), id: \.value.id) { collection in
+                            collectionSidebarRow(collection, workspace: workspace)
+                                .tag(LibraryScope.collection(collection.value.id))
+                        }
+                    } header: {
+                        Text("Collections")
+                    }
+                }
+            }
+            .listStyle(.sidebar)
+            .accessibilityIdentifier("LibrarySidebar")
+
+            Divider()
+            Button {
+                collectionEditorMode = .create
+            } label: {
+                Label("New Collection", systemImage: "plus")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .help("New Collection")
+            .accessibilityIdentifier("AddCollection")
+        }
+        .task { await session.libraryWorkspace?.refreshCollections() }
+    }
+
+    private func collectionSidebarRow(
+        _ collection: CollectionSnapshot,
+        workspace: LibraryWorkspace
+    ) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(collectionColor(collection.value.color))
+                .frame(width: 8, height: 8)
+                .accessibilityHidden(true)
+            Text(collection.value.name)
+                .lineLimit(1)
+                .accessibilityLabel(collection.value.name)
+                .help(collection.value.name)
+        }
+        .accessibilityLabel(collection.value.name)
+        .accessibilityIdentifier("CollectionRow-\(collection.value.id.rawValue.uuidString)")
+        .contextMenu {
+            Button("Rename Collection") { collectionEditorMode = .edit(collection) }
+            Button("Move Up") {
+                Task { _ = await workspace.reorderCollection(collection, offset: -1) }
+            }
+            .disabled(workspace.collections.first?.value.id == collection.value.id)
+            Button("Move Down") {
+                Task { _ = await workspace.reorderCollection(collection, offset: 1) }
+            }
+            .disabled(workspace.collections.last?.value.id == collection.value.id)
+            Divider()
+            Button("Delete Collection", role: .destructive) {
+                collectionPendingDeletion = collection
+            }
+        }
+    }
+
+    private func filteredCollections(_ workspace: LibraryWorkspace) -> [CollectionSnapshot] {
+        let query = collectionFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return workspace.collections }
+        return workspace.collections.filter { collection in
+            collection.value.name.localizedCaseInsensitiveContains(query)
+                || selectedScope == .collection(collection.value.id)
+        }
+    }
+
+    private func collectionColor(_ value: String) -> Color {
+        switch value {
+        case "purple": .purple
+        case "pink": .pink
+        case "red": .red
+        case "orange": .orange
+        case "yellow": .yellow
+        case "green": .green
+        case "teal": .teal
+        case "gray": .gray
+        default: .blue
+        }
+    }
+
+    private func deleteCollection(_ collection: CollectionSnapshot) {
+        collectionPendingDeletion = nil
+        Task {
+            guard let workspace = session.libraryWorkspace else { return }
+            let deleted = await workspace.deleteCollection(collection)
+            guard deleted, selectedScope == .collection(collection.value.id) else { return }
+            selectedScope = .uncategorized
+        }
+    }
+
     @ViewBuilder
     private var contentColumn: some View {
-        if selectedSection == .recentClips {
+        if selectedScope == .recentClips {
             VStack(spacing: 0) {
                 captureStatus
                 if session.actionMessage != nil { actionStatus.padding(12) }
@@ -296,6 +437,8 @@ struct LibraryView: View {
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            scopeMenu
+
             LibrarySearchField(text: searchBinding, focusRequest: commands.searchRequest)
                 .frame(width: 220)
 
@@ -307,10 +450,82 @@ struct LibraryView: View {
             .accessibilityIdentifier("NewSnippet")
             .disabled(session.libraryWorkspace == nil)
 
+            if session.libraryWorkspace?.canUndoCollectionChange == true {
+                Button {
+                    Task { _ = await session.libraryWorkspace?.undoCollectionChange() }
+                } label: {
+                    Label("Undo Collection Change", systemImage: "arrow.uturn.backward")
+                }
+                .help("Undo the last collection or favorite change")
+                .accessibilityIdentifier("UndoCollectionChange")
+            }
+
             Button { showsIgnoredApplications = true } label: {
                 Label("Ignored Apps", systemImage: "hand.raised")
             }
             .accessibilityIdentifier("IgnoredApplicationsToolbar")
+        }
+    }
+
+    private var scopeMenu: some View {
+        Menu {
+            Button {
+                selectedScope = .recentClips
+            } label: {
+                Label("Recent Clips", systemImage: "clock")
+            }
+            Button {
+                selectedScope = .favorites
+            } label: {
+                Label("Favorites", systemImage: "star")
+            }
+            Button {
+                selectedScope = .allSnippets
+            } label: {
+                Label("All Snippets", systemImage: "doc.text")
+            }
+            Button {
+                selectedScope = .uncategorized
+            } label: {
+                Label("Uncategorized", systemImage: "tray")
+            }
+
+            if let workspace = session.libraryWorkspace, !workspace.collections.isEmpty {
+                Divider()
+                ForEach(workspace.collections, id: \.value.id) { collection in
+                    Button {
+                        selectedScope = .collection(collection.value.id)
+                    } label: {
+                        Label(collection.value.name, systemImage: "circle.fill")
+                    }
+                }
+            }
+
+            Divider()
+            Button {
+                collectionEditorMode = .create
+            } label: {
+                Label("New Collection", systemImage: "plus")
+            }
+        } label: {
+            Label(currentScopeTitle, systemImage: "line.3.horizontal.decrease.circle")
+                .lineLimit(1)
+        }
+        .help("Choose Library Scope")
+        .accessibilityLabel("Library Scope: \(currentScopeTitle)")
+        .accessibilityIdentifier("LibraryScopeMenu")
+    }
+
+    private var currentScopeTitle: String {
+        guard let selectedScope else { return "Library" }
+        switch selectedScope {
+        case .recentClips: return "Recent Clips"
+        case .favorites: return "Favorites"
+        case .allSnippets: return "All Snippets"
+        case .uncategorized: return "Uncategorized"
+        case .collection(let id):
+            return session.libraryWorkspace?.collections.first(where: { $0.value.id == id })?.value.name
+                ?? "Collection"
         }
     }
 
@@ -332,8 +547,9 @@ struct LibraryView: View {
     }
 
     private func startNewSnippet(focusGeneration: Int) {
+        let requestedScope = selectedScope ?? .recentClips
         Task {
-            await session.libraryWorkspace?.startNew()
+            await session.libraryWorkspace?.startNew(in: requestedScope)
             guard commands.focusGeneration == focusGeneration else { return }
             bodyFocusSessionID = session.libraryWorkspace?.editor?.sessionID
             bodyFocusGeneration = focusGeneration
@@ -407,6 +623,10 @@ struct LibraryView: View {
             if workspace.isLoading {
                 ProgressView().controlSize(.small).padding(8)
             }
+            if !recentStyle, !selectedEntryIDs.isEmpty {
+                selectionActionBar(workspace)
+                Divider()
+            }
             if workspace.entries.isEmpty, !workspace.isLoading {
                 ContentUnavailableView {
                     Label(recentStyle ? "No recent clips" : "No snippets",
@@ -420,10 +640,13 @@ struct LibraryView: View {
                 }
                 .accessibilityIdentifier(recentStyle ? "RecentClipsEmptyState" : "SnippetsEmptyState")
             } else {
-                List(workspace.entries, selection: workspaceSelection(workspace)) { entry in
+                List(workspace.entries, selection: entrySelection(workspace, recentStyle: recentStyle)) { entry in
                     LibraryEntryRow(entry: entry)
                         .tag(entry.id)
                         .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
+                        .contextMenu {
+                            entryActions(for: contextEntries(entry, workspace: workspace), workspace: workspace)
+                        }
                         .onAppear {
                             guard entry.id == workspace.entries.last?.id, workspace.hasMoreEntries else { return }
                             Task { await workspace.loadMore() }
@@ -435,14 +658,88 @@ struct LibraryView: View {
         }
     }
 
-    private func workspaceSelection(_ workspace: LibraryWorkspace) -> Binding<ItemID?> {
+    private func entrySelection(
+        _ workspace: LibraryWorkspace,
+        recentStyle: Bool
+    ) -> Binding<Set<ItemID>> {
         Binding(
-            get: { workspace.selectedEntryID },
-            set: { itemID in
-                guard let itemID else { return }
-                Task { await workspace.select(itemID) }
+            get: {
+                if recentStyle { return selectedItemID.map { [$0] } ?? [] }
+                return selectedEntryIDs
+            },
+            set: { itemIDs in
+                if recentStyle {
+                    selectedItemID = itemIDs.first
+                    return
+                }
+                selectedEntryIDs = itemIDs
+                if itemIDs.count == 1, let itemID = itemIDs.first {
+                    Task { await workspace.select(itemID) }
+                }
             }
         )
+    }
+
+    private func selectionActionBar(_ workspace: LibraryWorkspace) -> some View {
+        HStack(spacing: 12) {
+            Text("\(selectedActionEntries(workspace).count) selected")
+                .font(.callout.weight(.medium))
+            Spacer()
+            selectionActionsMenu(entries: selectedActionEntries(workspace), workspace: workspace)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.bar)
+    }
+
+    private func selectionActionsMenu(
+        entries: [LibraryEntry],
+        workspace: LibraryWorkspace
+    ) -> some View {
+        Menu {
+            entryActions(for: entries, workspace: workspace)
+        } label: {
+            Label("Actions", systemImage: "ellipsis.circle")
+        }
+        .disabled(entries.isEmpty)
+        .accessibilityLabel("Actions for \(entries.count) selected items")
+        .accessibilityIdentifier("SelectionActions")
+    }
+
+    @ViewBuilder
+    private func entryActions(for entries: [LibraryEntry], workspace: LibraryWorkspace) -> some View {
+        let refs = entries.map(\.ref)
+        let canOrganize = !entries.isEmpty && entries.allSatisfy { $0.ref.facet == .memo }
+        let removesFavorite = !entries.isEmpty && entries.allSatisfy(\.isFavorite)
+
+        Button(removesFavorite ? "Remove from Favorites" : "Add to Favorites") {
+            Task { _ = await workspace.setFavorite(refs, isFavorite: !removesFavorite) }
+        }
+        .disabled(!canOrganize)
+
+        Menu("Move To") {
+            Button("Move to Uncategorized") {
+                Task { _ = await workspace.moveItems(refs, to: nil) }
+            }
+            ForEach(workspace.collections, id: \.value.id) { collection in
+                Button("Move to \(collection.value.name)") {
+                    Task { _ = await workspace.moveItems(refs, to: collection) }
+                }
+            }
+        }
+        .disabled(!canOrganize)
+    }
+
+    private func selectedActionEntries(_ workspace: LibraryWorkspace) -> [LibraryEntry] {
+        workspace.entries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private func contextEntries(_ entry: LibraryEntry, workspace: LibraryWorkspace) -> [LibraryEntry] {
+        if selectedEntryIDs.contains(entry.id) {
+            let selected = selectedActionEntries(workspace)
+            if !selected.isEmpty { return selected }
+        }
+        return [entry]
     }
 
     private var captureHeadline: String {
@@ -533,6 +830,13 @@ private struct LibraryEntryRow: View {
                 Text(entry.lastCopiedAt, style: .relative)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 4)
+            if entry.isFavorite {
+                Image(systemName: "star.fill")
+                    .foregroundStyle(.yellow)
+                    .help("Favorite")
+                    .accessibilityLabel("Favorite")
             }
         }
         .padding(.vertical, 4)

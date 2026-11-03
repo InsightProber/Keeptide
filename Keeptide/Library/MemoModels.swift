@@ -18,6 +18,8 @@ struct MemoDraft: Codable, Equatable, Sendable {
     var kind: MemoKind
     var languageHint: String?
     var note: String
+    /// Creation context only. Existing memo edits never move collection membership.
+    var collectionID: CollectionID?
 
     init(
         itemID: ItemID = ItemID(),
@@ -25,7 +27,8 @@ struct MemoDraft: Codable, Equatable, Sendable {
         body: String,
         kind: MemoKind = .plainText,
         languageHint: String? = nil,
-        note: String = ""
+        note: String = "",
+        collectionID: CollectionID? = nil
     ) {
         self.itemID = itemID
         self.title = title
@@ -33,6 +36,7 @@ struct MemoDraft: Codable, Equatable, Sendable {
         self.kind = kind
         self.languageHint = languageHint
         self.note = note
+        self.collectionID = collectionID
     }
 }
 

@@ -4,6 +4,23 @@ import Foundation
 struct WriteCoordinator: Sendable {
     let controller: PersistenceController
 
+    /// A no-op command still has a single writer-queue validation point. This
+    /// prevents separately read members from masquerading as an atomic snapshot.
+    func validate(_ transaction: StoreTransaction) async throws {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            guard transaction.mutations.isEmpty, transaction.receiptFingerprintKeys.isEmpty else {
+                throw StoreError.invalidTransaction
+            }
+            guard transaction.identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            for condition in transaction.preconditions {
+                try check(condition, transaction: transaction, in: context)
+            }
+        }
+    }
+
     func commit(_ transaction: StoreTransaction, validate authorization: @escaping @Sendable () throws -> Void = {}) async throws -> StoreReceipt {
         try await controller.perform { context in
             context.reset()
@@ -119,10 +136,19 @@ struct WriteCoordinator: Sendable {
                 // All mutations in this save belong to CloudContent. Local usage,
                 // file access and generation changes use separate LocalState saves.
                 try authorization()
+                // These keys are explicitly restricted to pending-aware item and
+                // collection reads. Compute before saving so failure cannot follow
+                // a successful commit; existing capture transactions pay no cost.
+                let fingerprints = try Dictionary(uniqueKeysWithValues:
+                    transaction.receiptFingerprintKeys.map { key in
+                        (key, try StoredRecords.fingerprint(key, in: context))
+                    }
+                )
                 try context.save()
                 CaptureCandidateRepository.didCommit(transaction, runtime: controller.runtime)
                 return StoreReceipt(transactionID: transaction.transactionID, identity: controller.runtime.identity,
-                                    changed: touched.sorted { $0.entity + $0.id.uuidString < $1.entity + $1.id.uuidString })
+                                    changed: touched.sorted { $0.entity + $0.id.uuidString < $1.entity + $1.id.uuidString },
+                                    postMutationFingerprints: fingerprints)
             } catch {
                 context.rollback()
                 throw error
@@ -132,16 +158,25 @@ struct WriteCoordinator: Sendable {
 
     private func validateStructure(_ transaction: StoreTransaction) throws {
         var keys = Set<RecordKey>()
+        var survivingKeys = Set<RecordKey>()
         for mutation in transaction.mutations {
             let key: RecordKey
             switch mutation {
             case .insert(let value), .update(let value):
                 key = value.key
+                survivingKeys.insert(key)
                 try validatePersistableScalars(value)
             case .delete(let target):
                 key = target
             }
             guard keys.insert(key).inserted else { throw StoreError.invalidTransaction }
+        }
+        for key in transaction.receiptFingerprintKeys {
+            guard survivingKeys.contains(key) else { throw StoreError.invalidTransaction }
+            switch key {
+            case .item, .collection: break
+            default: throw StoreError.invalidTransaction
+            }
         }
     }
 
@@ -188,6 +223,14 @@ struct WriteCoordinator: Sendable {
         case .localCaptureSet(let digest, let fingerprint):
             valid = try CaptureCandidateRepository.localFingerprint(digest: digest, in: context, runtime: controller.runtime) == fingerprint
         case .referenceSet(let id, let fingerprint): valid = try StoredRecords.referenceFingerprint(snapshotID: id, in: context) == fingerprint
+        case .collectionMembership(let id, let fingerprint):
+            valid = try StoredRecords.collectionMembershipFingerprint(id, in: context) == fingerprint
+        case .collectionActive(let id):
+            if let target = try StoredRecords.object(.collection(id), in: context) {
+                valid = target.value(forKey: "deletedAt") == nil
+            } else {
+                valid = false
+            }
         }
         guard valid else { throw StoreError.preconditionFailed }
     }
@@ -488,9 +531,11 @@ struct WriteCoordinator: Sendable {
         }
         if let collection = item.collectionID {
             guard item.memoID != nil else { throw StoreError.invalidTransaction }
-            if changes.collection,
-               try StoredRecords.object(.collection(collection), in: context) == nil {
-                throw StoreError.invalidTransaction
+            if changes.collection {
+                guard let target = try StoredRecords.object(.collection(collection), in: context),
+                      target.value(forKey: "deletedAt") == nil else {
+                    throw StoreError.invalidTransaction
+                }
             }
         }
     }

@@ -1,7 +1,13 @@
+import CoreData
 import Foundation
 
 struct RecordState: Sendable {
     let value: RecordValue
+    let fingerprint: Data
+}
+
+struct CollectionMembershipSnapshot: Sendable {
+    let members: [RecordState]
     let fingerprint: Data
 }
 
@@ -62,6 +68,31 @@ struct ContentRepository: Sendable {
         try await controller.perform { context in
             context.reset()
             return try StoredRecords.referenceFingerprint(snapshotID: snapshotID, in: context)
+        }
+    }
+
+    func collectionMembershipFingerprint(_ collectionID: CollectionID) async throws -> Data {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            return try StoredRecords.collectionMembershipFingerprint(collectionID, in: context)
+        }
+    }
+
+    func collectionMembershipSnapshot(_ collectionID: CollectionID) async throws -> CollectionMembershipSnapshot {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            let ids = try StoredRecords.collectionMemberIDs(collectionID, in: context)
+            let members = try ids.map { id -> RecordState in
+                let key = RecordKey.item(id)
+                guard let value = try StoredRecords.value(key, in: context) else { throw StoreError.corruptStore }
+                return RecordState(value: value, fingerprint: try StoredRecords.fingerprint(key, in: context))
+            }
+            return CollectionMembershipSnapshot(
+                members: members,
+                fingerprint: try StoredRecords.canonicalDigest(ids.map { $0.rawValue.uuidString })
+            )
         }
     }
 }

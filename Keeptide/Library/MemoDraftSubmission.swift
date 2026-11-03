@@ -21,7 +21,8 @@ extension LibraryService {
                 throw LibraryServiceError.invalidDraft
             }
             ref = try await create(MemoDraft(itemID: draft.itemID, title: draft.title, body: body,
-                kind: draft.kind, languageHint: draft.languageHint, note: draft.note),
+                kind: draft.kind, languageHint: draft.languageHint, note: draft.note,
+                collectionID: draft.collectionID),
                 expecting: draft.storeIdentity)
         }
 

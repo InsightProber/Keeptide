@@ -1,10 +1,17 @@
 import Foundation
 import Observation
 
-enum LibraryScope: String, CaseIterable, Sendable {
+enum LibraryScope: Hashable, Sendable {
     case recentClips
+    case favorites
     case allSnippets
     case uncategorized
+    case collection(CollectionID)
+
+    var collectionID: CollectionID? {
+        if case .collection(let id) = self { return id }
+        return nil
+    }
 }
 
 struct LibraryEntry: Identifiable, Equatable, Sendable {
@@ -15,6 +22,7 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     let lastCopiedAt: Date
     let kind: ContentKind
     let isMemo: Bool
+    var isFavorite = false
 }
 
 struct RecoveredDraftSummary: Identifiable, Equatable, Sendable {
@@ -46,6 +54,8 @@ final class LibraryWorkspace {
     private(set) var searchIsPartial = false
     private(set) var isClosing = false
     private(set) var recoveryNotice: String?
+    private(set) var collections: [CollectionSnapshot] = []
+    private(set) var canUndoCollectionChange = false
 
     @ObservationIgnored private let controller: PersistenceController
     @ObservationIgnored private let repository: ContentRepository
@@ -64,6 +74,9 @@ final class LibraryWorkspace {
     @ObservationIgnored private var isClosed = false
     @ObservationIgnored private var refreshedRevisionByDraft: [UUID: UInt64] = [:]
     @ObservationIgnored private var queryTask: Task<Void, Never>?
+    @ObservationIgnored private var collectionUndo: CollectionUndoToken?
+    @ObservationIgnored private var isChangingCollection = false
+    @ObservationIgnored private var collectionCompletionWaiters: [CheckedContinuation<Void, Never>] = []
 
     private struct UndoSave {
         let itemID: ItemID
@@ -139,6 +152,99 @@ final class LibraryWorkspace {
         await reload(refreshIndex: true)
     }
 
+    func refreshCollections() async {
+        guard !isClosing, !isClosed else { return }
+        do { collections = try await collectionService.list(expecting: storeIdentity) }
+        catch { message = "Collections could not be loaded." }
+    }
+
+    func createCollection(_ draft: CollectionDraft) async -> Bool {
+        await changeCollection {
+            _ = try await self.collectionService.create(draft, expecting: self.storeIdentity)
+            return nil
+        }
+    }
+
+    func editCollection(_ snapshot: CollectionSnapshot, name: String, color: String) async -> Bool {
+        await changeCollection {
+            _ = try await self.collectionService.edit(snapshot, name: name, color: color, expecting: self.storeIdentity)
+            return nil
+        }
+    }
+
+    func deleteCollection(_ snapshot: CollectionSnapshot) async -> Bool {
+        await changeCollection {
+            let change = try await self.collectionService.delete(snapshot, expecting: self.storeIdentity)
+            if self.scope.collectionID == snapshot.value.id {
+                self.navigationGeneration &+= 1
+                self.scope = .uncategorized
+            }
+            return change
+        }
+    }
+
+    func reorderCollection(_ snapshot: CollectionSnapshot, offset: Int) async -> Bool {
+        guard let index = collections.firstIndex(where: { $0.value.id == snapshot.value.id }),
+              collections[index].fingerprint == snapshot.fingerprint,
+              offset == -1 || offset == 1,
+              collections.indices.contains(index + offset) else { return false }
+        var ordered = collections
+        ordered.swapAt(index, index + offset)
+        return await changeCollection {
+            _ = try await self.collectionService.reorder(ordered, expecting: self.storeIdentity)
+            return nil
+        }
+    }
+
+    func moveItems(_ refs: [ContentRef], to collection: CollectionSnapshot?) async -> Bool {
+        await changeCollection {
+            try await self.collectionService.move(refs, to: collection, expecting: self.storeIdentity)
+        }
+    }
+
+    func setFavorite(_ refs: [ContentRef], isFavorite: Bool) async -> Bool {
+        await changeCollection {
+            try await self.collectionService.setFavorite(refs, isFavorite: isFavorite, expecting: self.storeIdentity)
+        }
+    }
+
+    func undoCollectionChange() async -> Bool {
+        guard let token = collectionUndo else { return false }
+        return await changeCollection {
+            _ = try await self.collectionService.undo(token)
+            return nil
+        }
+    }
+
+    private var collectionService: CollectionService { CollectionService(controller: controller) }
+
+    private func changeCollection(_ operation: () async throws -> CollectionChange?) async -> Bool {
+        guard !isClosing, !isClosed, !isChangingCollection else { return false }
+        isChangingCollection = true
+        defer {
+            isChangingCollection = false
+            collectionCompletionWaiters.forEach { $0.resume() }
+            collectionCompletionWaiters.removeAll()
+        }
+        var committed = false
+        do {
+            let change = try await operation()
+            committed = true
+            collectionUndo = change?.undoToken
+            canUndoCollectionChange = !(collectionUndo?.records.isEmpty ?? true)
+            guard !isClosing, !isClosed else { return true }
+            collections = try await collectionService.list(expecting: storeIdentity)
+            try await refreshSearch()
+            if !isClosing, !isClosed { await reload(refreshIndex: false) }
+            return true
+        } catch {
+            message = committed
+                ? "Saved. Library results are still updating."
+                : "This change could not be applied. The items or collection may have changed."
+            return committed
+        }
+    }
+
     private func reload(refreshIndex: Bool) async {
         loadGeneration &+= 1
         let generation = loadGeneration
@@ -147,7 +253,10 @@ final class LibraryWorkspace {
         searchIsPartial = false
         message = nil
         do {
-            if refreshIndex { try await refreshSearch() }
+            if refreshIndex {
+                try await refreshSearch()
+                collections = try await collectionService.list(expecting: storeIdentity)
+            }
             guard generation == loadGeneration else { return }
             let loaded = try await loadEntries(generation: generation, offset: 0)
             guard generation == loadGeneration else { return }
@@ -184,10 +293,18 @@ final class LibraryWorkspace {
         if generation == loadGeneration { isLoading = false }
     }
 
-    func setScope(_ value: LibraryScope) async {
-        guard scope != value else { return }
+    /// Scope is published before any asynchronous work, just like native search input.
+    /// Changing it also invalidates pending navigation from the previous scope.
+    func updateScope(_ value: LibraryScope) {
+        guard !isClosing, !isClosed, scope != value else { return }
+        navigationGeneration &+= 1
         scope = value
-        await reload()
+        scheduleQueryLoad(refreshIndex: true)
+    }
+
+    func setScope(_ value: LibraryScope) async {
+        updateScope(value)
+        await queryTask?.value
     }
 
     func setQuery(_ value: String) async {
@@ -204,14 +321,14 @@ final class LibraryWorkspace {
         scheduleQueryLoad()
     }
 
-    private func scheduleQueryLoad() {
+    private func scheduleQueryLoad(refreshIndex: Bool = false) {
         queryTask?.cancel()
         loadGeneration &+= 1
         let generation = loadGeneration
         queryTask = Task { [weak self] in
             guard !Task.isCancelled, let self,
                   self.loadGeneration == generation else { return }
-            await self.reload(refreshIndex: false)
+            await self.reload(refreshIndex: refreshIndex)
         }
     }
 
@@ -226,6 +343,7 @@ final class LibraryWorkspace {
     }
 
     func open(_ ref: ContentRef) async {
+        guard !isClosing, !isClosed else { return }
         if editor?.ref == ref { return }
         navigationGeneration &+= 1
         let navigation = navigationGeneration
@@ -248,7 +366,9 @@ final class LibraryWorkspace {
         }
     }
 
-    func startNew() async {
+    func startNew(in requestedScope: LibraryScope? = nil) async {
+        guard !isClosing, !isClosed else { return }
+        if let requestedScope { updateScope(requestedScope) }
         navigationGeneration &+= 1
         let navigation = navigationGeneration
         do {
@@ -260,7 +380,7 @@ final class LibraryWorkspace {
         guard navigation == navigationGeneration else { return }
         let session = MemoEditorSession(
             itemID: ItemID(), ref: nil, isReadOnly: false, title: "", body: "", note: "",
-            kind: .plainText, storeIdentity: storeIdentity
+            kind: .plainText, storeIdentity: storeIdentity, collectionID: scope.collectionID
         )
         install(session)
         selectedEntryID = nil
@@ -415,7 +535,8 @@ final class LibraryWorkspace {
             note: draft.note, kind: draft.kind, status: .saving,
             isComposing: false, revision: draft.revision + 1,
             conflictItemID: draft.conflictItemID, storeIdentity: draft.storeIdentity,
-            baseMemoFingerprint: draft.baseMemoFingerprint, languageHint: draft.languageHint
+            baseMemoFingerprint: draft.baseMemoFingerprint, languageHint: draft.languageHint,
+            collectionID: draft.collectionID
         )
         install(session)
         editorDidChange(session)
@@ -426,10 +547,14 @@ final class LibraryWorkspace {
         if isClosed { return true }
         guard !isClosing else { return false }
         isClosing = true
+        navigationGeneration &+= 1
         queryTask?.cancel()
         loadGeneration &+= 1
         isLoading = false
         pasteSession?.end()
+        if isChangingCollection {
+            await withCheckedContinuation { collectionCompletionWaiters.append($0) }
+        }
         do {
             while let editor, !editor.isReadOnly {
                 let draftID = editor.draftID
@@ -489,7 +614,8 @@ final class LibraryWorkspace {
             base: session.ref, baseMemoFingerprint: session.baseMemoFingerprint,
             title: session.title, body: session.body, kind: session.kind,
             languageHint: session.languageHint, note: session.note,
-            isComposing: session.isComposing, revision: session.revision, savedAt: Date()
+            isComposing: session.isComposing, revision: session.revision, savedAt: Date(),
+            collectionID: session.collectionID
         )
     }
 
@@ -522,12 +648,18 @@ final class LibraryWorkspace {
     ) async throws -> (entries: [LibraryEntry], hasMore: Bool, isPartial: Bool) {
         if let searchService {
             let searchScope: SearchScope = scope == .recentClips ? .history : .memo
-            let collection: CollectionFilter? = scope == .uncategorized ? .uncategorized : nil
+            let collection: CollectionFilter?
+            switch scope {
+            case .uncategorized: collection = .uncategorized
+            case .collection(let id): collection = .collection(id)
+            default: collection = nil
+            }
             var latest: [SearchResult] = []
             var totalMatches = 0
             var isPartial = false
             for try await page in searchService.search(SearchRequest(
                 query: query, scope: searchScope, collection: collection,
+                favoritesOnly: scope == .favorites,
                 generation: generation, offset: offset, limit: 100
             )) where page.generation == generation {
                 latest = page.results
@@ -542,7 +674,7 @@ final class LibraryWorkspace {
             }
             return (latest.map(Self.entry), offset + latest.count < totalMatches, isPartial)
         }
-        guard query.isEmpty, scope != .uncategorized else {
+        guard query.isEmpty, scope == .recentClips || scope == .allSnippets else {
             throw LibraryWorkspaceError.searchUnavailable
         }
         let recent = try await repository.recent(limit: 200)
@@ -604,7 +736,8 @@ final class LibraryWorkspace {
         LibraryEntry(
             id: result.ref.itemID, ref: result.ref, title: result.title,
             snippet: result.snippet?.text, lastCopiedAt: result.lastCopiedAt,
-            kind: result.kind, isMemo: result.savedAsMemo
+            kind: result.kind, isMemo: result.ref.facet == .memo || result.savedAsMemo,
+            isFavorite: result.isFavorite
         )
     }
 
