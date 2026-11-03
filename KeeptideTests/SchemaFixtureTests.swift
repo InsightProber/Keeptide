@@ -91,7 +91,7 @@ final class SchemaFixtureTests: XCTestCase {
         var result: [String: Data] = [:]
         for case let file as URL in enumerator {
             guard try file.resourceValues(forKeys: Set(keys)).isRegularFile == true else { continue }
-            let relativePath = String(file.path.dropFirst(canonicalDirectory.path.count + 1))
+            let relativePath = String(file.resolvingSymlinksInPath().path.dropFirst(canonicalDirectory.path.count + 1))
             result[relativePath] = Data(SHA256.hash(data: try Data(contentsOf: file)))
         }
         return result
