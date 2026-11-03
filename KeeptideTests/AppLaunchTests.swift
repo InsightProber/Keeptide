@@ -1556,11 +1556,12 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testSpaceOpensThePreviewAboveTheBandAndEscapeClosesIt() async throws {
-        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        // Freeze the layout input: Dock/menu-bar changes can update NSScreen during the async preview load.
+        let visibleFrame = try XCTUnwrap(NSScreen.main).visibleFrame
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: visibleFrame)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
-        let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
-        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
+        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
         controller.perform(.focusResults)
         let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
 
@@ -1570,7 +1571,7 @@ final class AppLaunchTests: XCTestCase {
         settleLayout()
 
         // The panel grows to hold the card above the band, and the band moves down if the card has no room there.
-        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium, withPreview: true))
+        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium, withPreview: true))
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
         XCTAssertEqual(text.string, "newer")
         XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
@@ -1580,7 +1581,7 @@ final class AppLaunchTests: XCTestCase {
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(controller.state.isPreviewExpanded)
-        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
+        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
         XCTAssertTrue(window.firstResponder === strip)
         controller.state.close()
     }
@@ -3862,7 +3863,10 @@ final class AppLaunchTests: XCTestCase {
     /// Where `StripLayout` puts the panel on `screen`: around the band alone, or around the band and the
     /// preview card above it.
     private func panelFrame(on screen: NSScreen, cardSize: CardSize, withPreview: Bool = false) -> NSRect {
-        let visible = screen.visibleFrame
+        panelFrame(in: screen.visibleFrame, cardSize: cardSize, withPreview: withPreview)
+    }
+
+    private func panelFrame(in visible: NSRect, cardSize: CardSize, withPreview: Bool = false) -> NSRect {
         let metrics = StripLayout.metrics(for: cardSize, visibleWidth: visible.width)
         let band = StripLayout.bandFrame(metrics, in: visible)
         guard withPreview else { return StripLayout.panelFrame(band: band, preview: nil, in: visible) }
