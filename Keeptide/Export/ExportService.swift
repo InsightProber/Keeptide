@@ -273,7 +273,7 @@ private extension ExportService {
     static let readmeData = Data("""
     Keeptide Local Export
 
-    This directory is a verified local export. Portable source bytes are in payloads, and human-readable derivatives are in readable. Entries marked Requires File Relocation do not contain the original local file or its path.
+    This directory is a verified local export. Portable source bytes are in payloads, and human-readable derivatives are in readable. Entries marked Requires File Relocation do not contain the original local file or its path. Regular .DS_Store display metadata is excluded from content verification; manifest-listed content and file digests are still checked.
     """.utf8)
 }
 
