@@ -70,6 +70,10 @@ later when a GitHub Release is published. Use a tag such as `v0.1.0` or
 the DMG, its SHA-256 checksum, and build metadata to that existing release.
 Creating a tag alone does not publish a package.
 
+The mounted installer volume carries the application's icon. Its icon is embedded
+inside the DMG; no external Finder metadata is required after downloading it.
+The downloaded `.dmg` file itself may retain macOS's standard disk-image icon.
+
 Pull requests also exercise DMG creation and read-only mount verification.
 **Run workflow** produces a downloadable Actions artifact without publishing a
 release. Artifacts are retained for 14 days. Local packaging uses full Xcode:

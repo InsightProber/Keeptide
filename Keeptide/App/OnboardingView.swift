@@ -11,8 +11,11 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            Image(systemName: "clipboard.fill")
-                .font(.system(size: 38, weight: .semibold))
+            Image("BrandMark")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 44, height: 44)
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
 

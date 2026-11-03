@@ -5,6 +5,26 @@ import XCTest
 
 @MainActor
 final class MenuBarControllerTests: XCTestCase {
+    func testMenuBarUsesBrandedTemplateImageWithNativeAccessibility() throws {
+        XCTAssertNotNil(NSImage(named: "KeeptideStatusTemplate"))
+        XCTAssertNotNil(NSImage(named: "BrandMark"))
+
+        let controller = MenuBarController(
+            showQuickAccess: {},
+            toggleQuickAccess: {},
+            showLibrary: {},
+            shouldRegisterHotKey: false
+        )
+        let button = try XCTUnwrap(controller.statusButton)
+        let image = try XCTUnwrap(button.image)
+
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertEqual(image.size, NSSize(width: 18, height: 18))
+        XCTAssertEqual(button.imagePosition, .imageOnly)
+        XCTAssertEqual(button.toolTip, "Keeptide")
+        XCTAssertEqual(button.accessibilityLabel(), "Keeptide")
+    }
+
     func testLegacySyntheticRegistrationInitializerRemainsSourceCompatible() {
         let controller = MenuBarController(
             showQuickAccess: {},

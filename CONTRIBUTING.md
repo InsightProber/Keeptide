@@ -90,6 +90,16 @@ cloud recovery need isolated real-service
 evidence in addition to deterministic application tests. Use synthetic test data;
 never include personal content, credentials or signing material in submissions.
 
+## Icon artwork
+
+The application and installer volume share the same Keeptide icon. The menu bar
+uses a separate monochrome vector template so macOS can adapt its contrast.
+The app icon is maintained in `Keeptide/Resources/AppIcon.icon` with editable SVG
+layers. Open it in Icon Composer to edit materials and appearances. Xcode compiles
+both the system-rendered icon and the flattened installer icon from that source.
+Review small sizes and Default, Dark, and Mono appearances; keep compatibility
+with the CI Xcode version.
+
 ## Coding agents
 
 Codex reads the root `AGENTS.md`. Claude Code reads `CLAUDE.md`, which imports the

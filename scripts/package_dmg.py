@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import ctypes
+import errno
 import hashlib
 import os
 from pathlib import Path
+import platform
 import plistlib
 import re
 import shutil
@@ -44,6 +46,10 @@ distribution signing and notarization process is configured.
 
 License and attribution are provided in LICENSE.txt and NOTICE.txt.
 """
+FINDER_INFO_ATTRIBUTE = "com.apple.FinderInfo"
+FINDER_FLAG_OFFSET = 8
+FINDER_FLAG_HAS_CUSTOM_ICON = 0x0400
+MAX_ICON_BYTES = 32 * 1024 * 1024
 
 
 class PackagingError(RuntimeError):
@@ -120,6 +126,31 @@ def _verify_executable(executable: Path, expected_entitlements: dict[str, object
         )
 
 
+def _application_icon(app: Path, info: dict[str, object]) -> bytes:
+    icon_name = info.get("CFBundleIconFile")
+    if not isinstance(icon_name, str) or not icon_name:
+        raise PackagingError("application icon declaration is missing or invalid")
+    if Path(icon_name).name != icon_name or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", icon_name) is None:
+        raise PackagingError("application icon declaration must be a safe resource name")
+    icon_path = Path(icon_name)
+    if icon_path.suffix not in ("", ".icns"):
+        raise PackagingError("application icon declaration must reference an icns resource")
+    if not icon_path.suffix:
+        icon_path = icon_path.with_suffix(".icns")
+    resource = app / "Contents" / "Resources" / icon_path.name
+    if not resource.is_file() or resource.is_symlink():
+        raise PackagingError(f"application icon resource is missing or invalid: {resource}")
+    try:
+        icon = resource.read_bytes()
+    except OSError as error:
+        raise PackagingError(f"application icon resource cannot be read: {resource}") from error
+    if not 16 <= len(icon) <= MAX_ICON_BYTES or icon[:4] != b"icns":
+        raise PackagingError("application icon resource is not a valid icns container")
+    if int.from_bytes(icon[4:8], byteorder="big") != len(icon):
+        raise PackagingError("application icon resource has an invalid icns length")
+    return icon
+
+
 def verify_app_bundle(app: Path, version: str, build_number: str, runner: CommandRunner = run_command) -> None:
     info_path = app / "Contents" / "Info.plist"
     try:
@@ -138,6 +169,7 @@ def verify_app_bundle(app: Path, version: str, build_number: str, runner: Comman
     for key, expected in expected_info.items():
         if info.get(key) != expected:
             raise PackagingError(f"unexpected {key}: {info.get(key)!r}; expected {expected!r}")
+    _application_icon(app, info)
 
     test_products = sorted(app.rglob("*.xctest"))
     if test_products:
@@ -151,7 +183,12 @@ def verify_app_bundle(app: Path, version: str, build_number: str, runner: Comman
 
 
 @contextmanager
-def mounted_dmg(dmg: Path, runner: CommandRunner = run_command) -> Iterator[Path]:
+def mounted_dmg(
+    dmg: Path,
+    runner: CommandRunner = run_command,
+    *,
+    read_only: bool = True,
+) -> Iterator[Path]:
     with tempfile.TemporaryDirectory(prefix="keeptide-dmg-mount-") as mount_directory:
         mount_point = Path(mount_directory) / "Keeptide"
         mount_point.mkdir()
@@ -162,7 +199,7 @@ def mounted_dmg(dmg: Path, runner: CommandRunner = run_command) -> Iterator[Path
                 [
                     "/usr/bin/hdiutil",
                     "attach",
-                    "-readonly",
+                    "-readonly" if read_only else "-readwrite",
                     "-nobrowse",
                     "-noautoopen",
                     "-mountpoint",
@@ -226,7 +263,88 @@ def _build_app(version: str, build_number: str, derived_data: Path, runner: Comm
     return app
 
 
-def _verify_mounted_contents(mount_point: Path, version: str, build_number: str, runner: CommandRunner) -> None:
+def _finder_info(path: Path) -> bytes | None:
+    getxattr = ctypes.CDLL(None, use_errno=True).getxattr
+    getxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    getxattr.restype = ctypes.c_ssize_t
+    encoded_path = os.fsencode(path)
+    encoded_name = FINDER_INFO_ATTRIBUTE.encode("ascii")
+    size = getxattr(encoded_path, encoded_name, None, 0, 0, 0)
+    if size < 0:
+        error_code = ctypes.get_errno()
+        missing_codes = {getattr(errno, "ENOATTR", 93), getattr(errno, "ENODATA", -1)}
+        if error_code in missing_codes:
+            return None
+        raise PackagingError(
+            f"could not read Finder metadata for {path}: {os.strerror(error_code)}"
+        )
+    buffer = ctypes.create_string_buffer(size)
+    actual_size = getxattr(encoded_path, encoded_name, buffer, size, 0, 0)
+    if actual_size != size:
+        error_code = ctypes.get_errno()
+        detail = os.strerror(error_code) if actual_size < 0 else "metadata changed while reading"
+        raise PackagingError(f"could not read Finder metadata for {path}: {detail}")
+    value = buffer.raw
+    if len(value) != 32:
+        raise PackagingError(f"Finder metadata has an invalid length for {path}")
+    return value
+
+
+def _set_custom_icon_flag(path: Path) -> None:
+    finder_info = bytearray(_finder_info(path) or bytes(32))
+    flags = int.from_bytes(finder_info[FINDER_FLAG_OFFSET : FINDER_FLAG_OFFSET + 2], "big")
+    finder_info[FINDER_FLAG_OFFSET : FINDER_FLAG_OFFSET + 2] = (
+        flags | FINDER_FLAG_HAS_CUSTOM_ICON
+    ).to_bytes(2, "big")
+    setxattr = ctypes.CDLL(None, use_errno=True).setxattr
+    setxattr.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint32,
+        ctypes.c_int,
+    ]
+    setxattr.restype = ctypes.c_int
+    value = bytes(finder_info)
+    buffer = ctypes.create_string_buffer(value)
+    result = setxattr(
+        os.fsencode(path),
+        FINDER_INFO_ATTRIBUTE.encode("ascii"),
+        buffer,
+        len(value),
+        0,
+        0,
+    )
+    if result != 0:
+        error_code = ctypes.get_errno()
+        raise PackagingError(
+            f"could not set Finder custom icon flag for {path}: {os.strerror(error_code)}"
+        )
+
+
+def _has_custom_icon_flag(path: Path) -> bool:
+    finder_info = _finder_info(path)
+    if finder_info is None:
+        return False
+    flags = int.from_bytes(finder_info[FINDER_FLAG_OFFSET : FINDER_FLAG_OFFSET + 2], "big")
+    return bool(flags & FINDER_FLAG_HAS_CUSTOM_ICON)
+
+
+def _verify_mounted_contents(
+    mount_point: Path,
+    version: str,
+    build_number: str,
+    expected_volume_icon: bytes,
+    runner: CommandRunner,
+) -> None:
     app = mount_point / "Keeptide.app"
     applications = mount_point / "Applications"
     readme = mount_point / "README.txt"
@@ -239,6 +357,12 @@ def _verify_mounted_contents(mount_point: Path, version: str, build_number: str,
         if (not bundled.is_file() or bundled.is_symlink()
                 or bundled.read_bytes() != (REPOSITORY_ROOT / source_name).read_bytes()):
             raise PackagingError(f"disk image {source_name.lower()} is missing or invalid")
+    volume_icon = mount_point / ".VolumeIcon.icns"
+    if (not volume_icon.is_file() or volume_icon.is_symlink()
+            or volume_icon.read_bytes() != expected_volume_icon):
+        raise PackagingError("disk image volume icon is missing or invalid")
+    if not _has_custom_icon_flag(mount_point):
+        raise PackagingError("disk image Finder custom icon flag is missing")
     verify_app_bundle(app, version, build_number, runner)
 
 
@@ -251,6 +375,47 @@ def publish_directory(source: Path, destination: Path) -> None:
     if rename(os.fsencode(source), os.fsencode(destination), 0x00000004) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), str(destination))
+
+
+def _compress_disk_image(
+    source: Path,
+    destination: Path,
+    runner: CommandRunner,
+    *,
+    macos_version: str | None = None,
+) -> None:
+    version = macos_version if macos_version is not None else platform.mac_ver()[0]
+    match = re.fullmatch(r"([0-9]+)(?:\.[0-9]+){0,2}", version)
+    if match is None:
+        raise PackagingError(f"could not determine a valid macOS version: {version!r}")
+    major_version = int(match.group(1))
+    if major_version < 26:
+        raise PackagingError(f"DMG packaging requires macOS 26 or newer, found {version}")
+    if major_version >= 27:
+        command = [
+            "/usr/sbin/diskutil",
+            "image",
+            "create",
+            "from",
+            "--format",
+            "UDZO",
+            str(source),
+            str(destination),
+        ]
+    else:
+        command = [
+            "/usr/bin/hdiutil",
+            "convert",
+            str(source),
+            "-format",
+            "UDZO",
+            "-ov",
+            "-o",
+            str(destination),
+        ]
+    runner(command)
+    if not destination.is_file():
+        raise PackagingError("disk image conversion did not produce the expected compressed image")
 
 
 def package_release(
@@ -271,6 +436,8 @@ def package_release(
         work = Path(work_directory)
         app = _build_app(version, build_number, work / "DerivedData", runner)
         verify_app_bundle(app, version, build_number, runner)
+        with (app / "Contents" / "Info.plist").open("rb") as stream:
+            volume_icon = _application_icon(app, plistlib.load(stream))
 
         staging = work / "volume"
         staging.mkdir()
@@ -279,7 +446,8 @@ def package_release(
         (staging / "README.txt").write_text(README_TEXT, encoding="utf-8")
         for source_name in ("LICENSE", "NOTICE"):
             shutil.copyfile(REPOSITORY_ROOT / source_name, staging / f"{source_name}.txt")
-        temporary_dmg = work / filename
+        (staging / ".VolumeIcon.icns").write_bytes(volume_icon)
+        writable_dmg = work / "Keeptide-writable.dmg"
         runner(
             [
                 "/usr/bin/hdiutil",
@@ -289,16 +457,25 @@ def package_release(
                 "-volname",
                 f"Keeptide {full_version}",
                 "-format",
-                "UDZO",
+                "UDRW",
                 "-ov",
-                str(temporary_dmg),
+                str(writable_dmg),
             ]
         )
-        if not temporary_dmg.is_file():
-            raise PackagingError("hdiutil did not produce the expected disk image")
+        if not writable_dmg.is_file():
+            raise PackagingError("hdiutil did not produce the expected writable disk image")
+        with mounted_dmg(writable_dmg, runner, read_only=False) as mount_point:
+            _set_custom_icon_flag(mount_point)
+            _verify_mounted_contents(
+                mount_point, version, build_number, volume_icon, runner
+            )
+        temporary_dmg = work / filename
+        _compress_disk_image(writable_dmg, temporary_dmg, runner)
         runner(["/usr/bin/hdiutil", "verify", str(temporary_dmg)])
         with mounted_dmg(temporary_dmg, runner) as mount_point:
-            _verify_mounted_contents(mount_point, version, build_number, runner)
+            _verify_mounted_contents(
+                mount_point, version, build_number, volume_icon, runner
+            )
 
         digest = hashlib.sha256(temporary_dmg.read_bytes()).hexdigest()
         final_stage = Path(tempfile.mkdtemp(prefix=".keeptide-release-", dir=output.parent))

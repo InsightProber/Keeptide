@@ -21,6 +21,83 @@ HELPER_ENTITLEMENTS = {
 
 
 class PackageDmgTests(unittest.TestCase):
+    def test_compressed_image_selects_tool_by_macos_major_version(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "writable.dmg"
+            source.write_bytes(b"synthetic writable image")
+            cases = (
+                (
+                    "26.6",
+                    ["/usr/bin/hdiutil", "convert", str(source), "-format", "UDZO", "-ov", "-o"],
+                ),
+                (
+                    "27.0",
+                    ["/usr/sbin/diskutil", "image", "create", "from", "--format", "UDZO", str(source)],
+                ),
+                (
+                    "28.1.2",
+                    ["/usr/sbin/diskutil", "image", "create", "from", "--format", "UDZO", str(source)],
+                ),
+            )
+            for index, (version, prefix) in enumerate(cases):
+                with self.subTest(version=version):
+                    destination = root / f"final-{index}.dmg"
+                    commands: list[list[str]] = []
+
+                    def runner(command: list[str], **_: object) -> str:
+                        commands.append(command)
+                        destination.write_bytes(b"synthetic compressed image")
+                        return ""
+
+                    package_dmg._compress_disk_image(
+                        source, destination, runner, macos_version=version
+                    )
+                    self.assertEqual(len(commands), 1)
+                    self.assertEqual(commands[0][:-1], prefix)
+                    self.assertEqual(commands[0][-1], str(destination))
+
+    def test_compressed_image_uses_detected_version_and_preserves_failure_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "writable.dmg"
+            destination = root / "final.dmg"
+            source.write_bytes(b"synthetic writable image")
+            commands: list[list[str]] = []
+
+            def runner(command: list[str], **_: object) -> str:
+                commands.append(command)
+                raise package_dmg.PackagingError("fatal conversion")
+
+            with patch.object(package_dmg.platform, "mac_ver", return_value=("27.2", ("", "", ""), "")):
+                with self.assertRaisesRegex(package_dmg.PackagingError, "fatal conversion"):
+                    package_dmg._compress_disk_image(source, destination, runner)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(commands[0][0], "/usr/sbin/diskutil")
+            self.assertFalse(destination.exists())
+
+            with self.assertRaisesRegex(package_dmg.PackagingError, "expected compressed image"):
+                package_dmg._compress_disk_image(
+                    source, destination, lambda *_args, **_kwargs: "", macos_version="27.2"
+                )
+
+    def test_compressed_image_rejects_invalid_or_unsupported_system_version(self):
+        calls = 0
+
+        def runner(*_args: object, **_kwargs: object) -> str:
+            nonlocal calls
+            calls += 1
+            return ""
+
+        for version in ("", "unknown", "27.2.1.4", "25.9"):
+            with self.subTest(version=version), self.assertRaisesRegex(
+                package_dmg.PackagingError, "macOS version|requires macOS 26"
+            ):
+                package_dmg._compress_disk_image(
+                    Path("source.dmg"), Path("destination.dmg"), runner, macos_version=version
+                )
+        self.assertEqual(calls, 0)
+
     def test_packaging_build_disables_debug_entitlement_injection(self):
         with tempfile.TemporaryDirectory() as temporary:
             derived = Path(temporary)
@@ -49,31 +126,47 @@ class PackageDmgTests(unittest.TestCase):
             self.assertEqual((output / 'payload').read_text(), 'synthetic')
 
     def test_mounted_dmg_accepts_canonical_equivalent_mount_path(self):
+        attach_commands: list[list[str]] = []
+
         def runner(command, **kwargs):
             if command[1] == 'attach':
+                attach_commands.append(command)
                 mount = Path(command[command.index('-mountpoint') + 1])
                 return plistlib.dumps({'system-entities': [{'mount-point': str(mount.resolve()),
                                                            'dev-entry': '/dev/disk99s1'}]}).decode()
             return ''
-        with package_dmg.mounted_dmg(Path('synthetic.dmg'), runner) as mount:
+        with package_dmg.mounted_dmg(Path('synthetic.dmg'), runner, read_only=False) as mount:
             self.assertTrue(mount.is_dir())
+        self.assertIn("-readwrite", attach_commands[0])
+        self.assertNotIn("-readonly", attach_commands[0])
 
     def test_mounted_package_requires_exact_license_copy(self):
         with tempfile.TemporaryDirectory() as temporary:
             mount = Path(temporary)
+            expected_icon = b"icns\x00\x00\x00\x10TOC \x00\x00\x00\x08"
             (mount / 'Applications').symlink_to('/Applications')
             (mount / 'README.txt').write_text(package_dmg.README_TEXT)
             with patch.object(package_dmg, 'verify_app_bundle'):
                 with self.assertRaisesRegex(package_dmg.PackagingError, 'license'):
-                    package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                    package_dmg._verify_mounted_contents(
+                        mount, '1.2.3', '7', expected_icon, self.validating_runner
+                    )
                 (mount / 'LICENSE.txt').write_text('incomplete synthetic license')
                 with self.assertRaisesRegex(package_dmg.PackagingError, 'license'):
-                    package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                    package_dmg._verify_mounted_contents(
+                        mount, '1.2.3', '7', expected_icon, self.validating_runner
+                    )
                 (mount / 'LICENSE.txt').write_bytes((package_dmg.REPOSITORY_ROOT / 'LICENSE').read_bytes())
                 with self.assertRaisesRegex(package_dmg.PackagingError, 'notice'):
-                    package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                    package_dmg._verify_mounted_contents(
+                        mount, '1.2.3', '7', expected_icon, self.validating_runner
+                    )
                 (mount / 'NOTICE.txt').write_bytes((package_dmg.REPOSITORY_ROOT / 'NOTICE').read_bytes())
-                package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                (mount / '.VolumeIcon.icns').write_bytes(expected_icon)
+                package_dmg._set_custom_icon_flag(mount)
+                package_dmg._verify_mounted_contents(
+                    mount, '1.2.3', '7', expected_icon, self.validating_runner
+                )
 
     def test_parse_version_returns_numeric_bundle_version(self):
         self.assertEqual(package_dmg.parse_version("1.2.3"), "1.2.3")
@@ -108,8 +201,12 @@ class PackageDmgTests(unittest.TestCase):
         app = root / "Keeptide.app"
         (app / "Contents" / "MacOS").mkdir(parents=True)
         (app / "Contents" / "Helpers").mkdir(parents=True)
+        (app / "Contents" / "Resources").mkdir(parents=True)
         (app / "Contents" / "MacOS" / "Keeptide").write_bytes(b"app")
         (app / "Contents" / "Helpers" / "KeeptidePasteboardReader").write_bytes(b"helper")
+        (app / "Contents" / "Resources" / "Keeptide.icns").write_bytes(
+            b"icns\x00\x00\x00\x10TOC \x00\x00\x00\x08"
+        )
         with (app / "Contents" / "Info.plist").open("wb") as stream:
             plistlib.dump(
                 {
@@ -117,6 +214,7 @@ class PackageDmgTests(unittest.TestCase):
                     "CFBundleShortVersionString": version,
                     "CFBundleVersion": build,
                     "CFBundleExecutable": "Keeptide",
+                    "CFBundleIconFile": "Keeptide.icns",
                     "LSMinimumSystemVersion": "26.0",
                 },
                 stream,
@@ -140,6 +238,75 @@ class PackageDmgTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             app = self.make_app(Path(directory))
             package_dmg.verify_app_bundle(app, "1.2.3", "7", self.validating_runner)
+
+    def test_verify_app_bundle_rejects_missing_or_unsafe_icon_reference(self):
+        with tempfile.TemporaryDirectory() as directory:
+            app = self.make_app(Path(directory))
+            info_path = app / "Contents" / "Info.plist"
+            with info_path.open("rb") as stream:
+                info = plistlib.load(stream)
+
+            for icon_name in (None, "", "../Keeptide.icns", "Folder/Keeptide.icns"):
+                with self.subTest(icon_name=icon_name):
+                    updated = dict(info)
+                    if icon_name is None:
+                        updated.pop("CFBundleIconFile")
+                    else:
+                        updated["CFBundleIconFile"] = icon_name
+                    with info_path.open("wb") as stream:
+                        plistlib.dump(updated, stream)
+                    with self.assertRaisesRegex(package_dmg.PackagingError, "icon"):
+                        package_dmg.verify_app_bundle(app, "1.2.3", "7", self.validating_runner)
+
+    def test_verify_app_bundle_rejects_malformed_or_symlinked_icon(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = self.make_app(root)
+            icon = app / "Contents" / "Resources" / "Keeptide.icns"
+            for invalid in (
+                b"not-an-icns",
+                b"icns\x00\x00\x00\x11TOC \x00\x00\x00\x08",
+            ):
+                with self.subTest(invalid=invalid):
+                    icon.write_bytes(invalid)
+                    with self.assertRaisesRegex(package_dmg.PackagingError, "icon"):
+                        package_dmg.verify_app_bundle(app, "1.2.3", "7", self.validating_runner)
+
+            icon.unlink()
+            external = root / "external.icns"
+            external.write_bytes(b"icns\x00\x00\x00\x10TOC \x00\x00\x00\x08")
+            icon.symlink_to(external)
+            with self.assertRaisesRegex(package_dmg.PackagingError, "icon"):
+                package_dmg.verify_app_bundle(app, "1.2.3", "7", self.validating_runner)
+
+    def test_mounted_package_requires_exact_icon_and_custom_volume_flag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            mount = Path(temporary)
+            (mount / "Applications").symlink_to("/Applications")
+            (mount / "README.txt").write_text(package_dmg.README_TEXT)
+            for source_name in ("LICENSE", "NOTICE"):
+                (mount / f"{source_name}.txt").write_bytes(
+                    (package_dmg.REPOSITORY_ROOT / source_name).read_bytes()
+                )
+            expected_icon = b"icns\x00\x00\x00\x10TOC \x00\x00\x00\x08"
+            (mount / ".VolumeIcon.icns").write_bytes(expected_icon)
+
+            with patch.object(package_dmg, "verify_app_bundle"):
+                with self.assertRaisesRegex(package_dmg.PackagingError, "custom icon flag"):
+                    package_dmg._verify_mounted_contents(
+                        mount, "1.2.3", "7", expected_icon, self.validating_runner
+                    )
+
+                package_dmg._set_custom_icon_flag(mount)
+                package_dmg._verify_mounted_contents(
+                    mount, "1.2.3", "7", expected_icon, self.validating_runner
+                )
+
+                (mount / ".VolumeIcon.icns").write_bytes(expected_icon + b"changed")
+                with self.assertRaisesRegex(package_dmg.PackagingError, "volume icon"):
+                    package_dmg._verify_mounted_contents(
+                        mount, "1.2.3", "7", expected_icon, self.validating_runner
+                    )
 
     def test_verify_app_bundle_rejects_test_products(self):
         with tempfile.TemporaryDirectory() as directory:
