@@ -9,6 +9,11 @@ struct QuickAccessPreviewView: View {
     /// Keys pressed in the preview's text that act on the panel: Space and Escape close it, Return copies, and
     /// typing goes to the search field.
     var onCommand: (QuickAccessCommand) -> Void = { _ in }
+    var fileAccessStore: FileAccessStore? = nil
+    var fileAccessIdentity: StoreIdentity? = nil
+    var isLoadingOriginal = false
+    var previewMessage: String? = nil
+    var onRequestOriginal: (() -> Void)? = nil
 
     var body: some View {
         Group {
@@ -26,12 +31,31 @@ struct QuickAccessPreviewView: View {
                     }
                 }
             case .image(let image, let pixelSize)?:
-                // The picture's own shape comes from its header; ImageIO rounds the decoded size.
-                Image(image, scale: 1, label: Text(imageLabel))
-                    .resizable()
-                    .aspectRatio(pixelSize.width > 0 && pixelSize.height > 0 ? pixelSize.width / pixelSize.height : nil,
-                                 contentMode: .fit)
-                    .padding()
+                VStack(spacing: 8) {
+                    ImagePreview(image: image, pixelSize: pixelSize, accessibilityLabel: imageLabel,
+                                 isLoadingOriginal: isLoadingOriginal, onRequestOriginal: onRequestOriginal)
+                    if let previewMessage {
+                        Text(verbatim: previewMessage).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(12)
+            case .markdown(let document, let isTruncated)?:
+                VStack(spacing: 0) {
+                    ScrollView { MarkdownPreviewView(document: document).padding(16) }
+                    if isTruncated {
+                        Text("Preview shows the first 256 KB.")
+                            .font(.caption).foregroundStyle(.secondary).padding(6)
+                    }
+                }
+            case .url(let title, let address)?:
+                if let url = URL(string: address) {
+                    URLPreview(title: title, url: url) { NSWorkspace.shared.open($0) }
+                        .padding(16)
+                } else {
+                    PreviewText(text: address, onCommand: onCommand)
+                }
+            case .files(let references)?:
+                FilePreviewPane(references: references, store: fileAccessStore, identity: fileAccessIdentity)
             case .info(let kind, _)?:
                 VStack(spacing: 8) {
                     Image(systemName: kind.symbolName).font(.largeTitle).foregroundStyle(.secondary)

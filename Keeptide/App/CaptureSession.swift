@@ -27,6 +27,9 @@ final class CaptureSession {
     @ObservationIgnored private(set) var pasteService: PasteService?
     /// What the strip shows of each clip is read through this; nil until the store opens.
     @ObservationIgnored private(set) var previewService: PreviewService?
+    /// Local file authorization belongs to the exact store generation opened by this session.
+    @ObservationIgnored private(set) var fileAccessStore: FileAccessStore?
+    @ObservationIgnored private(set) var fileAccessIdentity: StoreIdentity?
     @ObservationIgnored private(set) var usageStore: LocalUsageStore?
     /// The library window's copies share one session; selections and newer copies refuse older ones.
     @ObservationIgnored private var librarySession: PasteSession?
@@ -147,6 +150,13 @@ final class CaptureSession {
                 message = "The library requires recovery before recording can resume."
                 return
             }
+            let storeIdentity: StoreIdentity
+            do {
+                storeIdentity = try await store.identity()
+            } catch {
+                try? await store.close()
+                throw error
+            }
             #if DEBUG
             switch library {
             case .test where seedSyntheticClips: try await SyntheticClipSeeder.seed(into: store)
@@ -178,11 +188,19 @@ final class CaptureSession {
             }
             self.monitor = monitor
             let usage = LocalUsageStore(controller: store)
+            let fileAccess = FileAccessStore(controller: store)
             usageStore = usage
+            fileAccessStore = fileAccess
+            fileAccessIdentity = storeIdentity
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
                                         didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) },
                                         system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo)
-            previewService = PreviewService(read: read)
+            previewService = PreviewService(
+                read: read,
+                fileReferences: { ref in
+                    try await fileAccess.filePreviewReferences(for: ref, expecting: storeIdentity)
+                }
+            )
             await startSearch(store: store, directory: directory)
             let consumer = historyConsumer
             do {
@@ -309,6 +327,10 @@ final class CaptureSession {
         monitor = nil
         await historyConsumer?.stopAndDrain()
         historyConsumer = nil
+        // Stop publishing generation-bound local authorization before the store closes.
+        previewService = nil
+        fileAccessStore = nil
+        fileAccessIdentity = nil
         try? await controller?.close()
         controller = nil
         searchIndex?.close()
@@ -322,7 +344,6 @@ final class CaptureSession {
         libraryWorkspace = nil
         readContent = nil
         pasteService = nil
-        previewService = nil
         usageStore = nil
         isReady = false
         onServicesChanged?()

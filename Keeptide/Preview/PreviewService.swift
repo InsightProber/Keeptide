@@ -29,18 +29,73 @@ struct ClipDetail: Equatable, Sendable {
 /// The reads still queue: each takes the whole clip through the store's one writer context, in the same
 /// line as a copy's read, so a caller keeps only a few of them going at once.
 final class PreviewService: Sendable {
+    static let originalImagePixelLimit = 64_000_000
+    static let fullPreviewByteLimit = 262_144
     private static let excerptLength = 300
     /// A card shows a link by its host and its page title or the start of its path, so far less than this. The cut
     /// keeps what the cache holds small even for a huge URL, such as a data URL; the count is of all of it.
     private static let linkExcerptLength = 2_048
 
     private let read: @Sendable (ContentRef) async throws -> ResolvedContent
+    private let fileReferences: (@Sendable (ContentRef) async throws -> [FilePreviewReference])?
     private let cache: ThumbnailCache
 
     init(read: @escaping @Sendable (ContentRef) async throws -> ResolvedContent,
+         fileReferences: (@Sendable (ContentRef) async throws -> [FilePreviewReference])? = nil,
          cache: ThumbnailCache = ThumbnailCache()) {
         self.read = read
+        self.fileReferences = fileReferences
         self.cache = cache
+    }
+
+    /// Loads a full preview from the current content reference. Unlike card details,
+    /// full previews are never cached: deletion, replacement, relocation, and account
+    /// changes must be observed on every request.
+    func preview(
+        for ref: ContentRef,
+        kind: ContentKind,
+        maximumImagePixels: Int
+    ) async throws -> PreviewContent {
+        if kind == .file, let fileReferences {
+            let references = try await fileReferences(ref)
+            try Task.checkCancellation()
+            return .files(references)
+        }
+
+        let content = try await read(ref)
+        try Task.checkCancellation()
+        guard content.integrity == .complete else { throw PasteRefusal.contentUnavailable }
+        if kind == .text || kind == .other,
+           let markdown = Self.markdownSource(in: content.representations) {
+            let document = MarkdownRenderer.parse(markdown.text)
+            try Task.checkCancellation()
+            return .markdown(document, isTruncated: markdown.isTruncated)
+        }
+
+        switch kind {
+        case .image:
+            guard let loaded = try Self.image(
+                in: content.representations,
+                maximumPixels: maximumImagePixels
+            ) else { return .info(kind: kind, sourceApp: nil) }
+            return .image(loaded.image, pixelSize: loaded.pixelSize)
+        case .url:
+            guard let address = ClipboardTextDecoder.linkText(content.representations) else {
+                return .info(kind: kind, sourceApp: nil)
+            }
+            return .url(title: ClipboardTextDecoder.linkTitle(content.representations), address: address)
+        case .text:
+            guard let text = ClipboardTextDecoder.preview(
+                content.representations,
+                maximumBytes: Self.fullPreviewByteLimit
+            ) else { return .info(kind: kind, sourceApp: nil) }
+            return .text(text.text, isTruncated: text.isTruncated)
+        case .file:
+            // Without a LocalState reader a file remains informative but cannot be previewed.
+            return .info(kind: kind, sourceApp: nil)
+        case .other:
+            return .info(kind: kind, sourceApp: nil)
+        }
     }
 
     /// `frameSize` is the area a picture fills in a card, in pixels: the card's middle, between its colour band and
@@ -69,13 +124,21 @@ final class PreviewService: Sendable {
     /// picture. Nil when the clip holds no image that can be decoded.
     func image(for ref: ContentRef, maximumPixels: Int) async throws -> (image: CGImage, pixelSize: CGSize)? {
         let representations = try await completeRepresentations(of: ref)
+        return try Self.image(in: representations, maximumPixels: maximumPixels)
+    }
+
+    /// Decodes the selected image at its source dimensions only after an explicit
+    /// user action. Header dimensions are checked before ImageIO allocates pixels.
+    func originalImage(for ref: ContentRef) async throws -> (image: CGImage, pixelSize: CGSize)? {
+        let representations = try await completeRepresentations(of: ref)
         guard let source = Self.imageSource(in: representations), let size = Self.pixelSize(of: source) else {
             return nil
         }
+        try OriginalImagePolicy.validate(pixelSize: size, limit: Self.originalImagePixelLimit)
         try Task.checkCancellation()
         let longEdge = Int(max(size.width, size.height))
-        guard let image = Self.thumbnail(of: source, maximumPixels: min(max(maximumPixels, 1), longEdge)) else {
-            return nil
+        guard let image = Self.thumbnail(of: source, maximumPixels: longEdge) else {
+            throw PreviewLoadError.couldNotDecodeImage
         }
         try Task.checkCancellation()
         return (image, size)
@@ -122,6 +185,37 @@ final class PreviewService: Sendable {
         detail.fillsFrame = fills
         detail.thumbnail = thumbnail(of: source, maximumPixels: thumbnailPixels(of: size, in: frameSize, fills: fills))
         return detail
+    }
+
+    private static func image(
+        in representations: [RepresentationValue],
+        maximumPixels: Int
+    ) throws -> (image: CGImage, pixelSize: CGSize)? {
+        guard let source = imageSource(in: representations), let size = pixelSize(of: source) else {
+            return nil
+        }
+        try Task.checkCancellation()
+        let decodePixels = FittedImagePolicy.maximumPixels(sourceSize: size, requested: maximumPixels)
+        guard let image = thumbnail(of: source, maximumPixels: decodePixels) else {
+            return nil
+        }
+        try Task.checkCancellation()
+        return (image, size)
+    }
+
+    private static func markdownSource(in representations: [RepresentationValue]) -> ClipTextPreview? {
+        for representation in representations where ContentKind.isMarkdown(representation.typeIdentifier) {
+            guard let bytes = representation.bytes else { continue }
+            let count = min(bytes.count, Self.fullPreviewByteLimit)
+            for trim in 0...min(3, max(0, count - 1)) {
+                let candidateCount = count - trim
+                guard candidateCount > 0 else { continue }
+                if let text = String(data: Data(bytes.prefix(candidateCount)), encoding: .utf8) {
+                    return ClipTextPreview(text: text, isTruncated: candidateCount < bytes.count)
+                }
+            }
+        }
+        return nil
     }
 
     /// The long edge, in pixels, at which the image just covers the frame (`fills`) or just fits
@@ -205,5 +299,45 @@ final class PreviewService: Sendable {
         let name = isReference ? (url as NSURL).filePathURL?.lastPathComponent : url.lastPathComponent
         guard let name, !name.isEmpty else { return nil }
         return name
+    }
+}
+
+enum PreviewLoadError: Error, Equatable {
+    case originalImageTooLarge
+    case invalidImageDimensions
+    case couldNotDecodeImage
+}
+
+enum OriginalImagePolicy {
+    static func validate(pixelSize: CGSize, limit: Int) throws {
+        guard limit > 0,
+              pixelSize.width.isFinite,
+              pixelSize.height.isFinite,
+              pixelSize.width > 0,
+              pixelSize.height > 0,
+              let width = Int(exactly: pixelSize.width.rounded(.up)),
+              let height = Int(exactly: pixelSize.height.rounded(.up)) else {
+            throw PreviewLoadError.invalidImageDimensions
+        }
+        let (pixels, overflow) = width.multipliedReportingOverflow(by: height)
+        guard !overflow else { throw PreviewLoadError.originalImageTooLarge }
+        guard pixels <= limit else { throw PreviewLoadError.originalImageTooLarge }
+    }
+}
+
+enum FittedImagePolicy {
+    /// A corrupt or adversarial header can carry an integer dimension that loses
+    /// precision when ImageIO bridges it through CGFloat. Never convert such a
+    /// value back to Int directly; the caller's already-bounded request remains
+    /// a safe thumbnail limit.
+    static func maximumPixels(sourceSize: CGSize, requested: Int) -> Int {
+        let requested = max(requested, 1)
+        let longEdge = max(sourceSize.width, sourceSize.height)
+        guard longEdge.isFinite,
+              longEdge > 0,
+              let sourcePixels = Int(exactly: longEdge.rounded(.up)) else {
+            return requested
+        }
+        return min(requested, sourcePixels)
     }
 }

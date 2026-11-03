@@ -121,7 +121,9 @@ extension CaptureSession {
             paste: pasteService,
             preview: previewService,
             usage: usageStore,
-            library: libraryService
+            library: libraryService,
+            fileAccess: fileAccessStore,
+            fileAccessIdentity: fileAccessIdentity
         )
     }
 }

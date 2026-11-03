@@ -205,9 +205,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return false
     }
 
-    /// The panel closes when it loses the keys, except while it is hidden for a paste (decision 11).
+    /// A file-permission sheet temporarily owns the keys while keeping this
+    /// preview alive. Unrelated focus changes still end the quick-access session.
     func windowDidResignKey(_ notification: Notification) {
-        guard !isHiddenForPaste else { return }
+        guard !isHiddenForPaste, window?.attachedSheet == nil else { return }
         close()
     }
 

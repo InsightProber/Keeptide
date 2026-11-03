@@ -4,6 +4,31 @@ import XCTest
 
 @MainActor
 final class MemoIdentityTests: XCTestCase {
+    func testSavingExplicitMarkdownHistoryKeepsMarkdownKindAndExactSource() async throws {
+        for type in ["net.daringfireball.markdown", "text/markdown"] {
+            try await withStore { controller in
+                let source = "# Saved \(type)\n\n- [ ] exact  source\n"
+                let capture = try ContentStoreFixtures.capture([[(type, Data(source.utf8))]])
+                let item = ContentStoreFixtures.item(capture)
+                try await ContentStoreFixtures.insert(item, capture, into: controller)
+                let service = LibraryService(controller: controller)
+
+                let saved = try await service.saveAsMemo(item.id).ref
+                let snapshot = try await service.editingSnapshot(saved)
+                let itemState = try await ContentRepository(controller: controller).recordState(.item(item.id))
+                guard case .item(let storedItem) = itemState.value,
+                      let memoID = storedItem.memoID else { return XCTFail("Memo was not attached") }
+                let memoState = try await ContentRepository(controller: controller).recordState(.memo(memoID))
+                guard case .memo(let memo) = memoState.value else { return XCTFail("Wrong record") }
+
+                XCTAssertEqual(memo.displayKind, MemoKind.markdown.rawValue, type)
+                XCTAssertEqual(memo.sourceRepresentationType, type, type)
+                XCTAssertEqual(snapshot.kind, .markdown, type)
+                XCTAssertEqual(snapshot.body, source, type)
+            }
+        }
+    }
+
     func testSavingAHistoryItemIsIdempotentAndDoesNotCopyItsPayload() async throws {
         try await withStore { controller in
             let capture = try ContentStoreFixtures.capture([[

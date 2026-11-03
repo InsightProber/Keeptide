@@ -626,9 +626,12 @@ final class LibraryWorkspace {
         let state = try await repository.recordState(.item(ref.itemID))
         guard case .item(let item) = state.value else { throw StoreError.staleReference }
         let extracted = try MemoTextExtractor.editableText(from: content)
+        let kind: MemoKind = extracted.map {
+            ContentKind.isMarkdown($0.sourceRepresentationType) ? .markdown : .plainText
+        } ?? .plainText
         return MemoEditorSession(
             itemID: ref.itemID, ref: ref, isReadOnly: true, title: item.title,
-            body: extracted?.text, note: "", kind: .plainText,
+            body: extracted?.text, note: "", kind: kind,
             richSourceWarning: extracted.map { $0.sourceRepresentationType != "public.utf8-plain-text" } ?? false,
             storeIdentity: storeIdentity
         )

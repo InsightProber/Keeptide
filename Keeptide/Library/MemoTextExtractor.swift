@@ -13,6 +13,18 @@ enum MemoTextExtractor {
             return $0.representationIndex < $1.representationIndex
         }
 
+        for representation in representations where ContentKind.isMarkdown(representation.typeIdentifier) {
+            guard representation.storage == .portable,
+                  let bytes = representation.bytes,
+                  let text = String(data: bytes, encoding: .utf8) else {
+                continue
+            }
+            return MemoExtractedText(
+                text: text,
+                sourceRepresentationType: representation.typeIdentifier
+            )
+        }
+
         for representation in representations where ClipboardTextDecoder.isTextType(representation.typeIdentifier) {
             guard representation.storage == .portable,
                   let bytes = representation.bytes,

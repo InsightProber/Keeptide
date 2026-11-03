@@ -14,15 +14,18 @@ the newest one, apart from the recent clips; Settings can turn this off. The
 panel searches all content with a local full-text index from a search that
 folds into an icon at the band's left end until you type, filters by type,
 previews text and images, and can paste the selected clip directly into the app
-window it was opened from. Other capabilities, including editable snippets and
-iCloud saving, remain planned. There is no application release yet.
+window it was opened from. The native library supports editable snippets;
+iCloud saving remains planned. There is no application release yet.
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library
 provides text editing, document-local find, explicit capture saving and safe
-undo of a newly saved capture. Collections and Markdown reading mode remain
-planned. Full input-method and accessibility acceptance remains a release gate.
+undo of a newly saved capture, flat collections and favorites. Markdown reading
+mode keeps source editing separate from rendering and never fetches embedded
+images. Typed previews show stored URLs, bounded image resolutions and locally
+authorized files. Full input-method and accessibility acceptance remains a
+release gate.
 
 ## First release
 
