@@ -569,6 +569,12 @@ private extension ArchiveVerifier {
             guard values.isSymbolicLink != true else { throw ArchiveVerificationError.unsafePath }
             if values.isRegularFile == true {
                 try validateRegularFile(url)
+                // Opening an export in Finder may add this display metadata.
+                // These exact regular files are unverified, never parsed, and
+                // excluded from content counts/digests regardless of origin.
+                if [".DS_Store", "payloads/.DS_Store", "readable/.DS_Store"].contains(relative) {
+                    continue
+                }
                 actualFiles.insert(relative)
             } else if values.isDirectory == true {
                 actualDirectories.insert(relative)

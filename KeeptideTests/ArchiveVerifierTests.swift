@@ -16,6 +16,64 @@ final class ArchiveVerifierTests: XCTestCase {
         XCTAssertTrue(isLowercaseSHA256(result.verifiedRootDigest))
     }
 
+    func testFinderMetadataInArchiveDirectoriesDoesNotChangeVerifiedContent() async throws {
+        let fixture = try makePortableFixture()
+        let baseline = try await ArchiveVerifier().verify(at: fixture.root)
+        for path in [".DS_Store", "payloads/.DS_Store", "readable/.DS_Store"] {
+            // This data is deliberately not a parsed Finder metadata document.
+            try Data("unverified Finder display metadata".utf8).write(to: fixture.root.appendingPathComponent(path))
+            let result = try await ArchiveVerifier().verify(at: fixture.root)
+            XCTAssertEqual(result, baseline, "Finder metadata must not enter verified counts or the root digest")
+        }
+    }
+
+    func testFinderMetadataExceptionRejectsSymlinksHardLinksAndDirectories() async throws {
+        for path in [".DS_Store", "payloads/.DS_Store", "readable/.DS_Store"] {
+            for type in ["symlink", "hardlink", "directory"] {
+                let fixture = try makePortableFixture()
+                let metadata = fixture.root.appendingPathComponent(path)
+                let outside = fixture.root.deletingLastPathComponent().appendingPathComponent("outside")
+                try Data("not archive metadata".utf8).write(to: outside)
+                switch type {
+                case "symlink":
+                    try FileManager.default.createSymbolicLink(at: metadata, withDestinationURL: outside)
+                case "hardlink":
+                    try FileManager.default.linkItem(at: outside, to: metadata)
+                default:
+                    try FileManager.default.createDirectory(at: metadata, withIntermediateDirectories: false)
+                }
+                await assertVerificationFails(fixture.root)
+            }
+        }
+    }
+
+    func testFinderMetadataExceptionRejectsCaseVariantsOtherHiddenFilesAndExtraDirectories() async throws {
+        for path in [".ds_store", ".DS_STORE", ".hidden", "payloads/.ds_store", "readable/.localized"] {
+            let fixture = try makePortableFixture()
+            try Data("unexpected".utf8).write(to: fixture.root.appendingPathComponent(path))
+            await assertVerificationFails(fixture.root)
+        }
+        let extra = try makePortableFixture()
+        let extraDirectory = extra.root.appendingPathComponent("extra")
+        try FileManager.default.createDirectory(at: extraDirectory, withIntermediateDirectories: false)
+        try Data("metadata".utf8).write(to: extraDirectory.appendingPathComponent(".DS_Store"))
+        await assertVerificationFails(extra.root)
+    }
+
+    func testFinderMetadataDoesNotHideChangedPayloadBytes() async throws {
+        let fixture = try makePortableFixture()
+        try Data("metadata".utf8).write(to: fixture.root.appendingPathComponent(".DS_Store"))
+        let payload = fixture.root.appendingPathComponent("payloads/text.bin")
+        let original = try Data(contentsOf: payload)
+        try Data(repeating: 88, count: original.count).write(to: payload)
+        do {
+            _ = try await ArchiveVerifier().verify(at: fixture.root)
+            XCTFail("Finder metadata must not relax payload integrity checks")
+        } catch let error as ArchiveVerificationError {
+            XCTAssertEqual(error, .integrityMismatch)
+        }
+    }
+
     func testEmptyAllVisibleArchiveIsValid() async throws {
         let root = try temporaryRoot()
         let readme = Data("Keeptide local export\n".utf8)
