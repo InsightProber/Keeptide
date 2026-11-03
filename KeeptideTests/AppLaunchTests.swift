@@ -922,28 +922,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.isSessionOpen)
     }
 
-    func testClicksAroundTheOpenPreviewKeepTheCardAndCloseInTheGap() async throws {
-        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+    func testClickingTheExposedBandClosesOnlyThePreviewAndConsumesTheClick() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
-        _ = try searchEditor(in: controller)
+        let (field, editor) = try searchEditor(in: controller)
+        editor.insertText("e", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "e" }
         controller.perform(.focusResults)
         controller.perform(.togglePreview)
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
         window.contentView?.layoutSubtreeIfNeeded()
         settleLayout()
         let band = try bandRect(in: window)
-        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
-        let card = text.convert(text.bounds, to: nil)
-        XCTAssertGreaterThan(card.minY, band.maxY)
+        let selection = controller.state.selection.selectedID
+        board.declareTypes([.string], owner: nil)
+        XCTAssertTrue(board.setString("untouched", forType: .string))
+        let changeCount = board.changeCount
 
-        // The preview card is the panel's own: a click on it keeps the panel and the card open.
-        try click(at: NSPoint(x: card.midX, y: card.midY), in: window)
+        // The preview leaves at least 24 pt of the band visible at either side. This click is only a dismissal gesture:
+        // it does not reach the toolbar or strip underneath and does not close the Quick Access session.
+        try click(at: NSPoint(x: band.minX + 12, y: band.midY), in: window)
+        XCTAssertFalse(controller.state.isPreviewExpanded)
         XCTAssertTrue(controller.isSessionOpen)
-        XCTAssertTrue(controller.state.isPreviewExpanded)
-
-        // The 16 pt between the card and the band holds only the band's shadow: a click there closes the panel.
-        try click(at: NSPoint(x: band.midX, y: band.maxY + StripLayout.previewGap / 2), in: window)
-        XCTAssertFalse(controller.isSessionOpen)
+        XCTAssertEqual(controller.state.selection.selectedID, selection)
+        XCTAssertEqual(controller.state.query, "e")
+        XCTAssertEqual(field.stringValue, "e")
+        XCTAssertEqual(board.changeCount, changeCount)
+        XCTAssertEqual(board.string(forType: .string), "untouched")
     }
 
     func testCommandFKeepsTheEditingSession() async throws {
@@ -1555,13 +1560,13 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testSpaceOpensThePreviewAboveTheBandAndEscapeClosesIt() async throws {
+    func testSpaceOpensThePreviewOverTheStationaryBandAndEscapeClosesIt() async throws {
         // Freeze the layout input: Dock/menu-bar changes can update NSScreen during the async preview load.
         let visibleFrame = try XCTUnwrap(NSScreen.main).visibleFrame
         let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: visibleFrame)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
-        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
+        let bandBefore = window.convertToScreen(try bandRect(in: window))
         controller.perform(.focusResults)
         let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
 
@@ -1570,20 +1575,53 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
         settleLayout()
 
-        // The panel grows to hold the card above the band, and the band moves down if the card has no room there.
-        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium, withPreview: true))
+        // The preview floats over the band instead of laying out above it: opening it cannot move the strip the
+        // pointer and keyboard are already using.
+        let band = try bandRect(in: window)
+        assertFrame(window.convertToScreen(band), places: bandBefore)
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let scroll = try XCTUnwrap(text.enclosingScrollView)
+        let previewBody = scroll.convert(scroll.bounds, to: nil)
         XCTAssertEqual(text.string, "newer")
-        XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
+        XCTAssertTrue(previewBody.intersects(band))
+        XCTAssertEqual(previewBody.midX, band.midX, accuracy: 0.5)
         XCTAssertTrue(window.firstResponder === strip, "The strip keeps the keys")
 
         // Escape closes the card and leaves the band as it was.
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(controller.state.isPreviewExpanded)
-        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
+        assertFrame(window.convertToScreen(try bandRect(in: window)), places: bandBefore)
         XCTAssertTrue(window.firstResponder === strip)
         controller.state.close()
+    }
+
+    func testEscapeFromANativeControlDismissesOnlyThePreviewWithoutInterruptingComposition() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        controller.togglePreview()
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+
+        // Escape still belongs to an active input-method composition before it belongs to the preview.
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertFalse(editor.hasMarkedText())
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertTrue(controller.isSessionOpen)
+
+        // Escape also works while a non-text native control has focus. Its key repeat is consumed after the preview
+        // disappears instead of immediately peeling the next layer and closing Quick Access too. The SwiftUI close
+        // control's pointer and accessibility action are covered by the UI tests; this native button pins responder
+        // routing.
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        XCTAssertTrue(window.makeFirstResponder(toolbar.moreButton))
+        window.sendEvent(try key(kVK_Escape, "\u{1B}", windowNumber: window.windowNumber))
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+        XCTAssertTrue(controller.isSessionOpen)
+        window.sendEvent(try key(kVK_Escape, "\u{1B}", windowNumber: window.windowNumber, isARepeat: true))
+        XCTAssertTrue(controller.isSessionOpen)
     }
 
     func testAHeldCommandYTogglesThePreviewOnce() async throws {
@@ -1608,7 +1646,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.state.isPreviewExpanded)
     }
 
-    func testOnALowScreenThePreviewCardIsDrawnOverTheBandsTopEdge() async throws {
+    func testOnALowScreenThePreviewStaysCentredOverTheStationaryBand() async throws {
         // 1024 × 440 has no room for even the shortest card above the band.
         let low = NSRect(x: 0, y: 30, width: 1024, height: 440)
         let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: low)
@@ -1617,36 +1655,28 @@ final class AppLaunchTests: XCTestCase {
         controller.perform(.focusResults)
         controller.perform(.togglePreview)
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
-        let metrics = StripLayout.metrics(for: .medium, visibleWidth: low.width)
-        let placed = StripLayout.previewLayout(band: StripLayout.bandFrame(metrics, in: low), in: low)
-        XCTAssertLessThan(placed.preview.minY, placed.band.maxY)
+        let expectedBand = StripLayout.bandFrame(
+            StripLayout.metrics(for: .medium, visibleWidth: low.width), in: low
+        )
+        let band = try bandRect(in: window)
+        assertFrame(window.convertToScreen(band), places: expectedBand)
 
-        // The panel stays on the screen, around the band and the card as they are placed.
-        assertFrame(window.frame, places: StripLayout.panelFrame(band: placed.band, preview: placed.preview, in: low))
-        // The card is drawn where it is placed: over the band's top edge, whole, and inside the window.
+        // The card is screen-safe and centred over the band. Its native text viewport is 40 pt shorter than the
+        // card because the close-button header stands above it.
         var card = NSRect.zero
         try await SearchTestSupport.waitUntil {
             window.contentView?.layoutSubtreeIfNeeded()
             let text = self.views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor }
             card = text?.enclosingScrollView.map { $0.convert($0.bounds, to: nil) } ?? .zero
-            return card.height > 0
+            return card.height > 0 && abs(card.midY - (band.midY - 20)) <= 0.5
         }
-        let band = try bandRect(in: window)
-        XCTAssertEqual(card.height, placed.preview.height, accuracy: 0.5)
-        XCTAssertEqual(card.minY - band.maxY, placed.preview.minY - placed.band.maxY, accuracy: 0.5)
-        XCTAssertLessThan(card.minY, band.maxY, "Over the band")
+        XCTAssertTrue(card.intersects(band), "Over the band")
+        XCTAssertEqual(card.midX, band.midX, accuracy: 0.5)
+        XCTAssertEqual(card.midY, band.midY - 20, accuracy: 0.5)
         let content = try XCTUnwrap(window.contentView)
+        XCTAssertGreaterThanOrEqual(card.minY, content.bounds.minY - 0.5, "Inside the window")
         XCTAssertLessThanOrEqual(card.maxY, content.bounds.maxY + 0.5, "Inside the window")
 
-        // Where the centered card lies over the toolbar it takes the pointer too. The search now stays at the left.
-        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: content).first)
-        let overlap = card.intersection(toolbar.convert(toolbar.rowFrame, to: nil))
-        XCTAssertGreaterThan(overlap.width, 0)
-        XCTAssertGreaterThan(overlap.height, 0)
-        let middle = NSPoint(x: overlap.midX, y: overlap.midY)
-        let scroll = try XCTUnwrap(views(NSTextView.self, in: content).first { !$0.isFieldEditor }?.enclosingScrollView)
-        let hit = content.hitTest(middle)
-        XCTAssertTrue(hit?.isDescendant(of: scroll) == true, "\(hit.map { "\(type(of: $0))" } ?? "nothing")")
         controller.state.close()
     }
 
@@ -1993,7 +2023,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 43, accuracy: 0.5)
     }
 
-    func testWithAFrequentWingSpaceOpensTheNewestClipsPreviewAboveTheBand() async throws {
+    func testWithAFrequentWingSpaceOverlaysTheNewestClipsPreviewOnTheStationaryBand() async throws {
         let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
         let state = controller.state
         let window = try XCTUnwrap(controller.window)
@@ -2007,27 +2037,27 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === strip)
 
         // Space opens the preview of the selected clip, the newest, and not of the least used one, which leads the
-        // rows.
-        // The panel grows to hold the card above the band, and the band moves down since the card has no room there.
+        // rows. The band remains exactly where it opened while the preview floats over it.
         strip.keyDown(with: try key(kVK_Space, " "))
         XCTAssertTrue(state.isPreviewExpanded)
         try await SearchTestSupport.waitUntil { state.preview != nil }
         settleLayout()
-        let placed = StripLayout.previewLayout(band: band, in: Self.wingScreen)
-        XCTAssertLessThan(placed.band.minY, band.minY)
-        assertFrame(window.frame, places: StripLayout.panelFrame(band: placed.band, preview: placed.preview,
-                                                                 in: Self.wingScreen))
+        assertFrame(window.convertToScreen(try bandRect(in: window)), places: band)
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let scroll = try XCTUnwrap(text.enclosingScrollView)
+        let previewBody = scroll.convert(scroll.bounds, to: nil)
+        let currentBand = try bandRect(in: window)
         XCTAssertEqual(state.selection.rows.first?.title, "clip 9")
         XCTAssertEqual(text.string, "clip 0")
-        XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
+        XCTAssertTrue(previewBody.intersects(currentBand))
+        XCTAssertEqual(previewBody.midX, currentBand.midX, accuracy: 0.5)
         XCTAssertTrue(window.firstResponder === strip, "The strip keeps the keys")
 
         // Escape closes the card and leaves the band as it was, the wing still before the newest clip.
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(state.isPreviewExpanded)
-        assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
+        assertFrame(window.convertToScreen(try bandRect(in: window)), places: band)
         XCTAssertEqual(state.selection.frequentCount, 3)
         XCTAssertTrue(window.firstResponder === strip)
     }

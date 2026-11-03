@@ -17,6 +17,11 @@ previews text and images, and can paste the selected clip directly into the app
 window it was opened from. The native library supports editable snippets;
 iCloud saving remains planned. There is no application release yet.
 
+Space opens a preview over the stationary quick-access band, with a brief zoom
+that respects Reduce Motion. Its close button, a click on the exposed band, or
+Escape dismisses the preview while preserving the current search and selection.
+Escape continues through the existing search layers before closing quick access.
+
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library

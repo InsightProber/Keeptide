@@ -130,6 +130,88 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
     }
 
+    func testPreviewOverlaysTheStationaryStripAndItsCloseButtonDismissesOnlyThePreview() throws {
+        let app = launchKeeptide()
+        _ = try openPanel(app)
+        let panel = app.dialogs["KeeptideQuickAccessPanel"]
+        let strip = stripElement(in: app)
+        let stripBeforePreview = strip.frame
+        let preview = app.descendants(matching: .any)["QuickAccessPreview"]
+        let closePreview = app.buttons["CloseQuickAccessPreview"]
+
+        app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.space, modifierFlags: [])
+
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(closePreview.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(waitUntilHittable(closePreview), app.debugDescription)
+        XCTAssertEqual(strip.frame.minX, stripBeforePreview.minX, accuracy: 1, app.debugDescription)
+        XCTAssertEqual(strip.frame.minY, stripBeforePreview.minY, accuracy: 1, app.debugDescription)
+        XCTAssertEqual(strip.frame.width, stripBeforePreview.width, accuracy: 1, app.debugDescription)
+        XCTAssertEqual(strip.frame.height, stripBeforePreview.height, accuracy: 1, app.debugDescription)
+        XCTAssertEqual(preview.frame.midX, strip.frame.midX, accuracy: 2, app.debugDescription)
+        XCTAssertTrue(preview.frame.intersects(strip.frame), app.debugDescription)
+
+        closePreview.click()
+
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(panel.exists, app.debugDescription)
+        XCTAssertEqual(strip.frame.minX, stripBeforePreview.minX, accuracy: 1, app.debugDescription)
+        XCTAssertEqual(strip.frame.minY, stripBeforePreview.minY, accuracy: 1, app.debugDescription)
+    }
+
+    func testClickingTheBandDismissesPreviewWithoutActivatingTheControlBeneathIt() throws {
+        let app = launchKeeptide()
+        let frames = try openPanel(app)
+        let panel = app.dialogs["KeeptideQuickAccessPanel"]
+        let preview = app.descendants(matching: .any)["QuickAccessPreview"]
+        let search = app.buttons["Search clips"]
+        let query = app.searchFields["Quick access query"]
+        let selectedBeforePreview = selectedClip(in: frames)?.label
+
+        query.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), app.debugDescription)
+
+        // The folded search button is exposed on the band. The first click belongs to the preview dismissal layer,
+        // so it must not also unfold the search control beneath it.
+        let exposedSearchMaxX = min(search.frame.maxX, preview.frame.minX)
+        XCTAssertGreaterThan(exposedSearchMaxX, search.frame.minX, app.debugDescription)
+        let exposedSearchX = (search.frame.minX + exposedSearchMaxX) / 2
+        search.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            .withOffset(CGVector(dx: exposedSearchX - search.frame.minX, dy: search.frame.height / 2))
+            .click()
+
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(panel.exists, app.debugDescription)
+        XCTAssertTrue(search.exists, app.debugDescription)
+        XCTAssertEqual(query.value as? String, "", app.debugDescription)
+        if let selectedBeforePreview, let selectedAfterPreview = selectedClip(in: frames)?.label {
+            XCTAssertEqual(selectedAfterPreview, selectedBeforePreview, app.debugDescription)
+        }
+    }
+
+    func testEscapeFromInsidePreviewDismissesItBeforeClosingThePanel() throws {
+        let app = launchKeeptide()
+        _ = try openPanel(app)
+        let panel = app.dialogs["KeeptideQuickAccessPanel"]
+        let preview = app.descendants(matching: .any)["QuickAccessPreview"]
+
+        app.searchFields["Quick access query"].typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.space, modifierFlags: [])
+        XCTAssertTrue(preview.waitForExistence(timeout: 5), app.debugDescription)
+
+        XCTAssertTrue(waitUntilHittable(preview), app.debugDescription)
+        preview.click()
+        app.typeKey(.escape, modifierFlags: [])
+
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(panel.exists, app.debugDescription)
+
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(panel.waitForNonExistence(timeout: 5), app.debugDescription)
+    }
+
     func testReturnWithNoResultsDoesNothing() throws {
         let app = launchKeeptide()
         _ = try openPanel(app)
@@ -247,6 +329,14 @@ final class QuickAccessUITests: XCTestCase {
 
     private func stripElement(in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any)["QuickAccessStrip"]
+    }
+
+    private func waitUntilHittable(_ element: XCUIElement, timeout: TimeInterval = 5) -> Bool {
+        let hittable = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hittable == true"),
+            object: element
+        )
+        return XCTWaiter.wait(for: [hittable], timeout: timeout) == .completed
     }
 
     /// The frame of the clip with this title. A frame is labelled "<Kind>, <time>, from <App>, <footer>: <title>",

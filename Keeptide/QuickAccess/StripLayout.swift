@@ -359,7 +359,18 @@ enum StripLayout {
         StripSectionLabels(frequent: dividerX - sectionLabelGap - frequentWidth, recent: dividerX + sectionLabelGap)
     }
 
-    /// The card goes above the band, which stays where it is. Where the card has no room above it, the
+    /// The browsing preview floats over the stationary band. Leave a clickable strip at both sides, including
+    /// on narrow screens, and keep the whole preview inside the visible area.
+    static func previewOverlayFrame(band: NSRect, in visible: NSRect) -> NSRect {
+        let width = min(previewMaximum.width, max(0, band.width - 48))
+        let height = min(previewMaximum.height, max(0, visible.height - 2 * screenMargin))
+        return NSRect(x: band.midX - width / 2,
+                      y: min(max(band.midY - height / 2, visible.minY + screenMargin),
+                             visible.maxY - screenMargin - height),
+                      width: width, height: height)
+    }
+
+    /// The command review goes above the band, which stays where it is. Where the card has no room above it, the
     /// card and the band are centred vertically as one group, so the band moves down to make room. The card is
     /// at most `previewMaximum`; when the room is smaller it shrinks to fit, in height and in width, but never below
     /// `previewMinimumHeight`. A group too tall for the room between the screen margins takes the visible area's
