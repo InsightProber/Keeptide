@@ -15,8 +15,16 @@ final class SettingsUITests: XCTestCase {
         app.tabs["iCloud"].click()
         let cloudDescription = app.staticTexts["CloudUnavailableTitle"]
         XCTAssertTrue(cloudDescription.waitForExistence(timeout: 3))
-        XCTAssertTrue(cloudDescription.label.contains("iCloud is not available in this build"))
-        XCTAssertTrue(cloudDescription.label.contains("Your library is stored locally on this Mac."))
+        // The native Form groups these sentences into one static text element,
+        // whose contents can be exposed as AXValue instead of AXLabel.
+        let cloudLabel = cloudDescription.label
+        let cloudValue = cloudDescription.value as? String ?? ""
+        XCTAssertTrue(cloudLabel.contains("iCloud is not available in this build")
+                      || cloudValue.contains("iCloud is not available in this build"),
+                      cloudDescription.debugDescription)
+        XCTAssertTrue(cloudLabel.contains("Your library is stored locally on this Mac.")
+                      || cloudValue.contains("Your library is stored locally on this Mac."),
+                      cloudDescription.debugDescription)
         XCTAssertFalse(app.buttons["Sign In"].exists)
         XCTAssertFalse(app.switches["iCloud"].exists)
     }
@@ -33,7 +41,9 @@ final class SettingsUITests: XCTestCase {
         XCTAssertTrue(manage.exists)
         manage.click()
         XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Ignored Applications"))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH %@ OR value BEGINSWITH %@", "Ignored Applications", "Ignored Applications"
+        ))
             .firstMatch.waitForExistence(timeout: 3))
     }
 

@@ -9,8 +9,9 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["OnboardingStartRecording"].exists)
         XCTAssertTrue(app.buttons["OnboardingNotNow"].exists)
         XCTAssertTrue(app.buttons["OnboardingOpenLibrary"].exists)
+        let recordingExplanation = "Recording starts only after you choose Start Recording."
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS[c] %@", "starts only after"
+            format: "label CONTAINS %@ OR value CONTAINS %@", recordingExplanation, recordingExplanation
         )).firstMatch.exists)
         XCTAssertFalse(app.buttons["Allow Accessibility"].exists)
         XCTAssertFalse(app.buttons["Enable iCloud"].exists)

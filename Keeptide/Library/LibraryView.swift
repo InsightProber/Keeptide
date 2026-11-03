@@ -42,9 +42,7 @@ struct LibraryView: View {
     @State private var sidebarPreference: LibrarySidebarPreference = .automatic
     @State private var sidebarVisibility: LibrarySidebarVisibility = .visible
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
-    @State private var bodyFocusRequest = 0
-    @State private var bodyFocusSessionID: UUID?
-    @State private var bodyFocusGeneration = 0
+    @State private var bodyFocus = BodyFocusRequestState()
     @State private var availableWidth: CGFloat = 1_120
 
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
@@ -445,6 +443,7 @@ struct LibraryView: View {
             }
             .accessibilityIdentifier("RecentlyDeletedDetail")
         } else if let workspace = session.libraryWorkspace, let editor = workspace.editor {
+            let focusRequest = bodyFocus.request(for: editor.sessionID, documentID: editor.draftID)
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
@@ -452,9 +451,21 @@ struct LibraryView: View {
                 previewService: session.previewService,
                 fileAccessStore: session.fileAccessStore,
                 fileAccessIdentity: session.fileAccessIdentity,
-                bodyFocusRequest: bodyFocusSessionID == editor.sessionID ? bodyFocusRequest : 0,
+                bodyFocusRequest: focusRequest,
                 shouldFocusBody: {
-                    commands.focusGeneration == bodyFocusGeneration
+                    bodyFocus.isCurrent(
+                        sessionID: editor.sessionID,
+                        documentID: editor.draftID,
+                        request: focusRequest,
+                        generation: commands.focusGeneration
+                    )
+                },
+                onBodyFocusAccepted: { sessionID, documentID, request in
+                    bodyFocus.consume(
+                        sessionID: sessionID,
+                        documentID: documentID,
+                        request: request
+                    )
                 }
             )
             .id(editor.sessionID)
@@ -541,7 +552,19 @@ struct LibraryView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             scopeMenu
 
-            LibrarySearchField(text: searchBinding, focusRequest: commands.searchRequest)
+            let searchFocus = commands.pendingSearchFocus
+            LibrarySearchField(
+                text: searchBinding,
+                focusRequest: searchFocus?.request ?? 0,
+                shouldFocus: {
+                    guard let searchFocus else { return false }
+                    return commands.isCurrentSearchFocus(searchFocus)
+                },
+                onFocusAccepted: { request in
+                    guard let searchFocus, searchFocus.request == request else { return }
+                    commands.consumeSearchFocus(searchFocus)
+                }
+            )
                 .frame(width: 220)
                 .disabled(selectedScope == .recentlyDeleted)
 
@@ -661,9 +684,12 @@ struct LibraryView: View {
         Task {
             await session.libraryWorkspace?.startNew(in: requestedScope)
             guard commands.focusGeneration == focusGeneration else { return }
-            bodyFocusSessionID = session.libraryWorkspace?.editor?.sessionID
-            bodyFocusGeneration = focusGeneration
-            bodyFocusRequest += 1
+            guard let editor = session.libraryWorkspace?.editor else { return }
+            bodyFocus.request(
+                sessionID: editor.sessionID,
+                documentID: editor.draftID,
+                generation: focusGeneration
+            )
         }
     }
 
@@ -998,6 +1024,7 @@ private struct MemoEditorView: View {
     let fileAccessIdentity: StoreIdentity?
     let bodyFocusRequest: Int
     let shouldFocusBody: @MainActor () -> Bool
+    let onBodyFocusAccepted: @MainActor (UUID, UUID, Int) -> Void
     @State private var markdownMode = MarkdownReadingMode.source
 
     var body: some View {
@@ -1026,6 +1053,9 @@ private struct MemoEditorView: View {
                         },
                         onFocusLost: {
                             Task { _ = try? await workspace.focusLost() }
+                        },
+                        onFocusAccepted: { documentID, request in
+                            onBodyFocusAccepted(editor.sessionID, documentID, request)
                         }
                     )
                     .id(editor.sessionID)
