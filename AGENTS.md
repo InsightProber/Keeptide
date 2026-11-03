@@ -34,7 +34,8 @@ or one with control or invisible characters, is confirmed first. Keeptide never
 runs commands, and it does not confirm that the app received a paste. The snippet
 service foundation preserves capture identity during saving and body edits,
 retains conflicting edits separately, and recovers local drafts. Its native editor
-interface, persistent file authorization, and cloud integration remain planned.
+supports recoverable editing, document find, search, and explicit saving. Persistent
+file authorization and cloud integration remain planned.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here

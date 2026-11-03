@@ -39,16 +39,16 @@ as a snippet, or write one directly.
 > instead and says so. Keeptide sends the paste and does not confirm that the app
 > received it. In a terminal, text is pasted as plain text without its trailing
 > newline, and a multi-line command, or one with control or invisible
-> characters, is confirmed first. Keeptide never runs commands. The native
-> snippet editor and iCloud saving are still planned. There is no end-user release
-> yet.
+> characters, is confirmed first. Keeptide never runs commands. The native snippet
+> editor is implemented; iCloud saving is still planned. There is no end-user
+> release yet.
 
 The snippet service foundation supports saving a capture without duplicating its
 payload, independent text and Markdown snippets, explicit copies, and edits that
 preserve the original capture. Local drafts support restart recovery and protect
 concurrent edits by saving conflicting content separately. These services are
-covered by native tests; the library editor and its user-facing save actions are
-still planned.
+covered by native tests. The library adds recoverable editing, document find,
+search, explicit saving, and quick-access save and open actions.
 
 ## Designed for the Mac
 
@@ -98,8 +98,8 @@ transient content is skipped when the source marks it accordingly. A copy above
 visible status. Clipboard bodies are read in an isolated helper process so a
 slow or faulty provider does not block the interface. Rapidly replaced clipboard
 contents may not be captured. Detail text previews show a bounded prefix.
-The current library shows recent clips; full-library search and retention
-controls are forthcoming. File references remain local and are not backups of
+The library searches recent clips and saved snippets. Retention controls are
+forthcoming. File references remain local and are not backups of
 the referenced files. Persistent file-access authorization is not implemented.
 
 Automated capture tests use isolated named pasteboards and temporary libraries.

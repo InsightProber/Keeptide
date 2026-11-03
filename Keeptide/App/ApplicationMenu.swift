@@ -33,6 +33,11 @@ enum ApplicationMenuBuilder {
         )
         mainMenu.addItem(menuItem(title: applicationName, submenu: applicationMenu))
 
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(item(title: "New Snippet", action: #selector(LibraryWindowController.newDocument(_:)), keyEquivalent: "n"))
+        fileMenu.addItem(item(title: "Save", action: #selector(LibraryWindowController.saveDocument(_:)), keyEquivalent: "s"))
+        mainMenu.addItem(menuItem(title: "File", submenu: fileMenu))
+
         let editMenu = NSMenu(title: "Edit")
         editMenu.addItem(item(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
         editMenu.addItem(
@@ -48,6 +53,12 @@ enum ApplicationMenuBuilder {
         editMenu.addItem(item(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
         editMenu.addItem(item(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
         editMenu.addItem(item(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
+        editMenu.addItem(.separator())
+        let find = item(title: "Find in Note…", action: #selector(NSTextView.performFindPanelAction(_:)), keyEquivalent: "f")
+        find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+        editMenu.addItem(find)
+        editMenu.addItem(item(title: "Search Library…", action: #selector(LibraryWindowController.searchLibrary(_:)), keyEquivalent: "f", modifierMask: [.command, .shift]))
+        editMenu.addItem(item(title: "Copy Entire Item", action: #selector(LibraryWindowController.copyEntireItem(_:)), keyEquivalent: "c", modifierMask: [.command, .shift]))
         mainMenu.addItem(menuItem(title: "Edit", submenu: editMenu))
 
         let windowMenu = NSMenu(title: "Window")

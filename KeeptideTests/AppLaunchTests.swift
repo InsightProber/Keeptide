@@ -816,6 +816,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(isEditing(field, in: window))
     }
 
+    func testLibraryShortcutsDoNotInterruptMarkedSearchText() async throws {
+        let (controller, _) = try await makePanelWithClips(["alpha note"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        var opens = 0
+        var creates = 0
+        controller.onOpenInLibrary = { _ in opens += 1 }
+        controller.onNewSnippet = { creates += 1 }
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        let marked = editor.markedRange()
+        let caret = editor.selectedRange()
+        let query = controller.state.query
+        for (code, character) in [(kVK_ANSI_S, "s"), (kVK_ANSI_E, "e"), (kVK_ANSI_N, "n")] {
+            // Consumed without acting, so AppKit cannot offer it to New/Save in
+            // the main menu after this window returns.
+            XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)))
+            XCTAssertTrue(editor.hasMarkedText())
+            XCTAssertEqual(editor.markedRange(), marked)
+            XCTAssertEqual(editor.selectedRange(), caret)
+            XCTAssertEqual(controller.state.query, query)
+            XCTAssertTrue(isEditing(field, in: window))
+        }
+        XCTAssertEqual(opens, 0)
+        XCTAssertEqual(creates, 0)
+    }
+
     func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheLeft() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -1484,7 +1511,15 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(commandK.point.x, selected.maxX, accuracy: try stripMetrics(in: window).gap)
         XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
         XCTAssertEqual(commandK.point.y, selected.maxY, accuracy: 1)
-        XCTAssertEqual(commandK.menu.items.map(\.title), ["Copy", "Copy as Plain Text", "", "Show Preview"])
+        XCTAssertEqual(commandK.menu.items.map(\.title), [
+            "Copy", "Copy as Plain Text", "", "Show Preview", "",
+            "Save as Snippet", "Open in Library", "New Snippet",
+        ])
+        XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent), ["\r", "\r", "", " ", "", "s", "e", "n"])
+        XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem }.map(\.keyEquivalentModifierMask), [
+            [], .shift, [], .command, .command, .command,
+        ])
+        XCTAssertTrue(commandK.menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled })
         // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
             with: .rightMouseDown, location: strip.convert(NSPoint(x: selected.midX, y: selected.midY), to: nil),
@@ -1967,7 +2002,11 @@ final class AppLaunchTests: XCTestCase {
         addTeardownBlock { controller.close() }
         controller.show()
         try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
-        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: controller.window?.contentView).first)
+        let window = try XCTUnwrap(controller.window)
+        // The state receives the rows before PanelController's observation task
+        // applies them to AppKit. Judge the fade only once a real frame is in the
+        // strip, as the other panel-rendering tests do.
+        let strip = try await clipStrip(in: window)
         XCTAssertEqual(strip.edgeFades, StripEdgeFades(leading: 0, trailing: 1))
         XCTAssertNotNil(strip.layer?.mask)
         preferences.fadesStripEnds = false
@@ -1976,7 +2015,9 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(strip.layer?.mask)
         controller.close()
         controller.show()
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 40 }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == 40 && !self.framesOnScreen(in: strip).isEmpty
+        }
         XCTAssertNil(strip.layer?.mask)
         XCTAssertFalse(strip.isFollowingMotion)
     }
@@ -2228,8 +2269,10 @@ final class AppLaunchTests: XCTestCase {
         // captured, and the way to turn direct paste on, after a separator of its own.
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-                       ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview", "Enable Direct Paste…"])
-        XCTAssertEqual(menu.items.map(\.isSeparatorItem), [false, false, true, false, true, false])
+                       ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview",
+                        "Save as Snippet", "Open in Library", "New Snippet", "Enable Direct Paste…"])
+        XCTAssertEqual(menu.items.map(\.isSeparatorItem),
+                       [false, false, true, false, true, false, false, false, true, false])
         XCTAssertEqual(menu.items[0].keyEquivalent, "\r")
         XCTAssertEqual(menu.items[0].keyEquivalentModifierMask, [])
         XCTAssertTrue(menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled })
@@ -2246,7 +2289,10 @@ final class AppLaunchTests: XCTestCase {
         let (other, otherBoard) = try await makePanelWithClips(["older", "newer"], shown: true, system: pasting.system)
         _ = try searchEditor(in: other)
         let pasteMenu = try actionMenu(of: other)
-        XCTAssertEqual(pasteMenu.items.map(\.title), ["Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview"])
+        XCTAssertEqual(pasteMenu.items.map(\.title), [
+            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "",
+            "Save as Snippet", "Open in Library", "New Snippet",
+        ])
         XCTAssertEqual(pasteMenu.items[1].keyEquivalentModifierMask, .shift)
         pasteMenu.performActionForItem(at: 2)
         try await SearchTestSupport.waitUntil { otherBoard.string(forType: .string) != nil && !other.isSessionOpen }
@@ -2282,8 +2328,10 @@ final class AppLaunchTests: XCTestCase {
             modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
             clickCount: 1, pressure: 1
         ))))
-        XCTAssertEqual(menu.items.map(\.title), ["Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "",
-                                                 "Show Preview"])
+        XCTAssertEqual(menu.items.map(\.title), [
+            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "",
+            "Save as Snippet", "Open in Library", "New Snippet",
+        ])
         XCTAssertEqual(fake.sent, [])
     }
 
@@ -2930,7 +2978,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNil(controller.state.pasteTarget)
         _ = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
         XCTAssertEqual(try actionMenu(of: controller).items.map(\.title),
-                       ["Copy", "Copy as Plain Text", "", "Show Preview"])
+                       ["Copy", "Copy as Plain Text", "", "Show Preview", "",
+                        "Save as Snippet", "Open in Library", "New Snippet"])
 
         controller.perform(.primary)
         try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
@@ -3082,11 +3131,16 @@ final class AppLaunchTests: XCTestCase {
         let toolbar = try await toolbarSaying(.action(title: "Paste Command", enabled: false, hint: nil), in: controller)
         XCTAssertFalse(toolbar.copyHint.isEnabled)
         let menu = try actionMenu(of: controller)
-        XCTAssertEqual(menu.items.map(\.title), ["Paste Command", "Copy As-Is (Keeps Trailing Newline)", "",
-                                                 "Show Preview"])
+        XCTAssertEqual(menu.items.map(\.title), [
+            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "",
+            "Save as Snippet", "Open in Library", "New Snippet",
+        ])
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[1].isEnabled)
         XCTAssertTrue(menu.items[3].isEnabled)
+        XCTAssertTrue(menu.items[5].isEnabled)
+        XCTAssertTrue(menu.items[6].isEnabled)
+        XCTAssertTrue(menu.items[7].isEnabled)
 
         // Without the card, Return's actions are offered again.
         controller.perform(.escape)
@@ -3203,6 +3257,78 @@ final class AppLaunchTests: XCTestCase {
         for completion in [QuickAccessCompletion.copied, .copiedInstead(.targetChanged), .copiedInstead(.returnHeld)] {
             XCTAssertEqual(PanelController.toastDuration(for: completion, arguments: ["--ui-testing"]), .seconds(4))
         }
+    }
+
+    func testOpenInLibraryWaitsForTheChoosingReturnAndKeepsTheChosenClip() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        let chosen = try XCTUnwrap(controller.state.copyTarget?.ref)
+        var opened: [ContentRef] = []
+        controller.onOpenInLibrary = { opened.append($0) }
+        let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
+        controller.currentEvent = { returnDown }
+
+        let menu = try actionMenu(of: controller)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Open in Library" }))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(opened, [], "The library must not receive Return repeats")
+        XCTAssertEqual(controller.state.returnIsDown?(), true)
+
+        controller.perform(.move(1))
+        XCTAssertNotEqual(controller.state.copyTarget?.ref, chosen)
+        window.sendEvent(try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber))
+        try await SearchTestSupport.waitUntil { opened.count == 1 }
+        XCTAssertEqual(opened, [chosen], "The menu action keeps the clip chosen before waiting")
+    }
+
+    func testNewSnippetChosenWithHeldReturnLapsesWithoutOpeningTheEditor() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        var newSnippets = 0
+        controller.onNewSnippet = { newSnippets += 1 }
+        let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
+        let returnUp = try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber)
+        controller.currentEvent = { returnDown }
+
+        let menu = try actionMenu(of: controller)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "New Snippet" }))
+        try await Task.sleep(for: .milliseconds(1_300))
+        XCTAssertEqual(newSnippets, 0)
+        XCTAssertTrue(controller.isSessionOpen)
+        window.sendEvent(returnUp)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(newSnippets, 0, "A late key-up must not revive a lapsed handoff")
+    }
+
+    func testLibraryHandoffsFromThePointerAndCommandShortcutsAreImmediate() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
+        let selected = try XCTUnwrap(controller.state.copyTarget?.ref)
+        var opened: [ContentRef] = []
+        var newSnippets = 0
+        controller.onOpenInLibrary = { opened.append($0) }
+        controller.onNewSnippet = { newSnippets += 1 }
+        let click = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0
+        ))
+        controller.currentEvent = { click }
+
+        let menu = try actionMenu(of: controller)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Open in Library" }))
+        XCTAssertEqual(opened, [selected])
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "New Snippet" }))
+        XCTAssertEqual(newSnippets, 1)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_E, "e", modifiers: .command)))
+        XCTAssertEqual(opened, [selected, selected])
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_N, "n", modifiers: .command)))
+        XCTAssertEqual(newSnippets, 2)
     }
 
     func testEnableDirectPasteExplainsWhatItTakesBeforeAskingForAccess() async throws {

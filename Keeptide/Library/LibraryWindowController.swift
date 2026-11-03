@@ -5,8 +5,15 @@ import SwiftUI
 final class LibraryWindowController: NSWindowController {
     private static let defaultSize = NSSize(width: 1120, height: 740)
     private static let minimumSize = NSSize(width: 840, height: 560)
+    let commands: LibraryWindowCommands
+    private let session: CaptureSession
+    private var closesAfterPreparation = false
+    private var closePreparationTask: Task<Void, Never>?
 
     init(session: CaptureSession, autosaveName: String? = "KeeptideLibraryWindow") {
+        let commands = LibraryWindowCommands()
+        self.commands = commands
+        self.session = session
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -18,20 +25,90 @@ final class LibraryWindowController: NSWindowController {
         window.setAccessibilityIdentifier("KeeptideLibraryWindow")
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
-        window.contentViewController = WindowContentController(rootView: LibraryView(session: session), size: Self.defaultSize)
+        window.contentViewController = WindowContentController(
+            rootView: LibraryView(session: session, commands: commands),
+            size: Self.defaultSize,
+            sceneBridgingOptions: .toolbars
+        )
         window.setContentSize(Self.defaultSize)
         window.contentMinSize = Self.minimumSize
         window.standardWindowButton(.closeButton)?.setAccessibilityIdentifier("Close Library")
         window.center()
         if let autosaveName { window.setFrameAutosaveName(autosaveName) }
         super.init(window: window)
+        window.delegate = self
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     func show() {
         guard let window else { return }
+        session.libraryWorkspace?.resumeAfterCloseCancellation()
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)
     }
+
+    @objc func newDocument(_ sender: Any?) { commands.requestNewSnippet() }
+    @objc func saveDocument(_ sender: Any?) { commands.saveRequest += 1 }
+    @objc func copyEntireItem(_ sender: Any?) { commands.copyRequest += 1 }
+    @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
+
+    func open(_ ref: ContentRef) {
+        commands.openRequest = LibraryOpenRequest(
+            ref: ref,
+            generation: (commands.openRequest?.generation ?? 0) + 1
+        )
+    }
+}
+
+extension LibraryWindowController: NSWindowDelegate {
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if closesAfterPreparation {
+            closesAfterPreparation = false
+            return true
+        }
+        guard let workspace = session.libraryWorkspace else { return true }
+        guard closePreparationTask == nil else { return false }
+        closePreparationTask = Task { @MainActor [weak self, weak sender] in
+            guard let self, let sender else { return }
+            let mayClose = await workspace.prepareToClose()
+            closePreparationTask = nil
+            guard mayClose else { return }
+            closesAfterPreparation = true
+            sender.performClose(nil)
+        }
+        return false
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard let workspace = session.libraryWorkspace else { return }
+        Task { _ = try? await workspace.focusLost() }
+    }
+}
+
+@MainActor @Observable
+final class LibraryWindowCommands {
+    private(set) var newSnippetRequest = 0
+    var saveRequest = 0
+    var copyRequest = 0
+    private(set) var searchRequest = 0
+    private(set) var focusGeneration = 0
+    private(set) var newSnippetFocusGeneration = 0
+    var openRequest: LibraryOpenRequest?
+
+    func requestNewSnippet() {
+        focusGeneration &+= 1
+        newSnippetFocusGeneration = focusGeneration
+        newSnippetRequest &+= 1
+    }
+
+    func requestSearch() {
+        focusGeneration &+= 1
+        searchRequest &+= 1
+    }
+}
+
+struct LibraryOpenRequest: Equatable {
+    let ref: ContentRef
+    let generation: Int
 }

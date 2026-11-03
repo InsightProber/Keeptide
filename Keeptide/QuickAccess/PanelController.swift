@@ -73,6 +73,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The ⋯ menu's Open Library and Settings…, which the app points at its own commands.
     var onOpenLibrary: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    /// Actions for the selected clip that hand the exact content identity to the library.
+    var onOpenInLibrary: ((ContentRef) -> Void)?
+    var onNewSnippet: (() -> Void)?
     /// The actions menu's Enable Direct Paste…, once the panel has closed. The app explains it and asks for access,
     /// which takes Keeptide to the front: the panel never does that itself.
     var onEnableDirectPaste: (() -> Void)?
@@ -750,9 +753,34 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .plainText: act(.plainText, guessesReturn: returnMayBeDown)
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
+            case .saveSnippet: saveSelectedSnippet()
+            case .openLibrary: openSelectedInLibraryFromMenu()
+            case .newSnippet: newSnippetFromMenu()
             case .enableDirectPaste: enableDirectPaste()
             }
         }
+    }
+
+    private func saveSelectedSnippet() {
+        guard let target = state.copyTarget else { return }
+        Task { await state.saveSelection(target) }
+    }
+
+    private func openSelectedInLibrary() {
+        guard let ref = state.copyTarget?.ref else { return }
+        onOpenInLibrary?(ref)
+    }
+
+    /// A menu item chosen with Return must keep the keys until that Return is up, so its repeats cannot reach the
+    /// library editor. The content identity is captured before the wait: moving the strip meanwhile cannot redirect
+    /// the action to a different clip.
+    private func openSelectedInLibraryFromMenu() {
+        guard let ref = state.copyTarget?.ref else { return }
+        handOverWhenChoosingReturnIsUp { [weak self] in self?.onOpenInLibrary?(ref) }
+    }
+
+    private func newSnippetFromMenu() {
+        handOverWhenChoosingReturnIsUp { [weak self] in self?.onNewSnippet?() }
     }
 
     /// How the menu item was chosen, as far as Return goes; true when Return may still be down from choosing it.
@@ -784,11 +812,18 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// Still down after `returnReleaseWait`, nothing happens. Only a key the panel saw go down holds it back, never one
     /// only guessed down: at worst a held key's repeats press Open System Settings, which is what was asked for.
     private func enableDirectPaste() {
-        guard heldReturnKeys.contains(where: { $0 != Self.returnMayBeDown }) else { return handOverEnableDirectPaste() }
+        handOverWhenChoosingReturnIsUp { [weak self] in self?.handOverEnableDirectPaste() }
+    }
+
+    /// A Return or keypad Enter the panel actually saw choose a menu item fences a handoff to another interface. A
+    /// pointer choice, shortcut, or accessibility action with no observed Return hands over immediately. If the key
+    /// stays down past `returnReleaseWait`, the choice lapses; a later key-up cannot revive it.
+    private func handOverWhenChoosingReturnIsUp(_ handoff: @escaping @MainActor @Sendable () -> Void) {
+        guard heldReturnKeys.contains(where: { $0 != Self.returnMayBeDown }) else { return handoff() }
         Task {
             guard await returnKeysComeUp() == true else { return }
-            // The alert runs a loop of its own, so it starts on a turn of its own rather than inside this task.
-            DispatchQueue.main.async { self.handOverEnableDirectPaste() }
+            // A handoff starts on a turn of its own, outside the menu item's action.
+            DispatchQueue.main.async(execute: handoff)
         }
     }
 
@@ -855,7 +890,22 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             confirmCommand()
             return true
         }
-        switch event.charactersIgnoringModifiers?.lowercased() {
+        let key = event.charactersIgnoringModifiers?.lowercased()
+        // Library commands must not interrupt composition. Existing panel
+        // commands keep their own composition behavior; in particular, Command-F
+        // in the active search editor leaves its marked text and caret intact.
+        if ["s", "e", "n"].contains(key),
+           (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
+        switch key {
+        case "s":
+            saveSelectedSnippet()
+            return true
+        case "e":
+            openSelectedInLibrary()
+            return true
+        case "n":
+            onNewSnippet?()
+            return true
         case "f":
             unfoldSearch()
             return true

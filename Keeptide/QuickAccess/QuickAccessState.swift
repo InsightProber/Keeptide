@@ -28,6 +28,8 @@ struct QuickAccessServices {
     var preview: PreviewService? = nil
     /// How often clips were used, for the frequent wing; without it there is no wing.
     var usage: (any QuickAccessUsage)? = nil
+    /// Saving a capture as a snippet uses the same service and transaction rules as the library.
+    var library: LibraryService? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -92,6 +94,8 @@ final class QuickAccessState {
     private(set) var isPreviewExpanded = false
     private(set) var preview: PreviewContent?
     private(set) var failure: PasteRefusal?
+    private(set) var saveMessage: String?
+    private(set) var canUndoSave = false
     /// What strip frames show of a clip beyond its title. Only clips still in the list keep one.
     private(set) var details: [ContentRef: ClipDetail] = [:]
     /// Whether the search was unfolded by hand or by typing, and has not been folded since.
@@ -134,6 +138,13 @@ final class QuickAccessState {
     /// Set once a page of the current generation added no rows; the generation asks for no more pages.
     private var pagingStopped = false
     @ObservationIgnored private var previewing: Task<Void, Never>?
+    @ObservationIgnored private var saving = false
+    @ObservationIgnored private var savedUndo: (
+        itemID: ItemID,
+        memoID: UUID,
+        fingerprint: Data,
+        identity: StoreIdentity
+    )?
     /// One read per clip whose detail is wanted, running or finished. A load that has finished stays listed
     /// while its clip is still requested, so a clip that cannot be read is not read again on every request.
     @ObservationIgnored private var detailLoads: [ContentRef: Task<Void, Never>] = [:]
@@ -191,6 +202,9 @@ final class QuickAccessState {
     /// many clips before them (`StripLayout.recentShownWhole`). With it the frequent wing leads the recent clips,
     /// without the clips the band shows whole; nil lists no wing.
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
+        saveMessage = nil
+        savedUndo = nil
+        canUndoSave = false
         isOpen = true
         frequentWingFirstScreen = firstScreen
         query = ""
@@ -395,6 +409,61 @@ final class QuickAccessState {
     func copySelection(_ mode: PasteMode) async {
         guard let target = copyTarget else { return }
         await copy(target, mode: mode)
+    }
+
+    /// Saves the captured selection without changing or duplicating its immutable payload.
+    /// Every await is fenced by the panel session and captured selection.
+    func saveSelection(_ target: CopyTarget) async {
+        guard isOpen, !saving, copyTarget == target, let currentSession = session,
+              let services = services(), let library = services.library else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            let identity = try await library.controller.identity()
+            let content = try await services.repository.read(target.ref)
+            guard content.integrity == .complete, isOpen, session === currentSession,
+                  copyTarget == target else { return }
+            let outcome = try await library.saveAsMemo(target.ref.itemID, expecting: identity)
+            guard isOpen, session === currentSession, copyTarget == target else { return }
+            switch outcome {
+            case .created(let ref):
+                let snapshot = try await library.editingSnapshot(ref)
+                guard isOpen, session === currentSession, copyTarget == target else { return }
+                savedUndo = (target.ref.itemID, snapshot.memoID, snapshot.memoFingerprint, identity)
+                canUndoSave = true
+                saveMessage = "Saved to Snippets"
+            case .existing:
+                savedUndo = nil
+                canUndoSave = false
+                saveMessage = "Already in Snippets"
+            }
+        } catch {
+            if isOpen, session === currentSession, copyTarget == target {
+                saveMessage = "This item could not be saved. Try again."
+            }
+        }
+    }
+
+    func undoSaveSelection() async {
+        guard isOpen, !saving, let savedUndo, let currentSession = session,
+              let library = services()?.library else { return }
+        saving = true
+        defer { saving = false }
+        do {
+            try await library.undoSaveAsMemo(
+                savedUndo.itemID,
+                memoID: savedUndo.memoID,
+                expectedFingerprint: savedUndo.fingerprint,
+                expecting: savedUndo.identity
+            )
+            guard isOpen, session === currentSession else { return }
+            self.savedUndo = nil
+            canUndoSave = false
+            saveMessage = "Save undone"
+        } catch {
+            guard isOpen, session === currentSession else { return }
+            saveMessage = "This snippet changed and cannot be undone safely."
+        }
     }
 
     func loadMoreIfNeeded(visibleRow index: Int) {

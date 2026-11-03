@@ -1,47 +1,113 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+enum LibrarySidebarPreference: Equatable {
+    case automatic, shown, hidden
+}
+
+enum LibrarySidebarVisibility: Equatable {
+    case visible, hidden
+}
+
+enum LibraryLayoutPolicy {
+    static func sidebarVisibility(
+        width: CGFloat,
+        preference: LibrarySidebarPreference,
+        current: LibrarySidebarVisibility
+    ) -> LibrarySidebarVisibility {
+        switch preference {
+        case .shown:
+            return .visible
+        case .hidden:
+            return .hidden
+        case .automatic:
+            if width < 960 { return .hidden }
+            if width > 1_040 { return .visible }
+            return current
+        }
+    }
+}
+
 struct LibraryView: View {
     @Bindable private var session: CaptureSession
+    @Bindable private var commands: LibraryWindowCommands
     @State private var selectedSection: LibrarySection? = .recentClips
     @State private var selectedItemID: ItemID?
     @State private var showsIgnoredApplications = false
+    @State private var sidebarPreference: LibrarySidebarPreference = .automatic
+    @State private var sidebarVisibility: LibrarySidebarVisibility = .visible
+    @State private var splitVisibility: NavigationSplitViewVisibility = .all
+    @State private var bodyFocusRequest = 0
+    @State private var bodyFocusSessionID: UUID?
+    @State private var bodyFocusGeneration = 0
+    @State private var availableWidth: CGFloat = 1_120
 
-    init(session: CaptureSession) {
+    init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
         _session = Bindable(wrappedValue: session)
+        _commands = Bindable(wrappedValue: commands)
     }
 
     var body: some View {
-        NavigationSplitView {
-            List(LibrarySection.allCases, selection: $selectedSection) { section in
-                Label(section.title, systemImage: section.symbolName)
-                    .tag(section)
+        GeometryReader { geometry in
+            NavigationSplitView(columnVisibility: $splitVisibility) {
+                List(LibrarySection.allCases, selection: $selectedSection) { section in
+                    Label(section.title, systemImage: section.symbolName)
+                        .tag(section)
+                }
+                .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
+            } content: {
+                contentColumn
+                    .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .textBackgroundColor))
+            } detail: {
+                detailColumn
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color(nsColor: .textBackgroundColor))
             }
-            .navigationTitle("Library")
-            .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
-        } content: {
-            contentColumn
-                .navigationTitle(selectedSection?.title ?? "Library")
-                .navigationSplitViewColumnWidth(min: 240, ideal: 280, max: 360)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .textBackgroundColor))
-        } detail: {
-            detailColumn
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color(nsColor: .textBackgroundColor))
+            .onAppear {
+                availableWidth = geometry.size.width
+                updateSidebar(for: geometry.size.width)
+            }
+            .onChange(of: geometry.size.width) { _, width in
+                availableWidth = width
+                updateSidebar(for: width)
+            }
         }
         .navigationSplitViewStyle(.balanced)
+        .toolbar { libraryToolbar }
+        .onChange(of: splitVisibility) { _, visibility in
+            let next: LibrarySidebarVisibility = visibility == .all ? .visible : .hidden
+            guard next != sidebarVisibility else { return }
+            sidebarVisibility = next
+            sidebarPreference = next == .visible ? .shown : .hidden
+        }
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
         }
         .task(id: selectedItemID) {
             let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
             await session.select(ref)
+            if selectedSection == .recentClips, let selectedItemID {
+                await session.libraryWorkspace?.select(selectedItemID)
+            }
         }
         .onChange(of: selectedSection) { _, section in
-            guard section != .recentClips else { return }
             selectedItemID = nil
+            guard let section else { return }
+            Task { await session.libraryWorkspace?.setScope(section.scope) }
         }
+        .onChange(of: commands.newSnippetRequest) { _, _ in
+            startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
+        }
+        .onChange(of: commands.saveRequest) { _, _ in saveCurrentEditor() }
+        .onChange(of: commands.copyRequest) { _, _ in copyCurrentEditor() }
+        .onChange(of: commands.openRequest) { _, request in
+            guard let request else { return }
+            Task { await session.libraryWorkspace?.open(request.ref) }
+        }
+        .disabled(session.libraryWorkspace?.isClosing == true)
     }
 
     @ViewBuilder
@@ -51,34 +117,30 @@ struct LibraryView: View {
                 captureStatus
                 if session.actionMessage != nil { actionStatus.padding(12) }
                 Divider()
-                if session.recent.isEmpty {
+                if let workspace = session.libraryWorkspace {
+                    snippetList(workspace, recentStyle: true)
+                } else if let error = session.libraryInitializationError {
                     ContentUnavailableView {
-                        Label("No recent clips", systemImage: "clipboard")
+                        Label("Library unavailable", systemImage: "exclamationmark.triangle")
                     } description: {
-                        Text("Start recording to keep new copies. Existing clipboard content is not imported.")
+                        Text(error)
                     }
-                    .accessibilityIdentifier("RecentClipsEmptyState")
+                    .accessibilityIdentifier("LibraryInitializationError")
                 } else {
-                    List(session.recent, id: \.itemID, selection: $selectedItemID) { summary in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(summary.title.isEmpty ? "Clipboard Item" : summary.title)
-                                .lineLimit(2)
-                            Text(summary.lastCopiedAt, style: .relative)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .tag(summary.itemID)
-                        .accessibilityIdentifier("RecentClipRow")
-                    }
-                    .listStyle(.inset)
+                    ProgressView("Preparing library…")
                 }
             }
-        } else {
+        } else if let workspace = session.libraryWorkspace {
+            snippetList(workspace)
+        } else if let error = session.libraryInitializationError {
             ContentUnavailableView {
-                Label("Planned for a later milestone", systemImage: "hammer")
+                Label("Library unavailable", systemImage: "exclamationmark.triangle")
             } description: {
-                Text("Recent clipboard capture is available first. This library section is not implemented yet.")
+                Text(error)
             }
+            .accessibilityIdentifier("LibraryInitializationError")
+        } else {
+            ProgressView("Preparing library…")
         }
     }
 
@@ -124,6 +186,23 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var detailColumn: some View {
+        if let workspace = session.libraryWorkspace, let editor = workspace.editor {
+            MemoEditorView(
+                editor: editor,
+                workspace: workspace,
+                bodyFocusRequest: bodyFocusSessionID == editor.sessionID ? bodyFocusRequest : 0,
+                shouldFocusBody: {
+                    commands.focusGeneration == bodyFocusGeneration
+                }
+            )
+            .id(editor.sessionID)
+        } else {
+            captureDetailColumn
+        }
+    }
+
+    @ViewBuilder
+    private var captureDetailColumn: some View {
         if session.selectionIsLoading {
             ProgressView("Loading clip…")
         } else if let content = session.selectedContent,
@@ -146,6 +225,19 @@ struct LibraryView: View {
                         }
                         .keyboardShortcut("c", modifiers: [.command, .shift])
                         .accessibilityIdentifier("CopyCapture")
+                        .disabled(!content.isActionable || session.selectionIsLoading)
+
+                        Button {
+                            Task {
+                                guard let workspace = session.libraryWorkspace else { return }
+                                await workspace.open(ref)
+                                guard workspace.editor?.ref == ref else { return }
+                                _ = try? await workspace.saveSelectedHistory()
+                            }
+                        } label: {
+                            Label("Save as Snippet", systemImage: "bookmark")
+                        }
+                        .accessibilityIdentifier("SaveCaptureAsSnippet")
                         .disabled(!content.isActionable || session.selectionIsLoading)
                     }
 
@@ -199,6 +291,158 @@ struct LibraryView: View {
                 Text("Content details and the explicit Copy action will appear here.")
             }
         }
+    }
+
+    @ToolbarContentBuilder
+    private var libraryToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .primaryAction) {
+            LibrarySearchField(text: searchBinding, focusRequest: commands.searchRequest)
+                .frame(width: 220)
+
+            Button {
+                commands.requestNewSnippet()
+            } label: {
+                Label("New Snippet", systemImage: "square.and.pencil")
+            }
+            .accessibilityIdentifier("NewSnippet")
+            .disabled(session.libraryWorkspace == nil)
+
+            Button { showsIgnoredApplications = true } label: {
+                Label("Ignored Apps", systemImage: "hand.raised")
+            }
+            .accessibilityIdentifier("IgnoredApplicationsToolbar")
+        }
+    }
+
+    private var searchBinding: Binding<String> {
+        Binding(
+            get: { session.libraryWorkspace?.query ?? "" },
+            set: { value in session.libraryWorkspace?.updateQuery(value) }
+        )
+    }
+
+    private func updateSidebar(for width: CGFloat) {
+        let next = LibraryLayoutPolicy.sidebarVisibility(
+            width: width,
+            preference: sidebarPreference,
+            current: sidebarVisibility
+        )
+        sidebarVisibility = next
+        splitVisibility = next == .visible ? .all : .doubleColumn
+    }
+
+    private func startNewSnippet(focusGeneration: Int) {
+        Task {
+            await session.libraryWorkspace?.startNew()
+            guard commands.focusGeneration == focusGeneration else { return }
+            bodyFocusSessionID = session.libraryWorkspace?.editor?.sessionID
+            bodyFocusGeneration = focusGeneration
+            bodyFocusRequest += 1
+        }
+    }
+
+    private func saveCurrentEditor() {
+        Task {
+            guard let workspace = session.libraryWorkspace else { return }
+            do {
+                if workspace.editor?.isReadOnly == true { _ = try await workspace.saveSelectedHistory() }
+                else { _ = try await workspace.flush() }
+            } catch { /* Workspace retains the draft and its visible failure. */ }
+        }
+    }
+
+    private func copyCurrentEditor() {
+        Task { _ = await session.libraryWorkspace?.copyCurrent(mode: .original) }
+    }
+
+    @ViewBuilder
+    private func recoveredDrafts(_ workspace: LibraryWorkspace) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let notice = workspace.recoveryNotice {
+                Label(notice, systemImage: "exclamationmark.triangle")
+                    .accessibilityIdentifier("DraftRecoveryNotice")
+            }
+            Label("Recovered drafts", systemImage: "arrow.counterclockwise.circle")
+                .font(.headline)
+            ForEach(workspace.recoveredDrafts) { draft in
+                Button {
+                    Task { await workspace.recoverDraft(draft.id) }
+                } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(draft.title.isEmpty ? "Untitled Draft" : draft.title)
+                        if let preview = draft.bodyPreview, !preview.isEmpty {
+                            Text(preview).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .background(.regularMaterial)
+        .accessibilityIdentifier("RecoveredDrafts")
+    }
+
+    @ViewBuilder
+    private func snippetList(_ workspace: LibraryWorkspace, recentStyle: Bool = false) -> some View {
+        VStack(spacing: 0) {
+            if !workspace.recoveredDrafts.isEmpty || workspace.recoveryNotice != nil {
+                recoveredDrafts(workspace)
+                Divider()
+            }
+            if let message = workspace.message {
+                HStack {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                    Spacer()
+                    if workspace.editor?.status == .failed {
+                        Button("Retry") { saveCurrentEditor() }
+                    }
+                }
+                .padding(10)
+                .background(.regularMaterial)
+                .accessibilityIdentifier("LibraryFailureMessage")
+            }
+            if workspace.isLoading {
+                ProgressView().controlSize(.small).padding(8)
+            }
+            if workspace.entries.isEmpty, !workspace.isLoading {
+                ContentUnavailableView {
+                    Label(recentStyle ? "No recent clips" : "No snippets",
+                          systemImage: recentStyle ? "clipboard" : "doc.text")
+                } description: {
+                    Text(workspace.query.isEmpty
+                         ? (recentStyle
+                            ? "Start recording to keep new copies. Existing clipboard content is not imported."
+                            : "Create a snippet or save a recent clip to keep it here.")
+                         : "No items match your search.")
+                }
+                .accessibilityIdentifier(recentStyle ? "RecentClipsEmptyState" : "SnippetsEmptyState")
+            } else {
+                List(workspace.entries, selection: workspaceSelection(workspace)) { entry in
+                    LibraryEntryRow(entry: entry)
+                        .tag(entry.id)
+                        .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
+                        .onAppear {
+                            guard entry.id == workspace.entries.last?.id, workspace.hasMoreEntries else { return }
+                            Task { await workspace.loadMore() }
+                        }
+                }
+                .listStyle(.inset)
+                .accessibilityIdentifier("SnippetList")
+            }
+        }
+    }
+
+    private func workspaceSelection(_ workspace: LibraryWorkspace) -> Binding<ItemID?> {
+        Binding(
+            get: { workspace.selectedEntryID },
+            set: { itemID in
+                guard let itemID else { return }
+                Task { await workspace.select(itemID) }
+            }
+        )
     }
 
     private var captureHeadline: String {
@@ -261,6 +505,251 @@ struct LibraryView: View {
         let itemCount = Set(content.representations.map(\.itemIndex)).count
         let formatCount = content.representations.count
         return "\(itemCount) item\(itemCount == 1 ? "" : "s") • \(formatCount) format\(formatCount == 1 ? "" : "s")"
+    }
+}
+
+private struct LibraryEntryRow: View {
+    let entry: LibraryEntry
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: symbolName)
+                .foregroundStyle(.secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(entry.title.isEmpty ? "Untitled" : entry.title)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+                if let snippet = entry.snippet, !snippet.isEmpty {
+                    Text(snippet)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                } else if entry.kind == .image {
+                    Text("Image content")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                Text(entry.lastCopiedAt, style: .relative)
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 4)
+        .accessibilityIdentifier("LibraryEntryRow")
+    }
+
+    private var symbolName: String {
+        switch entry.kind {
+        case .text: "text.alignleft"
+        case .url: "link"
+        case .image: "photo"
+        case .file: "doc"
+        case .other: "square.dashed"
+        }
+    }
+}
+
+private struct MemoEditorView: View {
+    @Bindable var editor: MemoEditorSession
+    @Bindable var workspace: LibraryWorkspace
+    let bodyFocusRequest: Int
+    let shouldFocusBody: @MainActor () -> Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if let body = editor.body {
+                EditorBridge(
+                    documentID: editor.draftID,
+                    text: body,
+                    isCode: editor.kind == .code,
+                    isEditable: !editor.isReadOnly && !workspace.isClosing,
+                    focusRequest: bodyFocusRequest,
+                    shouldFocus: shouldFocusBody,
+                    onChange: { value, isComposing in
+                        editor.setBody(value, isComposing: isComposing)
+                    },
+                    onFocusLost: {
+                        Task { _ = try? await workspace.focusLost() }
+                    }
+                )
+                .id(editor.sessionID)
+                .accessibilityIdentifier("SnippetBodyEditor")
+            } else {
+                ContentUnavailableView(
+                    "Original content preserved",
+                    systemImage: "photo.on.rectangle.angled",
+                    description: Text("This item has no editable text body. Its original formats remain available for copying.")
+                )
+                .accessibilityIdentifier("SnippetMetadataOnly")
+            }
+            Divider()
+            footer
+        }
+        .background(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                ComposingTextField(
+                    text: editor.title,
+                    placeholder: "Untitled Snippet",
+                    isEditable: !editor.isReadOnly,
+                    font: .preferredFont(forTextStyle: .title2),
+                    onChange: editor.setTitle
+                )
+                .frame(height: 34)
+                .accessibilityIdentifier("SnippetTitleEditor")
+
+                Spacer(minLength: 16)
+
+                if workspace.canUndoNewSave {
+                    Button("Undo Save") {
+                        Task { _ = try? await workspace.undoNewSave() }
+                    }
+                    .accessibilityIdentifier("LibraryUndoNewSave")
+                }
+
+                if editor.isReadOnly {
+                    Button {
+                        Task { _ = try? await workspace.saveSelectedHistory() }
+                    } label: {
+                        Label("Save as Snippet", systemImage: "bookmark")
+                    }
+                    .accessibilityIdentifier("SaveHistoryAsSnippet")
+                }
+
+                Button {
+                    Task { _ = await workspace.copyCurrent(mode: .original) }
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .accessibilityIdentifier(editor.isReadOnly ? "CopyCapture" : "CopyLibraryItem")
+            }
+
+            HStack(spacing: 10) {
+                Picker("Kind", selection: kindBinding) {
+                    Text("Text").tag(MemoKind.plainText)
+                    Text("Prompt").tag(MemoKind.prompt)
+                    Text("Code").tag(MemoKind.code)
+                    Text("Markdown").tag(MemoKind.markdown)
+                }
+                .pickerStyle(.menu)
+                .frame(width: 150)
+                .disabled(editor.isReadOnly)
+
+                statusLabel
+
+                if editor.richSourceWarning {
+                    Label("Saving edits creates an owned text version", systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Text("Note")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            ComposingTextField(
+                text: editor.note,
+                placeholder: "Optional note",
+                isEditable: !editor.isReadOnly,
+                font: .preferredFont(forTextStyle: .callout),
+                onChange: editor.setNote
+            )
+            .frame(height: 28)
+            .accessibilityIdentifier("SnippetNoteEditor")
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 12)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private var statusLabel: some View {
+        switch editor.status {
+        case .clean:
+            EmptyView()
+        case .saving:
+            Label(editor.isComposing ? "Saving draft…" : "Saving…", systemImage: "circle.dotted")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .saved:
+            Label("Saved", systemImage: "checkmark.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        case .failed:
+            HStack(spacing: 6) {
+                Label(editor.failureMessage ?? "Could not save", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                Button("Retry") { Task { _ = try? await workspace.flush() } }
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private var kindBinding: Binding<MemoKind> {
+        Binding(get: { editor.kind }, set: { editor.setKind($0) })
+    }
+}
+
+private struct ComposingTextField: NSViewRepresentable {
+    let text: String
+    let placeholder: String
+    let isEditable: Bool
+    let font: NSFont
+    let onChange: @MainActor (String, Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.placeholderString = placeholder
+        field.font = font
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        field.isEditable = isEditable
+        field.isSelectable = true
+        field.font = font
+        guard (field.currentEditor() as? NSTextView)?.hasMarkedText() != true,
+              field.stringValue != text else { return }
+        field.stringValue = text
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        let onChange: @MainActor (String, Bool) -> Void
+
+        init(onChange: @escaping @MainActor (String, Bool) -> Void) {
+            self.onChange = onChange
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            onChange(field.stringValue, (field.currentEditor() as? NSTextView)?.hasMarkedText() == true)
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            onChange(field.stringValue, false)
+        }
     }
 }
 
@@ -359,11 +848,18 @@ private struct IgnoredApplicationsView: View {
     }
 }
 
-private enum LibrarySection: String, CaseIterable, Identifiable {
+enum LibrarySection: String, CaseIterable, Identifiable {
     case recentClips
     case allSnippets
-    case favorites
     case uncategorized
+
+    var scope: LibraryScope {
+        switch self {
+        case .recentClips: .recentClips
+        case .allSnippets: .allSnippets
+        case .uncategorized: .uncategorized
+        }
+    }
 
     var id: Self { self }
 
@@ -371,7 +867,6 @@ private enum LibrarySection: String, CaseIterable, Identifiable {
         switch self {
         case .recentClips: "Recent Clips"
         case .allSnippets: "All Snippets"
-        case .favorites: "Favorites"
         case .uncategorized: "Uncategorized"
         }
     }
@@ -380,7 +875,6 @@ private enum LibrarySection: String, CaseIterable, Identifiable {
         switch self {
         case .recentClips: "clock"
         case .allSnippets: "doc.text"
-        case .favorites: "star"
         case .uncategorized: "tray"
         }
     }

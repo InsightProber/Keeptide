@@ -98,14 +98,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard !isShuttingDown, let environment else { return .terminateNow }
+        guard !isShuttingDown else { return .terminateCancel }
+        guard let environment else { return .terminateNow }
         isShuttingDown = true
         let initializationTask = initializationTask
         Task {
             await initializationTask?.value
+            if let workspace = environment.captureSession.libraryWorkspace,
+               !(await workspace.prepareToClose()) {
+                isShuttingDown = false
+                environment.showLibrary()
+                sender.reply(toApplicationShouldTerminate: false)
+                return
+            }
             await environment.captureSession.shutdown()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    @objc func newDocument(_ sender: Any?) {
+        environment?.showLibrary()
+        environment?.libraryWindowController.newDocument(sender)
+    }
+
+    @objc func searchLibrary(_ sender: Any?) {
+        environment?.showLibrary()
+        environment?.libraryWindowController.searchLibrary(sender)
     }
 }

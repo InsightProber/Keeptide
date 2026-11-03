@@ -29,16 +29,26 @@ struct RecoverableDraft: Codable, Equatable, Sendable {
     var savedAt: Date
 }
 
+struct DraftRestoreResult: Equatable, Sendable {
+    var drafts: [RecoverableDraft]
+    var failedIDs: [UUID]
+}
+
 protocol DraftStoring: Sendable {
     func write(_ draft: RecoverableDraft) async throws
     func load(_ id: UUID) async throws -> RecoverableDraft?
     func loadAll() async throws -> [RecoverableDraft]
+    func loadAllBestEffort() async throws -> DraftRestoreResult
     func remove(_ id: UUID, ifStorageRevision: UInt64) async throws -> Bool
     func releaseRetiredRevision(_ id: UUID, through storageRevision: UInt64) async
 }
 
 extension DraftStoring {
     func releaseRetiredRevision(_: UUID, through _: UInt64) async {}
+
+    func loadAllBestEffort() async throws -> DraftRestoreResult {
+        DraftRestoreResult(drafts: try await loadAll(), failedIDs: [])
+    }
 }
 
 actor DraftStore: DraftStoring {
@@ -145,6 +155,28 @@ actor DraftStore: DraftStoring {
             drafts.append(draft)
         }
         return drafts.sorted { $0.draftID.uuidString < $1.draftID.uuidString }
+    }
+
+    func loadAllBestEffort() async throws -> DraftRestoreResult {
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ).filter { $0.pathExtension == "json" }
+        var drafts: [RecoverableDraft] = []
+        var failedIDs: [UUID] = []
+        for url in urls.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
+            do {
+                if let draft = try loadFromDisk(id) { drafts.append(draft) }
+            } catch {
+                failedIDs.append(id)
+            }
+        }
+        return DraftRestoreResult(
+            drafts: drafts.sorted { $0.draftID.uuidString < $1.draftID.uuidString },
+            failedIDs: failedIDs.sorted { $0.uuidString < $1.uuidString }
+        )
     }
 
     func remove(_ id: UUID, ifStorageRevision: UInt64) async throws -> Bool {

@@ -10,6 +10,8 @@ final class CaptureSession {
     private(set) var selectionIsLoading = false
     private(set) var selectionError: String?
     private(set) var isReady = false
+    private(set) var libraryWorkspace: LibraryWorkspace?
+    private(set) var libraryInitializationError: String?
     private(set) var actionMessage: String?
     private var message: String?
     private var monitor: PasteboardMonitor?
@@ -60,6 +62,7 @@ final class CaptureSession {
         return isReady && !isPausing
     }
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
+    var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
 
     /// `directPaste` stays `.unavailable` everywhere but in the app delegate: tests use a fake.
     init(readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
@@ -181,6 +184,17 @@ final class CaptureSession {
                                         system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo)
             previewService = PreviewService(read: read)
             await startSearch(store: store, directory: directory)
+            let consumer = historyConsumer
+            do {
+                libraryWorkspace = try await LibraryWorkspace.make(
+                    controller: store, draftDirectory: directory.appendingPathComponent("Drafts"),
+                    searchService: searchService, pasteService: pasteService,
+                    refreshSearch: { try await consumer?.synchronize() }
+                )
+                libraryInitializationError = nil
+            } catch {
+                libraryInitializationError = "The editor could not be opened. Your saved content is preserved."
+            }
             isReady = true
             message = nil
             await refresh()
@@ -218,6 +232,7 @@ final class CaptureSession {
             let rows = try await ContentRepository(controller: controller).recent(limit: 200)
             guard generation == refreshGeneration else { return }
             recent = rows.filter { $0.history != nil }
+            await libraryWorkspace?.reload()
             actionMessage = nil
             onRecentClipsChanged?()
         } catch {
@@ -304,6 +319,7 @@ final class CaptureSession {
         manualPasteQASession = nil
         #endif
         searchService = nil
+        libraryWorkspace = nil
         readContent = nil
         pasteService = nil
         previewService = nil

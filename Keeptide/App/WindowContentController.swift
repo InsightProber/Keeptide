@@ -4,12 +4,16 @@ import SwiftUI
 /// AppKit owns window geometry and title; SwiftUI lays out only its content.
 @MainActor
 final class WindowContentController<Content: View>: NSViewController {
-    init(rootView: Content, size: NSSize) {
+    init(
+        rootView: Content,
+        size: NSSize,
+        sceneBridgingOptions: NSHostingSceneBridgingOptions = []
+    ) {
         super.init(nibName: nil, bundle: nil)
         view = NSView(frame: NSRect(origin: .zero, size: size))
         let hosting = NSHostingController(rootView: rootView)
         hosting.sizingOptions = []
-        hosting.sceneBridgingOptions = []
+        hosting.sceneBridgingOptions = sceneBridgingOptions
         addChild(hosting)
         hosting.view.frame = view.bounds
         hosting.view.autoresizingMask = [.width, .height]

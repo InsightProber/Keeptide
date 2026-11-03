@@ -6,7 +6,7 @@ local clipboard recording, a rebuildable local search index, and quick-access
 browsing on a band of clip cards, search, text and image preview, copying, and
 direct paste into the app window quick access was opened from are implemented.
 The snippet service foundation, including recoverable drafts and conflict copies,
-is also implemented. The native snippet editor, export UI, and cloud integration
+and the native snippet editor are implemented. Export UI and cloud integration
 remain planned.
 
 ## Native interfaces
@@ -68,8 +68,8 @@ copy-on-write edits, and conflict preservation through the same transactional
 store. Display types survive reopening and older stores migrate without changing
 capture bytes. Local drafts are isolated by library and editing session, written
 atomically, and retained when saving fails. Composition and asynchronous saves
-are coordinated before changes reach the content store. Native editor integration
-remains a separate milestone.
+are coordinated before changes reach the content store. The native editor uses
+those contracts for recoverable editing, document find, search, and explicit saves.
 
 ## Search and previews
 

@@ -32,7 +32,13 @@ final class AppEnvironment {
             PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }),
                             preferences: quickAccessPreferences)
         }
-        self.makeLibrary = makeLibrary ?? { LibraryWindowController(session: captureSession) }
+        self.makeLibrary = makeLibrary ?? {
+            LibraryWindowController(
+                session: captureSession,
+                autosaveName: ProcessInfo.processInfo.arguments.contains("--ui-testing")
+                    ? nil : "KeeptideLibraryWindow"
+            )
+        }
         self.makeSettings = makeSettings ?? { SettingsWindowController(preferences: quickAccessPreferences) }
     }
 
@@ -44,6 +50,14 @@ final class AppEnvironment {
         captureSession.onRecentClipsChanged = { [weak panel] in panel?.state.recentClipsChanged() }
         // The panel's ⋯ menu does what the menu bar's Open Library and Settings… do.
         panel.onOpenLibrary = { [weak self] in self?.showLibrary() }
+        panel.onOpenInLibrary = { [weak self] ref in
+            self?.showLibrary()
+            self?.libraryWindowController.open(ref)
+        }
+        panel.onNewSnippet = { [weak self] in
+            self?.showLibrary()
+            self?.libraryWindowController.newDocument(nil)
+        }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
         panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
         return panel
@@ -101,7 +115,13 @@ extension CaptureSession {
     /// wing reads the same usage store that the session's copies and pastes record their uses in.
     var quickAccessServices: QuickAccessServices? {
         guard let contentRepository, let pasteService else { return nil }
-        return QuickAccessServices(repository: contentRepository, search: searchService, paste: pasteService,
-                                   preview: previewService, usage: usageStore)
+        return QuickAccessServices(
+            repository: contentRepository,
+            search: searchService,
+            paste: pasteService,
+            preview: previewService,
+            usage: usageStore,
+            library: libraryService
+        )
     }
 }

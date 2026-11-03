@@ -1,7 +1,8 @@
 import AppKit
 
 enum ActionMenuCommand {
-    case primary, plainText, copyOnly, togglePreview, enableDirectPaste
+    case primary, plainText, copyOnly, togglePreview
+    case saveSnippet, openLibrary, newSnippet, enableDirectPaste
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
@@ -33,6 +34,20 @@ enum ActionMenu {
         }
         preview.isEnabled = row != nil
         menu.addItem(preview)
+        menu.addItem(.separator())
+        let save = ActionMenuItem("Save as Snippet", key: "s", modifiers: .command) {
+            perform(.saveSnippet)
+        }
+        save.isEnabled = canAct
+        menu.addItem(save)
+        let open = ActionMenuItem("Open in Library", key: "e", modifiers: .command) {
+            perform(.openLibrary)
+        }
+        open.isEnabled = canAct
+        menu.addItem(open)
+        menu.addItem(ActionMenuItem("New Snippet", key: "n", modifiers: .command) {
+            perform(.newSnippet)
+        })
         if actions.offersEnableDirectPaste {
             menu.addItem(.separator())
             menu.addItem(ActionMenuItem("Enable Direct Paste…", key: "", modifiers: []) { perform(.enableDirectPaste) })

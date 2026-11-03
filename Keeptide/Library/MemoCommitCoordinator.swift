@@ -1,6 +1,12 @@
 import Foundation
 
 actor MemoCommitCoordinator {
+    enum Event: Sendable {
+        case saved(draftID: UUID, revision: UInt64, receipt: MemoCommitReceipt)
+        case failed(draftID: UUID, revision: UInt64, storageRevision: UInt64, stage: DraftCoordinationStage)
+    }
+    private let onEvent: @Sendable (Event) -> Void
+
     typealias Sleep = @Sendable (Duration) async throws -> Void
     typealias Commit = @Sendable (RecoverableDraft) async throws -> MemoCommitReceipt
 
@@ -24,8 +30,10 @@ actor MemoCommitCoordinator {
         commitDelay: Duration = .seconds(1),
         sleep: @escaping Sleep = { try await Task.sleep(for: $0) },
         now: @escaping @Sendable () -> Date = Date.init,
+        onEvent: @escaping @Sendable (Event) -> Void = { _ in },
         commit: @escaping Commit
     ) {
+        self.onEvent = onEvent
         self.store = store
         self.persistDelay = persistDelay
         self.commitDelay = commitDelay
@@ -109,19 +117,38 @@ actor MemoCommitCoordinator {
     }
 
     func cancel(_ draftID: UUID) async throws {
-        cancelTimers(draftID)
-        guard let draft = drafts[draftID] else { return }
-        do {
-            try await persist(draft)
-            clearFailure(draftID, generation: draft.generation)
-        } catch {
-            recordFailure(.persistence, draft: draft)
-            throw error
+        while let draft = drafts[draftID] {
+            cancelTimers(draftID)
+            do {
+                try await persist(draft)
+                clearFailure(draftID, generation: draft.generation)
+            } catch {
+                if completedReceipt(for: draft) != nil { continue }
+                // A newer revision may have reached disk while this write was
+                // suspended. Drain it rather than reporting an obsolete CAS.
+                if error as? DraftStoreError == .staleRevision,
+                   drafts[draftID]?.generation != draft.generation { continue }
+                recordFailure(.persistence, draft: draft)
+                throw error
+            }
+            guard drafts[draftID]?.generation != draft.generation else {
+                cancelTimers(draftID)
+                return
+            }
         }
+        cancelTimers(draftID)
     }
 
     func restore() async throws -> [RecoverableDraft] {
-        let recovered = try await store.loadAll()
+        register(try await store.loadAll())
+    }
+
+    func restoreBestEffort() async throws -> DraftRestoreResult {
+        let result = try await store.loadAllBestEffort()
+        return DraftRestoreResult(drafts: register(result.drafts), failedIDs: result.failedIDs)
+    }
+
+    private func register(_ recovered: [RecoverableDraft]) -> [RecoverableDraft] {
         for draft in recovered {
             guard var current = drafts[draft.draftID] else {
                 drafts[draft.draftID] = draft
@@ -272,6 +299,8 @@ actor MemoCommitCoordinator {
                     cancelTimers(committedDraft.draftID)
                     drafts.removeValue(forKey: committedDraft.draftID)
                     failures.removeValue(forKey: committedDraft.draftID)
+                    onEvent(.saved(draftID: committedDraft.draftID,
+                                   revision: committedDraft.revision, receipt: receipt))
                 }
                 return
             }
@@ -279,6 +308,8 @@ actor MemoCommitCoordinator {
         }
         if current.revision > committedDraft.revision {
             try await advance(current, from: committedDraft, receipt: receipt)
+            onEvent(.saved(draftID: committedDraft.draftID,
+                           revision: committedDraft.revision, receipt: receipt))
         }
     }
 
@@ -340,6 +371,8 @@ actor MemoCommitCoordinator {
             revision: draft.revision,
             storageRevision: draft.storageRevision
         )
+        onEvent(.failed(draftID: draft.draftID, revision: draft.revision,
+                        storageRevision: draft.storageRevision, stage: stage))
     }
 
     private func clearFailure(_ draftID: UUID, generation: DraftGeneration) {
@@ -436,5 +469,26 @@ private struct DraftGeneration: Equatable, Sendable {
 private extension RecoverableDraft {
     var generation: DraftGeneration {
         DraftGeneration(revision: revision, storageRevision: storageRevision)
+    }
+}
+
+extension MemoCommitCoordinator {
+    func discardEmptyDraft(_ draftID: UUID) async throws -> Bool {
+        guard let draft = drafts[draftID], draft.base == nil, !draft.isComposing,
+              [draft.title, draft.body ?? "", draft.note].allSatisfy({
+                  $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              }), inFlightCommits[draftID] == nil, pendingWrites[draftID] == nil else { return false }
+        cancelTimers(draftID)
+        // Persist before conditional removal so the store fences delayed writes.
+        try await persist(draft)
+        guard drafts[draftID]?.generation == draft.generation,
+              inFlightCommits[draftID] == nil else { return false }
+        guard try await store.remove(draftID, ifStorageRevision: draft.storageRevision),
+              drafts[draftID]?.generation == draft.generation else { return false }
+        drafts.removeValue(forKey: draftID)
+        failures.removeValue(forKey: draftID)
+        // Keep the retired revision until this coordinator is released: an editor
+        // callback queued before closing must not resurrect the blank draft.
+        return true
     }
 }

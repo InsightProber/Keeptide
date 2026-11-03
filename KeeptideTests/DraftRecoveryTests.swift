@@ -66,6 +66,24 @@ final class DraftRecoveryTests: XCTestCase {
         }
     }
 
+    func testBestEffortRestoreKeepsCorruptEvidenceAndReturnsHealthyDrafts() async throws {
+        let fixture = try DraftFixture()
+        defer { fixture.remove() }
+        let identity = StoreIdentity(storeID: UUID(), generation: UUID())
+        let store = try DraftStore(directory: fixture.directory, identity: identity)
+        let healthy = fixture.draft(identity: identity, body: "healthy", revision: 1)
+        try await store.write(healthy)
+        let corruptID = UUID()
+        let corruptURL = store.fileURL(for: corruptID)
+        try Data("not json".utf8).write(to: corruptURL, options: .atomic)
+
+        let result = try await store.loadAllBestEffort()
+
+        XCTAssertEqual(result.drafts, [healthy])
+        XCTAssertEqual(result.failedIDs, [corruptID])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: corruptURL.path))
+    }
+
     func testConditionalRemoveDoesNotDeleteNewerRevision() async throws {
         let fixture = try DraftFixture()
         defer { fixture.remove() }
@@ -384,6 +402,29 @@ final class DraftRecoveryTests: XCTestCase {
 
     func testLateWritePausedBeforeDiskCannotResurrectSuccessfullyCommittedDraft() async throws {
         try await assertLateWriteAcrossSuccessfulCommit(mode: .beforeBackingWrite)
+    }
+
+    func testCancelDrainsComposingEditsThatArriveDuringPersistence() async throws {
+        let fixture = try DraftFixture()
+        defer { fixture.remove() }
+        let identity = StoreIdentity(storeID: UUID(), generation: UUID())
+        let backing = try DraftStore(directory: fixture.directory, identity: identity)
+        let gated = GatedNthWriteStore(backing: backing, gatedWrite: 1, phase: .beforeBackingWrite)
+        let coordinator = MemoCommitCoordinator(store: gated, persistDelay: .seconds(60),
+            commit: { _ in XCTFail("Composing text must not commit"); throw StoreError.operationDenied })
+        var draft = fixture.draft(identity: identity, body: "first", revision: 1, isComposing: true)
+        await coordinator.update(draft)
+        let draftID = draft.draftID
+        let closing = Task { try await coordinator.cancel(draftID) }
+        try await gated.waitUntilGatedWriteStarted()
+        draft.body = "latest composing text"
+        draft.revision = 2
+        await coordinator.update(draft)
+        await gated.releaseWrite()
+        try await closing.value
+        let disk = try await backing.load(draftID)
+        XCTAssertEqual(disk?.body, "latest composing text")
+        XCTAssertEqual(disk?.revision, 2)
     }
 
     func testLateWritePausedAfterDiskReturnsCompletedReceiptWithoutFalseFailure() async throws {
