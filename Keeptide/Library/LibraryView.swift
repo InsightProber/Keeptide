@@ -42,9 +42,7 @@ struct LibraryView: View {
     @State private var sidebarPreference: LibrarySidebarPreference = .automatic
     @State private var sidebarVisibility: LibrarySidebarVisibility = .visible
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
-    @State private var bodyFocusRequest = 0
-    @State private var bodyFocusSessionID: UUID?
-    @State private var bodyFocusGeneration = 0
+    @State private var bodyFocus = BodyFocusRequestState()
     @State private var availableWidth: CGFloat = 1_120
 
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
@@ -52,7 +50,7 @@ struct LibraryView: View {
         _commands = Bindable(wrappedValue: commands)
     }
 
-    var body: some View {
+    private var libraryLayout: some View {
         GeometryReader { geometry in
             NavigationSplitView(columnVisibility: $splitVisibility) {
                 librarySidebar
@@ -84,8 +82,17 @@ struct LibraryView: View {
             sidebarVisibility = next
             sidebarPreference = next == .visible ? .shown : .hidden
         }
+    }
+
+    private var presentedLibrary: some View {
+        libraryLayout
         .sheet(isPresented: $showsIgnoredApplications) {
             IgnoredApplicationsView(preferences: session.preferences)
+        }
+        .sheet(isPresented: exportStatusPresentation) {
+            if let coordinator = session.exportCoordinator {
+                ExportStatusView(coordinator: coordinator)
+            }
         }
         .sheet(item: $collectionEditorMode) { mode in
             CollectionEditorSheet(mode: mode) { name, color in
@@ -113,6 +120,10 @@ struct LibraryView: View {
         } message: { _ in
             Text("Items will move to Uncategorized. Their content and history will not be deleted.")
         }
+    }
+
+    private var selectionLibrary: some View {
+        presentedLibrary
         .task(id: selectedItemID) {
             let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
             await session.select(ref)
@@ -123,9 +134,19 @@ struct LibraryView: View {
         .onChange(of: selectedScope) { _, scope in
             selectedItemID = nil
             selectedEntryIDs.removeAll()
+            updateExportContext()
             guard let scope else { return }
             session.libraryWorkspace?.updateScope(scope)
         }
+        .onChange(of: selectedItemID) { _, _ in updateExportContext() }
+        .onChange(of: selectedEntryIDs) { _, _ in updateExportContext() }
+        .onChange(of: session.libraryWorkspace?.entries.map(\.ref) ?? []) { _, _ in
+            updateExportContext()
+        }
+    }
+
+    var body: some View {
+        selectionLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }
@@ -135,7 +156,78 @@ struct LibraryView: View {
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }
         }
+        .onChange(of: commands.exportLibraryRequest, initial: true) { _, request in
+            if request > 0 { beginExport(selectedOnly: false) }
+        }
+        .onChange(of: commands.exportSelectedRequest, initial: true) { _, request in
+            if request > 0 { beginExport(selectedOnly: true) }
+        }
+        .onAppear { updateExportContext() }
         .disabled(session.libraryWorkspace?.isClosing == true)
+    }
+
+    private var exportStatusPresentation: Binding<Bool> {
+        Binding(
+            get: { session.exportCoordinator?.presentsStatus == true },
+            set: { presented in
+                guard !presented else { return }
+                guard let coordinator = session.exportCoordinator else { return }
+                if case .exporting = coordinator.phase {
+                    coordinator.cancel()
+                } else {
+                    coordinator.dismissResult()
+                }
+            }
+        )
+    }
+
+    private func updateExportContext() {
+        commands.updateExportContext(
+            refs: currentExportRefs(),
+            isRecentlyDeleted: selectedScope == .recentlyDeleted
+        )
+    }
+
+    private func currentExportRefs() -> [ContentRef] {
+        guard selectedScope != .recentlyDeleted, let workspace = session.libraryWorkspace else { return [] }
+        if selectedScope == .recentClips {
+            guard let selectedItemID else { return [] }
+            return workspace.entries.filter { $0.id == selectedItemID }.map(\.ref)
+        }
+        return workspace.entries.filter { selectedEntryIDs.contains($0.id) }.map(\.ref)
+    }
+
+    private func beginExport(selectedOnly: Bool) {
+        guard selectedScope != .recentlyDeleted,
+              let coordinator = session.exportCoordinator,
+              let workspace = session.libraryWorkspace else { return }
+        let requested = currentExportRefs()
+        if selectedOnly && requested.isEmpty { return }
+
+        coordinator.start {
+            if workspace.editor?.isComposing == true
+                || (NSApp.keyWindow?.firstResponder as? NSTextView)?.hasMarkedText() == true {
+                throw ExportPreparationError.compositionInProgress
+            }
+            if selectedOnly, currentExportRefs() != requested {
+                throw ExportPreparationError.selectionChanged
+            }
+
+            let editorRef = workspace.editor?.ref
+            let flushed: ContentRef?
+            do {
+                flushed = try await workspace.flush()
+            } catch {
+                throw ExportPreparationError.saveFailed
+            }
+            guard selectedOnly else { return .allVisible }
+            return try ExportSelectionResolver.selectedScope(
+                requested: requested,
+                editorRef: editorRef,
+                flushedRef: flushed,
+                displayed: currentExportRefs()
+            )
+        }
     }
 
     private var librarySidebar: some View {
@@ -348,6 +440,7 @@ struct LibraryView: View {
             }
             .accessibilityIdentifier("RecentlyDeletedDetail")
         } else if let workspace = session.libraryWorkspace, let editor = workspace.editor {
+            let focusRequest = bodyFocus.request(for: editor.sessionID, documentID: editor.draftID)
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
@@ -355,9 +448,21 @@ struct LibraryView: View {
                 previewService: session.previewService,
                 fileAccessStore: session.fileAccessStore,
                 fileAccessIdentity: session.fileAccessIdentity,
-                bodyFocusRequest: bodyFocusSessionID == editor.sessionID ? bodyFocusRequest : 0,
+                bodyFocusRequest: focusRequest,
                 shouldFocusBody: {
-                    commands.focusGeneration == bodyFocusGeneration
+                    bodyFocus.isCurrent(
+                        sessionID: editor.sessionID,
+                        documentID: editor.draftID,
+                        request: focusRequest,
+                        generation: commands.focusGeneration
+                    )
+                },
+                onBodyFocusAccepted: { sessionID, documentID, request in
+                    bodyFocus.consume(
+                        sessionID: sessionID,
+                        documentID: documentID,
+                        request: request
+                    )
                 }
             )
             .id(editor.sessionID)
@@ -444,7 +549,19 @@ struct LibraryView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             scopeMenu
 
-            LibrarySearchField(text: searchBinding, focusRequest: commands.searchRequest)
+            let searchFocus = commands.pendingSearchFocus
+            LibrarySearchField(
+                text: searchBinding,
+                focusRequest: searchFocus?.request ?? 0,
+                shouldFocus: {
+                    guard let searchFocus else { return false }
+                    return commands.isCurrentSearchFocus(searchFocus)
+                },
+                onFocusAccepted: { request in
+                    guard let searchFocus, searchFocus.request == request else { return }
+                    commands.consumeSearchFocus(searchFocus)
+                }
+            )
                 .frame(width: 220)
                 .disabled(selectedScope == .recentlyDeleted)
 
@@ -564,9 +681,12 @@ struct LibraryView: View {
         Task {
             await session.libraryWorkspace?.startNew(in: requestedScope)
             guard commands.focusGeneration == focusGeneration else { return }
-            bodyFocusSessionID = session.libraryWorkspace?.editor?.sessionID
-            bodyFocusGeneration = focusGeneration
-            bodyFocusRequest += 1
+            guard let editor = session.libraryWorkspace?.editor else { return }
+            bodyFocus.request(
+                sessionID: editor.sessionID,
+                documentID: editor.draftID,
+                generation: focusGeneration
+            )
         }
     }
 
@@ -901,6 +1021,7 @@ private struct MemoEditorView: View {
     let fileAccessIdentity: StoreIdentity?
     let bodyFocusRequest: Int
     let shouldFocusBody: @MainActor () -> Bool
+    let onBodyFocusAccepted: @MainActor (UUID, UUID, Int) -> Void
     @State private var markdownMode = MarkdownReadingMode.source
 
     var body: some View {
@@ -929,6 +1050,9 @@ private struct MemoEditorView: View {
                         },
                         onFocusLost: {
                             Task { _ = try? await workspace.focusLost() }
+                        },
+                        onFocusAccepted: { documentID, request in
+                            onBodyFocusAccepted(editor.sessionID, documentID, request)
                         }
                     )
                     .id(editor.sessionID)

@@ -52,12 +52,28 @@ final class LibraryWindowController: NSWindowController {
     @objc func saveDocument(_ sender: Any?) { commands.saveRequest += 1 }
     @objc func copyEntireItem(_ sender: Any?) { commands.copyRequest += 1 }
     @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
+    @objc func exportLibrary(_ sender: Any?) { commands.exportLibraryRequest &+= 1 }
+    @objc func exportSelected(_ sender: Any?) { commands.exportSelectedRequest &+= 1 }
 
     func open(_ ref: ContentRef) {
         commands.openRequest = LibraryOpenRequest(
             ref: ref,
             generation: (commands.openRequest?.generation ?? 0) + 1
         )
+    }
+}
+
+extension LibraryWindowController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(exportSelected(_:)) {
+            return session.exportCoordinator?.canStart == true
+                && !commands.isRecentlyDeleted
+                && !commands.selectedExportRefs.isEmpty
+        }
+        if menuItem.action == #selector(exportLibrary(_:)) {
+            return session.exportCoordinator?.canStart == true && !commands.isRecentlyDeleted
+        }
+        return true
     }
 }
 
@@ -91,13 +107,20 @@ final class LibraryWindowCommands {
     private(set) var newSnippetRequest = 0
     var saveRequest = 0
     var copyRequest = 0
+    var exportLibraryRequest = 0
+    var exportSelectedRequest = 0
     private(set) var searchRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
+    private var searchFocus = SearchFocusRequestState()
+    var pendingSearchFocus: SearchFocusIntent? { searchFocus.pending }
     var openRequest: LibraryOpenRequest?
+    private(set) var selectedExportRefs: [ContentRef] = []
+    private(set) var isRecentlyDeleted = false
 
     func requestNewSnippet() {
         focusGeneration &+= 1
+        searchFocus.invalidate()
         newSnippetFocusGeneration = focusGeneration
         newSnippetRequest &+= 1
     }
@@ -105,6 +128,21 @@ final class LibraryWindowCommands {
     func requestSearch() {
         focusGeneration &+= 1
         searchRequest &+= 1
+        searchFocus.request(searchRequest, generation: focusGeneration)
+    }
+
+    func isCurrentSearchFocus(_ intent: SearchFocusIntent) -> Bool {
+        searchFocus.isCurrent(intent, generation: focusGeneration)
+    }
+
+    @discardableResult
+    func consumeSearchFocus(_ intent: SearchFocusIntent) -> Bool {
+        searchFocus.consume(intent, generation: focusGeneration)
+    }
+
+    func updateExportContext(refs: [ContentRef], isRecentlyDeleted: Bool) {
+        selectedExportRefs = refs
+        self.isRecentlyDeleted = isRecentlyDeleted
     }
 }
 

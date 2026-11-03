@@ -36,6 +36,9 @@ enum ApplicationMenuBuilder {
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(item(title: "New Snippet", action: #selector(LibraryWindowController.newDocument(_:)), keyEquivalent: "n"))
         fileMenu.addItem(item(title: "Save", action: #selector(LibraryWindowController.saveDocument(_:)), keyEquivalent: "s"))
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(item(title: "Export Library…", action: #selector(AppDelegate.exportLibrary(_:))))
+        fileMenu.addItem(item(title: "Export Selected…", action: #selector(LibraryWindowController.exportSelected(_:))))
         mainMenu.addItem(menuItem(title: "File", submenu: fileMenu))
 
         let editMenu = NSMenu(title: "Edit")

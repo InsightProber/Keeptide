@@ -79,6 +79,10 @@ final class AppEnvironment {
         return settingsWindow
     }
 
+    var libraryIsRecentlyDeleted: Bool {
+        library?.commands.isRecentlyDeleted == true
+    }
+
     func showLibrary() {
         panel?.close()
         libraryWindowController.show()
@@ -88,6 +92,11 @@ final class AppEnvironment {
         panel?.close()
         settingsWindowController.updateLifecycle(captureSession.maintenance?.settings)
         settingsWindowController.show()
+    }
+
+    func exportLibrary() {
+        showLibrary()
+        libraryWindowController.exportLibrary(nil)
     }
 
     /// Enable Direct Paste… from the panel's menu, once the panel has closed. Keeptide comes to the front and says what

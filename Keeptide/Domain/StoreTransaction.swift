@@ -100,10 +100,16 @@ struct StoreReceipt: Sendable {
     var postMutationFingerprints: [RecordKey: Data] = [:]
 }
 
+enum SnapshotScope: Equatable, Sendable {
+    case allVisible
+    case selected([ContentRef])
+}
+
 struct SnapshotRequest: Sendable {
     var pageSize = 50
     var permit: StorePermit
     var lifetime: TimeInterval = 300
+    var scope: SnapshotScope = .allVisible
 }
 
 struct SnapshotLease: Codable, Equatable, Sendable {
