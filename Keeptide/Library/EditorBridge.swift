@@ -11,9 +11,14 @@ struct EditorBridge: NSViewRepresentable {
     var shouldFocus: @MainActor () -> Bool = { true }
     let onChange: @MainActor (String, Bool) -> Void
     let onFocusLost: @MainActor () -> Void
+    var onFocusAccepted: @MainActor (UUID, Int) -> Void = { _, _ in }
 
     func makeCoordinator() -> EditorTextController {
-        EditorTextController(onChange: onChange, onFocusLost: onFocusLost)
+        EditorTextController(
+            onChange: onChange,
+            onFocusLost: onFocusLost,
+            onFocusAccepted: onFocusAccepted
+        )
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -39,6 +44,7 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
 
     private let onChange: @MainActor (String, Bool) -> Void
     private let onFocusLost: @MainActor () -> Void
+    private let onFocusAccepted: @MainActor (UUID, Int) -> Void
     private var shouldFocus: @MainActor () -> Bool = { true }
     private var currentDocumentID: UUID?
     private var currentFocusRequest = 0
@@ -50,10 +56,12 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
 
     init(
         onChange: @escaping @MainActor (String, Bool) -> Void = { _, _ in },
-        onFocusLost: @escaping @MainActor () -> Void = {}
+        onFocusLost: @escaping @MainActor () -> Void = {},
+        onFocusAccepted: @escaping @MainActor (UUID, Int) -> Void = { _, _ in }
     ) {
         self.onChange = onChange
         self.onFocusLost = onFocusLost
+        self.onFocusAccepted = onFocusAccepted
         scrollView = NSScrollView()
         textView = EditorTextView(frame: .zero)
         super.init()
@@ -176,9 +184,7 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
     }
 
     private func schedulePendingFocusIfPossible() {
-        guard let target = pendingFocus,
-              deferredFocusTask == nil,
-              textView.window != nil else { return }
+        guard let target = pendingFocus, deferredFocusTask == nil, textView.window != nil else { return }
         deferredFocusTask = Task { @MainActor [weak self] in
             await Task.yield()
             guard !Task.isCancelled, let self else { return }
@@ -190,6 +196,7 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
                   self.shouldFocus(),
                   self.textView.window?.makeFirstResponder(self.textView) == true else { return }
             self.pendingFocus = nil
+            self.onFocusAccepted(target.documentID, target.request)
         }
     }
 
@@ -203,6 +210,87 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
 private struct FocusTarget: Equatable {
     let documentID: UUID
     let request: Int
+}
+
+/// Shared by deferred SwiftUI column builders so they cannot retain a stale
+/// value copy of an initial focus request until an unrelated save refreshes them.
+@MainActor @Observable
+final class BodyFocusRequestState {
+    private struct Target: Equatable {
+        let sessionID: UUID
+        let documentID: UUID
+        let request: Int
+        let generation: Int
+    }
+
+    private(set) var lastIssuedRequest = 0
+    private var target: Target?
+
+    @discardableResult
+    func request(sessionID: UUID, documentID: UUID, generation: Int) -> Int {
+        lastIssuedRequest += 1
+        target = Target(
+            sessionID: sessionID,
+            documentID: documentID,
+            request: lastIssuedRequest,
+            generation: generation
+        )
+        return lastIssuedRequest
+    }
+
+    func request(for sessionID: UUID, documentID: UUID) -> Int {
+        guard target?.sessionID == sessionID, target?.documentID == documentID else { return 0 }
+        return target?.request ?? 0
+    }
+
+    func isCurrent(sessionID: UUID, documentID: UUID, request: Int, generation: Int) -> Bool {
+        target == Target(
+            sessionID: sessionID,
+            documentID: documentID,
+            request: request,
+            generation: generation
+        )
+    }
+
+    @discardableResult
+    func consume(sessionID: UUID, documentID: UUID, request: Int) -> Bool {
+        let consumed = target?.sessionID == sessionID
+            && target?.documentID == documentID
+            && target?.request == request
+        if consumed { target = nil }
+        return consumed
+    }
+}
+
+struct SearchFocusIntent: Equatable {
+    let request: Int
+    let generation: Int
+}
+
+struct SearchFocusRequestState: Equatable {
+    private(set) var pending: SearchFocusIntent?
+
+    @discardableResult
+    mutating func request(_ request: Int, generation: Int) -> SearchFocusIntent {
+        let intent = SearchFocusIntent(request: request, generation: generation)
+        pending = intent
+        return intent
+    }
+
+    mutating func invalidate() {
+        pending = nil
+    }
+
+    func isCurrent(_ intent: SearchFocusIntent, generation: Int) -> Bool {
+        pending == intent && intent.generation == generation
+    }
+
+    @discardableResult
+    mutating func consume(_ intent: SearchFocusIntent, generation: Int) -> Bool {
+        guard isCurrent(intent, generation: generation) else { return false }
+        pending = nil
+        return true
+    }
 }
 
 private final class EditorTextView: NSTextView {
@@ -223,6 +311,8 @@ private struct ReportedChange: Equatable {
 struct LibrarySearchField: NSViewRepresentable {
     @Binding var text: String
     let focusRequest: Int
+    var shouldFocus: @MainActor () -> Bool = { true }
+    var onFocusAccepted: @MainActor (Int) -> Void = { _ in }
 
     func makeCoordinator() -> LibrarySearchController {
         let binding = $text
@@ -236,7 +326,12 @@ struct LibrarySearchField: NSViewRepresentable {
     func updateNSView(_ searchField: NSSearchField, context: Context) {
         let binding = $text
         context.coordinator.onChange = { binding.wrappedValue = $0 }
-        context.coordinator.update(text: text, focusRequest: focusRequest)
+        context.coordinator.update(
+            text: text,
+            focusRequest: focusRequest,
+            shouldFocus: shouldFocus,
+            onFocusAccepted: onFocusAccepted
+        )
     }
 }
 
@@ -247,6 +342,9 @@ final class LibrarySearchController: NSObject, NSSearchFieldDelegate {
 
     private var currentFocusRequest = 0
     private var pendingFocusRequest: Int?
+    private var deferredFocusTask: Task<Void, Never>?
+    private var shouldFocus: @MainActor () -> Bool = { true }
+    private var onFocusAccepted: @MainActor (Int) -> Void = { _ in }
     private var suppressesChanges = false
 
     init(onChange: @escaping @MainActor (String) -> Void = { _ in }) {
@@ -259,10 +357,17 @@ final class LibrarySearchController: NSObject, NSSearchFieldDelegate {
         searchField.sendsWholeSearchString = false
         searchField.setAccessibilityIdentifier("LibrarySearchField")
         searchField.delegate = self
-        searchField.onWindowAttachment = { [weak self] in self?.applyPendingFocusIfPossible() }
+        searchField.onWindowAttachment = { [weak self] in self?.schedulePendingFocusIfPossible() }
     }
 
-    func update(text: String, focusRequest: Int) {
+    func update(
+        text: String,
+        focusRequest: Int,
+        shouldFocus: @escaping @MainActor () -> Bool = { true },
+        onFocusAccepted: @escaping @MainActor (Int) -> Void = { _ in }
+    ) {
+        self.shouldFocus = shouldFocus
+        self.onFocusAccepted = onFocusAccepted
         if (searchField.currentEditor() as? NSTextView)?.hasMarkedText() != true,
            searchField.stringValue != text {
             suppressesChanges = true
@@ -271,9 +376,10 @@ final class LibrarySearchController: NSObject, NSSearchFieldDelegate {
         }
         if focusRequest != currentFocusRequest {
             currentFocusRequest = focusRequest
+            cancelPendingFocus()
             pendingFocusRequest = focusRequest > 0 ? focusRequest : nil
         }
-        applyPendingFocusIfPossible()
+        schedulePendingFocusIfPossible()
     }
 
     func controlTextDidChange(_ notification: Notification) {
@@ -281,9 +387,30 @@ final class LibrarySearchController: NSObject, NSSearchFieldDelegate {
         onChange(searchField.stringValue)
     }
 
-    private func applyPendingFocusIfPossible() {
-        guard pendingFocusRequest != nil,
-              searchField.window?.makeFirstResponder(searchField) == true else { return }
+    func settlePendingFocus() async {
+        await deferredFocusTask?.value
+    }
+
+    private func schedulePendingFocusIfPossible() {
+        guard let request = pendingFocusRequest,
+              deferredFocusTask == nil,
+              searchField.window != nil else { return }
+        deferredFocusTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            defer { self.deferredFocusTask = nil }
+            guard self.pendingFocusRequest == request,
+                  self.currentFocusRequest == request,
+                  self.shouldFocus(),
+                  self.searchField.window?.makeFirstResponder(self.searchField) == true else { return }
+            self.pendingFocusRequest = nil
+            self.onFocusAccepted(request)
+        }
+    }
+
+    private func cancelPendingFocus() {
+        deferredFocusTask?.cancel()
+        deferredFocusTask = nil
         pendingFocusRequest = nil
     }
 }

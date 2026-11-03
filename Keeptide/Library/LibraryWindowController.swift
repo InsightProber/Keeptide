@@ -112,12 +112,15 @@ final class LibraryWindowCommands {
     private(set) var searchRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
+    private var searchFocus = SearchFocusRequestState()
+    var pendingSearchFocus: SearchFocusIntent? { searchFocus.pending }
     var openRequest: LibraryOpenRequest?
     private(set) var selectedExportRefs: [ContentRef] = []
     private(set) var isRecentlyDeleted = false
 
     func requestNewSnippet() {
         focusGeneration &+= 1
+        searchFocus.invalidate()
         newSnippetFocusGeneration = focusGeneration
         newSnippetRequest &+= 1
     }
@@ -125,6 +128,16 @@ final class LibraryWindowCommands {
     func requestSearch() {
         focusGeneration &+= 1
         searchRequest &+= 1
+        searchFocus.request(searchRequest, generation: focusGeneration)
+    }
+
+    func isCurrentSearchFocus(_ intent: SearchFocusIntent) -> Bool {
+        searchFocus.isCurrent(intent, generation: focusGeneration)
+    }
+
+    @discardableResult
+    func consumeSearchFocus(_ intent: SearchFocusIntent) -> Bool {
+        searchFocus.consume(intent, generation: focusGeneration)
     }
 
     func updateExportContext(refs: [ContentRef], isRecentlyDeleted: Bool) {
