@@ -80,6 +80,78 @@ final class SnapshotLeaseTests: XCTestCase {
         catch { XCTAssertEqual(error as? StoreError, .notFound) }
     }
 
+    func testLeaseProtectsOwnedMemoExternalBodyUntilRelease() async throws {
+        let store = try makeStore()
+        let body = Data(String(repeating: "external memo payload ", count: 120_000).utf8)
+        let itemID = ItemID()
+        let memo = MemoValue(
+            itemID: itemID,
+            bodyMode: .ownedPlainText,
+            body: body,
+            version: ContentVersion(),
+            digest: ContentDigest.sha256(body)
+        )
+        let item = ItemValue(id: itemID, memoID: memo.id)
+        let writer = WriteCoordinator(controller: store)
+        _ = try await writer.commit(StoreTransaction(
+            identity: try await store.identity(),
+            mutations: [.insert(.memo(memo)), .insert(.item(item))]
+        ))
+        // Core Data owns the support-directory spelling (including a leading
+        // dot on some OS versions). Inspect the isolated fixture without
+        // assuming that private name or modifying its files.
+        let directory = try XCTUnwrap(store.contentStore.url?.deletingLastPathComponent())
+        let files = try XCTUnwrap(FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey]
+        ))
+        let externalFiles = try files.compactMap { element -> URL? in
+            guard let url = element as? URL,
+                  url.pathComponents.contains("_EXTERNAL_DATA"),
+                  try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true else {
+                return nil
+            }
+            return url
+        }
+        XCTAssertFalse(externalFiles.isEmpty, "The fixture did not exercise Core Data external payload storage")
+
+        let gate = StoreSafetyGate(controller: store)
+        let reader = ContentSnapshotReader(controller: store)
+        let lease = try await reader.begin(SnapshotRequest(permit: try await gate.permit(.completeArchive)))
+        let protected = try await store.perform { _ in
+            store.runtime.leases[lease.leaseID]?.protectedPayloadRecords
+        }
+        XCTAssertTrue(protected?.contains(.memo(memo.id)) == true)
+        let repository = ContentRepository(controller: store)
+        let itemState = try await repository.recordState(.item(item.id))
+        let memoState = try await repository.recordState(.memo(memo.id))
+        let purge = StoreTransaction(
+            identity: try await store.identity(),
+            preconditions: [
+                .recordUnchanged(.item(item.id), fingerprint: itemState.fingerprint),
+                .recordUnchanged(.memo(memo.id), fingerprint: memoState.fingerprint)
+            ],
+            mutations: [
+                .insert(.itemMarker(ItemDeletionMarkerValue(itemID: item.id))),
+                .delete(.item(item.id)),
+                .delete(.memo(memo.id))
+            ],
+            permit: try await gate.permit(.maintenance)
+        )
+
+        do {
+            _ = try await writer.commit(purge)
+            XCTFail("An owned memo payload was deleted while its archive lease was active")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .contentProtected)
+        }
+        let page = try await reader.page(lease, after: nil)
+        XCTAssertEqual(page.contents.first?.representations.first?.bytes, body)
+        await reader.end(lease)
+        _ = try await writer.commit(purge)
+        do { _ = try await repository.recordState(.memo(memo.id)); XCTFail("Released memo payload survived purge") }
+        catch { XCTAssertEqual(error as? StoreError, .notFound) }
+    }
+
     func testGenerationChangeInvalidatesPermitsLeasesAndPersistsQuarantine() async throws {
         let store = try makeStore()
         let gate = StoreSafetyGate(controller: store)

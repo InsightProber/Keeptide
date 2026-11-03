@@ -150,6 +150,8 @@ struct LibraryView: View {
                         .tag(LibraryScope.allSnippets)
                     Label("Uncategorized", systemImage: "tray")
                         .tag(LibraryScope.uncategorized)
+                    Label("Recently Deleted", systemImage: "trash")
+                        .tag(LibraryScope.recentlyDeleted)
                 }
 
                 if let workspace = session.libraryWorkspace {
@@ -253,7 +255,18 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var contentColumn: some View {
-        if selectedScope == .recentClips {
+        if selectedScope == .recentlyDeleted {
+            if let maintenance = session.maintenance {
+                RecentlyDeletedView(maintenance: maintenance)
+            } else {
+                ContentUnavailableView {
+                    Label("Recently Deleted unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("The library maintenance service is not available.")
+                }
+                .accessibilityIdentifier("RecentlyDeletedUnavailable")
+            }
+        } else if selectedScope == .recentClips {
             VStack(spacing: 0) {
                 captureStatus
                 if session.actionMessage != nil { actionStatus.padding(12) }
@@ -327,7 +340,14 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        if let workspace = session.libraryWorkspace, let editor = workspace.editor {
+        if selectedScope == .recentlyDeleted {
+            ContentUnavailableView {
+                Label("Recently Deleted", systemImage: "trash")
+            } description: {
+                Text("Restore an item or permanently delete it from the list.")
+            }
+            .accessibilityIdentifier("RecentlyDeletedDetail")
+        } else if let workspace = session.libraryWorkspace, let editor = workspace.editor {
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
@@ -426,6 +446,7 @@ struct LibraryView: View {
 
             LibrarySearchField(text: searchBinding, focusRequest: commands.searchRequest)
                 .frame(width: 220)
+                .disabled(selectedScope == .recentlyDeleted)
 
             Button {
                 commands.requestNewSnippet()
@@ -433,7 +454,7 @@ struct LibraryView: View {
                 Label("New Snippet", systemImage: "square.and.pencil")
             }
             .accessibilityIdentifier("NewSnippet")
-            .disabled(session.libraryWorkspace == nil)
+            .disabled(session.libraryWorkspace == nil || selectedScope == .recentlyDeleted)
 
             if session.libraryWorkspace?.canUndoCollectionChange == true {
                 Button {
@@ -474,6 +495,11 @@ struct LibraryView: View {
             } label: {
                 Label("Uncategorized", systemImage: "tray")
             }
+            Button {
+                selectedScope = .recentlyDeleted
+            } label: {
+                Label("Recently Deleted", systemImage: "trash")
+            }
 
             if let workspace = session.libraryWorkspace, !workspace.collections.isEmpty {
                 Divider()
@@ -508,6 +534,7 @@ struct LibraryView: View {
         case .favorites: return "Favorites"
         case .allSnippets: return "All Snippets"
         case .uncategorized: return "Uncategorized"
+        case .recentlyDeleted: return "Recently Deleted"
         case .collection(let id):
             return session.libraryWorkspace?.collections.first(where: { $0.value.id == id })?.value.name
                 ?? "Collection"
@@ -533,6 +560,7 @@ struct LibraryView: View {
 
     private func startNewSnippet(focusGeneration: Int) {
         let requestedScope = selectedScope ?? .recentClips
+        guard requestedScope != .recentlyDeleted else { return }
         Task {
             await session.libraryWorkspace?.startNew(in: requestedScope)
             guard commands.focusGeneration == focusGeneration else { return }
@@ -713,6 +741,26 @@ struct LibraryView: View {
             }
         }
         .disabled(!canOrganize)
+
+        Divider()
+        Button("Move to Recently Deleted", role: .destructive) {
+            moveToRecentlyDeleted(entries, workspace: workspace)
+        }
+        .disabled(entries.isEmpty || session.maintenance == nil)
+    }
+
+    private func moveToRecentlyDeleted(_ entries: [LibraryEntry], workspace: LibraryWorkspace) {
+        guard let maintenance = session.maintenance, !entries.isEmpty else { return }
+        Task {
+            for entry in entries {
+                let removed = await workspace.moveToRecentlyDeleted(entry.ref) { ref in
+                    await maintenance.remove(ref)
+                }
+                guard removed else { break }
+            }
+            selectedEntryIDs.removeAll()
+            selectedItemID = nil
+        }
     }
 
     private func selectedActionEntries(_ workspace: LibraryWorkspace) -> [LibraryEntry] {

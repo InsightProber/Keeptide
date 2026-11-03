@@ -3,6 +3,27 @@ import XCTest
 @testable import Keeptide
 
 final class SearchServiceTests: XCTestCase {
+    func testInFlightScanCannotPublishResultsAfterDiskPressureSuspendsSearch() async throws {
+        let (_, index, status) = try makeService(
+            (0..<300).map { SearchTestSupport.document(body: "贴板 \($0)") },
+            in: SearchTestSupport.directory()
+        )
+        let service = SearchService(index: index, status: status, scanChunkSize: 100, onScanProgress: { _ in
+            status.suspend()
+            do { try index.evictForDiskPressure() } catch { XCTFail("Synthetic eviction failed: \(error)") }
+            // A late consumer completion must not make the retired index available.
+            status.finishPass(startedAt: status.pendingMark)
+            status.update(.ready)
+        })
+        var pages: [SearchPage] = []
+        for try await page in service.search(request("贴板")) { pages.append(page) }
+        XCTAssertEqual(pages.count, 1)
+        XCTAssertEqual(pages.first?.indexState, .unavailable)
+        XCTAssertEqual(pages.first?.results.count, 0)
+        XCTAssertEqual(pages.first?.isComplete, true)
+        XCTAssertEqual(status.state, .unavailable)
+    }
+
     func testShortChineseQueryFindsSubstringInLongerWord() async throws {
         let service = try makeService([SearchTestSupport.document(body: "中文剪贴板")])
 

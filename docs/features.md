@@ -25,7 +25,10 @@ undo of a newly saved capture, flat collections and favorites. Markdown reading
 mode keeps source editing separate from rendering and never fetches embedded
 images. Typed previews show stored URLs, bounded image resolutions and locally
 authorized files. Full input-method and accessibility acceptance remains a
-release gate.
+release gate. History now has configurable retention, a seven-day Recently
+Deleted window and explicit permanent removal. Settings report allocated storage
+and let users configure or disable advisory warnings. Saved snippets protect
+referenced content; permanent retention has no hidden count or size quota.
 
 ## First release
 

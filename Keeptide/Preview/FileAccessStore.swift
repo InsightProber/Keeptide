@@ -9,6 +9,10 @@ struct LocalFileAccess: Codable, Equatable, Sendable {
     var localPath: String?
 }
 
+enum FileAccessCleanupError: Error, Equatable {
+    case evidenceMismatch
+}
+
 final class FileAccessStore: @unchecked Sendable {
     private let controller: PersistenceController
 
@@ -264,6 +268,36 @@ final class FileAccessStore: @unchecked Sendable {
                 throw error
             }
         }
+    }
+
+    /// Queue-confined permanent cleanup. Missing rows are already-clean; any
+    /// surviving row must still match the complete durable envelope identity.
+    /// The caller owns the surrounding LocalState save or rollback.
+    static func stageExactCleanup(
+        _ payloads: [CleanupPayloadIdentity],
+        in context: NSManagedObjectContext
+    ) throws -> Bool {
+        guard Set(payloads.map(\.representationID)).count == payloads.count else {
+            throw StoreError.invalidTransaction
+        }
+        var changed = false
+        for payload in payloads {
+            let request = request(representationID: payload.representationID)
+            request.fetchLimit = 2
+            let matches = try context.fetch(request)
+            guard matches.count <= 1 else { throw StoreError.corruptStore }
+            guard let record = matches.first else { continue }
+            guard record.value(forKey: "id") as? UUID == payload.representationID,
+                  record.value(forKey: "snapshotID") as? UUID == payload.snapshotID,
+                  let envelope = record.value(forKey: "bytes") as? Data,
+                  Int64(envelope.count) == payload.envelopeByteCount,
+                  ContentDigest.sha256(envelope) == payload.envelopeDigest else {
+                throw FileAccessCleanupError.evidenceMismatch
+            }
+            context.delete(record)
+            changed = true
+        }
+        return changed
     }
 
     private static func request(representationID: UUID) -> NSFetchRequest<NSManagedObject> {

@@ -78,6 +78,17 @@ final class LocalUsageStore: @unchecked Sendable {
         try await controller.perform { context in
             guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
             try StoreSafetyGate.validate(.projection, runtime: controller.runtime)
+            do {
+                guard try StoredRecords.currentRef(
+                    itemID: receipt.ref.itemID,
+                    facet: receipt.ref.facet,
+                    in: context
+                ) == receipt.ref else {
+                    return
+                }
+            } catch StoreError.notFound, StoreError.staleReference {
+                return
+            }
             let shouldRegisterPolicy: Bool
             if let configured = controller.runtime.usagePolicy {
                 guard configured == policy else { throw StoreError.preconditionFailed }
@@ -294,6 +305,30 @@ extension LocalUsageStore {
                 latestUse: row?["latest"] as? Date
             )
         }
+    }
+
+    /// Queue-confined permanent cleanup. The caller must save or roll back the
+    /// surrounding LocalState transaction. No item-wide wildcard is accepted.
+    static func stageExactCleanup(
+        itemID: ItemID,
+        facets: Set<ContentFacet>,
+        in context: NSManagedObjectContext
+    ) throws -> Int {
+        var removed = 0
+        for facet in facets {
+            let request = NSFetchRequest<NSManagedObject>(entityName: "UsageSummary")
+            request.predicate = NSPredicate(
+                format: "itemID == %@ AND facet == %@",
+                itemID.rawValue as NSUUID,
+                facet.rawValue
+            )
+            request.fetchLimit = 2
+            let matches = try context.fetch(request)
+            guard matches.count <= 1 else { throw StoreError.corruptStore }
+            matches.forEach(context.delete)
+            removed += matches.count
+        }
+        return removed
     }
 }
 

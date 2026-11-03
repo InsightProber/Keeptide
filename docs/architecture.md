@@ -71,6 +71,18 @@ atomically, and retained when saving fails. Composition and asynchronous saves
 are coordinated before changes reach the content store. The native editor uses
 those contracts for recoverable editing, document find, search, and explicit saves.
 
+## Retention and safe maintenance
+
+History expiration, recoverable removal and permanent removal are separate
+operations. Saved snippets retain the content they reference. Permanent cleanup
+records its progress durably across the content and local stores, checks exact
+identities and references, and resumes after interruption. Active snapshots
+protect payloads they still need, and unknown recovery formats remain preserved.
+
+Storage warnings do not impose quotas. If a write fails for lack of disk space,
+recording pauses and only the rebuildable search index is eligible for automatic
+cache removal. Primary content and drafts remain intact.
+
 ## Search and previews
 
 Full-text search is a derived SQLite index, rebuilt from the content store when

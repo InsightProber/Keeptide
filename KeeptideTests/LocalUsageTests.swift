@@ -4,16 +4,211 @@ import XCTest
 
 @MainActor
 final class LocalUsageTests: XCTestCase {
+    func testSuccessfulReceiptAfterSoftDeleteCreatesNeitherSummaryNorDedup() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let ref = try await makePersistedRef(in: controller)
+        let identity = try await controller.identity()
+        _ = try await LifecycleService(controller: controller).remove(
+            ref: ref,
+            at: Date(timeIntervalSince1970: 500),
+            expecting: identity,
+            permit: try await StoreSafetyGate(controller: controller).permit(.maintenance)
+        )
+
+        try await store.record(makeReceipt(ref: ref), now: Date(timeIntervalSince1970: 1_000))
+
+        let summaries = try await store.summaries(for: [ref])
+        let dedupCount = try await usageDedupCount(in: controller)
+        XCTAssertEqual(summaries, [])
+        XCTAssertEqual(dedupCount, 0)
+    }
+
+    func testSuccessfulReceiptAfterPermanentDeleteCreatesNeitherSummaryNorDedup() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let ref = try await makePersistedRef(in: controller)
+        try await store.record(makeReceipt(ref: ref), now: Date(timeIntervalSince1970: 400))
+        let identity = try await controller.identity()
+        let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+        let removed = try await LifecycleService(controller: controller).remove(
+            ref: ref,
+            at: Date(timeIntervalSince1970: 500),
+            expecting: identity,
+            permit: permit
+        )
+        _ = try await LifecycleCleanupService(controller: controller).purgeFacet(
+            removed.target,
+            trigger: .explicitUserRequest,
+            at: Date(timeIntervalSince1970: 600),
+            expecting: identity,
+            permit: permit
+        )
+        let dedupCountAfterCleanup = try await usageDedupCount(in: controller)
+        let summariesAfterCleanup = try await store.summaries(for: [ref])
+        XCTAssertEqual(summariesAfterCleanup, [])
+
+        try await store.record(makeReceipt(ref: ref), now: Date(timeIntervalSince1970: 1_000))
+
+        let summariesAfterLateReceipt = try await store.summaries(for: [ref])
+        let dedupCountAfterLateReceipt = try await usageDedupCount(in: controller)
+        XCTAssertEqual(summariesAfterLateReceipt, [])
+        XCTAssertEqual(dedupCountAfterLateReceipt, dedupCountAfterCleanup)
+    }
+
+    func testSuccessfulReceiptForPurgedMemoGenerationCannotCountAgainstReplacement() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let oldRef = try await makePersistedRef(in: controller, facet: .memo)
+        let identity = try await controller.identity()
+        let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+        let removed = try await LifecycleService(controller: controller).remove(
+            ref: oldRef,
+            at: Date(timeIntervalSince1970: 500),
+            expecting: identity,
+            permit: permit
+        )
+        _ = try await LifecycleCleanupService(controller: controller).purgeFacet(
+            removed.target,
+            trigger: .explicitUserRequest,
+            at: Date(timeIntervalSince1970: 600),
+            expecting: identity,
+            permit: permit
+        )
+
+        let body = Data("replacement memo".utf8)
+        let version = ContentVersion()
+        let digest = ContentDigest.sha256(body)
+        let replacement = MemoValue(
+            itemID: oldRef.itemID,
+            bodyMode: .ownedPlainText,
+            body: body,
+            version: version,
+            digest: digest
+        )
+        let itemState = try await ContentRepository(controller: controller).recordState(.item(oldRef.itemID))
+        guard case .item(var item) = itemState.value else {
+            return XCTFail("Missing persisted item")
+        }
+        item.memoID = replacement.id
+        _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+            identity: identity,
+            preconditions: [.recordUnchanged(.item(item.id), fingerprint: itemState.fingerprint)],
+            mutations: [.insert(.memo(replacement)), .update(.item(item))]
+        ))
+        let replacementRef = ContentRef(
+            itemID: item.id,
+            facet: .memo,
+            version: version,
+            digest: digest
+        )
+
+        try await store.record(makeReceipt(ref: oldRef), now: Date(timeIntervalSince1970: 1_000))
+        let staleSummaries = try await store.summaries(for: [oldRef])
+        let staleDedupCount = try await usageDedupCount(in: controller)
+        XCTAssertEqual(staleSummaries, [])
+        XCTAssertEqual(staleDedupCount, 0)
+
+        try await store.record(makeReceipt(ref: replacementRef), now: Date(timeIntervalSince1970: 1_001))
+        let replacementSummaries = try await store.summaries(for: [replacementRef])
+        let replacementDedupCount = try await usageDedupCount(in: controller)
+        XCTAssertEqual(replacementSummaries.map(\.useCount), [1])
+        XCTAssertEqual(replacementDedupCount, 1)
+    }
+
+    func testSuccessfulReceiptForOldBodyVersionOfCurrentMemoCannotCount() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let capture = try ContentStoreFixtures.capture([[
+            ("public.utf8-plain-text", Data("original capture".utf8))
+        ]])
+        var item = ContentStoreFixtures.item(capture)
+        let firstBody = Data("owned memo version one".utf8)
+        var memo = MemoValue(
+            itemID: item.id,
+            bodyMode: .ownedPlainText,
+            body: firstBody,
+            version: ContentVersion(),
+            digest: ContentDigest.sha256(firstBody)
+        )
+        item.memoID = memo.id
+        _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+            identity: try await controller.identity(),
+            mutations: [.insert(.capture(capture)), .insert(.memo(memo)), .insert(.item(item))]
+        ))
+        let firstRef = ContentRef(
+            itemID: item.id,
+            facet: .memo,
+            version: try XCTUnwrap(memo.version),
+            digest: try XCTUnwrap(memo.digest)
+        )
+
+        let memoState = try await ContentRepository(controller: controller).recordState(.memo(memo.id))
+        let secondBody = Data("owned memo version two".utf8)
+        memo.body = secondBody
+        memo.version = ContentVersion()
+        memo.digest = ContentDigest.sha256(secondBody)
+        _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+            identity: try await controller.identity(),
+            preconditions: [.recordUnchanged(.memo(memo.id), fingerprint: memoState.fingerprint)],
+            mutations: [.update(.memo(memo))]
+        ))
+        let secondRef = ContentRef(
+            itemID: item.id,
+            facet: .memo,
+            version: try XCTUnwrap(memo.version),
+            digest: try XCTUnwrap(memo.digest)
+        )
+
+        try await store.record(makeReceipt(ref: firstRef), now: Date(timeIntervalSince1970: 1_000))
+        let staleSummaries = try await store.summaries(for: [firstRef])
+        let staleDedupCount = try await usageDedupCount(in: controller)
+        XCTAssertEqual(staleSummaries, [])
+        XCTAssertEqual(staleDedupCount, 0)
+
+        try await store.record(makeReceipt(ref: secondRef), now: Date(timeIntervalSince1970: 1_001))
+        let currentSummaries = try await store.summaries(for: [secondRef])
+        let currentDedupCount = try await usageDedupCount(in: controller)
+        XCTAssertEqual(currentSummaries.map(\.useCount), [1])
+        XCTAssertEqual(currentDedupCount, 1)
+    }
+
+    func testSuccessfulReceiptPropagatesCorruptCurrentFacetWithoutWritingUsage() async throws {
+        let (_, controller) = try makeStore()
+        let store = LocalUsageStore(controller: controller)
+        let ref = try await makePersistedRef(in: controller, facet: .memo)
+        try await controller.perform { context in
+            guard case .item(let item) = try StoredRecords.value(.item(ref.itemID), in: context),
+                  let memoID = item.memoID,
+                  let memo = try StoredRecords.object(.memo(memoID), in: context) else {
+                throw StoreError.notFound
+            }
+            memo.setValue(Data("invalid inherited body".utf8), forKey: "body")
+            try context.save()
+        }
+
+        do {
+            try await store.record(makeReceipt(ref: ref))
+            XCTFail("Corrupt current content was accepted as a usage target")
+        } catch {
+            XCTAssertEqual(error as? StoreError, .corruptStore)
+        }
+        let summaries = try await store.summaries(for: [ref])
+        let dedupCount = try await usageDedupCount(in: controller)
+        XCTAssertEqual(summaries, [])
+        XCTAssertEqual(dedupCount, 0)
+    }
+
     func testSuccessfulUsagePersistsAcrossReopenAndKeepsLatestEventTime() async throws {
         let directory = try makeStoreDirectory()
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }
-        let ref = makeRef()
         let firstEvent = Date(timeIntervalSince1970: 200)
         let olderEvent = Date(timeIntervalSince1970: 100)
 
         var controller: PersistenceController? = try PersistenceController(directory: directory)
         let initialController = try XCTUnwrap(controller)
         addTeardownBlock { try await initialController.close() }
+        let ref = try await makePersistedRef(in: initialController)
         var store: LocalUsageStore? = LocalUsageStore(controller: initialController)
         try await store?.record(
             UseReceipt(executionID: UUID(), ref: ref, occurredAt: firstEvent, outcome: .success),
@@ -40,8 +235,8 @@ final class LocalUsageTests: XCTestCase {
     func testAllSummariesReturnsEveryPersistedSummary() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let once = makeRef()
-        let twice = makeRef()
+        let once = try await makePersistedRef(in: controller)
+        let twice = try await makePersistedRef(in: controller)
         for ref in [once, twice, twice] {
             try await store.record(
                 UseReceipt(executionID: UUID(), ref: ref, occurredAt: Date(timeIntervalSince1970: 100), outcome: .success),
@@ -58,9 +253,9 @@ final class LocalUsageTests: XCTestCase {
     func testFrequentListsClipsUsedAtLeastTwiceMostUsedFirst() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let a = makeRef()
-        let b = makeRef()
-        let c = makeRef()
+        let a = try await makePersistedRef(in: controller)
+        let b = try await makePersistedRef(in: controller)
+        let c = try await makePersistedRef(in: controller)
         // `b` was used more recently than `a`, so only the count can put `a` first.
         try await use(a, times: 3, lastAt: 300, in: store)
         try await use(b, times: 2, lastAt: 400, in: store)
@@ -79,9 +274,9 @@ final class LocalUsageTests: XCTestCase {
         let id2 = ItemID(rawValue: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000002")))
         let id3 = ItemID(rawValue: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000003")))
         // Written highest id first, so a missing item tie-break would hand the tied pair back in the order written.
-        try await use(makeRef(itemID: id3), times: 2, lastAt: 500, in: store)
-        try await use(makeRef(itemID: id2), times: 2, lastAt: 400, in: store)
-        try await use(makeRef(itemID: id1), times: 2, lastAt: 400, in: store)
+        try await use(try await makePersistedRef(in: controller, itemID: id3), times: 2, lastAt: 500, in: store)
+        try await use(try await makePersistedRef(in: controller, itemID: id2), times: 2, lastAt: 400, in: store)
+        try await use(try await makePersistedRef(in: controller, itemID: id1), times: 2, lastAt: 400, in: store)
 
         let frequent = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 20)
 
@@ -91,8 +286,8 @@ final class LocalUsageTests: XCTestCase {
     func testFrequentKeepsOnlyClipsUsedSinceTheWindowStart() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let a = makeRef()
-        let b = makeRef()
+        let a = try await makePersistedRef(in: controller)
+        let b = try await makePersistedRef(in: controller)
         try await use(a, times: 2, lastAt: 1_000, in: store)
         try await use(b, times: 2, lastAt: 999, in: store)
 
@@ -104,7 +299,9 @@ final class LocalUsageTests: XCTestCase {
     func testFrequentStopsAtTheLimitAndRejectsBadArguments() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        for _ in 0..<5 { try await use(makeRef(), times: 2, lastAt: 300, in: store) }
+        for _ in 0..<5 {
+            try await use(try await makePersistedRef(in: controller), times: 2, lastAt: 300, in: store)
+        }
 
         let three = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 3)
         let none = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 0)
@@ -132,7 +329,8 @@ final class LocalUsageTests: XCTestCase {
     func testFrequentKeepsTheMostUsedWhenItStopsAtTheLimit() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let refs = (0..<4).map { _ in makeRef() }
+        var refs: [ContentRef] = []
+        for _ in 0..<4 { refs.append(try await makePersistedRef(in: controller)) }
         // Written least used first, so a limit taken before the ranking would keep the least used.
         for (ref, times) in zip(refs, [2, 3, 4, 5]) { try await use(ref, times: times, lastAt: 300, in: store) }
 
@@ -145,8 +343,8 @@ final class LocalUsageTests: XCTestCase {
     func testFrequentLeavesOutMemoUses() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        try await use(makeRef(facet: .memo), times: 3, lastAt: 300, in: store)
-        try await use(makeRef(facet: .history), times: 2, lastAt: 300, in: store)
+        try await use(try await makePersistedRef(in: controller, facet: .memo), times: 3, lastAt: 300, in: store)
+        try await use(try await makePersistedRef(in: controller), times: 2, lastAt: 300, in: store)
 
         let frequent = try await store.frequent(minimumCount: 2, since: .distantPast, limit: 20)
 
@@ -156,13 +354,12 @@ final class LocalUsageTests: XCTestCase {
     func testFrequentReadsTheSameAfterReopening() async throws {
         let directory = try makeStoreDirectory()
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }
-        let a = makeRef()
+        let initial = try PersistenceController(directory: directory)
+        addTeardownBlock { try await initial.close() }
+        let a = try await makePersistedRef(in: initial)
         let expected = [
             UsageSummary(itemID: a.itemID, facet: .history, lastUsedAt: Date(timeIntervalSince1970: 300), useCount: 2)
         ]
-
-        let initial = try PersistenceController(directory: directory)
-        addTeardownBlock { try await initial.close() }
         let initialStore = LocalUsageStore(controller: initial)
         try await use(a, times: 2, lastAt: 300, in: initialStore)
         let before = try await initialStore.frequent(minimumCount: 2, since: .distantPast, limit: 20)
@@ -201,7 +398,7 @@ final class LocalUsageTests: XCTestCase {
     func testConcurrentDuplicateExecutionCountsExactlyOnce() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
         let receipt = UseReceipt(
             executionID: UUID(),
             ref: ref,
@@ -226,7 +423,7 @@ final class LocalUsageTests: XCTestCase {
     func testFailureAndCancellationDoNotCreateUsageOrDedupRecords() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
 
         try await store.record(UseReceipt(ref: ref, outcome: .failure))
         try await store.record(UseReceipt(ref: ref, outcome: .cancelled))
@@ -243,7 +440,7 @@ final class LocalUsageTests: XCTestCase {
     func testExpiredExecutionCanCountAgain() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller, deduplicationInterval: 10)
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
         let receipt = UseReceipt(
             executionID: UUID(),
             ref: ref,
@@ -266,7 +463,7 @@ final class LocalUsageTests: XCTestCase {
             deduplicationLimit: 2,
             deduplicationInterval: 10_000
         )
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
         let oldestID = UUID()
 
         try await store.record(makeReceipt(id: oldestID, ref: ref), now: Date(timeIntervalSince1970: 1_000))
@@ -290,7 +487,7 @@ final class LocalUsageTests: XCTestCase {
             deduplicationLimit: 2,
             deduplicationInterval: 10_000
         )
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
         let currentExecutionID = UUID()
 
         try await store.record(makeReceipt(ref: ref), now: Date(timeIntervalSince1970: 1_000))
@@ -320,7 +517,12 @@ final class LocalUsageTests: XCTestCase {
         let store = LocalUsageStore(controller: controller)
 
         for (index, count) in [997, 998, 1_000, 2_000].enumerated() {
-            let refs = (0..<count).map { position in
+            let first = try await makePersistedRef(in: controller)
+            let last = try await makePersistedRef(
+                in: controller,
+                facet: (count - 1).isMultiple(of: 2) ? .history : .memo
+            )
+            let middle = (1..<(count - 1)).map { position in
                 ContentRef(
                     itemID: ItemID(),
                     facet: position.isMultiple(of: 2) ? .history : .memo,
@@ -328,8 +530,7 @@ final class LocalUsageTests: XCTestCase {
                     digest: Data([0x01])
                 )
             }
-            let first = try XCTUnwrap(refs.first)
-            let last = try XCTUnwrap(refs.last)
+            let refs = [first] + middle + [last]
             try await store.record(
                 UseReceipt(ref: first, occurredAt: Date(timeIntervalSince1970: Double(index * 2)), outcome: .success)
             )
@@ -347,7 +548,7 @@ final class LocalUsageTests: XCTestCase {
 
     func testFirstUsageWriteFixesThePolicyForEveryStoreInstanceOnTheController() async throws {
         let (_, controller) = try makeStore()
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
         let first = LocalUsageStore(
             controller: controller,
             deduplicationLimit: 2,
@@ -391,19 +592,14 @@ final class LocalUsageTests: XCTestCase {
         )
 
         do {
-            try await rejectedPolicy.record(makeReceipt(ref: makeRef()))
+            try await rejectedPolicy.record(makeReceipt(ref: try await makePersistedRef(in: controller)))
             XCTFail("The synthetic Core Data validation failure did not reach save")
         } catch {
             let validationError = error as NSError
             XCTAssertEqual(validationError.domain, NSCocoaErrorDomain)
         }
 
-        let memoRef = ContentRef(
-            itemID: ItemID(),
-            facet: .memo,
-            version: ContentVersion(),
-            digest: Data([0xcc])
-        )
+        let memoRef = try await makePersistedRef(in: controller, facet: .memo)
         try await acceptedPolicy.record(makeReceipt(ref: memoRef))
         let summaries = try await acceptedPolicy.summaries(for: [memoRef])
         XCTAssertEqual(summaries.first?.useCount, 1)
@@ -413,7 +609,7 @@ final class LocalUsageTests: XCTestCase {
     func testUsageProjectionAllowsQuarantineButRejectsAStaleExpectedIdentity() async throws {
         let (_, controller) = try makeStore()
         let store = LocalUsageStore(controller: controller)
-        let ref = makeRef()
+        let ref = try await makePersistedRef(in: controller)
         let staleIdentity = try await controller.identity()
         try await StoreSafetyGate(controller: controller).transition(to: .quarantined, expecting: staleIdentity)
 
@@ -567,13 +763,33 @@ final class LocalUsageTests: XCTestCase {
         try await controller.close()
     }
 
-    private func makeRef(itemID: ItemID = ItemID(rawValue: UUID()), facet: ContentFacet = .history) -> ContentRef {
-        ContentRef(
-            itemID: itemID,
-            facet: facet,
-            version: ContentVersion(rawValue: UUID()),
-            digest: Data([0xaa, 0xbb])
-        )
+    private func makePersistedRef(
+        in controller: PersistenceController,
+        itemID: ItemID = ItemID(),
+        facet: ContentFacet = .history
+    ) async throws -> ContentRef {
+        let capture = try ContentStoreFixtures.capture([
+            [("public.utf8-plain-text", Data("usage fixture \(UUID().uuidString)".utf8))]
+        ])
+        var item = ContentStoreFixtures.item(capture, id: itemID)
+        var mutations: [StoreMutation] = [.insert(.capture(capture))]
+        if facet == .memo {
+            let memo = MemoValue(itemID: itemID, bodyMode: .inheritedCapture)
+            item.memoID = memo.id
+            mutations.append(.insert(.memo(memo)))
+        }
+        mutations.append(.insert(.item(item)))
+        _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+            identity: try await controller.identity(),
+            mutations: mutations
+        ))
+        return ContentStoreFixtures.ref(item, capture, facet: facet)
+    }
+
+    private func usageDedupCount(in controller: PersistenceController) async throws -> Int {
+        try await controller.perform { context in
+            try context.count(for: NSFetchRequest<NSFetchRequestResult>(entityName: "UsageExecutionDedup"))
+        }
     }
 
     /// Records `times` successful uses of `ref`: the last at `lastAt` seconds since 1970, and each earlier one a second

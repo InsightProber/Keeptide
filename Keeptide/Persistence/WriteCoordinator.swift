@@ -14,7 +14,9 @@ struct WriteCoordinator: Sendable {
                 throw StoreError.invalidTransaction
             }
             guard transaction.identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try validateMaintenancePermitIfPresent(transaction)
             try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            try CleanupIntentStore.validateCloudWriteFence(transaction, validationOnly: true, in: context)
             for condition in transaction.preconditions {
                 try check(condition, transaction: transaction, in: context)
             }
@@ -30,7 +32,9 @@ struct WriteCoordinator: Sendable {
             }
             guard transaction.identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
             controller.runtime.expireLeases()
+            try validateMaintenancePermitIfPresent(transaction)
             try StoreSafetyGate.validate(.write, runtime: controller.runtime)
+            try CleanupIntentStore.validateCloudWriteFence(transaction, validationOnly: false, in: context)
             guard !transaction.mutations.isEmpty else { throw StoreError.invalidTransaction }
             try validateStructure(transaction)
             for condition in transaction.preconditions {
@@ -96,11 +100,14 @@ struct WriteCoordinator: Sendable {
                             guard transaction.preconditions.contains(where: {
                                 if case .referenceSet(let snapshot, _) = $0 { return snapshot == id }; return false
                             }) else { throw StoreError.preconditionFailed }
-                            guard !controller.runtime.leases.values.contains(where: { $0.protectedCaptures.contains(id) }) else {
+                            guard !controller.runtime.isPayloadProtected(.capture(id)) else {
                                 throw StoreError.contentProtected
                             }
                             try deleteCaptureRepresentations(id: id, capture: record, in: context)
                         case .memo(let id):
+                            guard !controller.runtime.isPayloadProtected(.memo(id)) else {
+                                throw StoreError.contentProtected
+                            }
                             if case .memo(let memo) = old {
                                 guard try hasFacetMarker(itemID: memo.itemID, facet: .memo, id: id, in: context)
                                         || StoredRecords.object(.itemMarker(memo.itemID), in: context) != nil else {
@@ -136,6 +143,8 @@ struct WriteCoordinator: Sendable {
                 // All mutations in this save belong to CloudContent. Local usage,
                 // file access and generation changes use separate LocalState saves.
                 try authorization()
+                try validateMaintenancePermitIfPresent(transaction)
+                try CleanupIntentStore.validateCloudWriteFence(transaction, validationOnly: false, in: context)
                 // These keys are explicitly restricted to pending-aware item and
                 // collection reads. Compute before saving so failure cannot follow
                 // a successful commit; existing capture transactions pay no cost.
@@ -358,6 +367,11 @@ struct WriteCoordinator: Sendable {
 
     private func requireMaintenance(_ transaction: StoreTransaction) throws {
         guard let permit = transaction.permit else { throw StoreError.operationDenied }
+        try StoreSafetyGate.validate(.maintenance, runtime: controller.runtime, permit: permit)
+    }
+
+    private func validateMaintenancePermitIfPresent(_ transaction: StoreTransaction) throws {
+        guard let permit = transaction.permit else { return }
         try StoreSafetyGate.validate(.maintenance, runtime: controller.runtime, permit: permit)
     }
 

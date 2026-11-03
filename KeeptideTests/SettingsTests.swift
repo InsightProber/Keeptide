@@ -50,6 +50,24 @@ final class SettingsTests: XCTestCase {
         }
     }
 
+    func testRetentionConfirmationNamesExactImpactAndStorageUsageStatesPartialCoverage() {
+        XCTAssertEqual(
+            SettingsView.confirmationMessage(historyCount: 1),
+            "This will expire 1 active clip from clipboard history. Saved snippets are kept."
+        )
+        XCTAssertEqual(
+            SettingsView.confirmationMessage(historyCount: 12),
+            "This will expire 12 active clips from clipboard history. Saved snippets are kept."
+        )
+        let complete = StorageUsageReport(allocatedBytes: [.contentDatabase: 2_000], issues: [])
+        let partial = StorageUsageReport(
+            allocatedBytes: [.contentDatabase: 2_000],
+            issues: [StorageUsageIssue(relativePath: "Content_SUPPORT", reason: .unreadable)]
+        )
+        XCTAssertFalse(SettingsView.usageDescription(complete).hasPrefix("At least "))
+        XCTAssertTrue(SettingsView.usageDescription(partial).hasPrefix("At least "))
+    }
+
     func testDefaultsAreMediumAndTicksOn() throws {
         let preferences = QuickAccessPreferences(defaults: try makeDefaults())
 
@@ -362,6 +380,24 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(controller.window === window)
         XCTAssertTrue(window.isVisible)
         XCTAssertEqual(policies, [.regular, .accessory, .regular])
+    }
+
+    func testSettingsWindowRebindsLifecycleModelAfterStoreInitializationAndClose() throws {
+        let controller = try makeController()
+        weak var releasedModel: LifecycleSettingsModel?
+        do {
+            let defaults = try makeDefaults()
+            let model = LifecycleSettingsModel(preferences: LifecyclePreferences(defaults: defaults))
+            releasedModel = model
+            controller.updateLifecycle(model)
+            controller.updateLifecycle(model)
+            XCTAssertNotNil(releasedModel)
+        }
+        XCTAssertNotNil(releasedModel, "The hosted Settings view owns the active store-scoped model")
+
+        controller.updateLifecycle(nil)
+
+        XCTAssertNil(releasedModel, "Closing the store must release its lifecycle model")
     }
 
     func testSettingsWindowIs520PointsWideAndFitsItsForm() throws {

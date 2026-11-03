@@ -12,7 +12,7 @@ permissions:
 jobs:
   native-foundation:
     runs-on: macos-26
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
@@ -35,6 +35,7 @@ jobs:
         run: ./scripts/verify.sh unit
 
       - name: Run native shell UI tests
+        if: ${{ success() || failure() }}
         run: ./scripts/verify.sh ui
 
       - name: Build Release configuration

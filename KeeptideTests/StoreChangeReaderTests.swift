@@ -59,17 +59,30 @@ final class StoreChangeReaderTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = try PersistenceController(directory: directory)
         addTeardownBlock { try await store.close(); try FileManager.default.removeItem(at: directory) }
-        let ref = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data([1]))
-        try await LocalUsageStore(controller: store).record(UseReceipt(executionID: UUID(), ref: ref,
+        let capture = try ContentStoreFixtures.capture([[
+            ("public.utf8-plain-text", Data("real usage target".utf8))
+        ]])
+        let item = ContentStoreFixtures.item(capture)
+        try await ContentStoreFixtures.insert(item, capture, into: store)
+        let ref = ContentStoreFixtures.ref(item, capture)
+        let reader = StoreChangeReader(controller: store)
+        let currentCheckpoint = try await reader.currentCheckpoint()
+        let checkpoint = try XCTUnwrap(currentCheckpoint)
+        let usage = LocalUsageStore(controller: store)
+
+        try await usage.record(UseReceipt(executionID: UUID(), ref: ref,
             occurredAt: Date(), outcome: .success))
         try await FileAccessStore(controller: store).put(
             LocalFileAccess(id: UUID(), snapshotID: UUID(), bytes: Data("synthetic-file-reference".utf8),
                             bookmark: Data([1, 2]), localPath: "/synthetic/example"),
             expecting: try await store.identity()
         )
-        let batch = try await StoreChangeReader(controller: store).read(after: nil)
+        let summaries = try await usage.summaries(for: [ref])
+        let batch = try await reader.read(after: checkpoint)
+
+        XCTAssertEqual(summaries.map(\.useCount), [1])
         XCTAssertTrue(batch.transactions.isEmpty)
-        XCTAssertNil(batch.token)
+        XCTAssertEqual(batch.token, checkpoint, "Local-only writes must not advance the content checkpoint")
     }
 
     func testPersistentHistoryResumesAfterReopenAndRejectsForeignStoreAndGeneration() async throws {

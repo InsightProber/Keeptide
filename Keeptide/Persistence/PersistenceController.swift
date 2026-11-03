@@ -169,6 +169,12 @@ final class StoreRuntime {
             releaseLease(id)
         }
     }
+
+    func isPayloadProtected(_ key: RecordKey) -> Bool {
+        (Array(leases.values) + Array(retiredLeases.values)).contains {
+            $0.protectedPayloadRecords.contains(key)
+        }
+    }
 }
 
 // Immutable context/refs may cross queues; cursors and lifecycle counters are writer-confined.
@@ -176,7 +182,13 @@ final class PinnedSnapshot: @unchecked Sendable {
     let lease: SnapshotLease
     let context: NSManagedObjectContext
     let refs: [ContentRef]
-    let protectedCaptures: Set<UUID>
+    let protectedPayloadRecords: Set<RecordKey>
+    var protectedCaptures: Set<UUID> {
+        Set(protectedPayloadRecords.compactMap { key in
+            if case .capture(let id) = key { return id }
+            return nil
+        })
+    }
     let pageSize: Int
     let deadline: ContinuousClock.Instant
     var cursors: [Data: Int] = [:]
@@ -184,9 +196,9 @@ final class PinnedSnapshot: @unchecked Sendable {
     var expirationTask: Task<Void, Never>?
 
     init(lease: SnapshotLease, context: NSManagedObjectContext, refs: [ContentRef],
-         protectedCaptures: Set<UUID>, pageSize: Int, lifetime: TimeInterval) {
+         protectedPayloadRecords: Set<RecordKey>, pageSize: Int, lifetime: TimeInterval) {
         self.lease = lease; self.context = context; self.refs = refs
-        self.protectedCaptures = protectedCaptures; self.pageSize = pageSize
+        self.protectedPayloadRecords = protectedPayloadRecords; self.pageSize = pageSize
         deadline = ContinuousClock().now.advanced(by: .seconds(lifetime))
     }
 }

@@ -12,7 +12,7 @@ struct ContentSnapshotReader: Sendable {
             controller.runtime.expireLeases()
             let context = controller.container.newBackgroundContext()
             context.undoManager = nil
-            let values: (refs: [ContentRef], protectedCaptures: Set<UUID>)
+            let values: (refs: [ContentRef], protectedPayloadRecords: Set<RecordKey>)
             do {
                 values = try context.performAndWait {
                     try context.setQueryGenerationFrom(.current)
@@ -29,7 +29,7 @@ struct ContentSnapshotReader: Sendable {
             let lease = SnapshotLease(leaseID: UUID(), identity: controller.runtime.identity,
                                       boundary: ContentDigest.sha256(try encoder.encode(values.refs)))
             let snapshot = PinnedSnapshot(lease: lease, context: context,
-                refs: values.refs, protectedCaptures: values.protectedCaptures,
+                refs: values.refs, protectedPayloadRecords: values.protectedPayloadRecords,
                 pageSize: request.pageSize, lifetime: request.lifetime)
             controller.runtime.leases[lease.leaseID] = snapshot
             controller.scheduleExpiration(of: snapshot)

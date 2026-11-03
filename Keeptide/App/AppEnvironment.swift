@@ -39,7 +39,9 @@ final class AppEnvironment {
                     ? nil : "KeeptideLibraryWindow"
             )
         }
-        self.makeSettings = makeSettings ?? { SettingsWindowController(preferences: quickAccessPreferences) }
+        self.makeSettings = makeSettings ?? {
+            SettingsWindowController(preferences: quickAccessPreferences, lifecycle: captureSession.maintenance?.settings)
+        }
     }
 
     var panelController: PanelController {
@@ -84,6 +86,7 @@ final class AppEnvironment {
 
     func showSettings() {
         panel?.close()
+        settingsWindowController.updateLifecycle(captureSession.maintenance?.settings)
         settingsWindowController.show()
     }
 

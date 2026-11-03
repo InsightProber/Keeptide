@@ -97,6 +97,33 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[revisedTitle].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
     }
 
+    func testRecentClipCanMoveToRecentlyDeletedAndBeRestored() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        _ = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+
+        capture.rightClick()
+        let remove = app.menuItems["Move to Recently Deleted"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
+        remove.click()
+
+        let deletedScope = app.staticTexts["Recently Deleted"].firstMatch
+        XCTAssertTrue(deletedScope.waitForExistence(timeout: 8), app.debugDescription)
+        deletedScope.click()
+        let deleted = app.staticTexts[title].firstMatch
+        XCTAssertTrue(deleted.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Clipboard History"].firstMatch.exists)
+
+        let restore = app.buttons["RestoreDeletedItem"].firstMatch
+        XCTAssertTrue(restore.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(restore.isEnabled)
+        restore.click()
+        XCTAssertTrue(deleted.waitForNonExistence(timeout: 8), app.debugDescription)
+    }
+
     func testFindInNoteAndLibrarySearchUseDistinctShortcuts() {
         continueAfterFailure = false
         let app = launchKeeptide(sessionID: UUID())
