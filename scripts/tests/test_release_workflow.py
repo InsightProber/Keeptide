@@ -11,6 +11,12 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertTrue(WORKFLOW.is_file(), 'DMG workflow is missing')
         return WORKFLOW.read_text()
 
+    def test_runner_context_is_only_used_after_job_dispatch(self):
+        source = self.workflow()
+        build_header = source.split('  build:', 1)[1].split('    steps:', 1)[0]
+        self.assertNotIn('${{ runner.', build_header)
+        self.assertIn('path: ${{ runner.temp }}/release-dmg/', source)
+
     def test_only_published_release_can_enter_write_job(self):
         source = self.workflow()
         self.assertRegex(source, r'(?m)^  release:\n    types: \[published\]$')
