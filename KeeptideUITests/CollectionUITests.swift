@@ -85,7 +85,12 @@ final class CollectionUITests: XCTestCase {
         let bodyEditor = app.textViews["SnippetBodyTextView"]
         XCTAssertTrue(titleField.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(bodyEditor.waitForExistence(timeout: 5), app.debugDescription)
-        replaceText(in: bodyEditor, with: "created before collection results finish loading")
+        let initialFocus = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: bodyEditor
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [initialFocus], timeout: 5), .completed,
+                       "A new snippet must accept typing without an extra click.")
+        bodyEditor.typeText("created before collection results finish loading")
         replaceText(in: titleField, with: snippetTitle)
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Saved"].firstMatch.waitForExistence(timeout: 8),

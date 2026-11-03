@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import XCTest
 @testable import Keeptide
 
@@ -102,6 +103,205 @@ final class EditorBridgeTests: XCTestCase {
         XCTAssertFalse(window.firstResponder === controller.textView)
     }
 
+    func testConsumedBodyFocusDoesNotReplayWhenControllerIsRecreatedAndTitleOwnsFocus() async {
+        let sessionID = UUID()
+        let documentID = UUID()
+        let owner = BodyFocusStateBox()
+        let request = owner.state.request(
+            sessionID: sessionID,
+            documentID: documentID,
+            generation: 1
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentView?.bounds ?? .zero)
+        let title = NSTextField(frame: NSRect(x: 20, y: 270, width: 240, height: 24))
+        container.addSubview(title)
+        window.contentView = container
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        let first = EditorTextController(onFocusAccepted: { acceptedDocumentID, acceptedRequest in
+            owner.state.consume(
+                sessionID: sessionID,
+                documentID: acceptedDocumentID,
+                request: acceptedRequest
+            )
+        })
+        first.scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 250)
+        container.addSubview(first.scrollView)
+        first.update(
+            documentID: documentID,
+            text: "body",
+            isCode: false,
+            isEditable: true,
+            focusRequest: request
+        )
+        await first.settlePendingFocus()
+
+        XCTAssertTrue(window.firstResponder === first.textView)
+        XCTAssertEqual(owner.state.request(for: sessionID, documentID: documentID), 0)
+        XCTAssertTrue(window.makeFirstResponder(title))
+        let titleEditor = title.currentEditor()
+        XCTAssertNotNil(titleEditor)
+
+        first.scrollView.removeFromSuperview()
+        let recreated = EditorTextController(onFocusAccepted: { _, _ in
+            XCTFail("A consumed request must not be replayed by a recreated controller")
+        })
+        recreated.scrollView.frame = NSRect(x: 0, y: 0, width: 500, height: 250)
+        container.addSubview(recreated.scrollView)
+        recreated.update(
+            documentID: documentID,
+            text: "body",
+            isCode: false,
+            isEditable: true,
+            focusRequest: owner.state.request(for: sessionID, documentID: documentID)
+        )
+        await recreated.settlePendingFocus()
+
+        XCTAssertTrue(window.firstResponder === titleEditor)
+        XCTAssertFalse(window.firstResponder === recreated.textView)
+    }
+
+    func testDeferredBodyFocusReaderObservesNewRequestAndConsumption() async {
+        let state = BodyFocusRequestState()
+        let sessionID = UUID()
+        let documentID = UUID()
+        // SwiftUI stores column-builder closures before the asynchronous new
+        // snippet operation issues its focus request.
+        let readFromDeferredColumn = { [state] in
+            state.request(for: sessionID, documentID: documentID)
+        }
+        XCTAssertEqual(readFromDeferredColumn(), 0)
+        let requested = expectation(description: "request invalidates the column")
+        withObservationTracking {
+            _ = readFromDeferredColumn()
+        } onChange: {
+            requested.fulfill()
+        }
+        let request = state.request(sessionID: sessionID, documentID: documentID, generation: 1)
+        await fulfillment(of: [requested], timeout: 1)
+        XCTAssertEqual(readFromDeferredColumn(), request)
+
+        let consumed = expectation(description: "consumption invalidates the column")
+        withObservationTracking {
+            _ = readFromDeferredColumn()
+        } onChange: {
+            consumed.fulfill()
+        }
+        XCTAssertTrue(state.consume(sessionID: sessionID, documentID: documentID, request: request))
+        await fulfillment(of: [consumed], timeout: 1)
+        XCTAssertEqual(readFromDeferredColumn(), 0)
+    }
+
+    func testStaleBodyFocusAcknowledgementCannotConsumeANewerRequest() {
+        let firstSessionID = UUID()
+        let firstDocumentID = UUID()
+        let secondSessionID = UUID()
+        let secondDocumentID = UUID()
+        let state = BodyFocusRequestState()
+        let first = state.request(
+            sessionID: firstSessionID,
+            documentID: firstDocumentID,
+            generation: 4
+        )
+        let second = state.request(
+            sessionID: secondSessionID,
+            documentID: secondDocumentID,
+            generation: 5
+        )
+
+        XCTAssertEqual(first, 1)
+        XCTAssertEqual(second, 2)
+        XCTAssertFalse(state.consume(
+            sessionID: firstSessionID,
+            documentID: firstDocumentID,
+            request: first
+        ))
+        XCTAssertFalse(state.consume(
+            sessionID: secondSessionID,
+            documentID: firstDocumentID,
+            request: second
+        ))
+        XCTAssertEqual(state.request(for: secondSessionID, documentID: secondDocumentID), second)
+        XCTAssertTrue(state.isCurrent(
+            sessionID: secondSessionID,
+            documentID: secondDocumentID,
+            request: second,
+            generation: 5
+        ))
+        XCTAssertFalse(state.isCurrent(
+            sessionID: secondSessionID,
+            documentID: secondDocumentID,
+            request: second,
+            generation: 4
+        ))
+        XCTAssertTrue(state.consume(
+            sessionID: secondSessionID,
+            documentID: secondDocumentID,
+            request: second
+        ))
+        XCTAssertEqual(state.request(for: secondSessionID, documentID: secondDocumentID), 0)
+        XCTAssertEqual(
+            state.request(sessionID: secondSessionID, documentID: UUID(), generation: 6),
+            3,
+            "Consuming a request must not reset the monotonic request counter"
+        )
+    }
+
+    func testFocusAcknowledgementRequiresAttachmentEditableStateAndCurrentIntent() async {
+        let documentID = UUID()
+        var accepted: [(UUID, Int)] = []
+        let controller = EditorTextController(onFocusAccepted: { accepted.append(($0, $1)) })
+        let intent = FocusIntentBox()
+        controller.update(
+            documentID: documentID,
+            text: "body",
+            isCode: false,
+            isEditable: true,
+            focusRequest: 1,
+            shouldFocus: { intent.isCurrent }
+        )
+        XCTAssertTrue(accepted.isEmpty, "A request cannot be acknowledged before window attachment")
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 320),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.contentView = controller.scrollView
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        await controller.settlePendingFocus()
+
+        XCTAssertTrue(accepted.isEmpty, "A stale intent rejected by shouldFocus must not be acknowledged")
+        XCTAssertFalse(window.firstResponder === controller.textView)
+
+        intent.isCurrent = true
+        XCTAssertTrue(window.makeFirstResponder(nil))
+        controller.update(
+            documentID: documentID,
+            text: "body",
+            isCode: false,
+            isEditable: false,
+            focusRequest: 2,
+            shouldFocus: { intent.isCurrent }
+        )
+        await controller.settlePendingFocus()
+
+        XCTAssertTrue(accepted.isEmpty, "A read-only editor must not acknowledge body focus")
+        XCTAssertFalse(window.firstResponder === controller.textView)
+    }
+
     func testFocusRequestMadeBeforeAttachmentIsAppliedWhenTheEditorJoinsAWindow() async {
         let controller = EditorTextController()
         controller.update(documentID: UUID(), text: "text", isCode: false,
@@ -151,11 +351,11 @@ final class EditorBridgeTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
 
-        var bodyFocusIsCurrent = true
+        let bodyFocusIntent = FocusIntentBox(isCurrent: true)
         controller.update(documentID: UUID(), text: "", isCode: false,
                           isEditable: true, focusRequest: 1,
-                          shouldFocus: { bodyFocusIsCurrent })
-        bodyFocusIsCurrent = false
+                          shouldFocus: { bodyFocusIntent.isCurrent })
+        bodyFocusIntent.isCurrent = false
         XCTAssertTrue(window.makeFirstResponder(searchField))
 
         await controller.settlePendingFocus()
@@ -230,7 +430,7 @@ final class EditorBridgeTests: XCTestCase {
         XCTAssertEqual(focusLosses, 1)
     }
 
-    func testLibrarySearchFocusRequestWorksAcrossToolbarWindowAttachmentAndOnlyOnce() {
+    func testLibrarySearchFocusRequestWorksAcrossToolbarWindowAttachmentAndOnlyOnce() async {
         let controller = LibrarySearchController()
         controller.update(text: "", focusRequest: 1)
         XCTAssertNil(controller.searchField.window)
@@ -241,12 +441,126 @@ final class EditorBridgeTests: XCTestCase {
         window.contentView = controller.searchField
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
+        await controller.settlePendingFocus()
         XCTAssertTrue(window.firstResponder === controller.searchField.currentEditor())
 
         XCTAssertTrue(window.makeFirstResponder(nil))
         controller.update(text: "", focusRequest: 1)
+        await controller.settlePendingFocus()
         XCTAssertFalse(window.firstResponder === controller.searchField.currentEditor())
     }
+
+    func testConsumedLibrarySearchFocusDoesNotReplayAfterControllerRecreation() async {
+        let owner = SearchFocusStateBox()
+        let intent = owner.state.request(1, generation: 1)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 160),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        let container = NSView(frame: window.contentView?.bounds ?? .zero)
+        let title = NSTextField(frame: NSRect(x: 20, y: 105, width: 240, height: 24))
+        container.addSubview(title)
+        window.contentView = container
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+
+        let first = LibrarySearchController()
+        first.searchField.frame = NSRect(x: 20, y: 60, width: 240, height: 24)
+        first.update(
+            text: "",
+            focusRequest: intent.request,
+            shouldFocus: { owner.state.isCurrent(intent, generation: 1) },
+            onFocusAccepted: { request in
+                guard request == intent.request else { return }
+                owner.state.consume(intent, generation: 1)
+            }
+        )
+        container.addSubview(first.searchField)
+        await first.settlePendingFocus()
+
+        XCTAssertTrue(window.firstResponder === first.searchField.currentEditor())
+        XCTAssertNil(owner.state.pending)
+        XCTAssertTrue(window.makeFirstResponder(title))
+        let titleEditor = title.currentEditor()
+        XCTAssertNotNil(titleEditor)
+
+        first.searchField.removeFromSuperview()
+        let recreated = LibrarySearchController()
+        recreated.searchField.frame = NSRect(x: 20, y: 60, width: 240, height: 24)
+        recreated.update(
+            text: "",
+            focusRequest: owner.state.pending?.request ?? 0,
+            shouldFocus: { false },
+            onFocusAccepted: { _ in
+                XCTFail("A consumed search intent must not replay after controller recreation")
+            }
+        )
+        container.addSubview(recreated.searchField)
+        await recreated.settlePendingFocus()
+
+        XCTAssertTrue(window.firstResponder === titleEditor)
+        XCTAssertFalse(window.firstResponder === recreated.searchField.currentEditor())
+    }
+
+    func testNewerFocusIntentInvalidatesObsoleteSearchAndLateAckCannotConsumeNewSearch() {
+        var state = SearchFocusRequestState()
+        let obsoleteSearch = state.request(1, generation: 1)
+
+        state.invalidate() // The next focus generation belongs to Cmd-N.
+        XCTAssertFalse(state.isCurrent(obsoleteSearch, generation: 2))
+        XCTAssertFalse(state.consume(obsoleteSearch, generation: 2))
+        XCTAssertNil(state.pending)
+
+        let currentSearch = state.request(2, generation: 3)
+        XCTAssertFalse(state.consume(obsoleteSearch, generation: 3))
+        XCTAssertEqual(state.pending, currentSearch)
+        XCTAssertTrue(state.isCurrent(currentSearch, generation: 3))
+        XCTAssertFalse(state.consume(currentSearch, generation: 2))
+        XCTAssertEqual(state.pending, currentSearch)
+        XCTAssertTrue(state.consume(currentSearch, generation: 3))
+        XCTAssertNil(state.pending)
+    }
+
+    #if !SWIFT_PACKAGE
+    func testLibraryWindowCommandsPublishAndFenceSearchFocusAcrossNewSnippetOrdering() async throws {
+        let commands = LibraryWindowCommands()
+        let published = expectation(description: "pending search focus changed")
+        withObservationTracking {
+            _ = commands.pendingSearchFocus
+        } onChange: {
+            published.fulfill()
+        }
+
+        commands.requestSearch()
+        await fulfillment(of: [published], timeout: 1)
+        let first = try XCTUnwrap(commands.pendingSearchFocus)
+        XCTAssertEqual(first.request, 1)
+        XCTAssertEqual(first.generation, 1)
+        XCTAssertEqual(commands.searchRequest, 1)
+        XCTAssertEqual(commands.focusGeneration, 1)
+
+        commands.requestNewSnippet()
+        XCTAssertNil(commands.pendingSearchFocus)
+        XCTAssertEqual(commands.focusGeneration, 2)
+        XCTAssertEqual(commands.newSnippetFocusGeneration, 2)
+        XCTAssertEqual(commands.newSnippetRequest, 1)
+
+        commands.requestSearch()
+        let second = try XCTUnwrap(commands.pendingSearchFocus)
+        XCTAssertEqual(second.request, 2)
+        XCTAssertEqual(second.generation, 3)
+        XCTAssertEqual(commands.searchRequest, 2)
+        XCTAssertEqual(commands.focusGeneration, 3)
+
+        XCTAssertFalse(commands.consumeSearchFocus(first))
+        XCTAssertEqual(commands.pendingSearchFocus, second)
+        XCTAssertTrue(commands.consumeSearchFocus(second))
+        XCTAssertNil(commands.pendingSearchFocus)
+    }
+    #endif
 
     func testLibrarySearchReportsNativeTextChangesWithoutEchoingProgrammaticUpdates() {
         var changes: [String] = []
@@ -304,4 +618,23 @@ private final class RecordingFindTextView: NSTextView {
               let action = NSTextFinder.Action(rawValue: value.intValue) else { return }
         actions.append(action)
     }
+}
+
+@MainActor
+private final class BodyFocusStateBox {
+    let state = BodyFocusRequestState()
+}
+
+@MainActor
+private final class FocusIntentBox {
+    var isCurrent: Bool
+
+    init(isCurrent: Bool = false) {
+        self.isCurrent = isCurrent
+    }
+}
+
+@MainActor
+private final class SearchFocusStateBox {
+    var state = SearchFocusRequestState()
 }
