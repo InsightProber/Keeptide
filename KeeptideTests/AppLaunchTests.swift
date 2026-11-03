@@ -29,9 +29,163 @@ final class AppLaunchTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        let settings = AppSettings(defaults: defaults)
+        let preferences = CapturePreferences(defaults: defaults)
 
-        XCTAssertFalse(settings.captureEnabled)
+        XCTAssertFalse(preferences.isEnabled)
+    }
+
+    func testDefaultEnvironmentUsesEphemeralPreferencesAndNoSystemLoginController() {
+        let environment = AppEnvironment()
+
+        XCTAssertNotNil(environment.ephemeralPreferencesSuiteName)
+        XCTAssertEqual(environment.settingsModel.launchAtLogin.state, .unavailable)
+        XCTAssertFalse(environment.captureSession.preferences.isEnabled)
+    }
+
+    func testEnvironmentUsesOneSettingsModelForCaptureShortcutAndLoginState() throws {
+        let suiteName = "AppLaunchTests.sharedSettingsModel.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture)
+        let shortcut = GlobalShortcutCoordinator(
+            preferences: GlobalShortcutPreferences(defaults: defaults),
+            shouldInstallHandler: false
+        )
+        let login = LaunchAtLoginModel(service: AppLaunchFakeLoginService())
+        let environment = AppEnvironment(
+            captureSession: session,
+            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+            shortcutCoordinator: shortcut,
+            launchAtLogin: login,
+            onboardingPreferences: OnboardingPreferences(defaults: defaults)
+        )
+
+        XCTAssertTrue(environment.settingsModel.capture === capture)
+        XCTAssertTrue(environment.settingsModel.shortcut === shortcut)
+        XCTAssertTrue(environment.settingsModel.launchAtLogin === login)
+    }
+
+    func testStartRecordingBeforeStoreInitializationSurvivesOpeningTheIsolatedStore() async throws {
+        let configuration = CaptureTestConfiguration(id: UUID())
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        defaults.removePersistentDomain(forName: configuration.preferencesSuite)
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: configuration.preferencesSuite)
+            try? FileManager.default.removeItem(at: configuration.directory)
+        }
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture)
+        let onboarding = OnboardingPreferences(defaults: defaults)
+        let environment = AppEnvironment(
+            captureSession: session,
+            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+            shortcutCoordinator: GlobalShortcutCoordinator(
+                preferences: GlobalShortcutPreferences(defaults: defaults),
+                shouldInstallHandler: false
+            ),
+            launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
+            onboardingPreferences: onboarding,
+            showLibrary: {}
+        )
+        XCTAssertNil(environment.settingsModel.lifecycle)
+        XCTAssertFalse(environment.settingsModel.canExportLibrary)
+        XCTAssertFalse(environment.canExportLibrary)
+
+        environment.onboardingActions.startRecording()
+        XCTAssertTrue(capture.isEnabled)
+        XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding)
+
+        await session.initialize(testSessionID: configuration.id)
+
+        XCTAssertTrue(session.preferences === capture)
+        XCTAssertTrue(session.preferences.isEnabled)
+        XCTAssertNotNil(environment.settingsModel.lifecycle)
+        XCTAssertTrue(environment.settingsModel.canExportLibrary)
+        XCTAssertTrue(environment.canExportLibrary)
+        await session.shutdown()
+        XCTAssertNil(environment.settingsModel.lifecycle)
+        XCTAssertFalse(environment.settingsModel.canExportLibrary)
+    }
+
+    func testSkippingOrClosingWelcomeCompletesItWithoutEnablingCapture() throws {
+        let suiteName = "AppLaunchTests.skipWelcome.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let capture = CapturePreferences(defaults: defaults)
+        let onboarding = OnboardingPreferences(defaults: defaults)
+        var libraryShows = 0
+        let environment = AppEnvironment(
+            captureSession: CaptureSession(preferences: capture),
+            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+            shortcutCoordinator: GlobalShortcutCoordinator(
+                preferences: GlobalShortcutPreferences(defaults: defaults),
+                shouldInstallHandler: false
+            ),
+            launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
+            onboardingPreferences: onboarding,
+            showLibrary: { libraryShows += 1 }
+        )
+
+        environment.onboardingActions.notNow()
+
+        XCTAssertFalse(capture.isEnabled)
+        XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertEqual(libraryShows, 1)
+    }
+
+    func testApplicationActivationRefreshesTheExternalLoginItemStateWithoutRegistering() throws {
+        let suiteName = "AppLaunchTests.loginRefresh.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
+        let service = AppLaunchFakeLoginService()
+        let login = LaunchAtLoginModel(service: service)
+        let environment = AppEnvironment(
+            captureSession: CaptureSession(preferences: CapturePreferences(defaults: defaults)),
+            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+            shortcutCoordinator: GlobalShortcutCoordinator(
+                preferences: GlobalShortcutPreferences(defaults: defaults),
+                shouldInstallHandler: false
+            ),
+            launchAtLogin: login,
+            onboardingPreferences: OnboardingPreferences(defaults: defaults)
+        )
+        XCTAssertEqual(login.state, .disabled)
+        XCTAssertEqual(service.registerCalls, 0)
+
+        service.status = .enabled
+        environment.applicationDidBecomeActive()
+
+        XCTAssertEqual(login.state, .enabled)
+        XCTAssertEqual(service.registerCalls, 0)
+    }
+
+    func testSettingsIgnoredApplicationsActionOpensTheExistingLibrarySheet() throws {
+        let suiteName = "AppLaunchTests.ignoredApplications.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
+        let environment = AppEnvironment(
+            captureSession: CaptureSession(preferences: CapturePreferences(defaults: defaults)),
+            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+            shortcutCoordinator: GlobalShortcutCoordinator(
+                preferences: GlobalShortcutPreferences(defaults: defaults),
+                shouldInstallHandler: false
+            ),
+            launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
+            onboardingPreferences: OnboardingPreferences(defaults: defaults),
+            makeLibrary: { LibraryWindowController(session: CaptureSession(), autosaveName: nil) }
+        )
+        let library = environment.libraryWindowController
+        addTeardownBlock { library.close() }
+        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 0)
+
+        environment.settingsModel.actions.manageIgnoredApplications()
+
+        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 1)
+        XCTAssertTrue(library.window?.isVisible == true)
     }
 
     func testQuickAccessDoesNotActivateTheApplicationOrHideAnUnfinishedSession() throws {
@@ -1402,11 +1556,12 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testSpaceOpensThePreviewAboveTheBandAndEscapeClosesIt() async throws {
-        let (controller, _) = try await makePanelWithClips(["older", "newer"])
+        // Freeze the layout input: Dock/menu-bar changes can update NSScreen during the async preview load.
+        let visibleFrame = try XCTUnwrap(NSScreen.main).visibleFrame
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: visibleFrame)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
-        let screen = try XCTUnwrap(window.screen ?? NSScreen.main)
-        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
+        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
         controller.perform(.focusResults)
         let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
 
@@ -1416,7 +1571,7 @@ final class AppLaunchTests: XCTestCase {
         settleLayout()
 
         // The panel grows to hold the card above the band, and the band moves down if the card has no room there.
-        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium, withPreview: true))
+        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium, withPreview: true))
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
         XCTAssertEqual(text.string, "newer")
         XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
@@ -1426,7 +1581,7 @@ final class AppLaunchTests: XCTestCase {
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(controller.state.isPreviewExpanded)
-        assertFrame(window.frame, places: panelFrame(on: screen, cardSize: .medium))
+        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
         XCTAssertTrue(window.firstResponder === strip)
         controller.state.close()
     }
@@ -3708,7 +3863,10 @@ final class AppLaunchTests: XCTestCase {
     /// Where `StripLayout` puts the panel on `screen`: around the band alone, or around the band and the
     /// preview card above it.
     private func panelFrame(on screen: NSScreen, cardSize: CardSize, withPreview: Bool = false) -> NSRect {
-        let visible = screen.visibleFrame
+        panelFrame(in: screen.visibleFrame, cardSize: cardSize, withPreview: withPreview)
+    }
+
+    private func panelFrame(in visible: NSRect, cardSize: CardSize, withPreview: Bool = false) -> NSRect {
         let metrics = StripLayout.metrics(for: cardSize, visibleWidth: visible.width)
         let band = StripLayout.bandFrame(metrics, in: visible)
         guard withPreview else { return StripLayout.panelFrame(band: band, preview: nil, in: visible) }
@@ -3966,6 +4124,47 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(starts(["--manual-paste-qa"], underXCTest))
     }
 
+    func testWelcomeRoutingIsAutomaticOnlyForARealUserLaunch() {
+        XCTAssertTrue(LaunchConfiguration(arguments: [], environment: [:]).shouldPresentOnboardingIfNeeded)
+        XCTAssertFalse(LaunchConfiguration(arguments: ["--ui-testing"], environment: [:]).shouldPresentOnboardingIfNeeded)
+        XCTAssertFalse(LaunchConfiguration(
+            arguments: [],
+            environment: ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        ).shouldPresentOnboardingIfNeeded)
+        XCTAssertFalse(LaunchConfiguration(arguments: ["--manual-paste-qa"], environment: [:])
+            .shouldPresentOnboardingIfNeeded)
+    }
+
+    func testExplicitWelcomeRequiresAnIsolatedUITestSession() {
+        let id = UUID().uuidString
+        let isolatedArguments = ["--ui-testing", "--capture-test-session", id, "--show-onboarding"]
+
+        XCTAssertTrue(LaunchConfiguration(arguments: isolatedArguments, environment: [:]).shouldForceOnboarding)
+        XCTAssertFalse(LaunchConfiguration(
+            arguments: ["--ui-testing", "--show-onboarding"],
+            environment: [:]
+        ).shouldForceOnboarding)
+        XCTAssertFalse(LaunchConfiguration(
+            arguments: ["--capture-test-session", id, "--show-onboarding"],
+            environment: [:]
+        ).shouldForceOnboarding)
+    }
+
+    func testSettingsLaunchFlagIsExplicit() {
+        XCTAssertTrue(LaunchConfiguration(arguments: ["--show-settings"], environment: [:]).shouldShowSettings)
+        XCTAssertFalse(LaunchConfiguration(arguments: [], environment: [:]).shouldShowSettings)
+    }
+
+    func testUITestWithoutCaptureSessionUsesEphemeralApplicationState() {
+        XCTAssertTrue(LaunchConfiguration(arguments: ["--ui-testing"], environment: [:])
+            .shouldUseEphemeralApplicationState)
+        XCTAssertFalse(LaunchConfiguration(
+            arguments: ["--ui-testing", "--capture-test-session", UUID().uuidString],
+            environment: [:]
+        ).shouldUseEphemeralApplicationState)
+        XCTAssertFalse(LaunchConfiguration(arguments: [], environment: [:]).shouldUseEphemeralApplicationState)
+    }
+
     func testXCTestLaunchDoesNotRegisterTheGlobalShortcut() {
         let configuration = LaunchConfiguration(
             arguments: [],
@@ -3981,6 +4180,21 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(LaunchConfiguration(arguments: arguments, environment: environment).shouldRegisterGlobalHotKey)
         XCTAssertFalse(LaunchConfiguration(arguments: arguments + ["--disable-global-hotkey"],
                                           environment: environment).shouldRegisterGlobalHotKey)
+    }
+
+    func testSyntheticShortcutPresetsUseDistinctNonUserChords() {
+        let commandShift = UInt32(cmdKey | shiftKey)
+        let commandOption = UInt32(cmdKey | optionKey)
+        let commandControl = UInt32(cmdKey | controlKey)
+
+        let syntheticShift = AppDelegate.syntheticModifiers(for: commandShift)
+        let syntheticOption = AppDelegate.syntheticModifiers(for: commandOption)
+        let syntheticControl = AppDelegate.syntheticModifiers(for: commandControl)
+
+        XCTAssertEqual(syntheticShift, UInt32(cmdKey | shiftKey | optionKey | controlKey))
+        XCTAssertEqual(Set([syntheticShift, syntheticOption, syntheticControl]).count, 3)
+        XCTAssertNotEqual(syntheticOption, commandOption)
+        XCTAssertNotEqual(syntheticControl, commandControl)
     }
 
     func testEscapeCancelsMarkedTextBeforeClearingTheQuery() {
@@ -4060,7 +4274,8 @@ final class AppLaunchTests: XCTestCase {
         menu?.inputSourceChanged()
         settleLayout()
         XCTAssertEqual(registered, [9, 47])
-        XCTAssertEqual(removed, 2)
+        // A layout that cannot resolve semantic V does not discard the last working registration.
+        XCTAssertEqual(removed, 1)
         XCTAssertNotEqual(menu?.shortcutStatus, .registered)
         menu = nil
         XCTAssertEqual(removed, 2)
@@ -4161,6 +4376,17 @@ final class AppLaunchTests: XCTestCase {
 @MainActor
 private final class QueryLog {
     var queries: [String] = []
+}
+
+@MainActor
+private final class AppLaunchFakeLoginService: LaunchAtLoginServicing {
+    var status: LaunchAtLoginServiceStatus = .notRegistered
+    private(set) var registerCalls = 0
+    func register() async throws {
+        registerCalls += 1
+        status = .enabled
+    }
+    func unregister() async throws { status = .notRegistered }
 }
 
 /// Lets a search's first scanned range through and holds every later one, on the search queue, until it opens.

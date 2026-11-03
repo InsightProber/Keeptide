@@ -7,13 +7,23 @@ final class LibraryWindowController: NSWindowController {
     private static let minimumSize = NSSize(width: 840, height: 560)
     let commands: LibraryWindowCommands
     private let session: CaptureSession
+    private let setActivationPolicy: (NSApplication.ActivationPolicy) -> Void
+    var shouldRestoreAccessory: () -> Bool
     private var closesAfterPreparation = false
     private var closePreparationTask: Task<Void, Never>?
+    private var isOpen = false
 
-    init(session: CaptureSession, autosaveName: String? = "KeeptideLibraryWindow") {
+    init(
+        session: CaptureSession,
+        autosaveName: String? = "KeeptideLibraryWindow",
+        setActivationPolicy: @escaping (NSApplication.ActivationPolicy) -> Void = { NSApp.setActivationPolicy($0) },
+        shouldRestoreAccessory: @escaping () -> Bool = { true }
+    ) {
         let commands = LibraryWindowCommands()
         self.commands = commands
         self.session = session
+        self.setActivationPolicy = setActivationPolicy
+        self.shouldRestoreAccessory = shouldRestoreAccessory
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -43,6 +53,10 @@ final class LibraryWindowController: NSWindowController {
 
     func show() {
         guard let window else { return }
+        if !isOpen {
+            isOpen = true
+            setActivationPolicy(.regular)
+        }
         session.libraryWorkspace?.resumeAfterCloseCancellation()
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)
@@ -54,6 +68,7 @@ final class LibraryWindowController: NSWindowController {
     @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
     @objc func exportLibrary(_ sender: Any?) { commands.exportLibraryRequest &+= 1 }
     @objc func exportSelected(_ sender: Any?) { commands.exportSelectedRequest &+= 1 }
+    func showIgnoredApplications() { commands.requestIgnoredApplications() }
 
     func open(_ ref: ContentRef) {
         commands.openRequest = LibraryOpenRequest(
@@ -100,6 +115,11 @@ extension LibraryWindowController: NSWindowDelegate {
         guard let workspace = session.libraryWorkspace else { return }
         Task { _ = try? await workspace.focusLost() }
     }
+
+    func windowWillClose(_ notification: Notification) {
+        isOpen = false
+        if shouldRestoreAccessory() { setActivationPolicy(.accessory) }
+    }
 }
 
 @MainActor @Observable
@@ -110,6 +130,7 @@ final class LibraryWindowCommands {
     var exportLibraryRequest = 0
     var exportSelectedRequest = 0
     private(set) var searchRequest = 0
+    private(set) var ignoredApplicationsRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
     private var searchFocus = SearchFocusRequestState()
@@ -143,6 +164,10 @@ final class LibraryWindowCommands {
     func updateExportContext(refs: [ContentRef], isRecentlyDeleted: Bool) {
         selectedExportRefs = refs
         self.isRecentlyDeleted = isRecentlyDeleted
+    }
+
+    func requestIgnoredApplications() {
+        ignoredApplicationsRequest &+= 1
     }
 }
 

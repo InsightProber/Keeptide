@@ -3,7 +3,7 @@ import Observation
 
 @MainActor @Observable
 final class CaptureSession {
-    private(set) var preferences = CapturePreferences()
+    private(set) var preferences: CapturePreferences
     private(set) var recent: [ItemSummary] = []
     private(set) var selectedContent: ResolvedContent?
     private(set) var selectedPreview: ClipTextPreview?
@@ -47,6 +47,9 @@ final class CaptureSession {
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
     /// What direct paste asks of the system. Every paste service this session makes uses it.
     @ObservationIgnored private let directPaste: DirectPasteSystem
+    /// An app-level preference object is injected before asynchronous store initialization so Settings, onboarding,
+    /// and the monitor keep one identity. Legacy tests that do not inject one still adopt the selected test/QA suite.
+    @ObservationIgnored private var keepsPreferenceIdentity: Bool
     #if DEBUG
     /// The manual paste QA run's throwaway library and preferences, removed at shutdown.
     @ObservationIgnored private var manualPasteQASession: ManualPasteQASession?
@@ -68,13 +71,39 @@ final class CaptureSession {
         #endif
         return isReady && !isPausing
     }
+    var settingsRecordingState: SettingsRecordingState {
+        #if DEBUG
+        if manualPasteQASession != nil { return .unavailable("Manual paste QA does not record clipboard content.") }
+        #endif
+        if !isReady {
+            if let libraryInitializationError { return .unavailable(libraryInitializationError) }
+            if let message { return .unavailable(message) }
+            return .waitingForLibrary
+        }
+        if isRecording { return .recording }
+        if isPausing { return .pausing }
+        return preferences.isEnabled ? .unavailable(status) : .paused
+    }
+
+    /// A user may consent before storage finishes opening, but QA and a
+    /// pending pause must not present an actionable recording switch.
+    var canChangeRecordingConsent: Bool {
+        #if DEBUG
+        if manualPasteQASession != nil { return false }
+        #endif
+        return !isPausing
+    }
+
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
 
     /// `directPaste` stays `.unavailable` everywhere but in the app delegate: tests use a fake.
-    init(readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
+    init(preferences: CapturePreferences? = nil,
+         readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil,
          directPaste: DirectPasteSystem = .unavailable) {
+        self.preferences = preferences ?? CapturePreferences()
+        keepsPreferenceIdentity = preferences != nil
         self.readContent = readContent
         self.pasteboard = pasteboard
         self.directPaste = directPaste
@@ -83,6 +112,12 @@ final class CaptureSession {
                                         didWrite: { _ in }, system: directPaste)
             previewService = PreviewService(read: readContent)
         }
+    }
+
+    /// Once application-level UI observes this session, its preference reference must remain stable. Launch wiring
+    /// injects the correct user/test/QA suite before calling this; direct legacy test sessions can still adopt a suite.
+    func preservePreferenceIdentity() {
+        keepsPreferenceIdentity = true
     }
 
     /// Opens the library that the launch chooses (`CaptureLibrary.choose`).
@@ -132,14 +167,18 @@ final class CaptureSession {
                     message = "Test session removed"
                     return
                 }
-                preferences = CapturePreferences(defaults: defaults)
+                if !keepsPreferenceIdentity {
+                    preferences = CapturePreferences(defaults: defaults)
+                }
             #if DEBUG
             case .manualPasteQA(let qa):
                 // Its own library and preferences, never the user's. Pastes go to the general clipboard, where the
                 // app in front reads them; nothing records it in this session. A test gives the session a clipboard
                 // of its own when it makes it.
                 manualPasteQASession = qa
-                preferences = CapturePreferences(defaults: UserDefaults(suiteName: qa.preferencesSuite)!)
+                if !keepsPreferenceIdentity {
+                    preferences = CapturePreferences(defaults: UserDefaults(suiteName: qa.preferencesSuite)!)
+                }
                 board = pasteboard ?? .general
             #endif
             case .user:

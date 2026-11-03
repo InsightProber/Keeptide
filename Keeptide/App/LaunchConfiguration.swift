@@ -4,7 +4,13 @@ struct LaunchConfiguration: Sendable {
     let shouldRegisterGlobalHotKey: Bool
     let shouldShowQuickAccess: Bool
     let shouldShowLibrary: Bool
+    let shouldShowSettings: Bool
     let usesSyntheticHotKey: Bool
+    /// Normal launches may show the welcome window when its version has not been completed. Automated and manual
+    /// QA launches stay deterministic and quiet unless an isolated UI test explicitly asks for it.
+    let shouldPresentOnboardingIfNeeded: Bool
+    let shouldForceOnboarding: Bool
+    let shouldUseEphemeralApplicationState: Bool
     let shouldInitializeCaptureSession: Bool
     let captureTestSessionID: UUID?
     let shouldCleanupCaptureTestSession: Bool
@@ -21,6 +27,7 @@ struct LaunchConfiguration: Sendable {
             && !arguments.contains("--disable-global-hotkey")
         shouldShowQuickAccess = arguments.contains("--show-quick-access")
         shouldShowLibrary = arguments.contains("--show-library")
+        shouldShowSettings = arguments.contains("--show-settings")
 
         #if DEBUG
         captureTestSessionID = isUITesting ? (try? CaptureTestConfiguration.parse(arguments))?.id : nil
@@ -33,6 +40,9 @@ struct LaunchConfiguration: Sendable {
         shouldSeedSyntheticClips = false
         shouldStartManualPasteQA = false
         #endif
+        shouldForceOnboarding = captureTestSessionID != nil && arguments.contains("--show-onboarding")
+        shouldUseEphemeralApplicationState = captureTestSessionID == nil && (isUITesting || isRunningTests)
+        shouldPresentOnboardingIfNeeded = !isRunningTests && !isUITesting && !shouldStartManualPasteQA
         shouldInitializeCaptureSession = captureTestSessionID != nil || (!isRunningTests && !isUITesting)
     }
 }

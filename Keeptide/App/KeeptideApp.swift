@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var environment: AppEnvironment?
     private var menuBarController: MenuBarController?
     private var initializationTask: Task<Void, Never>?
+    private var ephemeralPreferencesSuiteName: String?
     private var isShuttingDown = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -31,18 +32,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             arguments: processInfo.arguments,
             environment: processInfo.environment
         )
+        #if DEBUG
+        let manualPasteQASession = launchConfiguration.shouldStartManualPasteQA
+            ? ManualPasteQASession(id: UUID()) : nil
+        #endif
+        let preferencesDefaults: UserDefaults = {
+            if let testSessionID = launchConfiguration.captureTestSessionID {
+                return UserDefaults(suiteName: CaptureTestConfiguration(id: testSessionID).preferencesSuite)!
+            }
+            #if DEBUG
+            if let manualPasteQASession {
+                return UserDefaults(suiteName: manualPasteQASession.preferencesSuite)!
+            }
+            #endif
+            if launchConfiguration.shouldUseEphemeralApplicationState {
+                let suiteName = "Keeptide.Launch.\(UUID().uuidString)"
+                ephemeralPreferencesSuiteName = suiteName
+                return UserDefaults(suiteName: suiteName)!
+            }
+            return .standard
+        }()
+        let capturePreferences = CapturePreferences(defaults: preferencesDefaults)
+        let captureSession = CaptureSession(preferences: capturePreferences, directPaste: .live)
+        let shortcutCoordinator = GlobalShortcutCoordinator(
+            preferences: GlobalShortcutPreferences(defaults: preferencesDefaults),
+            shouldInstallHandler: launchConfiguration.shouldRegisterGlobalHotKey,
+            registration: Self.shortcutRegistration(for: launchConfiguration)
+        )
         // The one place that wires direct paste to the system. A test session pastes only into the system test host.
-        let environment = AppEnvironment(captureSession: CaptureSession(directPaste: .live))
+        let launchAtLogin: any LaunchAtLoginControlling =
+            launchConfiguration.shouldUseEphemeralApplicationState
+            || launchConfiguration.captureTestSessionID != nil
+            || launchConfiguration.shouldStartManualPasteQA
+            ? LaunchAtLoginModel(service: InertLaunchAtLoginService())
+            : LaunchAtLoginModel()
+        let environment = AppEnvironment(
+            captureSession: captureSession,
+            quickAccessPreferences: QuickAccessPreferences(defaults: preferencesDefaults),
+            shortcutCoordinator: shortcutCoordinator,
+            launchAtLogin: launchAtLogin,
+            onboardingPreferences: OnboardingPreferences(defaults: preferencesDefaults)
+        )
         self.environment = environment
 
         if launchConfiguration.shouldInitializeCaptureSession {
             initializationTask = Task {
+                #if DEBUG
+                if let manualPasteQASession {
+                    await environment.captureSession.open(manualPasteQA: manualPasteQASession)
+                } else {
+                    await environment.captureSession.initialize(
+                        testSessionID: launchConfiguration.captureTestSessionID,
+                        cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
+                        seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
+                    )
+                }
+                #else
                 await environment.captureSession.initialize(
                     testSessionID: launchConfiguration.captureTestSessionID,
                     cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
-                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips,
-                    manualPasteQA: launchConfiguration.shouldStartManualPasteQA
+                    seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
                 )
+                #endif
             }
         }
         menuBarController = Self.makeMenuBarController(
@@ -50,11 +101,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             canRequestQuit: { [weak self] in self?.isShuttingDown == false }
         )
 
-        if launchConfiguration.shouldShowQuickAccess {
-            environment.panelController.show()
-        }
-        if launchConfiguration.shouldShowLibrary {
-            environment.showLibrary()
+        let showedOnboarding = (launchConfiguration.shouldForceOnboarding
+            || launchConfiguration.shouldPresentOnboardingIfNeeded)
+            && environment.showOnboardingIfNeeded(force: launchConfiguration.shouldForceOnboarding)
+        if !showedOnboarding {
+            if launchConfiguration.shouldShowQuickAccess {
+                environment.panelController.show()
+            }
+            if launchConfiguration.shouldShowLibrary {
+                environment.showLibrary()
+            }
+            if launchConfiguration.shouldShowSettings {
+                environment.showSettings()
+            }
         }
     }
 
@@ -66,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             toggleQuickAccess: { environment.panelController.toggle() },
             showLibrary: { environment.showLibrary() },
             showSettings: { environment.showSettings() },
+            showWelcome: { environment.showOnboarding() },
             captureIsReady: { environment.captureSession.canToggleRecording },
             captureIsEnabled: { environment.captureSession.isRecording },
             captureStatus: { environment.captureSession.status },
@@ -74,10 +134,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             canRequestQuit: canRequestQuit,
             shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
-            registration: launchConfiguration.usesSyntheticHotKey
-                ? .system(keyCode: { UInt32(kVK_ANSI_9) }, modifiers: UInt32(cmdKey | shiftKey | optionKey | controlKey))
-                : .system()
+            shortcutCoordinator: environment.shortcutCoordinator
         )
+    }
+
+    /// UI tests use a deliberately unusual chord and never claim the user's configured shortcut. The same
+    /// coordinator remains the single state source consumed by Settings and the menu.
+    private static func shortcutRegistration(for configuration: LaunchConfiguration) -> GlobalShortcutRegistration {
+        guard configuration.usesSyntheticHotKey else { return .system() }
+        var registration = GlobalShortcutRegistration.system(resolveSemanticV: { UInt32(kVK_ANSI_9) })
+        let systemRegister = registration.register
+        registration.register = { keyCode, modifiers, options, reference in
+            systemRegister(
+                keyCode,
+                AppDelegate.syntheticModifiers(for: modifiers),
+                options,
+                &reference
+            )
+        }
+        return registration
+    }
+
+    static func syntheticModifiers(for modifiers: UInt32) -> UInt32 {
+        if modifiers & UInt32(shiftKey) != 0 {
+            return UInt32(cmdKey | shiftKey | optionKey | controlKey)
+        }
+        if modifiers & UInt32(optionKey) != 0 {
+            return UInt32(cmdKey | optionKey | shiftKey)
+        }
+        return UInt32(cmdKey | controlKey | optionKey)
     }
 
     /// The application menu's Settings… (⌘,), which reaches the delegate through the responder chain.
@@ -87,6 +172,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func exportLibrary(_ sender: Any?) {
         environment?.exportLibrary()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        environment?.applicationDidBecomeActive()
     }
 
     /// Opening Keeptide again, as with a click on its Dock icon, shows the Library. While a window is on screen,
@@ -116,6 +205,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
             await environment.captureSession.shutdown()
+            if let ephemeralPreferencesSuiteName {
+                UserDefaults(suiteName: ephemeralPreferencesSuiteName)?
+                    .removePersistentDomain(forName: ephemeralPreferencesSuiteName)
+                self.ephemeralPreferencesSuiteName = nil
+            }
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

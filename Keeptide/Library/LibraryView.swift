@@ -152,6 +152,9 @@ struct LibraryView: View {
         }
         .onChange(of: commands.saveRequest) { _, _ in saveCurrentEditor() }
         .onChange(of: commands.copyRequest) { _, _ in copyCurrentEditor() }
+        .onChange(of: commands.ignoredApplicationsRequest, initial: true) { _, request in
+            if request > 0 { showsIgnoredApplications = true }
+        }
         .onChange(of: commands.openRequest) { _, request in
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }

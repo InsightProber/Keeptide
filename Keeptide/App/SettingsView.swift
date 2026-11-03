@@ -1,17 +1,69 @@
 import SwiftUI
 
-/// The one page of the Settings window. Each control writes its preference at once.
+/// Four native settings pages backed by the application's shared preference and service models.
 struct SettingsView: View {
-    @Bindable var preferences: QuickAccessPreferences
-    let lifecycle: LifecycleSettingsModel?
+    @Bindable var model: SettingsModel
+
+    private var lifecycle: LifecycleSettingsModel? { model.lifecycle }
+
+    init(model: SettingsModel) {
+        self.model = model
+    }
 
     init(preferences: QuickAccessPreferences, lifecycle: LifecycleSettingsModel? = nil) {
-        self.preferences = preferences
-        self.lifecycle = lifecycle
+        model = SettingsModel.compatibility(quickAccess: preferences, lifecycle: lifecycle)
     }
 
     var body: some View {
-        Form {
+        TabView(selection: $model.selectedTab) {
+            page("GeneralSettingsPage") { generalPage }
+                .tabItem { Label(SettingsTab.general.title, systemImage: SettingsTab.general.systemImage) }
+                .tag(SettingsTab.general)
+            page("ShortcutSettingsPage") { shortcutPage }
+                .tabItem { Label(SettingsTab.shortcuts.title, systemImage: SettingsTab.shortcuts.systemImage) }
+                .tag(SettingsTab.shortcuts)
+            page("RecordingPrivacySettingsPage") { recordingPage }
+                .tabItem {
+                    Label(SettingsTab.recordingAndPrivacy.title, systemImage: SettingsTab.recordingAndPrivacy.systemImage)
+                }
+                .tag(SettingsTab.recordingAndPrivacy)
+            page("CloudSettingsPage") { cloudPage }
+                .tabItem { Label(SettingsTab.iCloud.title, systemImage: SettingsTab.iCloud.systemImage) }
+                .tag(SettingsTab.iCloud)
+        }
+        .frame(minWidth: 600, idealWidth: 600, maxWidth: 600, minHeight: 420)
+        .accessibilityIdentifier("SettingsTabs")
+        .alert(
+            "Shorten History Retention?",
+            isPresented: confirmationPresented
+        ) {
+            Button("Cancel", role: .cancel) { lifecycle?.cancelConfirmation() }
+            Button("Apply Shorter Retention", role: .destructive) {
+                guard let lifecycle else { return }
+                Task { await lifecycle.confirmShortening() }
+            }
+        } message: {
+            if let confirmation = lifecycle?.pendingConfirmation {
+                Text(Self.confirmationMessage(historyCount: confirmation.historyCount))
+            }
+        }
+    }
+
+    private func page<Content: View>(
+        _ identifier: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        ScrollView {
+            content()
+                .padding(.horizontal, 20)
+                .padding(.vertical, 16)
+        }
+        .accessibilityIdentifier(identifier)
+    }
+
+    private var generalPage: some View {
+        @Bindable var preferences = model.quickAccess
+        return Form {
             Section {
                 Picker("Card size", selection: $preferences.cardSize) {
                     ForEach(CardSize.allCases, id: \.self) { size in
@@ -43,6 +95,65 @@ struct SettingsView: View {
                 Text("Larger cards give each clip more room and larger type. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
             }
 
+            Section("Application") {
+                launchAtLoginControl
+                Button("Show Welcome", action: model.actions.showWelcome)
+                    .accessibilityIdentifier("ShowWelcomeButton")
+                if let exportArchive = model.actions.exportArchive {
+                    Button("Export Library…", action: exportArchive)
+                        .disabled(!model.canExportLibrary)
+                        .help("Available when the local library is open and no export is running.")
+                        .accessibilityIdentifier("ExportLibraryButton")
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var shortcutPage: some View {
+        Form {
+            Section {
+                Picker("Keyboard shortcut", selection: shortcutSelection) {
+                    ForEach(QuickAccessShortcut.allCases, id: \.self) { shortcut in
+                        Text(shortcut.displayName).tag(shortcut)
+                    }
+                }
+                .accessibilityIdentifier("GlobalShortcutPicker")
+                Text(shortcutStatusDescription)
+                    .foregroundStyle(shortcutStatusIsFailure ? .red : .secondary)
+                    .accessibilityIdentifier("GlobalShortcutStatus")
+            } header: {
+                Text("Quick Access")
+            } footer: {
+                Text("The shortcut follows the V key in your current keyboard input source. If a choice is unavailable, use the menu bar or choose another preset.")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private var recordingPage: some View {
+        Form {
+            Section {
+                Toggle("Record new clipboard content", isOn: captureEnabled)
+                    .disabled(!model.canChangeRecordingConsent)
+                    .accessibilityIdentifier("CaptureEnabledToggle")
+                Text(model.recordingStatusDescription)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("RecordingAvailabilityStatus")
+                Text("Recording affects only new copies. Turning it off does not remove existing history or saved snippets.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Text(ignoredApplicationsDescription)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Manage Ignored Apps…", action: model.actions.manageIgnoredApplications)
+                        .accessibilityIdentifier("ManageIgnoredApplicationsButton")
+                }
+            } header: {
+                Text("Recording")
+            }
+
             Section("History & Storage") {
                 if let lifecycle {
                     lifecycleSettings(lifecycle)
@@ -51,23 +162,91 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("LifecycleSettingsUnavailable")
                 }
+                Text("Saved snippets are not affected by clipboard history retention.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("SavedSnippetRetentionExplanation")
             }
         }
         .formStyle(.grouped)
-        .frame(width: 520)
-        .alert(
-            "Shorten History Retention?",
-            isPresented: confirmationPresented
-        ) {
-            Button("Cancel", role: .cancel) { lifecycle?.cancelConfirmation() }
-            Button("Apply Shorter Retention", role: .destructive) {
-                guard let lifecycle else { return }
-                Task { await lifecycle.confirmShortening() }
+    }
+
+    private var cloudPage: some View {
+        Form {
+            Section {
+                Label("iCloud is not available in this build", systemImage: "icloud.slash")
+                    .font(.headline)
+                    .accessibilityIdentifier("CloudUnavailableTitle")
+                Text("Your library is stored locally on this Mac.")
+                    .accessibilityIdentifier("LocalLibraryExplanation")
+                Text("Clipboard history, saved snippets, search, and the Library continue to work without iCloud.")
+                    .foregroundStyle(.secondary)
             }
-        } message: {
-            if let confirmation = lifecycle?.pendingConfirmation {
-                Text(Self.confirmationMessage(historyCount: confirmation.historyCount))
+        }
+        .formStyle(.grouped)
+    }
+
+    @ViewBuilder
+    private var launchAtLoginControl: some View {
+        switch model.launchAtLogin.state {
+        case .unavailable:
+            Label("Open at Login is unavailable in this build", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("LaunchAtLoginUnavailable")
+        default:
+            Toggle("Open Keeptide at Login", isOn: launchAtLoginEnabled)
+                .disabled(model.launchAtLogin.isBusy)
+                .accessibilityIdentifier("LaunchAtLoginToggle")
+            if model.launchAtLogin.state == .requiresApproval {
+                Text("Allow Keeptide in System Settings > General > Login Items.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            } else if case .failed(_, let message) = model.launchAtLogin.state {
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
+        }
+    }
+
+    private var captureEnabled: Binding<Bool> {
+        Binding(get: { model.capture.isEnabled }, set: { model.capture.isEnabled = $0 })
+    }
+
+    private var shortcutSelection: Binding<QuickAccessShortcut> {
+        Binding(
+            get: { model.shortcut.selection },
+            set: { _ = model.shortcut.apply($0) }
+        )
+    }
+
+    private var launchAtLoginEnabled: Binding<Bool> {
+        Binding(
+            get: {
+                [.enabled, .requiresApproval].contains(model.launchAtLogin.state.actualStatus)
+            },
+            set: { enabled in Task { await model.launchAtLogin.setEnabled(enabled) } }
+        )
+    }
+
+    private var ignoredApplicationsDescription: String {
+        let count = model.capture.excludedApplications.count
+        return count == 0 ? "No ignored applications" : "\(count) ignored application\(count == 1 ? "" : "s")"
+    }
+
+    private var shortcutStatusDescription: String {
+        switch model.shortcut.status {
+        case .disabled: "The global shortcut is off. Quick Access remains available from the menu bar."
+        case .registered(let shortcut): "\(shortcut.displayName) is ready."
+        case .unavailable(let shortcut): "\(shortcut.displayName) is unavailable. Choose another preset or use the menu bar."
+        case .failed(let shortcut, _): "Keeptide could not register \(shortcut.displayName). Choose another preset or use the menu bar."
+        }
+    }
+
+    private var shortcutStatusIsFailure: Bool {
+        switch model.shortcut.status {
+        case .unavailable, .failed: true
+        case .disabled, .registered: false
         }
     }
 

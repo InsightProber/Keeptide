@@ -82,3 +82,11 @@ planned.
 Semantic search and contextual suggestions are potential second-phase features.
 They require separate decisions about model execution, privacy, consent, quality
 and performance. They are not first-release promises.
+
+## Application preferences and welcome
+
+The native Settings window groups appearance, keyboard shortcuts, recording and
+privacy, and cloud availability. Recording requires an explicit choice; the
+Library remains usable without recording. Shortcut changes preserve the last
+working registration if a new choice fails. Login-item controls reflect the
+operating system status. iCloud is explicitly unavailable in the current build.

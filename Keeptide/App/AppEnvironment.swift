@@ -2,31 +2,57 @@ import AppKit
 
 @MainActor
 final class AppEnvironment {
-    let settings: AppSettings
     let captureSession: CaptureSession
     let quickAccessPreferences: QuickAccessPreferences
+    let shortcutCoordinator: GlobalShortcutCoordinator
+    let launchAtLogin: any LaunchAtLoginControlling
+    let onboardingPreferences: OnboardingPreferences
+    private(set) var ephemeralPreferencesSuiteName: String?
     private let makePanel: () -> PanelController
     private let makeLibrary: () -> LibraryWindowController
-    private let makeSettings: () -> SettingsWindowController
+    private let settingsFactory: (() -> SettingsWindowController)?
+    private let onboardingFactory: ((OnboardingActions) -> OnboardingWindowController)?
+    private let showLibraryOverride: (() -> Void)?
     private var panel: PanelController?
     private var library: LibraryWindowController?
     private var settingsWindow: SettingsWindowController?
+    private var onboardingWindow: OnboardingWindowController?
     /// Shows the Enable Direct Paste alert and returns the button chosen. Tests replace it, since a real alert waits.
     var runDirectPasteAlert: (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() }
     /// Brings Keeptide to the front for the Enable Direct Paste alert. Tests replace it, so that they never bring the
     /// test host forward.
     var activateApp: () -> Void = { NSApplication.shared.activate() }
 
-    init(settings: AppSettings = AppSettings(),
-         captureSession: CaptureSession? = nil,
-         quickAccessPreferences: QuickAccessPreferences = QuickAccessPreferences(),
+    init(captureSession: CaptureSession? = nil,
+         quickAccessPreferences: QuickAccessPreferences? = nil,
+         shortcutCoordinator: GlobalShortcutCoordinator? = nil,
+         launchAtLogin: (any LaunchAtLoginControlling)? = nil,
+         onboardingPreferences: OnboardingPreferences? = nil,
          makePanel: (() -> PanelController)? = nil,
          makeLibrary: (() -> LibraryWindowController)? = nil,
-         makeSettings: (() -> SettingsWindowController)? = nil) {
-        let captureSession = captureSession ?? CaptureSession()
-        self.settings = settings
+         makeSettings: (() -> SettingsWindowController)? = nil,
+         makeOnboarding: ((OnboardingActions) -> OnboardingWindowController)? = nil,
+         showLibrary: (() -> Void)? = nil) {
+        let needsEphemeralDefaults = captureSession == nil || quickAccessPreferences == nil
+            || shortcutCoordinator == nil || onboardingPreferences == nil
+        let ephemeralSuiteName = needsEphemeralDefaults
+            ? "Keeptide.AppEnvironment.\(UUID().uuidString)" : nil
+        let ephemeralDefaults = ephemeralSuiteName.flatMap(UserDefaults.init(suiteName:))
+        let captureSession = captureSession ?? CaptureSession(
+            preferences: CapturePreferences(defaults: ephemeralDefaults!)
+        )
+        let quickAccessPreferences = quickAccessPreferences ?? QuickAccessPreferences(defaults: ephemeralDefaults!)
+        captureSession.preservePreferenceIdentity()
         self.captureSession = captureSession
         self.quickAccessPreferences = quickAccessPreferences
+        self.shortcutCoordinator = shortcutCoordinator ?? GlobalShortcutCoordinator(
+            preferences: GlobalShortcutPreferences(defaults: ephemeralDefaults!),
+            shouldInstallHandler: false
+        )
+        self.launchAtLogin = launchAtLogin ?? LaunchAtLoginModel(service: InertLaunchAtLoginService())
+        self.onboardingPreferences = onboardingPreferences
+            ?? OnboardingPreferences(defaults: ephemeralDefaults!)
+        ephemeralPreferencesSuiteName = ephemeralSuiteName
         self.makePanel = makePanel ?? { [weak captureSession] in
             // The panel reads the same preferences the Settings window edits.
             PanelController(state: QuickAccessState(services: { captureSession?.quickAccessServices }),
@@ -39,16 +65,68 @@ final class AppEnvironment {
                     ? nil : "KeeptideLibraryWindow"
             )
         }
-        self.makeSettings = makeSettings ?? {
-            SettingsWindowController(preferences: quickAccessPreferences, lifecycle: captureSession.maintenance?.settings)
+        settingsFactory = makeSettings
+        onboardingFactory = makeOnboarding
+        showLibraryOverride = showLibrary
+        captureSession.onServicesChanged = { [weak self] in
+            guard let self else { return }
+            self.panel?.state.servicesDidChange()
+            let lifecycle = self.captureSession.maintenance?.settings
+            self.settingsModel.updateLifecycle(lifecycle)
+            self.settingsWindow?.updateLifecycle(lifecycle)
         }
+    }
+
+    isolated deinit {
+        if let ephemeralPreferencesSuiteName {
+            UserDefaults(suiteName: ephemeralPreferencesSuiteName)?
+                .removePersistentDomain(forName: ephemeralPreferencesSuiteName)
+        }
+    }
+
+    lazy private(set) var settingsModel = SettingsModel(
+        quickAccess: quickAccessPreferences,
+        capture: captureSession.preferences,
+        lifecycle: captureSession.maintenance?.settings,
+        shortcut: shortcutCoordinator,
+        launchAtLogin: launchAtLogin,
+        actions: SettingsActions(
+            showWelcome: { [weak self] in self?.showOnboarding() },
+            manageIgnoredApplications: { [weak self] in self?.showIgnoredApplications() },
+            exportArchive: { [weak self] in self?.exportLibrary() }
+        ),
+        recordingState: { [weak captureSession] in
+            captureSession?.settingsRecordingState ?? .unavailable("Recording is unavailable.")
+        },
+        canChangeRecording: { [weak captureSession] in captureSession?.canChangeRecordingConsent ?? false },
+        canExport: { [weak self] in self?.canExportLibrary ?? false }
+    )
+
+    var onboardingActions: OnboardingActions {
+        OnboardingActions(
+            startRecording: { [weak self] in
+                guard let self else { return }
+                self.captureSession.preferences.isEnabled = true
+                self.onboardingPreferences.completeCurrentVersion()
+                self.showLibrary()
+            },
+            notNow: { [weak self] in
+                guard let self else { return }
+                self.onboardingPreferences.completeCurrentVersion()
+                self.showLibrary()
+            },
+            openLibrary: { [weak self] in
+                guard let self else { return }
+                self.onboardingPreferences.completeCurrentVersion()
+                self.showLibrary()
+            }
+        )
     }
 
     var panelController: PanelController {
         if let panel { return panel }
         let panel = makePanel()
         self.panel = panel
-        captureSession.onServicesChanged = { [weak panel] in panel?.state.servicesDidChange() }
         captureSession.onRecentClipsChanged = { [weak panel] in panel?.state.recentClipsChanged() }
         // The panel's ⋯ menu does what the menu bar's Open Library and Settings… do.
         panel.onOpenLibrary = { [weak self] in self?.showLibrary() }
@@ -69,13 +147,21 @@ final class AppEnvironment {
         if let library { return library }
         let library = makeLibrary()
         self.library = library
+        library.shouldRestoreAccessory = { [weak self, weak library] in
+            self?.shouldRestoreAccessory(excluding: library?.window) ?? true
+        }
         return library
     }
 
     var settingsWindowController: SettingsWindowController {
         if let settingsWindow { return settingsWindow }
-        let settingsWindow = makeSettings()
+        let settingsWindow = settingsFactory?() ?? SettingsWindowController(
+            model: settingsModel
+        )
         self.settingsWindow = settingsWindow
+        settingsWindow.shouldRestoreAccessory = { [weak self, weak settingsWindow] in
+            self?.shouldRestoreAccessory(excluding: settingsWindow?.window) ?? true
+        }
         return settingsWindow
     }
 
@@ -83,20 +169,66 @@ final class AppEnvironment {
         library?.commands.isRecentlyDeleted == true
     }
 
+    var onboardingWindowController: OnboardingWindowController {
+        if let onboardingWindow { return onboardingWindow }
+        let actions = onboardingActions
+        let onboardingWindow = onboardingFactory?(actions) ?? OnboardingWindowController(
+            actions: actions
+        )
+        self.onboardingWindow = onboardingWindow
+        onboardingWindow.shouldRestoreAccessory = { [weak self, weak onboardingWindow] in
+            self?.shouldRestoreAccessory(excluding: onboardingWindow?.window) ?? true
+        }
+        return onboardingWindow
+    }
+
     func showLibrary() {
         panel?.close()
+        if let showLibraryOverride {
+            showLibraryOverride()
+            return
+        }
         libraryWindowController.show()
     }
 
     func showSettings() {
         panel?.close()
-        settingsWindowController.updateLifecycle(captureSession.maintenance?.settings)
+        launchAtLogin.refresh()
+        let lifecycle = captureSession.maintenance?.settings
+        settingsModel.updateLifecycle(lifecycle)
+        settingsWindowController.updateLifecycle(lifecycle)
         settingsWindowController.show()
     }
 
+    var canExportLibrary: Bool {
+        captureSession.isReady && captureSession.exportCoordinator?.canStart == true && !libraryIsRecentlyDeleted
+    }
+
     func exportLibrary() {
+        guard canExportLibrary else { return }
         showLibrary()
         libraryWindowController.exportLibrary(nil)
+    }
+
+    func showIgnoredApplications() {
+        showLibrary()
+        guard showLibraryOverride == nil else { return }
+        libraryWindowController.showIgnoredApplications()
+    }
+
+    func showOnboarding() {
+        panel?.close()
+        onboardingWindowController.show()
+    }
+
+    func showOnboardingIfNeeded(force: Bool = false) -> Bool {
+        guard force || onboardingPreferences.snapshot().needsCurrentOnboarding else { return false }
+        showOnboarding()
+        return true
+    }
+
+    func applicationDidBecomeActive() {
+        launchAtLogin.refresh()
     }
 
     /// Enable Direct Paste… from the panel's menu, once the panel has closed. Keeptide comes to the front and says what
@@ -120,6 +252,18 @@ final class AppEnvironment {
         alert.addButton(withTitle: "Cancel")
         return alert
     }
+
+    private func shouldRestoreAccessory(excluding closingWindow: NSWindow?) -> Bool {
+        let regularWindows = [library?.window, settingsWindow?.window, onboardingWindow?.window]
+        return !regularWindows.compactMap { $0 }.contains { $0 !== closingWindow && $0.isVisible }
+    }
+}
+
+@MainActor
+final class InertLaunchAtLoginService: LaunchAtLoginServicing {
+    let status: LaunchAtLoginServiceStatus = .unavailable
+    func register() async throws {}
+    func unregister() async throws {}
 }
 
 extension CaptureSession {
