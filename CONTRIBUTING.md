@@ -5,9 +5,11 @@ development. A menu-bar application, quick-access panel, library shell, and
 verification infrastructure are present. Local persistence and content
 validation are implemented, together with local recording, a recent-clips list,
 original-format copying, a rebuildable local search index, and a quick-access
-panel that shows clips as a band of cards, searches, previews text and images,
-copies, and pastes into the app it was opened from. Snippets and cloud
-integration remain planned.
+panel that shows clips as a band of cards, searches, previews content, copies,
+and pastes into the app it was opened from. The reusable snippet library,
+collections, local lifecycle controls, settings, and local archive export are
+implemented foundations. Cloud integration and release qualification remain
+planned work.
 
 ## Before making a change
 
@@ -46,7 +48,10 @@ The verification entry point provides these commands:
 ./scripts/verify.sh ui NativeShellUITests
 ./scripts/verify.sh release-build
 ./scripts/verify.sh warnings-build
+./scripts/verify.sh analyze
 ./scripts/verify.sh all
+./scripts/benchmark.sh
+./scripts/benchmark.sh --million
 ```
 
 `unit` and `integration` run `KeeptideTests`; `ui` runs `KeeptideUITests`.
@@ -58,10 +63,25 @@ clipboard reader with inherited sandbox entitlements. Its signing step deliberat
 uses the checked-in helper entitlement set; XCTest's extra test-host entitlements
 must not be propagated to that helper.
 
+`analyze` runs Xcode's static analyzer without signing. The default benchmark
+runs a fixed 10,000-item search oracle and a 100,000-item SearchService
+measurement in Release configuration. `--million` explicitly opts into the
+one-million-item stress run and is not part of ordinary verification. The
+benchmark measures service build/query behavior and gates only SearchService's
+first batch; it does not establish UI presentation latency or responsiveness.
+It requires a clean worktree so the recorded Git SHA identifies the measured
+code. Detailed evidence is written only below the ignored `.local/benchmarks/`
+directory; do not commit those logs, result bundles, or reports.
+
 For verification-script changes, also run
 `python3 -m unittest discover -s scripts/tests -v`. Documentation changes need
 accurate status, valid links, consistent terminology, and `git diff --check`.
 Logs and result bundles belong under the ignored `.local/` directory.
+
+Passing automated checks is necessary but is not a release declaration. There
+is no completed Developer ID signing, notarization, production cloud recovery,
+or sustained-use acceptance claim in this repository. Record those operations
+only after they have actually run against the exact candidate SHA.
 
 Changes to native UI, input methods, permissions or destination selection need
 real macOS validation. CI and direct Swift compilation do not establish real

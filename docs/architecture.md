@@ -6,8 +6,8 @@ local clipboard recording, a rebuildable local search index, and quick-access
 browsing on a band of clip cards, search, text and image preview, copying, and
 direct paste into the app window quick access was opened from are implemented.
 The snippet service foundation, including recoverable drafts and conflict copies,
-and the native snippet editor are implemented. Export UI and cloud integration
-remain planned.
+the native snippet editor, and local export UI are implemented. Cloud integration
+remains planned.
 
 ## Native interfaces
 
