@@ -25,6 +25,11 @@ Git SHA, toolchain, and machine. Its performance gate applies to the first batch
 from SearchService in a Release test build. It is not evidence of quick-access
 rendering or end-to-end UI latency.
 
+Release automation builds and verifies an Apple silicon DMG, checksum, and build
+metadata for published version tags. The current packages use ad-hoc signatures;
+Developer ID signing and notarization remain pending. PR and manual workflow runs
+produce test artifacts without publishing releases.
+
 ## Remaining first-release gates
 
 - Complete signed manual validation for keyboard focus, input methods,
@@ -33,7 +38,7 @@ rendering or end-to-end UI latency.
 - Run representative Release benchmarks and sustained-use observation on the
   exact candidate SHA; the presence of benchmark tooling is not a passing run.
 - Complete Developer ID signing, notarization, supported-macOS checks, and the
-  release packaging path.
+  downloaded-package installation and upgrade checks.
 - Validate iCloud account isolation, background persistence, and clean-install
   recovery with a real provisioned container before enabling or claiming cloud
   support.

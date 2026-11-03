@@ -141,6 +141,9 @@ Planned capabilities must stay labelled until implemented and verified.
   service-level latency evidence does not establish UI presentation latency.
 - Run `python3 -m unittest discover -s scripts/tests -v` when changing the
   verification script. These checks do not substitute for native XCTest.
+- Package an ad-hoc Release DMG with `python3 scripts/package_dmg.py --version VERSION --build-number NUMBER --output NEW_DIRECTORY`.
+  The workflow tests disk-image integrity and mounted app signatures; this does
+  not establish Developer ID or notarization readiness.
 - Test behavior and failure boundaries. For meaningful changes, run focused
   tests first, then the relevant integration/build checks. Do not add tests that
   merely mirror formatting or implementation details.
