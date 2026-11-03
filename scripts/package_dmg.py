@@ -41,6 +41,8 @@ This automated build is ad-hoc signed for integrity checks. It is not signed
 with an Apple Developer ID and has not been notarized by Apple. macOS may block
 it on other computers. It is intended for project testing until the official
 distribution signing and notarization process is configured.
+
+License and attribution are provided in LICENSE.txt and NOTICE.txt.
 """
 
 
@@ -232,6 +234,11 @@ def _verify_mounted_contents(mount_point: Path, version: str, build_number: str,
         raise PackagingError("disk image Applications link is missing or invalid")
     if not readme.is_file() or readme.read_text(encoding="utf-8") != README_TEXT:
         raise PackagingError("disk image release notice is missing or invalid")
+    for source_name in ("LICENSE", "NOTICE"):
+        bundled = mount_point / f"{source_name}.txt"
+        if (not bundled.is_file() or bundled.is_symlink()
+                or bundled.read_bytes() != (REPOSITORY_ROOT / source_name).read_bytes()):
+            raise PackagingError(f"disk image {source_name.lower()} is missing or invalid")
     verify_app_bundle(app, version, build_number, runner)
 
 
@@ -270,6 +277,8 @@ def package_release(
         runner(["/usr/bin/ditto", str(app), str(staging / "Keeptide.app")])
         (staging / "Applications").symlink_to("/Applications")
         (staging / "README.txt").write_text(README_TEXT, encoding="utf-8")
+        for source_name in ("LICENSE", "NOTICE"):
+            shutil.copyfile(REPOSITORY_ROOT / source_name, staging / f"{source_name}.txt")
         temporary_dmg = work / filename
         runner(
             [

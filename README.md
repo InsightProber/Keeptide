@@ -79,7 +79,7 @@ python3 scripts/package_dmg.py --version 0.1.0-rc.1 --build-number 1 --output .l
 ```
 
 The output directory must not already exist. The disk image contains the app,
-an Applications shortcut, and installation notes. **These are ad-hoc-signed test
+an Applications shortcut, installation notes, and the project license and notices. **These are ad-hoc-signed test
 builds, not Developer ID-signed or notarized releases.** macOS may prevent a
 downloaded test build from opening. Packaging does not establish production
 release readiness or enable iCloud. Developer ID signing and notarization remain

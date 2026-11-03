@@ -58,6 +58,23 @@ class PackageDmgTests(unittest.TestCase):
         with package_dmg.mounted_dmg(Path('synthetic.dmg'), runner) as mount:
             self.assertTrue(mount.is_dir())
 
+    def test_mounted_package_requires_exact_license_copy(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            mount = Path(temporary)
+            (mount / 'Applications').symlink_to('/Applications')
+            (mount / 'README.txt').write_text(package_dmg.README_TEXT)
+            with patch.object(package_dmg, 'verify_app_bundle'):
+                with self.assertRaisesRegex(package_dmg.PackagingError, 'license'):
+                    package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                (mount / 'LICENSE.txt').write_text('incomplete synthetic license')
+                with self.assertRaisesRegex(package_dmg.PackagingError, 'license'):
+                    package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                (mount / 'LICENSE.txt').write_bytes((package_dmg.REPOSITORY_ROOT / 'LICENSE').read_bytes())
+                with self.assertRaisesRegex(package_dmg.PackagingError, 'notice'):
+                    package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+                (mount / 'NOTICE.txt').write_bytes((package_dmg.REPOSITORY_ROOT / 'NOTICE').read_bytes())
+                package_dmg._verify_mounted_contents(mount, '1.2.3', '7', self.validating_runner)
+
     def test_parse_version_returns_numeric_bundle_version(self):
         self.assertEqual(package_dmg.parse_version("1.2.3"), "1.2.3")
         self.assertEqual(package_dmg.parse_version("1234.56.78-rc.9"), "1234.56.78")
