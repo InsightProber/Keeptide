@@ -13,18 +13,21 @@ final class SettingsUITests: XCTestCase {
             XCTAssertTrue(app.tabs[title].exists, "Missing settings page \(title)")
         }
         app.tabs["iCloud"].click()
-        let cloudDescription = app.staticTexts["CloudUnavailableTitle"]
+        let cloudPage = app.scrollViews["CloudSettingsPage"]
+        let cloudDescription = cloudPage.staticTexts["CloudUnavailableTitle"]
         XCTAssertTrue(cloudDescription.waitForExistence(timeout: 3))
-        // The native Form groups these sentences into one static text element,
-        // whose contents can be exposed as AXValue instead of AXLabel.
+        // The native Form can expose separate or grouped static texts, with
+        // their contents in AXValue instead of AXLabel.
         let cloudLabel = cloudDescription.label
         let cloudValue = cloudDescription.value as? String ?? ""
         XCTAssertTrue(cloudLabel.contains("iCloud is not available in this build")
                       || cloudValue.contains("iCloud is not available in this build"),
                       cloudDescription.debugDescription)
-        XCTAssertTrue(cloudLabel.contains("Your library is stored locally on this Mac.")
-                      || cloudValue.contains("Your library is stored locally on this Mac."),
-                      cloudDescription.debugDescription)
+        let localExplanation = cloudPage.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS %@ OR value CONTAINS %@",
+            "Your library is stored locally on this Mac.", "Your library is stored locally on this Mac."
+        )).firstMatch
+        XCTAssertTrue(localExplanation.exists, cloudPage.debugDescription)
         XCTAssertFalse(app.buttons["Sign In"].exists)
         XCTAssertFalse(app.switches["iCloud"].exists)
     }
