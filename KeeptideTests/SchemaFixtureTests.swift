@@ -76,9 +76,12 @@ final class SchemaFixtureTests: XCTestCase {
     }
 
     private func hashes(in directory: URL) throws -> [String: Data] {
+        // Bundle URLs and enumerated URLs may spell /tmp as /private/tmp.
+        // Use the same canonical root when enumerating and removing the prefix.
+        let canonicalDirectory = directory.resolvingSymlinksInPath()
         let keys: [URLResourceKey] = [.isRegularFileKey]
         guard let enumerator = FileManager.default.enumerator(
-            at: directory,
+            at: canonicalDirectory,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles]
         ) else {
@@ -88,7 +91,7 @@ final class SchemaFixtureTests: XCTestCase {
         var result: [String: Data] = [:]
         for case let file as URL in enumerator {
             guard try file.resourceValues(forKeys: Set(keys)).isRegularFile == true else { continue }
-            let relativePath = String(file.path.dropFirst(directory.path.count + 1))
+            let relativePath = String(file.path.dropFirst(canonicalDirectory.path.count + 1))
             result[relativePath] = Data(SHA256.hash(data: try Data(contentsOf: file)))
         }
         return result
