@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import Keeptide
@@ -111,6 +112,142 @@ final class ExportTests: XCTestCase {
         try await assertVerifierFence(expireLease: false)
         try await assertVerifierFence(expireLease: true)
     }
+
+    func testPartialPayloadWriteFailureCleansStageReleasesLeaseAndPreservesSource() async throws {
+        let noSpace = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+        let wrappedNoSpace = NSError(domain: NSCocoaErrorDomain,
+            code: CocoaError.fileWriteUnknown.rawValue, userInfo: [NSUnderlyingErrorKey: noSpace])
+        for failure in [noSpace, wrappedNoSpace] {
+            try await assertPartialWriteFailure(failure, expected: .diskWriteFailed)
+        }
+    }
+
+    func testCancellationDuringPayloadWriteRemainsCancellationAndCleansUp() async throws {
+        try await assertPartialWriteFailure(CancellationError(), expected: .cancelled)
+    }
+
+    func testWriterRetainsPOSIXCodeFromDirectAndWrappedFileHandleErrors() throws {
+        let noSpace = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+        let wrapped = NSError(domain: NSCocoaErrorDomain,
+            code: CocoaError.fileWriteUnknown.rawValue, userInfo: [NSUnderlyingErrorKey: noSpace])
+        let cocoaNoSpace = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
+        for failure in [noSpace, wrapped, cocoaNoSpace] {
+            let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: parent) }
+            let writer = try StagedArchiveWriter(destinationParent: parent,
+                destinationName: "Never published", stagingID: UUID(), writeBytes: { _, _ in throw failure })
+            defer { writer.cleanup() }
+            XCTAssertThrowsError(try writer.write(Data("body".utf8), relativePath: "payloads/body.txt")) {
+                XCTAssertEqual($0 as? StagedArchiveWriterError, .ioFailure(ENOSPC))
+            }
+        }
+    }
+
+    func testVerifierFailureCleansStageAndReleasesLeaseWithoutPublishing() async throws {
+        let fixture = try makeStoreAndDestination()
+        _ = try await insertMixedLibrary(into: fixture.controller)
+        let controller = fixture.controller
+        let service = ExportService(reader: ContentSnapshotReader(controller: controller),
+            permitProvider: { try await StoreSafetyGate(controller: controller).permit(.completeArchive) },
+            verify: { root in
+                // Exercise a completed on-disk archive before rejecting verification.
+                _ = try await ArchiveVerifier().verify(at: root)
+                throw ArchiveVerificationError.integrityMismatch
+            })
+        await XCTAssertThrowsErrorAsyncExport {
+            _ = try await service.export(ExportRequest(scope: .allVisible,
+                                                      destinationParent: fixture.destinationParent))
+        } verify: { XCTAssertEqual($0 as? ExportError, .verificationFailed) }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.destinationParent.path), [])
+        let leases = try await activeLeaseCount(controller)
+        XCTAssertEqual(leases, 0)
+    }
+
+    func testCancellationDuringVerificationOrImmediatelyBeforePublicationCleansUp() async throws {
+        try await assertLateCancellation(duringVerification: true)
+        try await assertLateCancellation(duringVerification: false)
+    }
+
+    func testExternalLargeMemoEditedAfterFirstPageExportsOnlyOldBytesOrPublishesNothing() async throws {
+        let fixture = try makeStoreAndDestination()
+        let controller = fixture.controller
+        let smallCapture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("first page".utf8))]])
+        let smallItem = ContentStoreFixtures.item(smallCapture)
+        let oldBody = Data(repeating: 65, count: 21 * 1_024 * 1_024)
+        var memo = MemoValue(itemID: ItemID(), bodyMode: .ownedPlainText, body: oldBody,
+                             version: ContentVersion(), digest: ContentDigest.sha256(oldBody))
+        let memoItem = ItemValue(id: memo.itemID, memoID: memo.id)
+        let oldRef = ContentRef(itemID: memo.itemID, facet: .memo,
+                                version: try XCTUnwrap(memo.version), digest: try XCTUnwrap(memo.digest))
+        let selected = [ContentStoreFixtures.ref(smallItem, smallCapture), oldRef]
+        let writer = WriteCoordinator(controller: controller)
+        _ = try await writer.commit(StoreTransaction(identity: try await controller.identity(), mutations: [
+            .insert(.capture(smallCapture)), .insert(.item(smallItem)),
+            .insert(.memo(memo)), .insert(.item(memoItem)),
+        ]))
+        let files = try XCTUnwrap(FileManager.default.enumerator(
+            at: fixture.root.appendingPathComponent("store"), includingPropertiesForKeys: [.fileSizeKey]))
+        let externalSizes = try files.compactMap { element -> Int? in
+            guard let url = element as? URL, url.pathComponents.contains("_EXTERNAL_DATA") else { return nil }
+            return try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        }
+        XCTAssertTrue(externalSizes.contains(where: { $0 >= oldBody.count }),
+                      "The fixture must exercise a real external payload larger than 20 MiB")
+
+        let barrier = ExportProgressBarrier()
+        let task = Task {
+            try await ExportService(controller: controller).export(ExportRequest(
+                scope: .selected(selected), destinationParent: fixture.destinationParent, pageSize: 1
+            )) { progress in
+                if progress == .writing(completedEntries: 1) { barrier.arriveAndWait() }
+            }
+        }
+        defer { task.cancel(); barrier.release() }
+        await Task.detached { barrier.waitUntilReached() }.value
+        let state = try await ContentRepository(controller: controller).recordState(.memo(memo.id))
+        let newBody = Data("replacement saved while the export is paused".utf8)
+        memo.body = newBody
+        memo.version = ContentVersion()
+        memo.digest = ContentDigest.sha256(newBody)
+        _ = try await writer.commit(StoreTransaction(identity: try await controller.identity(),
+            preconditions: [.recordUnchanged(.memo(memo.id), fingerprint: state.fingerprint)],
+            mutations: [.update(.memo(memo))]))
+        barrier.release()
+
+        do {
+            let result = try await task.value
+            let verified = try await ArchiveVerifier().verify(at: result.destination)
+            let archive = try readArchive(at: result.destination)
+            XCTAssertEqual(verified.entryCount, 2)
+            XCTAssertEqual(archive.entries.map(\.itemID), selected.map { $0.itemID.rawValue })
+            let exportedMemo = try XCTUnwrap(archive.entries.last)
+            XCTAssertEqual(exportedMemo.contentVersion, oldRef.version.rawValue)
+            XCTAssertEqual(exportedMemo.contentDigestSHA256,
+                           oldRef.digest.map { String(format: "%02x", $0) }.joined())
+            let representation = try XCTUnwrap(exportedMemo.representations.first)
+            let payloadPath = try XCTUnwrap(representation.payloadPath)
+            let readablePath = try XCTUnwrap(representation.readable?.path)
+            XCTAssertEqual(try Data(contentsOf: result.destination.appendingPathComponent(payloadPath)), oldBody)
+            XCTAssertEqual(try Data(contentsOf: result.destination.appendingPathComponent(readablePath)), oldBody)
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.destinationParent.path),
+                           [result.destination.lastPathComponent])
+            print("Synthetic external-memo export race: verified exact original 21 MiB payload.")
+        } catch {
+            XCTAssertTrue(error as? ExportError == .changedSelection || error as? ExportError == .snapshotExpired,
+                          "An unavailable old external payload must fail the whole export: \(error)")
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.destinationParent.path), [])
+            print("Synthetic external-memo export race: rejected stale snapshot with \(error); no archive published.")
+        }
+        let leases = try await activeLeaseCount(controller)
+        XCTAssertEqual(leases, 0)
+        let newRef = ContentRef(itemID: memo.itemID, facet: .memo,
+                                version: try XCTUnwrap(memo.version), digest: try XCTUnwrap(memo.digest))
+        let current = try await ContentRepository(controller: controller).read(newRef)
+        XCTAssertTrue(current.isActionable)
+        XCTAssertEqual(current.representations.first?.bytes, newBody)
+    }
+
     func testSafeNamesIgnoreUserTitlesAndUseOnlyStableIdentifiers() {
         let ref = ContentRef(itemID: ItemID(rawValue: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!),
                              facet: .memo, version: ContentVersion(), digest: Data(repeating: 1, count: 32))
@@ -164,6 +301,28 @@ final class ExportTests: XCTestCase {
 
         XCTAssertEqual(result?.kind, .markdown)
         XCTAssertEqual(result?.data, markdown)
+    }
+
+    func testUTF16CaptureExportsExactUTF8ReadableAndUnchangedOriginalBytes() async throws {
+        let text = "工具 🐚\ncp /Users/alice/input /tmp/output\n"
+        let bytes = try XCTUnwrap(text.data(using: .utf16))
+        try await assertCaptureReadable(type: "public.utf16-plain-text", bytes: bytes,
+                                       readable: Data(text.utf8), kind: .text)
+    }
+
+    func testURLCaptureExportsExactReadableAndOriginalBytes() async throws {
+        let bytes = Data("https://example.test/path?q=one%20two&case=UPPER#fragment".utf8)
+        try await assertCaptureReadable(type: "public.url", bytes: bytes, readable: bytes, kind: .url)
+    }
+
+    func testUndecodableTextKeepsOriginalBytesWithoutFabricatingReadableText() async throws {
+        try await assertCaptureReadable(type: "public.utf8-plain-text", bytes: Data([0xFF, 0xFE, 0]),
+                                       readable: nil, kind: .other)
+    }
+
+    func testImageOnlyCaptureKeepsOriginalBytesWithoutFabricatingReadableText() async throws {
+        try await assertCaptureReadable(type: "public.png", bytes: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A]),
+                                       readable: nil, kind: .image)
     }
 
     func testExclusivePublishNeverOverwritesExistingDestination() throws {
@@ -377,6 +536,104 @@ private extension ExportTests {
         try await controller.perform { _ in controller.runtime.leases.count }
     }
 
+    func assertCaptureReadable(type: String, bytes: Data, readable: Data?, kind: ArchiveContentKind) async throws {
+        let fixture = try makeStoreAndDestination()
+        let capture = try ContentStoreFixtures.capture([[(type, bytes)]])
+        let item = ContentStoreFixtures.item(capture)
+        _ = try await WriteCoordinator(controller: fixture.controller).commit(StoreTransaction(
+            identity: try await fixture.controller.identity(),
+            mutations: [.insert(.capture(capture)), .insert(.item(item))]))
+
+        let result = try await ExportService(controller: fixture.controller).export(
+            ExportRequest(scope: .allVisible, destinationParent: fixture.destinationParent))
+        let verification = try await ArchiveVerifier().verify(at: result.destination)
+        let archive = try readArchive(at: result.destination)
+        XCTAssertEqual(archive.entries.count, 1)
+        let entry = try XCTUnwrap(archive.entries.first)
+        XCTAssertEqual(entry.contentKind, kind)
+        let representation = try XCTUnwrap(entry.representations.first)
+        let payloadPath = try XCTUnwrap(representation.payloadPath)
+        XCTAssertEqual(try Data(contentsOf: result.destination.appendingPathComponent(payloadPath)), bytes)
+        if let readable {
+            let readablePath = try XCTUnwrap(representation.readable?.path)
+            XCTAssertTrue(readablePath.hasSuffix(".txt"))
+            XCTAssertEqual(try Data(contentsOf: result.destination.appendingPathComponent(readablePath)), readable)
+            XCTAssertEqual(verification.readableFileCount, 1)
+        } else {
+            XCTAssertNil(representation.readable)
+            XCTAssertEqual(verification.readableFileCount, 0)
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: result.destination.appendingPathComponent("readable").path))
+        }
+    }
+
+    func assertPartialWriteFailure(_ failure: any Error, expected: ExportError) async throws {
+        let fixture = try makeStoreAndDestination()
+        let bytes = Data(repeating: 65, count: 2 * StagedArchiveWriter.chunkSize + 1)
+        let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", bytes)]])
+        let item = ContentStoreFixtures.item(capture)
+        let controller = fixture.controller
+        _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
+            identity: try await controller.identity(),
+            mutations: [.insert(.capture(capture)), .insert(.item(item))]))
+        let partialWrite = PartialExportWrite(failure: failure)
+        let service = ExportService(reader: ContentSnapshotReader(controller: controller),
+            permitProvider: { try await StoreSafetyGate(controller: controller).permit(.completeArchive) },
+            verify: { try await ArchiveVerifier().verify(at: $0) },
+            writeBytes: { try partialWrite.write($0, data: $1) })
+
+        await XCTAssertThrowsErrorAsyncExport {
+            _ = try await service.export(ExportRequest(scope: .allVisible,
+                                                      destinationParent: fixture.destinationParent))
+        } verify: { XCTAssertEqual($0 as? ExportError, expected) }
+
+        XCTAssertEqual(partialWrite.offsetAtFailure, UInt64(StagedArchiveWriter.chunkSize),
+                       "The failure must happen after a real payload chunk reached disk")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.destinationParent.path), [])
+        let leases = try await activeLeaseCount(controller)
+        XCTAssertEqual(leases, 0)
+        let sourceRef = ContentStoreFixtures.ref(item, capture)
+        let source = try await ContentRepository(controller: controller).read(sourceRef)
+        XCTAssertTrue(source.isActionable)
+        XCTAssertEqual(source.representations.first?.bytes, bytes)
+        try await controller.close()
+        let reopened = try PersistenceController(directory: fixture.root.appendingPathComponent("store"))
+        addTeardownBlock { try await reopened.close() }
+        let persistedSource = try await ContentRepository(controller: reopened).read(sourceRef)
+        XCTAssertTrue(persistedSource.isActionable)
+        XCTAssertEqual(persistedSource.representations.first?.bytes, bytes,
+                       "Write failure cleanup must preserve the stored external payload across a fresh reopen")
+    }
+
+    func assertLateCancellation(duringVerification: Bool) async throws {
+        let fixture = try makeStoreAndDestination()
+        _ = try await insertMixedLibrary(into: fixture.controller)
+        let controller = fixture.controller
+        let barrier = ExportProgressBarrier()
+        let service = ExportService(reader: ContentSnapshotReader(controller: controller),
+            permitProvider: { try await StoreSafetyGate(controller: controller).permit(.completeArchive) },
+            verify: { root in
+                let result = try await ArchiveVerifier().verify(at: root)
+                if duringVerification { barrier.arriveAndWait() }
+                return result
+            })
+        let task = Task {
+            try await service.export(ExportRequest(scope: .allVisible,
+                                                   destinationParent: fixture.destinationParent)) { progress in
+                if !duringVerification, progress == .publishing { barrier.arriveAndWait() }
+            }
+        }
+        await Task.detached { barrier.waitUntilReached() }.value
+        task.cancel()
+        barrier.release()
+        await XCTAssertThrowsErrorAsyncExport { _ = try await task.value } verify: {
+            XCTAssertEqual($0 as? ExportError, .cancelled)
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.destinationParent.path), [])
+        let leases = try await activeLeaseCount(controller)
+        XCTAssertEqual(leases, 0)
+    }
+
     func assertInterruptedExport(identityChange: Bool) async throws {
         let fixture = try makeStoreAndDestination()
         _ = try await insertMixedLibrary(into: fixture.controller)
@@ -438,6 +695,30 @@ private extension ExportTests {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.destinationParent.path), [])
         let activeLeases = try await activeLeaseCount(fixture.controller)
         XCTAssertEqual(activeLeases, 0)
+    }
+}
+
+private final class PartialExportWrite: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: any Error
+    private var didWrite = false
+    private var failureOffset: UInt64?
+
+    init(failure: any Error) { self.failure = failure }
+
+    var offsetAtFailure: UInt64? {
+        lock.lock(); defer { lock.unlock() }
+        return failureOffset
+    }
+
+    func write(_ handle: FileHandle, data: Data) throws {
+        lock.lock(); defer { lock.unlock() }
+        if didWrite {
+            failureOffset = try handle.offset()
+            throw failure
+        }
+        try handle.write(contentsOf: data)
+        didWrite = true
     }
 }
 
