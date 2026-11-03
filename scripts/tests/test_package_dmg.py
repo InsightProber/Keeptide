@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import hashlib
+import json
 import plistlib
 import tempfile
 import unittest
@@ -21,6 +23,136 @@ HELPER_ENTITLEMENTS = {
 
 
 class PackageDmgTests(unittest.TestCase):
+    def synthetic_icns(self, chunk_types: tuple[str, ...]) -> bytes:
+        chunks = b"".join(
+            chunk_type.encode("ascii")
+            + (8 + len(package_dmg.PNG_SIGNATURE)).to_bytes(4, "big")
+            + package_dmg.PNG_SIGNATURE
+            for chunk_type in chunk_types
+        )
+        return b"icns" + (8 + len(chunks)).to_bytes(4, "big") + chunks
+
+    def make_installer_icon_sources(self, root: Path) -> Path:
+        contents = {
+            "Keeptide/Resources/AppIcon.icon/icon.json": b"{}",
+            "Keeptide/Resources/AppIcon.icon/Assets/Retained Page.svg": b"<svg/>",
+            "Keeptide/Resources/AppIcon.icon/Assets/Tide.svg": b"<svg/>",
+            package_dmg.INSTALLER_ICON_SOURCE: (
+                package_dmg.PNG_SIGNATURE + (13).to_bytes(4, "big") + b"IHDR"
+                + (1024).to_bytes(4, "big") + (1024).to_bytes(4, "big") + b"\x08\x06"
+            ),
+        }
+        for relative_path, data in contents.items():
+            path = root / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        manifest = {
+            "schemaVersion": 1,
+            "files": {
+                relative_path: hashlib.sha256(data).hexdigest()
+                for relative_path, data in contents.items()
+            },
+        }
+        manifest_path = root / package_dmg.INSTALLER_ICON_MANIFEST
+        manifest_path.write_text(json.dumps(manifest))
+        return root / package_dmg.INSTALLER_ICON_SOURCE
+
+    def test_installer_icon_manifest_locks_exact_sources_and_png(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            expected = self.make_installer_icon_sources(root)
+            with patch.object(package_dmg, "REPOSITORY_ROOT", root):
+                self.assertEqual(package_dmg._verify_installer_icon_sources(), expected)
+
+                tide = root / "Keeptide/Resources/AppIcon.icon/Assets/Tide.svg"
+                tide.write_bytes(b"tampered")
+                with self.assertRaisesRegex(package_dmg.PackagingError, "digest mismatch"):
+                    package_dmg._verify_installer_icon_sources()
+
+    def test_installer_icon_manifest_rejects_extra_file_and_invalid_png(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            png = self.make_installer_icon_sources(root)
+            manifest_path = root / package_dmg.INSTALLER_ICON_MANIFEST
+            manifest = json.loads(manifest_path.read_text())
+            manifest["files"]["unexpected"] = "0" * 64
+            manifest_path.write_text(json.dumps(manifest))
+            with patch.object(package_dmg, "REPOSITORY_ROOT", root):
+                with self.assertRaisesRegex(package_dmg.PackagingError, "unexpected file set"):
+                    package_dmg._verify_installer_icon_sources()
+
+                manifest["files"].pop("unexpected")
+                png.write_bytes(b"not a PNG")
+                manifest["files"][package_dmg.INSTALLER_ICON_SOURCE] = hashlib.sha256(
+                    png.read_bytes()
+                ).hexdigest()
+                manifest_path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(package_dmg.PackagingError, "1024 x 1024"):
+                    package_dmg._verify_installer_icon_sources()
+
+    def test_installer_icon_export_requires_all_png_renditions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            source = work / "InstallerIcon.png"
+            destination = work / "InstallerIcon.icns"
+            source.write_bytes(b"synthetic source")
+            commands: list[list[str]] = []
+
+            def runner(command: list[str], **_: object) -> str:
+                commands.append(command)
+                destination.write_bytes(self.synthetic_icns(tuple(package_dmg.INSTALLER_ICON_CHUNKS)))
+                return ""
+
+            icon = package_dmg._render_installer_icon(source, destination, work, runner)
+            self.assertEqual(icon, destination.read_bytes())
+            self.assertEqual(commands[0][:4], ["/usr/bin/xcrun", "--sdk", "macosx", "swift"])
+            self.assertEqual(commands[0][-2:], [str(source), str(destination)])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            source = work / "InstallerIcon.png"
+            destination = work / "InstallerIcon.icns"
+            source.write_bytes(b"synthetic source")
+
+            def incomplete(_command: list[str], **_: object) -> str:
+                destination.write_bytes(self.synthetic_icns(("ic09", "ic10")))
+                return ""
+
+            with self.assertRaisesRegex(package_dmg.PackagingError, "missing required icon sizes"):
+                package_dmg._render_installer_icon(source, destination, work, incomplete)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            source = work / "InstallerIcon.png"
+            destination = work / "InstallerIcon.icns"
+            source.write_bytes(b"synthetic source")
+
+            def corrupt(_command: list[str], **_: object) -> str:
+                icon = bytearray(
+                    self.synthetic_icns(tuple(package_dmg.INSTALLER_ICON_CHUNKS))
+                )
+                final_png = icon.rfind(package_dmg.PNG_SIGNATURE)
+                icon[final_png : final_png + len(package_dmg.PNG_SIGNATURE)] = bytes(
+                    len(package_dmg.PNG_SIGNATURE)
+                )
+                destination.write_bytes(icon)
+                return ""
+
+            with self.assertRaisesRegex(package_dmg.PackagingError, "invalid .* icon record"):
+                package_dmg._render_installer_icon(source, destination, work, corrupt)
+
+    def test_installer_icon_export_propagates_tool_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+
+            def runner(_command: list[str], **_: object) -> str:
+                raise package_dmg.PackagingError("synthetic export failure")
+
+            with self.assertRaisesRegex(package_dmg.PackagingError, "synthetic export failure"):
+                package_dmg._render_installer_icon(
+                    work / "source.png", work / "output.icns", work, runner
+                )
+
     def test_compressed_image_selects_tool_by_macos_major_version(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

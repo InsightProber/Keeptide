@@ -8,6 +8,7 @@ from contextlib import contextmanager
 import ctypes
 import errno
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
@@ -50,6 +51,18 @@ FINDER_INFO_ATTRIBUTE = "com.apple.FinderInfo"
 FINDER_FLAG_OFFSET = 8
 FINDER_FLAG_HAS_CUSTOM_ICON = 0x0400
 MAX_ICON_BYTES = 32 * 1024 * 1024
+INSTALLER_ICON_SOURCE = "Keeptide/Resources/InstallerIcon.png"
+INSTALLER_ICON_MANIFEST = "Keeptide/Resources/InstallerIcon.source.json"
+INSTALLER_ICON_SOURCES = (
+    "Keeptide/Resources/AppIcon.icon/icon.json",
+    "Keeptide/Resources/AppIcon.icon/Assets/Retained Page.svg",
+    "Keeptide/Resources/AppIcon.icon/Assets/Tide.svg",
+    INSTALLER_ICON_SOURCE,
+)
+INSTALLER_ICON_CHUNKS = frozenset(
+    {"icp4", "ic11", "icp5", "ic12", "ic07", "ic13", "ic08", "ic14", "ic09", "ic10"}
+)
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 class PackagingError(RuntimeError):
@@ -126,6 +139,37 @@ def _verify_executable(executable: Path, expected_entitlements: dict[str, object
         )
 
 
+def _read_icns(resource: Path, description: str, required_chunks: frozenset[str] = frozenset()) -> bytes:
+    if not resource.is_file() or resource.is_symlink():
+        raise PackagingError(f"{description} is missing or invalid: {resource}")
+    try:
+        icon = resource.read_bytes()
+    except OSError as error:
+        raise PackagingError(f"{description} cannot be read: {resource}") from error
+    if not 16 <= len(icon) <= MAX_ICON_BYTES or icon[:4] != b"icns":
+        raise PackagingError(f"{description} is not a valid icns container")
+    if int.from_bytes(icon[4:8], byteorder="big") != len(icon):
+        raise PackagingError(f"{description} has an invalid icns length")
+    chunks: set[str] = set()
+    offset = 8
+    while offset < len(icon):
+        if offset + 8 > len(icon):
+            raise PackagingError(f"{description} has a truncated icns record")
+        chunk_type = icon[offset : offset + 4].decode("ascii", errors="replace")
+        chunk_length = int.from_bytes(icon[offset + 4 : offset + 8], byteorder="big")
+        if chunk_length < 8 or offset + chunk_length > len(icon):
+            raise PackagingError(f"{description} has an invalid icns record")
+        if (chunk_type in required_chunks
+                and icon[offset + 8 : offset + 16] != PNG_SIGNATURE):
+            raise PackagingError(f"{description} has an invalid {chunk_type} icon record")
+        chunks.add(chunk_type)
+        offset += chunk_length
+    missing = required_chunks - chunks
+    if missing:
+        raise PackagingError(f"{description} is missing required icon sizes: {sorted(missing)}")
+    return icon
+
+
 def _application_icon(app: Path, info: dict[str, object]) -> bytes:
     icon_name = info.get("CFBundleIconFile")
     if not isinstance(icon_name, str) or not icon_name:
@@ -138,17 +182,62 @@ def _application_icon(app: Path, info: dict[str, object]) -> bytes:
     if not icon_path.suffix:
         icon_path = icon_path.with_suffix(".icns")
     resource = app / "Contents" / "Resources" / icon_path.name
-    if not resource.is_file() or resource.is_symlink():
-        raise PackagingError(f"application icon resource is missing or invalid: {resource}")
+    return _read_icns(resource, "application icon resource")
+
+
+def _verify_installer_icon_sources() -> Path:
+    manifest_path = REPOSITORY_ROOT / INSTALLER_ICON_MANIFEST
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise PackagingError("installer icon source manifest is missing or invalid")
     try:
-        icon = resource.read_bytes()
-    except OSError as error:
-        raise PackagingError(f"application icon resource cannot be read: {resource}") from error
-    if not 16 <= len(icon) <= MAX_ICON_BYTES or icon[:4] != b"icns":
-        raise PackagingError("application icon resource is not a valid icns container")
-    if int.from_bytes(icon[4:8], byteorder="big") != len(icon):
-        raise PackagingError("application icon resource has an invalid icns length")
-    return icon
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise PackagingError("installer icon source manifest is unreadable") from error
+    if not isinstance(manifest, dict) or set(manifest) != {"schemaVersion", "files"}:
+        raise PackagingError("installer icon source manifest has an invalid structure")
+    files = manifest.get("files")
+    if manifest.get("schemaVersion") != 1 or not isinstance(files, dict):
+        raise PackagingError("installer icon source manifest has an unsupported schema")
+    if set(files) != set(INSTALLER_ICON_SOURCES):
+        raise PackagingError("installer icon source manifest has an unexpected file set")
+    png_data: bytes | None = None
+    for relative_path in INSTALLER_ICON_SOURCES:
+        expected = files.get(relative_path)
+        source = REPOSITORY_ROOT / relative_path
+        if (not isinstance(expected, str) or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+                or not source.is_file() or source.is_symlink()):
+            raise PackagingError(f"installer icon source is missing or invalid: {relative_path}")
+        try:
+            source_data = source.read_bytes()
+        except OSError as error:
+            raise PackagingError(f"installer icon source cannot be read: {relative_path}") from error
+        if hashlib.sha256(source_data).hexdigest() != expected:
+            raise PackagingError(f"installer icon source digest mismatch: {relative_path}")
+        if relative_path == INSTALLER_ICON_SOURCE:
+            png_data = source_data
+    png = REPOSITORY_ROOT / INSTALLER_ICON_SOURCE
+    header = (png_data or b"")[:26]
+    if (len(header) != 26 or header[:8] != PNG_SIGNATURE
+            or header[12:16] != b"IHDR"
+            or int.from_bytes(header[16:20], "big") != 1024
+            or int.from_bytes(header[20:24], "big") != 1024
+            or header[24:26] != b"\x08\x06"):
+        raise PackagingError("installer icon PNG must be 1024 x 1024 8-bit RGBA")
+    return png
+
+
+def _render_installer_icon(source: Path, destination: Path, work: Path, runner: CommandRunner) -> bytes:
+    module_cache = work / "SwiftModuleCache"
+    module_cache.mkdir()
+    runner(
+        [
+            "/usr/bin/xcrun", "--sdk", "macosx", "swift",
+            "-module-cache-path", str(module_cache),
+            str(REPOSITORY_ROOT / "scripts" / "render_installer_icon.swift"),
+            str(source), str(destination),
+        ]
+    )
+    return _read_icns(destination, "rendered installer icon", INSTALLER_ICON_CHUNKS)
 
 
 def verify_app_bundle(app: Path, version: str, build_number: str, runner: CommandRunner = run_command) -> None:
@@ -431,13 +520,15 @@ def package_release(
         raise PackagingError(f"output path already exists: {output}")
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    installer_icon_source = _verify_installer_icon_sources()
     filename = f"Keeptide-{full_version}-macOS-arm64.dmg"
     with tempfile.TemporaryDirectory(prefix="keeptide-dmg-build-") as work_directory:
         work = Path(work_directory)
         app = _build_app(version, build_number, work / "DerivedData", runner)
         verify_app_bundle(app, version, build_number, runner)
-        with (app / "Contents" / "Info.plist").open("rb") as stream:
-            volume_icon = _application_icon(app, plistlib.load(stream))
+        volume_icon = _render_installer_icon(
+            installer_icon_source, work / "KeeptideInstaller.icns", work, runner
+        )
 
         staging = work / "volume"
         staging.mkdir()
