@@ -50,6 +50,7 @@ struct ExportService: Exporting, Sendable {
     private let verify: @Sendable (URL) async throws -> ArchiveVerification
     private let now: @Sendable () -> Date
     private let makeID: @Sendable () -> UUID
+    private let writeBytes: StagedArchiveWriter.WriteBytes
     private let expectedIdentity: StoreIdentity?
 
     init(controller: PersistenceController, expecting expectedIdentity: StoreIdentity? = nil) {
@@ -58,6 +59,7 @@ struct ExportService: Exporting, Sendable {
         verify = { try await ArchiveVerifier().verify(at: $0) }
         now = Date.init
         makeID = UUID.init
+        writeBytes = { try $0.write(contentsOf: $1) }
         self.expectedIdentity = expectedIdentity
     }
 
@@ -66,12 +68,14 @@ struct ExportService: Exporting, Sendable {
          verify: @escaping @Sendable (URL) async throws -> ArchiveVerification,
          now: @escaping @Sendable () -> Date = Date.init,
          makeID: @escaping @Sendable () -> UUID = UUID.init,
+         writeBytes: @escaping StagedArchiveWriter.WriteBytes = { try $0.write(contentsOf: $1) },
          expecting expectedIdentity: StoreIdentity? = nil) {
         self.reader = reader
         self.permitProvider = permitProvider
         self.verify = verify
         self.now = now
         self.makeID = makeID
+        self.writeBytes = writeBytes
         self.expectedIdentity = expectedIdentity
     }
 
@@ -92,7 +96,8 @@ struct ExportService: Exporting, Sendable {
                                                                  lifetime: request.leaseLifetime, scope: request.scope))
             lease = opened
             let archive = try StagedArchiveWriter(destinationParent: request.destinationParent,
-                                                   destinationName: destinationName, stagingID: makeID())
+                                                   destinationName: destinationName, stagingID: makeID(),
+                                                   writeBytes: writeBytes)
             writer = archive
             var cursor: Data?
             var ordinal = 0

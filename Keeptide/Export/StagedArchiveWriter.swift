@@ -10,6 +10,7 @@ enum StagedArchiveWriterError: Error, Equatable {
 /// lease gate invokes publication on the persistence writer queue while cancellation races it.
 final class StagedArchiveWriter: @unchecked Sendable {
     static let chunkSize = 1_024 * 1_024
+    typealias WriteBytes = @Sendable (FileHandle, Data) throws -> Void
 
     let stagingURL: URL
     let destinationURL: URL
@@ -25,13 +26,16 @@ final class StagedArchiveWriter: @unchecked Sendable {
     private var createdDirectories = Set<String>()
     private var directoryFDs: [String: Int32] = [:]
     private let lock = NSRecursiveLock()
+    private let writeBytes: WriteBytes
 
-    init(destinationParent: URL, destinationName: String, stagingID: UUID) throws {
+    init(destinationParent: URL, destinationName: String, stagingID: UUID,
+         writeBytes: @escaping WriteBytes = { try $0.write(contentsOf: $1) }) throws {
         guard destinationParent.isFileURL, !destinationName.isEmpty,
               !destinationName.contains("/"), destinationName != ".", destinationName != ".." else {
             throw StagedArchiveWriterError.unsafeDestination
         }
         parentURL = destinationParent.standardizedFileURL
+        self.writeBytes = writeBytes
         self.destinationName = destinationName
         stagingName = ".keeptide-export-\(stagingID.uuidString.lowercased()).tmp"
         stagingURL = parentURL.appendingPathComponent(stagingName, isDirectory: true)
@@ -73,7 +77,9 @@ final class StagedArchiveWriter: @unchecked Sendable {
         let encoder = Self.encoder()
         var line = try encoder.encode(entry)
         line.append(0x0A)
-        try entriesHandle?.write(contentsOf: line)
+        try Self.performFileIO {
+            if let entriesHandle { try writeBytes(entriesHandle, line) }
+        }
         entriesHasher.update(data: line)
         entriesBytes += Int64(line.count)
     }
@@ -117,20 +123,24 @@ final class StagedArchiveWriter: @unchecked Sendable {
                 try Task.checkCancellation()
                 let end = min(offset + Self.chunkSize, data.count)
                 let chunk = data.subdata(in: offset..<end)
-                try handle.write(contentsOf: chunk)
+                try Self.performFileIO { try writeBytes(handle, chunk) }
                 hasher.update(data: chunk)
                 offset = end
             }
-            try handle.synchronize()
-            try handle.close()
+            try Self.performFileIO {
+                try handle.synchronize()
+                try handle.close()
+            }
         } catch { try? handle.close(); throw error }
         return ArchiveFileDigest(path: relativePath, byteCount: Int64(data.count), sha256: Self.hex(hasher.finalize()))
     }
 
     func finishEntries() throws -> ArchiveFileDigest {
         lock.lock(); defer { lock.unlock() }
-        try entriesHandle?.synchronize()
-        try entriesHandle?.close()
+        try Self.performFileIO {
+            try entriesHandle?.synchronize()
+            try entriesHandle?.close()
+        }
         entriesHandle = nil
         return ArchiveFileDigest(path: "entries.ndjson", byteCount: entriesBytes,
                                  sha256: Self.hex(entriesHasher.finalize()))
@@ -222,6 +232,36 @@ final class StagedArchiveWriter: @unchecked Sendable {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
         return !path.hasPrefix("/") && !path.contains("\\") && (1...2).contains(components.count) &&
             components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
+    }
+
+    /// Keep Foundation's FileHandle errors on the same path as direct POSIX I/O
+    /// failures. Only file operations belong here; encoding and verification do not.
+    private static func performFileIO(_ operation: () throws -> Void) throws {
+        do { try operation() }
+        catch is CancellationError { throw CancellationError() }
+        catch {
+            var current = error as NSError
+            var cocoaCode: Int32?
+            // NSError wrappers may contain an underlying POSIX cause. Bound the
+            // traversal so malformed error chains cannot prevent cleanup.
+            for _ in 0..<16 {
+                if current.domain == NSPOSIXErrorDomain,
+                   let code = Int32(exactly: current.code), code > 0 {
+                    throw StagedArchiveWriterError.ioFailure(code)
+                }
+                if current.domain == NSCocoaErrorDomain, cocoaCode == nil {
+                    switch current.code {
+                    case CocoaError.fileWriteOutOfSpace.rawValue: cocoaCode = ENOSPC
+                    case CocoaError.fileWriteNoPermission.rawValue: cocoaCode = EACCES
+                    case CocoaError.fileWriteVolumeReadOnly.rawValue: cocoaCode = EROFS
+                    default: break
+                    }
+                }
+                guard let underlying = current.userInfo[NSUnderlyingErrorKey] as? NSError else { break }
+                current = underlying
+            }
+            throw StagedArchiveWriterError.ioFailure(cocoaCode ?? EIO)
+        }
     }
 
     private static func encoder() -> JSONEncoder {
