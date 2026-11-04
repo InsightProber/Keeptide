@@ -101,28 +101,40 @@ final class AppLaunchTests: XCTestCase {
         // A new install: the welcome shows, and Keeptide records. A switch stored before the welcome looked would have
         // taken the new install for an earlier version's, and skipped the welcome.
         let fresh = try suite()
-        let first = AppDelegate.launchPreferences(in: fresh)
+        let first = AppDelegate.launchPreferences(in: fresh, manualPasteQA: false)
         XCTAssertTrue(first.onboarding.snapshot().needsCurrentOnboarding)
         XCTAssertTrue(first.capture.isEnabled)
         // Once the welcome is done, the next launch neither shows it nor takes the user for an earlier version's.
         first.onboarding.completeCurrentVersion()
-        let next = AppDelegate.launchPreferences(in: fresh)
+        let next = AppDelegate.launchPreferences(in: fresh, manualPasteQA: false)
         XCTAssertFalse(next.onboarding.snapshot().needsCurrentOnboarding)
         XCTAssertTrue(next.capture.isEnabled)
 
         // An earlier version's user who finished its welcome and never turned recording on: no welcome, and paused.
         let welcomed = try suite()
         welcomed.set(1, forKey: OnboardingPreferences.completedVersionKey)
-        let upgraded = AppDelegate.launchPreferences(in: welcomed)
+        let upgraded = AppDelegate.launchPreferences(in: welcomed, manualPasteQA: false)
         XCTAssertFalse(upgraded.onboarding.snapshot().needsCurrentOnboarding)
         XCTAssertFalse(upgraded.capture.isEnabled)
         // One from before the welcome, who only changed quick access: the welcome counts as seen, and recording stays
         // paused.
         let older = try suite()
         older.set("large", forKey: "quickAccess.cardSize")
-        let olderLaunch = AppDelegate.launchPreferences(in: older)
+        let olderLaunch = AppDelegate.launchPreferences(in: older, manualPasteQA: false)
         XCTAssertFalse(olderLaunch.onboarding.snapshot().needsCurrentOnboarding)
         XCTAssertFalse(olderLaunch.capture.isEnabled)
+    }
+
+    func testTheManualPasteQASessionStoresRecordingOff() throws {
+        let suiteName = "AppLaunchTests.qaLaunchPreferences.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+
+        // The QA session's preferences are as new as a new install's, but it never records: its switch is stored off,
+        // so Settings shows it off.
+        let launched = AppDelegate.launchPreferences(in: defaults, manualPasteQA: true)
+        XCTAssertFalse(launched.capture.isEnabled)
+        XCTAssertEqual(defaults.object(forKey: "captureEnabled") as? Bool, false)
     }
 
     func testDefaultEnvironmentUsesEphemeralPreferencesAndNoSystemLoginController() {
