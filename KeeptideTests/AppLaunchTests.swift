@@ -24,14 +24,32 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(LibraryWindowController(session: CaptureSession()).window)
     }
 
-    func testCaptureStartsDisabled() {
-        let suiteName = "AppLaunchTests.captureStartsDisabled.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+    func testCaptureRecordsWhenNothingIsStored() throws {
+        let suiteName = "AppLaunchTests.captureRecordsByDefault.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
 
         let preferences = CapturePreferences(defaults: defaults)
 
-        XCTAssertFalse(preferences.isEnabled)
+        XCTAssertTrue(preferences.isEnabled)
+        // The default is not written. A stored switch marks someone who used Keeptide before, and the launch makes the
+        // capture preferences first, so a written default would skip the welcome for everyone.
+        XCTAssertNil(defaults.object(forKey: "captureEnabled"))
+        XCTAssertTrue(OnboardingPreferences(defaults: defaults).snapshot().needsCurrentOnboarding)
+    }
+
+    func testAStoredPauseStaysPaused() throws {
+        for stored in [false, true] {
+            let suiteName = "AppLaunchTests.storedRecording.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            defaults.set(stored, forKey: "captureEnabled")
+
+            let preferences = CapturePreferences(defaults: defaults)
+
+            XCTAssertEqual(preferences.isEnabled, stored)
+            XCTAssertEqual(defaults.object(forKey: "captureEnabled") as? Bool, stored)
+        }
     }
 
     func testDefaultEnvironmentUsesEphemeralPreferencesAndNoSystemLoginController() {
@@ -39,7 +57,8 @@ final class AppLaunchTests: XCTestCase {
 
         XCTAssertNotNil(environment.ephemeralPreferencesSuiteName)
         XCTAssertEqual(environment.settingsModel.launchAtLogin.state, .unavailable)
-        XCTAssertFalse(environment.captureSession.preferences.isEnabled)
+        // A fresh suite of its own, where nothing is stored, records as a first launch does.
+        XCTAssertTrue(environment.captureSession.preferences.isEnabled)
     }
 
     func testEnvironmentUsesOneSettingsModelForCaptureShortcutAndLoginState() throws {
@@ -67,17 +86,19 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(environment.settingsModel.launchAtLogin === login)
     }
 
-    func testStartRecordingBeforeStoreInitializationSurvivesOpeningTheIsolatedStore() async throws {
+    func testDoneLeavesRecordingOnAndTheOpenedIsolatedStoreRecords() async throws {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
         defaults.removePersistentDomain(forName: configuration.preferencesSuite)
         addTeardownBlock {
             defaults.removePersistentDomain(forName: configuration.preferencesSuite)
             try? FileManager.default.removeItem(at: configuration.directory)
+            NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
         }
         let capture = CapturePreferences(defaults: defaults)
         let session = CaptureSession(preferences: capture)
         let onboarding = OnboardingPreferences(defaults: defaults)
+        var libraryShows = 0
         let environment = AppEnvironment(
             captureSession: session,
             quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
@@ -87,20 +108,26 @@ final class AppLaunchTests: XCTestCase {
             ),
             launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
             onboardingPreferences: onboarding,
-            showLibrary: {}
+            showLibrary: { libraryShows += 1 }
         )
         XCTAssertNil(environment.settingsModel.lifecycle)
         XCTAssertFalse(environment.settingsModel.canExportLibrary)
         XCTAssertFalse(environment.canExportLibrary)
 
-        environment.onboardingActions.startRecording()
+        // A first launch records without being asked, and Done only completes the welcome.
+        XCTAssertTrue(capture.isEnabled)
+        XCTAssertTrue(onboarding.snapshot().needsCurrentOnboarding)
+        environment.onboardingActions.done()
         XCTAssertTrue(capture.isEnabled)
         XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertEqual(libraryShows, 0)
 
         await session.initialize(testSessionID: configuration.id)
 
+        // The store opens with the same switch, and records.
         XCTAssertTrue(session.preferences === capture)
         XCTAssertTrue(session.preferences.isEnabled)
+        XCTAssertTrue(session.isRecording)
         XCTAssertNotNil(environment.settingsModel.lifecycle)
         XCTAssertTrue(environment.settingsModel.canExportLibrary)
         XCTAssertTrue(environment.canExportLibrary)
@@ -109,30 +136,43 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(environment.settingsModel.canExportLibrary)
     }
 
-    func testSkippingOrClosingWelcomeCompletesItWithoutEnablingCapture() throws {
-        let suiteName = "AppLaunchTests.skipWelcome.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        let capture = CapturePreferences(defaults: defaults)
-        let onboarding = OnboardingPreferences(defaults: defaults)
-        var libraryShows = 0
-        let environment = AppEnvironment(
-            captureSession: CaptureSession(preferences: capture),
-            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
-            shortcutCoordinator: GlobalShortcutCoordinator(
-                preferences: GlobalShortcutPreferences(defaults: defaults),
-                shouldInstallHandler: false
-            ),
-            launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
-            onboardingPreferences: onboarding,
-            showLibrary: { libraryShows += 1 }
-        )
+    func testDoneAndOpenLibraryCompleteTheWelcomeAndLeaveRecordingAsItIs() throws {
+        // Recording, as a first launch is, and paused from the menu bar while the welcome is still open.
+        for paused in [false, true] {
+            for opensLibrary in [false, true] {
+                let suiteName = "AppLaunchTests.welcome.\(UUID().uuidString)"
+                let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+                addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+                let onboarding = OnboardingPreferences(defaults: defaults)
+                let capture = CapturePreferences(defaults: defaults)
+                if paused { capture.isEnabled = false }
+                var libraryShows = 0
+                let environment = AppEnvironment(
+                    captureSession: CaptureSession(preferences: capture),
+                    quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+                    shortcutCoordinator: GlobalShortcutCoordinator(
+                        preferences: GlobalShortcutPreferences(defaults: defaults),
+                        shouldInstallHandler: false
+                    ),
+                    launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
+                    onboardingPreferences: onboarding,
+                    showLibrary: { libraryShows += 1 }
+                )
+                let name = "paused: \(paused), Open Library: \(opensLibrary)"
+                XCTAssertTrue(onboarding.snapshot().needsCurrentOnboarding, name)
 
-        environment.onboardingActions.notNow()
+                if opensLibrary {
+                    environment.onboardingActions.openLibrary()
+                } else {
+                    environment.onboardingActions.done()
+                }
 
-        XCTAssertFalse(capture.isEnabled)
-        XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding)
-        XCTAssertEqual(libraryShows, 1)
+                XCTAssertEqual(capture.isEnabled, !paused, name)
+                XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding, name)
+                // Only Open Library opens the Library. Done, like closing the window, only completes the welcome.
+                XCTAssertEqual(libraryShows, opensLibrary ? 1 : 0, name)
+            }
+        }
     }
 
     func testApplicationActivationRefreshesTheExternalLoginItemStateWithoutRegistering() throws {

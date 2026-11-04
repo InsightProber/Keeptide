@@ -83,14 +83,16 @@ final class CaptureMonitorTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let first = CapturePreferences(defaults: defaults)
-        XCTAssertFalse(first.isEnabled)
-        first.isEnabled = true
+        XCTAssertTrue(first.isEnabled)
+        first.isEnabled = false
         first.addExclusion("test.source")
         first.addExclusion("test.source")
         let second = CapturePreferences(defaults: defaults)
-        XCTAssertTrue(second.isEnabled)
+        XCTAssertFalse(second.isEnabled)
         XCTAssertEqual(second.excludedApplications, ["test.source"])
+        second.isEnabled = true
         second.removeExclusion("test.source")
+        XCTAssertTrue(CapturePreferences(defaults: defaults).isEnabled)
         XCTAssertTrue(CapturePreferences(defaults: defaults).excludedApplications.isEmpty)
     }
 
@@ -338,6 +340,8 @@ final class CaptureMonitorTests: XCTestCase {
         let suite = "CaptureMonitor-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
+        // Each test starts paused, as after the user's pause, and turns recording on where it needs it.
+        defaults.set(false, forKey: "captureEnabled")
         let controller = try PersistenceController(directory: directory)
         let reader = FakeReader()
         let preferences = CapturePreferences(defaults: defaults)

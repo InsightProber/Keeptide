@@ -102,19 +102,11 @@ final class AppEnvironment {
         canExport: { [weak self] in self?.canExportLibrary ?? false }
     )
 
+    /// Done, and closing the welcome, only complete it; Open Library completes it and opens the Library. Neither
+    /// touches recording, which is on from first launch unless the user paused it.
     var onboardingActions: OnboardingActions {
         OnboardingActions(
-            startRecording: { [weak self] in
-                guard let self else { return }
-                self.captureSession.preferences.isEnabled = true
-                self.onboardingPreferences.completeCurrentVersion()
-                self.showLibrary()
-            },
-            notNow: { [weak self] in
-                guard let self else { return }
-                self.onboardingPreferences.completeCurrentVersion()
-                self.showLibrary()
-            },
+            done: { [weak self] in self?.onboardingPreferences.completeCurrentVersion() },
             openLibrary: { [weak self] in
                 guard let self else { return }
                 self.onboardingPreferences.completeCurrentVersion()

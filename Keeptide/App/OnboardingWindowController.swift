@@ -29,8 +29,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         window.setAccessibilityIdentifier("KeeptideOnboardingWindow")
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: OnboardingView(actions: .init(
-            startRecording: { [weak self] in self?.finish(with: .startRecording) },
-            notNow: { [weak self] in self?.finish(with: .notNow) },
+            done: { [weak self] in self?.finish(with: .done) },
             openLibrary: { [weak self] in self?.finish(with: .openLibrary) }
         )))
         window.setContentSize(window.contentViewController?.view.fittingSize ?? NSSize(width: 560, height: 400))
@@ -51,8 +50,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Closing the window is Done.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        complete(.notNow)
+        complete(.done)
         return true
     }
 
@@ -61,7 +61,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         if shouldRestoreAccessory() { setActivationPolicy(.accessory) }
     }
 
-    enum Completion { case startRecording, notNow, openLibrary }
+    enum Completion { case done, openLibrary }
 
     func finish(with completion: Completion) {
         complete(completion)
@@ -72,8 +72,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         guard !didFinish else { return }
         didFinish = true
         switch completion {
-        case .startRecording: actions.startRecording()
-        case .notNow: actions.notNow()
+        case .done: actions.done()
         case .openLibrary: actions.openLibrary()
         }
     }

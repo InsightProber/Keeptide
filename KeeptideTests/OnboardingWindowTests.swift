@@ -1,29 +1,28 @@
 import AppKit
+import ApplicationServices
 import XCTest
 @testable import Keeptide
 
 @MainActor
 final class OnboardingWindowTests: XCTestCase {
-    func testStartRecordingRunsOnlyItsInjectedActionOnce() throws {
-        var starts = 0
-        var skips = 0
-        let controller = makeController(
-            start: { starts += 1 },
-            notNow: { skips += 1 }
-        )
+    func testDoneRunsOnlyItsInjectedActionOnce() throws {
+        var dones = 0
+        var libraries = 0
+        let controller = makeController(done: { dones += 1 }, openLibrary: { libraries += 1 })
         let window = try XCTUnwrap(controller.window)
         controller.show()
 
-        controller.finish(with: .startRecording)
+        controller.finish(with: .done)
         _ = controller.windowShouldClose(window)
 
-        XCTAssertEqual(starts, 1)
-        XCTAssertEqual(skips, 0)
+        XCTAssertEqual(dones, 1)
+        XCTAssertEqual(libraries, 0)
     }
 
-    func testClosingTheWindowMeansNotNowExactlyOnce() throws {
-        var skips = 0
-        let controller = makeController(notNow: { skips += 1 })
+    func testClosingTheWindowMeansDoneExactlyOnce() throws {
+        var dones = 0
+        var libraries = 0
+        let controller = makeController(done: { dones += 1 }, openLibrary: { libraries += 1 })
         let window = try XCTUnwrap(controller.window)
         controller.show()
 
@@ -31,17 +30,55 @@ final class OnboardingWindowTests: XCTestCase {
         controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
         XCTAssertTrue(controller.windowShouldClose(window))
 
-        XCTAssertEqual(skips, 1)
+        XCTAssertEqual(dones, 1)
+        XCTAssertEqual(libraries, 0)
     }
 
     func testOpenLibraryIsAnIndependentExplicitChoice() throws {
+        var dones = 0
         var libraries = 0
-        let controller = makeController(openLibrary: { libraries += 1 })
+        let controller = makeController(done: { dones += 1 }, openLibrary: { libraries += 1 })
+        let window = try XCTUnwrap(controller.window)
         controller.show()
 
         controller.finish(with: .openLibrary)
+        _ = controller.windowShouldClose(window)
 
         XCTAssertEqual(libraries, 1)
+        XCTAssertEqual(dones, 0)
+    }
+
+    func testTheWelcomeSaysKeeptideRecordsAndOffersOpenLibraryAndDone() throws {
+        var dones = 0
+        var libraries = 0
+        let controller = makeController(done: { dones += 1 }, openLibrary: { libraries += 1 })
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        content.layoutSubtreeIfNeeded()
+        let recording = "Keeptide saves what you copy. Pause or resume it anytime from the menu bar or Settings."
+        let elements = try swiftUIAccessibilityElements(in: content) { elements in
+            elements.contains { self.text(of: $0)?.contains(recording) == true }
+        }
+        let described = elements.map { "\(self.role(of: $0) ?? "?") \(self.text(of: $0) ?? "")" }
+
+        // It says that Keeptide records already, and how to pause; nothing asks the user to start it.
+        XCTAssertTrue(elements.contains { self.text(of: $0)?.contains(recording) == true }, "\(described)")
+        XCTAssertFalse(elements.contains { self.text(of: $0)?.contains("Start Recording") == true }, "\(described)")
+        // Its two buttons, in order: Open Library, then Done.
+        let buttons = elements.filter { self.role(of: $0) == NSAccessibility.Role.button.rawValue }
+        XCTAssertEqual(buttons.compactMap { self.text(of: $0) }, ["Open Library", "Done"], "\(described)")
+        XCTAssertEqual(buttons.compactMap { self.accessibility($0, "accessibilityIdentifier") as? String },
+                       ["OnboardingOpenLibrary", "OnboardingDone"])
+
+        // Done is the default button: Return presses it.
+        let returnKey = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                                       timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                                                       characters: "\r", charactersIgnoringModifiers: "\r",
+                                                       isARepeat: false, keyCode: UInt16(36)))
+        XCTAssertTrue(window.performKeyEquivalent(with: returnKey))
+        XCTAssertEqual(dones, 1)
+        XCTAssertEqual(libraries, 0)
     }
 
     func testClosingDoesNotHideTheDockWhenAnotherWindowStillNeedsIt() {
@@ -106,17 +143,61 @@ final class OnboardingWindowTests: XCTestCase {
     }
 
     private func makeController(
-        start: @escaping @MainActor () -> Void = {},
-        notNow: @escaping @MainActor () -> Void = {},
+        done: @escaping @MainActor () -> Void = {},
         openLibrary: @escaping @MainActor () -> Void = {},
         policies: @escaping (NSApplication.ActivationPolicy) -> Void = { _ in },
         shouldRestoreAccessory: @escaping () -> Bool = { true }
     ) -> OnboardingWindowController {
         OnboardingWindowController(
-            actions: OnboardingActions(startRecording: start, notNow: notNow, openLibrary: openLibrary),
+            actions: OnboardingActions(done: done, openLibrary: openLibrary),
             setActivationPolicy: policies,
             shouldRestoreAccessory: shouldRestoreAccessory
         )
+    }
+
+    /// Every element below `view` that VoiceOver could reach, SwiftUI's included, once `ready` finds what it needs.
+    /// SwiftUI builds its elements only once an assistive client asks the app for anything, so the app's own
+    /// accessibility element is asked for its role first. Where the test host may not use accessibility at all, the
+    /// test is skipped.
+    private func swiftUIAccessibilityElements(in view: NSView,
+                                              until ready: ([NSObject]) -> Bool) throws -> [NSObject] {
+        var role: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()), kAXRoleAttribute as CFString,
+                                                   &role)
+        let deadline = Date(timeIntervalSinceNow: 5)
+        var elements = accessibilityElements(below: view)
+        while !ready(elements), Date() < deadline {
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+            elements = accessibilityElements(below: view)
+        }
+        if !ready(elements), status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        return elements
+    }
+
+    /// The elements below `element`, depth first.
+    private func accessibilityElements(below element: NSObject) -> [NSObject] {
+        let children = (accessibility(element, "accessibilityChildren") as? [Any] ?? []).compactMap { $0 as? NSObject }
+        return children.flatMap { [$0] + accessibilityElements(below: $0) }
+    }
+
+    /// An accessibility attribute of an element, asked for by its getter's name. SwiftUI's elements do not declare
+    /// the accessibility protocol to Swift.
+    private func accessibility(_ element: NSObject, _ getter: String) -> Any? {
+        let selector = NSSelectorFromString(getter)
+        guard element.responds(to: selector) else { return nil }
+        return element.perform(selector)?.takeUnretainedValue()
+    }
+
+    private func role(of element: NSObject) -> String? {
+        accessibility(element, "accessibilityRole") as? String
+    }
+
+    /// What an accessibility element says: its label, or its value where it has no label.
+    private func text(of element: NSObject) -> String? {
+        if let label = accessibility(element, "accessibilityLabel") as? String, !label.isEmpty { return label }
+        return accessibility(element, "accessibilityValue") as? String
     }
 
     private func makeDefaults() throws -> UserDefaults {

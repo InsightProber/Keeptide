@@ -21,9 +21,12 @@ final class CapturePreferences {
         }
     }
 
+    /// Keeptide records from first launch, and a stored switch, such as the user's pause, is kept. The default is
+    /// never written, only a change is: a stored switch marks someone who has used Keeptide before
+    /// (`OnboardingPreferences`).
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        isEnabled = defaults.bool(forKey: "captureEnabled")
+        isEnabled = defaults.object(forKey: "captureEnabled") == nil || defaults.bool(forKey: "captureEnabled")
         excludedApplications = Array(Set((defaults.stringArray(forKey: "captureExcludedApplications") ?? []).map(Self.normalized))).sorted()
     }
 
