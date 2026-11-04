@@ -126,6 +126,39 @@ final class QuickAccessBandTests: XCTestCase {
         }
     }
 
+    // MARK: Shadow
+
+    /// The design's soft shadow reaches farther than the room the panel leaves it. Cut short where the window ends, it
+    /// showed as a faint band with a hard edge above and below the band; so it fades out before any edge of the window,
+    /// whether the panel leaves it its whole room or a low screen leaves it 10 points below the band.
+    func testTheShadowFadesOutBeforeTheWindowEnds() throws {
+        for dark in [true, false] {
+            for roomBelow in [StripLayout.shadowRoom.below, 10] as [CGFloat] {
+                let name = "\(dark ? "dark" : "light"), \(roomBelow) below"
+                let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false,
+                                                  roomBelow: roomBelow)
+                backdrop.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let content = try XCTUnwrap(window.contentView)
+                let shown = backdrop.bounds.intersection(backdrop.convert(content.bounds, from: content))
+                let alpha = try shadowAlpha(of: backdrop)
+                var edge: CGFloat = 0
+                for step in 0...64 {
+                    let x = shown.minX + shown.width * CGFloat(step) / 64
+                    let y = shown.minY + shown.height * CGFloat(step) / 64
+                    edge = max(edge, alpha(NSPoint(x: x, y: shown.maxY - 0.25)), alpha(NSPoint(x: x, y: shown.minY + 0.25)),
+                               alpha(NSPoint(x: shown.minX + 0.25, y: y)), alpha(NSPoint(x: shown.maxX - 0.25, y: y)))
+                }
+                XCTAssertLessThanOrEqual(edge, 1.0 / 255, name)
+                // Beside the band, well inside the window, the shadow is still there.
+                let band = backdrop.bandRect
+                let beside = max(alpha(NSPoint(x: band.midX, y: band.maxY + 10)),
+                                 alpha(NSPoint(x: band.midX, y: band.minY - 10)),
+                                 alpha(NSPoint(x: band.minX - 10, y: band.midY)))
+                XCTAssertGreaterThan(beside, dark ? 0.15 : 0.06, name)
+            }
+        }
+    }
+
     // MARK: Section icons
 
     func testTheSectionIconsLieBelowTheCards() throws {
@@ -385,11 +418,11 @@ final class QuickAccessBandTests: XCTestCase {
         reducesTransparency: Bool, increasedContrast: Bool,
         metrics: StripMetrics = StripLayout.metrics(for: .medium, visibleWidth: 1440),
         strip: QuickAccessStripView = QuickAccessStripView(),
-        toolbar: QuickAccessToolbar = QuickAccessToolbar(field: QuickAccessSearchField())
+        toolbar: QuickAccessToolbar = QuickAccessToolbar(field: QuickAccessSearchField()),
+        roomBelow: CGFloat = StripLayout.shadowRoom.below
     ) throws -> (NSWindow, QuickAccessBandBackdrop) {
         let band = QuickAccessBandView(
-            layout: QuickAccessBandView.Layout(metrics: metrics, previewSize: nil,
-                                               roomBelow: StripLayout.shadowRoom.below),
+            layout: QuickAccessBandView.Layout(metrics: metrics, previewSize: nil, roomBelow: roomBelow),
             state: QuickAccessState(services: { nil }), toolbar: toolbar,
             strip: strip, applicationNames: ApplicationNames(),
             actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {})
@@ -398,8 +431,7 @@ final class QuickAccessBandTests: XCTestCase {
             .environment(\._accessibilityReduceTransparency, reducesTransparency)
             .environment(\._colorSchemeContrast, increasedContrast ? .increased : .standard)
         let size = NSSize(width: metrics.bandWidth + 2 * StripLayout.sideMargin,
-                          height: StripLayout.bandHeight(metrics) + StripLayout.shadowRoom.above
-                              + StripLayout.shadowRoom.below)
+                          height: StripLayout.bandHeight(metrics) + StripLayout.shadowRoom.above + roomBelow)
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
                               backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -410,6 +442,29 @@ final class QuickAccessBandTests: XCTestCase {
         settle(window)
         let backdrop = try XCTUnwrap(backdrops(in: hosting).first)
         return (window, backdrop)
+    }
+
+    /// What the backdrop draws itself, its shadow, rendered at twice its size: the alpha at a point in its coordinates.
+    private func shadowAlpha(of backdrop: QuickAccessBandBackdrop) throws -> (NSPoint) -> CGFloat {
+        let size = backdrop.bounds.size
+        let rep = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        ))
+        rep.size = size
+        let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: rep))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        backdrop.draw(backdrop.bounds)
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+        XCTAssertFalse(backdrop.isFlipped, "The readings below count rows from the top of an unflipped view")
+        return { point in
+            let x = min(max(Int(point.x * 2), 0), rep.pixelsWide - 1)
+            let y = min(max(Int((size.height - point.y) * 2), 0), rep.pixelsHigh - 1)
+            return rep.colorAt(x: x, y: y)?.alphaComponent ?? 0
+        }
     }
 
     private func settle(_ window: NSWindow) {
