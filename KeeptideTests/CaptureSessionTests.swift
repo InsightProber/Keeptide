@@ -23,7 +23,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(try reopened.metadata()?.state, .ready)
     }
 
-    func testSearchIndexFailureDoesNotPreventRecording() async throws {
+    func testSearchIndexFailureDoesNotPreventCapture() async throws {
         let configuration = try makeIsolatedSession()
         try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
         try Data("not a directory".utf8).write(to: configuration.directory.appendingPathComponent("Search"))

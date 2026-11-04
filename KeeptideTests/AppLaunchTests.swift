@@ -126,7 +126,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(environment.settingsModel.launchAtLogin === login)
     }
 
-    func testDoneOnlyCompletesTheWelcomeAndTheOpenedIsolatedStoreKeepsNewCopies() async throws {
+    func testDoneOnlyCompletesTheWelcomeAndTheIsolatedStoreOpensWithTheSamePreferences() async throws {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
         defaults.removePersistentDomain(forName: configuration.preferencesSuite)
@@ -162,7 +162,7 @@ final class AppLaunchTests: XCTestCase {
 
         await session.initialize(testSessionID: configuration.id)
 
-        // The store opens with the same preferences, and keeps new copies, with nothing to say about them.
+        // The store opens with the same preferences, ready, with nothing to say about new copies.
         XCTAssertTrue(session.preferences === capture)
         XCTAssertTrue(session.isReady)
         XCTAssertNil(session.captureNotice)
