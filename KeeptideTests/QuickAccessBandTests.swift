@@ -159,6 +159,51 @@ final class QuickAccessBandTests: XCTestCase {
         }
     }
 
+    /// The panel moves around the band as the preview or a command's review opens and closes: the band moves down in
+    /// the window and the window grows, while the backdrop keeps its size, so AppKit does not lay it out again. On a
+    /// low screen the window then leaves less room below the band, and the shadow drawn for the old window ran on to
+    /// the new one's bottom edge and was cut short there. So the backdrop is drawn again when the band's layout
+    /// changes, and when its window's size does. SwiftUI hosts it in a layer: AppKit passes a request to draw it again
+    /// on to the layer, and the view's own `needsDisplay` stays false. A window that changes size marks that layer as
+    /// well, without drawing the view, so there the drawing itself tells whether the view was drawn again.
+    func testTheShadowIsDrawnAgainAsThePanelMovesAroundTheBand() throws {
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
+        let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics)
+        let layout = QuickAccessBandView.Layout(metrics: metrics, previewSize: nil,
+                                                roomBelow: StripLayout.shadowRoom.below)
+        XCTAssertEqual(backdrop.panelLayout, layout, "The band hands the backdrop its layout")
+        let layer = try XCTUnwrap(backdrop.layer)
+        layer.displayIfNeeded()
+        XCTAssertFalse(layer.needsDisplay())
+
+        var moved = layout
+        moved.roomBelow = 30
+        backdrop.panelLayout = moved
+        XCTAssertTrue(layer.needsDisplay(), "A new layout")
+        layer.displayIfNeeded()
+
+        // The window loses 70 points at its bottom edge and keeps its top edge.
+        let drawn = backdrop.drawnShadowArea
+        XCTAssertEqual(drawn, backdrop.shadowArea)
+        var frame = window.frame
+        frame.origin.y += 70
+        frame.size.height -= 70
+        window.setFrame(frame, display: false)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        XCTAssertNotEqual(backdrop.shadowArea, drawn, "The window ends elsewhere in the backdrop")
+        XCTAssertEqual(backdrop.drawnShadowArea, backdrop.shadowArea, "Drawn again for a window of another size")
+
+        // Drawn again, the shadow fades out before the window's new bottom edge.
+        let content = try XCTUnwrap(window.contentView)
+        let shown = backdrop.bounds.intersection(backdrop.convert(content.bounds, from: content))
+        let alpha = try shadowAlpha(of: backdrop)
+        var edge: CGFloat = 0
+        for step in 0...64 {
+            edge = max(edge, alpha(NSPoint(x: shown.minX + shown.width * CGFloat(step) / 64, y: shown.minY + 0.25)))
+        }
+        XCTAssertLessThanOrEqual(edge, 1.0 / 255)
+    }
+
     // MARK: Section icons
 
     func testTheSectionIconsLieBelowTheCards() throws {

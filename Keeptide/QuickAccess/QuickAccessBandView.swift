@@ -77,7 +77,8 @@ struct QuickAccessBandView: View {
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
-            BandBackdrop(reducesTransparency: reduceTransparency, increasesContrast: contrast == .increased)
+            BandBackdrop(layout: layout, reducesTransparency: reduceTransparency,
+                         increasesContrast: contrast == .increased)
                 .padding(EdgeInsets(top: -StripLayout.shadowRoom.above, leading: -StripLayout.sideMargin,
                                     bottom: -StripLayout.shadowRoom.below, trailing: -StripLayout.sideMargin))
         }
@@ -147,12 +148,14 @@ private struct HostedView<Content: NSView>: NSViewRepresentable {
 
 /// Places the band's backdrop behind it, reaching into the room the panel leaves around the band for the shadow.
 private struct BandBackdrop: NSViewRepresentable {
+    let layout: QuickAccessBandView.Layout
     let reducesTransparency: Bool
     let increasesContrast: Bool
 
     func makeNSView(context: Context) -> QuickAccessBandBackdrop { QuickAccessBandBackdrop() }
 
     func updateNSView(_ backdrop: QuickAccessBandBackdrop, context: Context) {
+        backdrop.panelLayout = layout
         backdrop.reducesTransparency = reducesTransparency
         backdrop.increasesContrast = increasesContrast
     }
@@ -183,7 +186,13 @@ final class QuickAccessBandBackdrop: NSView {
     /// the window ends, it would show as a faint band with a hard edge.
     static let shadowFade: CGFloat = 24
     /// The part of the view the window shows, where the shadow is drawn to, as it was last drawn.
-    private var drawnShadowArea = NSRect.zero
+    private(set) var drawnShadowArea = NSRect.zero
+    /// How the panel lays the band out. As the preview or a command's review opens and closes, the band moves in the
+    /// window and the window grows or shrinks around it, while the view keeps its size, so AppKit does not lay it out
+    /// again; the shadow is drawn again to end where the window now does.
+    var panelLayout: QuickAccessBandView.Layout? {
+        didSet { if panelLayout != oldValue { needsDisplay = true } }
+    }
 
     /// The part of the view the window shows: all of it where the panel leaves the shadow its whole room, and less
     /// where the edge of a low screen leaves the window short of it.
@@ -232,13 +241,29 @@ final class QuickAccessBandBackdrop: NSView {
             }
             needsDisplay = true
         }
-        // The window grows and shrinks around the band as the preview opens and closes, and the shadow ends with it.
+        // The window's edges may lie elsewhere in the view at its new size, and the shadow ends with them.
         if shadowArea != drawnShadowArea { needsDisplay = true }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: window)
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         needsDisplay = true
+        guard let window else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(windowDidResize),
+                                               name: NSWindow.didResizeNotification, object: window)
+    }
+
+    /// The window grows and shrinks around the band, which need not lay the view out again, and the shadow ends with
+    /// the window.
+    @objc private func windowDidResize(_ notification: Notification) {
+        if shadowArea != drawnShadowArea { needsDisplay = true }
     }
 
     override func viewDidChangeEffectiveAppearance() {
