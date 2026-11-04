@@ -1072,6 +1072,27 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(announced, ["Recording paused"])
     }
 
+    func testTheLibrarysRecordingSwitchPausesOrResumes() async throws {
+        let (environment, capture) = try await makeRecordingEnvironment()
+        let library = LibraryWindowController(session: environment.captureSession, autosaveName: nil,
+                                              setActivationPolicy: { _ in })
+        let content = try XCTUnwrap(library.window?.contentView)
+        addTeardownBlock { library.window?.close() }
+        /// The switch's title, once it is `expected`.
+        func switchTitle(once expected: String) throws -> String? {
+            let isSwitch = { (element: NSObject) in self.identifier(of: element) == "CaptureRecordingToggle" }
+            let elements = try swiftUIAccessibilityElements(in: content) { elements in
+                elements.contains { isSwitch($0) && self.text(of: $0) == expected }
+            }
+            return elements.first(where: isSwitch).flatMap { text(of: $0) }
+        }
+
+        // Recording, as it is from first launch, the switch pauses it; paused, it resumes.
+        XCTAssertEqual(try switchTitle(once: "Pause Recording"), "Pause Recording")
+        capture.isEnabled = false
+        XCTAssertEqual(try switchTitle(once: "Resume Recording"), "Resume Recording")
+    }
+
     func testVoiceOverHearsTheRecordingNoticeAsItAppearsOrChangesWhileThePanelIsOpen() async throws {
         // A panel over clips, given its notice as the app gives it, once the panel is made: the panel follows the
         // notice from the next time it follows its state, as when the clips load.

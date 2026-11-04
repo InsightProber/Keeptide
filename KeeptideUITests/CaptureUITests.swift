@@ -88,7 +88,7 @@ final class CaptureUITests: XCTestCase {
         XCTAssertTrue(copyButton.waitForExistence(timeout: 5))
 
         recordingButton.click()
-        XCTAssertEqual(recordingButton.label, "Start Recording")
+        XCTAssertEqual(recordingButton.label, "Resume Recording")
         host.activate()
         host.buttons["Write Alternate Text"].click()
         let hostStatus = host.staticTexts["Synthetic host status"]

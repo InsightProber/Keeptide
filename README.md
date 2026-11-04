@@ -116,12 +116,12 @@ commands and validation boundaries.
 
 Recording starts on first launch, and the welcome explains how to pause it.
 **Pause Recording** in the menu-bar menu or the library stops collecting new
-copies, and **Start Recording** there resumes it; Settings has the same switch.
-While recording is paused or stopped, the quick-access panel says so, and its
-**⋯** menu offers **Resume Recording**. Ignored applications can be configured
-in the library. Source attribution uses observed foreground-application changes
-and is best effort; it cannot authenticate which application wrote the
-clipboard.
+copies, and **Resume Recording** there starts it again; Settings has the same
+switch. While recording is paused, the quick-access panel says so, and its
+**⋯** menu offers **Resume Recording**; when recording stops for another
+reason, the panel says why. Ignored applications can be configured in the
+library. Source attribution uses observed foreground-application changes and is
+best effort; it cannot authenticate which application wrote the clipboard.
 
 Recording preserves whole items and their available representations. Private or
 transient content is skipped when the source marks it accordingly. A copy above

@@ -414,7 +414,7 @@ struct LibraryView: View {
                     session.preferences.isEnabled.toggle()
                 } label: {
                     Label(
-                        session.isRecording ? "Pause Recording" : "Start Recording",
+                        session.isRecording ? "Pause Recording" : "Resume Recording",
                         systemImage: session.isRecording ? "pause.fill" : "record.circle"
                     )
                 }
