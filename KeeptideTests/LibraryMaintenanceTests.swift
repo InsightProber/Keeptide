@@ -4,6 +4,8 @@ import XCTest
 
 @MainActor
 final class LibraryMaintenanceTests: XCTestCase {
+    private let day: TimeInterval = 24 * 60 * 60
+
     func testUnknownCleanupStopsBeforeExpiryAndKeepsTheRecoveryMessage() async throws {
         let harness = try await makeHarness(retention: .preset(.oneDay))
         let fixture = try await insertHistory("preserved-old", lastCopiedAt: .distantPast, into: harness.store)
@@ -92,6 +94,75 @@ final class LibraryMaintenanceTests: XCTestCase {
         XCTAssertNil(activeItem.captureID)
         XCTAssertNil(hiddenItemAfterMaintenance.captureID)
         XCTAssertEqual(markerCount, 2)
+    }
+
+    func testAMalformedRowInRecentlyDeletedIsLeftOutAndTheRestStillLoads() async throws {
+        let harness = try await makeHarness(retention: .permanent)
+        let valid = try await insertHistory("valid", lastCopiedAt: Date(), into: harness.store)
+        let bad = try await insertHistory("bad window", lastCopiedAt: Date(), into: harness.store)
+        let validTarget = try await LifecycleService(controller: harness.store).remove(
+            ref: valid.ref, at: Date(), expecting: harness.identity,
+            permit: try await StoreSafetyGate(controller: harness.store).permit(.maintenance)
+        ).target
+        // Deleted three days ago and due a day ago: not the seven days every deletion is given. A pass's cleanup meets
+        // it and leaves it; Recently Deleted meets it too.
+        let deletedAt = Date() - 3 * day, purgeAfter = Date() - day
+        try await overwriteRow("LibraryItem", id: bad.item.id.rawValue, in: harness.store) { row in
+            row.setValue(false, forKey: "historyEligible")
+            row.setValue(deletedAt, forKey: "historyDeletedAt")
+            row.setValue(purgeAfter, forKey: "historyPurgeAfter")
+        }
+        let before = try await itemValue(bad.item.id, in: harness.store)
+
+        await harness.maintenance.refreshTrash()
+        XCTAssertNil(harness.maintenance.message)
+        XCTAssertEqual(harness.maintenance.trash.map(\.identity), [validTarget])
+
+        // The pass goes on past Recently Deleted to measure the library.
+        await harness.maintenance.runScheduledMaintenance()
+        XCTAssertNil(harness.maintenance.message)
+        XCTAssertNotNil(harness.maintenance.usage)
+        XCTAssertEqual(harness.maintenance.trash.map(\.identity), [validTarget])
+        // The malformed row is left as it was, and its capture with it.
+        let after = try await itemValue(bad.item.id, in: harness.store)
+        XCTAssertEqual(after, before)
+        _ = try await ContentRepository(controller: harness.store).recordState(.capture(bad.capture.id))
+    }
+
+    func testRecentlyDeletedListsTheSoundFacetsOfRowsItCannotReadWhole() async throws {
+        let harness = try await makeHarness(retention: .permanent)
+        let lifecycle = LifecycleService(controller: harness.store)
+        let gate = StoreSafetyGate(controller: harness.store)
+        // Deleted history whose item record has lost its title.
+        let unreadable = try await insertHistory("unreadable", lastCopiedAt: Date(), into: harness.store)
+        _ = try await lifecycle.remove(ref: unreadable.ref, at: Date(), expecting: harness.identity,
+                                       permit: try await gate.permit(.maintenance))
+        try await overwriteRow("LibraryItem", id: unreadable.item.id.rawValue, in: harness.store) { row in
+            row.setValue(nil, forKey: "title")
+        }
+        // A deleted snippet whose history's deletion window is not the seven days: the snippet is still listed.
+        let snippet = try await insertHistory("snippet", lastCopiedAt: Date(), into: harness.store)
+        _ = try await LibraryService(controller: harness.store).saveAsMemo(snippet.item.id)
+        let snippetTarget = try await lifecycle.remove(itemID: snippet.item.id, facet: .memo, at: Date(),
+                                                       expecting: harness.identity,
+                                                       permit: try await gate.permit(.maintenance)).target
+        let deletedAt = Date() - day, purgeAfter = Date() + day
+        try await overwriteRow("LibraryItem", id: snippet.item.id.rawValue, in: harness.store) { row in
+            row.setValue(false, forKey: "historyEligible")
+            row.setValue(deletedAt, forKey: "historyDeletedAt")
+            row.setValue(purgeAfter, forKey: "historyPurgeAfter")
+        }
+        // Deleted history whose item names a snippet that is not there: the history is still listed.
+        let history = try await insertHistory("history", lastCopiedAt: Date(), into: harness.store)
+        let historyTarget = try await lifecycle.remove(ref: history.ref, at: Date(), expecting: harness.identity,
+                                                       permit: try await gate.permit(.maintenance)).target
+        try await overwriteRow("LibraryItem", id: history.item.id.rawValue, in: harness.store) { row in
+            row.setValue(UUID(), forKey: "memoID")
+        }
+
+        await harness.maintenance.refreshTrash()
+        XCTAssertNil(harness.maintenance.message)
+        XCTAssertEqual(Set(harness.maintenance.trash.map(\.identity)), [snippetTarget, historyTarget])
     }
 
     func testPermanentPolicyPreservesOldCaptureAndVisibleHistory() async throws {
@@ -254,6 +325,23 @@ final class LibraryMaintenanceTests: XCTestCase {
             throw StoreError.corruptStore
         }
         return item
+    }
+
+    /// Changes a row straight in Core Data, past the write coordinator's checks, as a damaged store or a faulty
+    /// earlier build might have left it.
+    private func overwriteRow(
+        _ entityName: String,
+        id: UUID,
+        in store: PersistenceController,
+        _ change: @escaping @Sendable (NSManagedObject) -> Void
+    ) async throws {
+        try await store.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+            let row = try XCTUnwrap(context.fetch(request).first)
+            change(row)
+            try context.save()
+        }
     }
 
     private func facetMarkerCount(in store: PersistenceController) async throws -> Int {
