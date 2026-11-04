@@ -67,13 +67,10 @@ final class CaptureUITests: XCTestCase {
             )
             return
         }
-        let ready = NSPredicate(format: "enabled == true")
-        expectation(for: ready, evaluatedWith: recordingButton)
+        // Recording is on from launch, once the isolated library is ready.
+        let recording = NSPredicate(format: "enabled == true AND label == %@", "Pause Recording")
+        expectation(for: recording, evaluatedWith: recordingButton)
         waitForExpectations(timeout: 8)
-        XCTAssertEqual(recordingButton.label, "Start Recording")
-
-        recordingButton.click()
-        XCTAssertEqual(recordingButton.label, "Pause Recording")
 
         host.activate()
         let writeText = host.buttons["Write Text"]
@@ -91,7 +88,7 @@ final class CaptureUITests: XCTestCase {
         XCTAssertTrue(copyButton.waitForExistence(timeout: 5))
 
         recordingButton.click()
-        XCTAssertEqual(recordingButton.label, "Start Recording")
+        XCTAssertEqual(recordingButton.label, "Resume Recording")
         host.activate()
         host.buttons["Write Alternate Text"].click()
         let hostStatus = host.staticTexts["Synthetic host status"]

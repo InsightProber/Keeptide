@@ -344,6 +344,31 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: marker), Data("preserve".utf8))
     }
 
+    func testCleanupAfterPublicationLeavesThePublishedArchiveWhole() throws {
+        let parent = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let writer = try StagedArchiveWriter(destinationParent: parent, destinationName: "Keeptide Export published",
+                                             stagingID: UUID())
+        let payload = Data("published payload".utf8)
+        let manifest = Data("{\"synthetic\":\"manifest\"}".utf8)
+        _ = try writer.write(payload, relativePath: "payloads/value.bin")
+        _ = try writer.finishEntries()
+        _ = try writer.write(manifest, relativePath: "manifest.json")
+        try writer.preparePublication()
+        let published = try writer.publish()
+
+        // The writer's descriptors now reach the published archive: cleaning up must not empty it.
+        writer.cleanup()
+
+        XCTAssertEqual(Set(try FileManager.default.contentsOfDirectory(atPath: published.path)),
+                       ["entries.ndjson", "manifest.json", "payloads"])
+        XCTAssertEqual(try Data(contentsOf: published.appendingPathComponent("payloads/value.bin")), payload)
+        XCTAssertEqual(try Data(contentsOf: published.appendingPathComponent("manifest.json")), manifest)
+        XCTAssertEqual(try Data(contentsOf: published.appendingPathComponent("entries.ndjson")), Data())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: writer.stagingURL.path))
+    }
+
     func testDestinationParentSymlinkIsRejectedWithoutCreatingStaging() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let actual = root.appendingPathComponent("actual", isDirectory: true)

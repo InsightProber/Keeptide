@@ -47,6 +47,9 @@ final class CaptureSession {
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
     /// What direct paste asks of the system. Every paste service this session makes uses it.
     @ObservationIgnored private let directPaste: DirectPasteSystem
+    /// A clipboard a test gives in place of the real one. Without it, the session reads the clipboard its library
+    /// records.
+    @ObservationIgnored private let clipboardReader: (any SnapshotReading)?
     /// An app-level preference object is injected before asynchronous store initialization so Settings, onboarding,
     /// and the monitor keep one identity. Legacy tests that do not inject one still adopt the selected test/QA suite.
     @ObservationIgnored private var keepsPreferenceIdentity: Bool
@@ -94,19 +97,41 @@ final class CaptureSession {
         return !isPausing
     }
 
+    /// What quick access says while new copies are not recorded, or nil while they are. A stop that the clipboard, the
+    /// disk or the library caused says why, as `status` does, ahead of a switch that is off, which says "Recording
+    /// paused". A library that could not open, or stopped working, keeps saying why while it is not ready, whatever
+    /// the switch does. A library that is still opening says nothing: recording starts as it opens.
+    var recordingNotice: String? {
+        #if DEBUG
+        // The QA session never records, and says so wherever recording shows.
+        if manualPasteQASession != nil { return status }
+        #endif
+        if isRecording { return nil }
+        if case .failed(let reason)? = monitor?.state { return reason }
+        if !isReady, let message { return message }
+        return preferences.isEnabled ? nil : QuickAccessStatus.recordingPaused
+    }
+
+    /// Whether quick access offers Resume Recording: once the library is ready, while the switch is off and may be
+    /// turned on now. Resumed while the library is not ready, recording would not start.
+    var canResumeRecording: Bool { isReady && !preferences.isEnabled && canChangeRecordingConsent }
+
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
 
-    /// `directPaste` stays `.unavailable` everywhere but in the app delegate: tests use a fake.
+    /// `directPaste` stays `.unavailable` everywhere but in the app delegate, and `clipboardReader` reads the real
+    /// clipboard everywhere but in tests: tests use fakes.
     init(preferences: CapturePreferences? = nil,
          readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil,
-         directPaste: DirectPasteSystem = .unavailable) {
+         directPaste: DirectPasteSystem = .unavailable,
+         clipboardReader: (any SnapshotReading)? = nil) {
         self.preferences = preferences ?? CapturePreferences()
         keepsPreferenceIdentity = preferences != nil
         self.readContent = readContent
         self.pasteboard = pasteboard
         self.directPaste = directPaste
+        self.clipboardReader = clipboardReader
         if let readContent, let pasteboard {
             pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in },
                                         didWrite: { _ in }, system: directPaste)
@@ -132,7 +157,8 @@ final class CaptureSession {
             message = "The local library could not be opened. Recording is unavailable."
             return
         }
-        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens.
+        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens; nor does a test
+        // process without a test session.
         guard let library else { return }
         await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips)
     }
@@ -214,12 +240,19 @@ final class CaptureSession {
             }
             readContent = read
             pasteboard = board
-            let monitor = library.recordsClipboard ? PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
-                service: CaptureService(controller: store), preferences: preferences,
-                sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
-                matchesOwnWrite: { $0.matches(pasteboard: board) }) : nil
+            let monitor = library.recordsClipboard
+                ? PasteboardMonitor(reader: clipboardReader ?? SnapshotReader(pasteboard: board),
+                                    service: CaptureService(controller: store), preferences: preferences,
+                                    sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
+                                    matchesOwnWrite: { $0.matches(pasteboard: board) })
+                : nil
             monitor?.onCapture = { [weak self] in await self?.refresh() }
-            monitor?.onUnavailable = { [weak self] in self?.isReady = false }
+            monitor?.onUnavailable = { [weak self, weak monitor] in
+                guard let self else { return }
+                isReady = false
+                // Only reopening Keeptide brings the library back, so why it stopped stays, whatever the switch does.
+                if case .failed(let reason)? = monitor?.state { message = reason }
+            }
             monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
             if let monitor {
                 foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -442,8 +475,11 @@ enum CaptureLibrary {
 
     /// A test session wins over the manual paste QA session, which is chosen only when asked for. `userLibrary` is
     /// looked up only when neither is chosen. A Release build has no QA session: asked for one, it chooses nothing
-    /// (nil), so nothing opens; it never falls back to the user's library.
+    /// (nil), so nothing opens; it never falls back to the user's library. Nor does a test process ever choose the
+    /// user's library, which records the general clipboard: where XCTest runs, as in the app that hosts the unit
+    /// tests, it chooses nothing. A test of the choice itself says it is not one with `isRunningTests`.
     static func choose(testSessionID: UUID?, manualPasteQA: Bool,
+                       isRunningTests: Bool = LaunchConfiguration.isRunningTests(ProcessInfo.processInfo.environment),
                        userLibrary: @autoclosure () throws -> URL) rethrows -> CaptureLibrary? {
         if let testSessionID { return .test(CaptureTestConfiguration(id: testSessionID)) }
         if manualPasteQA {
@@ -453,6 +489,7 @@ enum CaptureLibrary {
             return nil
             #endif
         }
+        guard !isRunningTests else { return nil }
         return .user(directory: try userLibrary())
     }
 

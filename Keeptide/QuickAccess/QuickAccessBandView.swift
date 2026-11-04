@@ -74,15 +74,11 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: metrics.bottomPadding)
                 .accessibilityHidden(true)
         }
-        .overlay(alignment: .topTrailing) {
-            saveStatus
-                .padding(.top, StripLayout.toolbarTop + QuickAccessToolbar.height + 4)
-                .padding(.trailing, 20)
-        }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
-            BandBackdrop(reducesTransparency: reduceTransparency, increasesContrast: contrast == .increased)
+            BandBackdrop(layout: layout, reducesTransparency: reduceTransparency,
+                         increasesContrast: contrast == .increased)
                 .padding(EdgeInsets(top: -StripLayout.shadowRoom.above, leading: -StripLayout.sideMargin,
                                     bottom: -StripLayout.shadowRoom.below, trailing: -StripLayout.sideMargin))
         }
@@ -93,25 +89,6 @@ struct QuickAccessBandView: View {
             HostedView(view: strip)
                 .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * ringRoom)
             if !hasFrames { emptyState }
-        }
-    }
-
-    @ViewBuilder
-    private var saveStatus: some View {
-        if let message = state.saveMessage {
-            HStack(spacing: 10) {
-                Text(message)
-                    .accessibilityIdentifier("QuickAccessSaveStatus")
-                if state.canUndoSave {
-                    Button("Undo") { Task { await state.undoSaveSelection() } }
-                        .buttonStyle(.borderless)
-                        .accessibilityIdentifier("QuickAccessUndoSave")
-                }
-            }
-            .font(.callout)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: Capsule())
         }
     }
 
@@ -216,12 +193,14 @@ private struct HostedView<Content: NSView>: NSViewRepresentable {
 
 /// Places the band's backdrop behind it, reaching into the room the panel leaves around the band for the shadow.
 private struct BandBackdrop: NSViewRepresentable {
+    let layout: QuickAccessBandView.Layout
     let reducesTransparency: Bool
     let increasesContrast: Bool
 
     func makeNSView(context: Context) -> QuickAccessBandBackdrop { QuickAccessBandBackdrop() }
 
     func updateNSView(_ backdrop: QuickAccessBandBackdrop, context: Context) {
+        backdrop.panelLayout = layout
         backdrop.reducesTransparency = reducesTransparency
         backdrop.increasesContrast = increasesContrast
     }
@@ -247,6 +226,26 @@ final class QuickAccessBandBackdrop: NSView {
         didSet { if increasesContrast != oldValue { restyle() } }
     }
     private var maskedSize = NSSize.zero
+    /// The shadow fades out over this much inside the window's edges. Its soft edge reaches farther than the room the
+    /// panel leaves it, 40 points above the band, 100 below and 32 beside it, and less on a low screen; cut short where
+    /// the window ends, it would show as a faint band with a hard edge.
+    static let shadowFade: CGFloat = 24
+    /// The part of the view the window shows, where the shadow is drawn to, as it was last drawn.
+    private(set) var drawnShadowArea = NSRect.zero
+    /// How the panel lays the band out. As the preview or a command's review opens and closes, the band moves in the
+    /// window and the window grows or shrinks around it, while the view keeps its size, so AppKit does not lay it out
+    /// again; the shadow is drawn again to end where the window now does.
+    var panelLayout: QuickAccessBandView.Layout? {
+        didSet { if panelLayout != oldValue { needsDisplay = true } }
+    }
+
+    /// The part of the view the window shows: all of it where the panel leaves the shadow its whole room, and less
+    /// where the edge of a low screen leaves the window short of it.
+    var shadowArea: NSRect {
+        guard let content = window?.contentView else { return bounds }
+        let shown = bounds.intersection(convert(content.bounds, from: content))
+        return shown.isEmpty ? bounds : shown
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -287,6 +286,29 @@ final class QuickAccessBandBackdrop: NSView {
             }
             needsDisplay = true
         }
+        // The window's edges may lie elsewhere in the view at its new size, and the shadow ends with them.
+        if shadowArea != drawnShadowArea { needsDisplay = true }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: window)
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsDisplay = true
+        guard let window else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(windowDidResize),
+                                               name: NSWindow.didResizeNotification, object: window)
+    }
+
+    /// The window grows and shrinks around the band, which need not lay the view out again, and the shadow ends with
+    /// the window.
+    @objc private func windowDidResize(_ notification: Notification) {
+        if shadowArea != drawnShadowArea { needsDisplay = true }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -309,12 +331,17 @@ final class QuickAccessBandBackdrop: NSView {
     }
 
     /// The shadow: 30 pt down and 90 pt soft, black at 55 percent in dark mode; 80 pt soft and a faint blue-grey at 22
-    /// percent in light mode. It is drawn only outside the band, so none of it shows through the material.
+    /// percent in light mode. It is drawn only outside the band, so none of it shows through the material, and it fades
+    /// out over `shadowFade` inside the window's edges, so it never ends in a hard edge where the window does.
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let band = Self.outline(in: bandRect)
+        let area = shadowArea
+        drawnShadowArea = area
         context.saveGState()
         defer { context.restoreGState() }
+        context.beginTransparencyLayer(in: area, auxiliaryInfo: nil)
+        context.saveGState()
         context.addRect(bounds)
         context.addPath(band)
         context.clip(using: .evenOdd)
@@ -329,6 +356,31 @@ final class QuickAccessBandBackdrop: NSView {
         context.addPath(band)
         context.setFillColor(CGColor(gray: 0, alpha: 1))
         context.fillPath()
+        context.restoreGState()
+        Self.fadeEdges(of: area, in: context)
+        context.endTransparencyLayer()
+    }
+
+    /// Keeps what is drawn in `area` at full strength `shadowFade` in from its edges, and fades it to nothing at them:
+    /// one ramp across, one down, each keeping only as much of what lies under it as its own opacity.
+    private static func fadeEdges(of area: NSRect, in context: CGContext) {
+        guard area.width > 0, area.height > 0 else { return }
+        let gray = CGColorSpaceCreateDeviceGray()
+        func ramp(_ length: CGFloat) -> CGGradient? {
+            let inset = min(shadowFade, length / 2) / length
+            // Gray and opacity: none at the edges, all of it `inset` in from them.
+            return CGGradient(colorSpace: gray, colorComponents: [0, 0, 0, 1, 0, 1, 0, 0],
+                              locations: [0, inset, 1 - inset, 1], count: 4)
+        }
+        guard let across = ramp(area.width), let down = ramp(area.height) else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setBlendMode(.destinationIn)
+        let beyond: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        context.drawLinearGradient(across, start: CGPoint(x: area.minX, y: area.midY),
+                                   end: CGPoint(x: area.maxX, y: area.midY), options: beyond)
+        context.drawLinearGradient(down, start: CGPoint(x: area.midX, y: area.minY),
+                                   end: CGPoint(x: area.midX, y: area.maxY), options: beyond)
     }
 }
 
