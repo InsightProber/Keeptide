@@ -2,6 +2,31 @@ import XCTest
 @testable import Keeptide
 
 final class StripLayoutTests: XCTestCase {
+    func testBrowsingPreviewOverlaysTheBandWithoutChangingItsScreenAnchor() {
+        let screens = [
+            CGRect(x: 0, y: 25, width: 1440, height: 875),
+            CGRect(x: -1280, y: 30, width: 1024, height: 440),
+            CGRect(x: 37, y: -900, width: 801, height: 675),
+        ]
+        for screen in screens {
+            for size in CardSize.allCases {
+                let metrics = StripLayout.metrics(for: size, visibleWidth: screen.width)
+                let band = StripLayout.bandFrame(metrics, in: screen)
+                let preview = StripLayout.previewOverlayFrame(band: band, in: screen)
+                XCTAssertTrue(screen.contains(preview))
+                XCTAssertTrue(preview.intersects(band))
+                XCTAssertEqual(preview.midX, band.midX, accuracy: 0.5)
+                XCTAssertEqual(preview.midY, band.midY, accuracy: 0.5)
+                XCTAssertLessThanOrEqual(preview.width, 760)
+                XCTAssertLessThanOrEqual(preview.height, 470)
+                XCTAssertGreaterThanOrEqual(preview.minX - band.minX, 24)
+                XCTAssertGreaterThanOrEqual(band.maxX - preview.maxX, 24)
+                let panel = StripLayout.panelFrame(band: band, preview: preview, in: screen)
+                XCTAssertTrue(screen.contains(panel))
+            }
+        }
+    }
+
     /// A band 1360 pt wide with frames 164 pt wide and 176 pt apart, docked 24 pt in from its ends: the geometry
     /// the placement numbers below were worked out for. It is no card size's own.
     private var metrics: StripMetrics {

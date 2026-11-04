@@ -450,11 +450,11 @@ private extension LifecycleCleanupPlanner {
                 reachedRetentionBoundary = true
                 break
             }
+            // A row whose item record is missing, or whose capture is gone, is left as it is: nothing of it is
+            // deleted, and it does not hold up the cleanup of the rows after it. The cursor has already passed it.
             guard case .item(let item)? = try StoredRecords.value(.item(itemID), in: context),
                   let captureID = item.captureID,
-                  try StoredRecords.object(.capture(captureID), in: context) != nil else {
-                throw StoreError.corruptStore
-            }
+                  try StoredRecords.object(.capture(captureID), in: context) != nil else { continue }
             let target = DeletedFacetIdentity.history(itemID: itemID, captureID: captureID)
             if try isCleanupVisible(target, in: context) {
                 result.append(LifecycleCleanupCandidate(target: target, trigger: .naturalExpiration(policy)))
@@ -506,11 +506,14 @@ private extension LifecycleCleanupPlanner {
             }
             let itemID = ItemID(rawValue: rawID)
             last = (purgeAfter, itemID)
+            // A row whose capture is gone, or whose deletion window is not a valid one that has ended, is left as it
+            // is: nothing of it is deleted, and it does not hold up the cleanup of the rows after it, as with memos
+            // below. The cursor has already passed it.
             guard case .item(let item)? = try StoredRecords.value(.item(itemID), in: context),
                   let captureID = item.captureID,
                   try StoredRecords.object(.capture(captureID), in: context) != nil,
-                  let window = try validatedWindow(item.historyDeletedAt, item.historyPurgeAfter),
-                  try window.isPurgeEligible(at: now) else { throw StoreError.corruptStore }
+                  let window = try? validatedWindow(item.historyDeletedAt, item.historyPurgeAfter),
+                  try window.isPurgeEligible(at: now) else { continue }
             let target = DeletedFacetIdentity.history(itemID: itemID, captureID: captureID)
             if try isCleanupVisible(target, in: context) {
                 result.append(LifecycleCleanupCandidate(target: target, trigger: .deletionWindowExpired))
@@ -559,7 +562,9 @@ private extension LifecycleCleanupPlanner {
             }
             last = (purgeAfter, memoID)
             let itemID = ItemID(rawValue: rawItemID)
-            guard let window = try validatedWindow(deletedAt, purgeAfter),
+            // A memo whose deletion window is not a valid one that has ended, or whose item no longer holds it, is left
+            // as it is and does not hold up the rows after it.
+            guard let window = try? validatedWindow(deletedAt, purgeAfter),
                   try window.isPurgeEligible(at: now),
                   case .item(let item)? = try StoredRecords.value(.item(itemID), in: context),
                   item.deletedAt == nil,

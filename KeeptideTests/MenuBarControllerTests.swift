@@ -77,6 +77,23 @@ final class MenuBarControllerTests: XCTestCase {
         XCTAssertNil(controller.menu?.items.first { $0.identifier?.rawValue == "ShortcutFallback" })
     }
 
+    func testTheRecordingSwitchPausesOrResumes() throws {
+        var recording = true
+        let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
+                                           captureIsEnabled: { recording }, shouldRegisterHotKey: false)
+        let menu = try XCTUnwrap(controller.menu)
+        func switchTitle() throws -> String {
+            controller.menuWillOpen(menu)
+            return try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "CaptureRecordingToggleMenuItem" }).title
+        }
+
+        // Recording, as it is from first launch, the switch pauses it.
+        XCTAssertEqual(try switchTitle(), "Pause Recording")
+        // Paused or stopped, it resumes what was recording; there is nothing to start.
+        recording = false
+        XCTAssertEqual(try switchTitle(), "Resume Recording")
+    }
+
     func testQuitMenuRequestsTerminationOnlyOnceWhileShutdownIsPending() throws {
         var requestCount = 0
         let controller = MenuBarController(

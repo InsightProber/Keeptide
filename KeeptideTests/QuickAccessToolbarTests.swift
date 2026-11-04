@@ -335,6 +335,105 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(toolbar.indexNoticeLabel.frame.minX, toolbar.filters.frame.maxX + 12)
     }
 
+    func testTheRecordingNoticeTakesTheNoticesPlaceWithOrWithoutClips() throws {
+        // While new copies are not recorded, the row says so where the rebuild notice goes: 12 pt after the filters,
+        // level with the row, in a status's type and colour, folded or open. It shows over clips and without them, and
+        // while the index rebuilds it takes that notice's place. The right end keeps Return's hint, word and all.
+        for expanded in [false, true] {
+            for hasClips in [false, true] {
+                let toolbar = makeToolbar(width: 1376)
+                toolbar.setSearchExpanded(expanded)
+                toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
+                toolbar.hasClips = hasClips
+                toolbar.indexNotice = .rebuilding
+                toolbar.recordingNotice = "Recording paused"
+                toolbar.layoutSubtreeIfNeeded()
+                let notice = toolbar.recordingNoticeLabel
+                let name = "\(expanded ? "open" : "folded"), clips: \(hasClips)"
+                XCTAssertFalse(notice.isHidden, name)
+                XCTAssertEqual(notice.stringValue, "Recording paused", name)
+                XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessRecordingNotice", name)
+                XCTAssertEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12, name)
+                XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, name)
+                XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.copyHint.frame.minX - 12, name)
+                XCTAssertFalse(isCut(notice), "\(name): in full")
+                XCTAssertNil(notice.toolTip, name)
+                XCTAssertEqual(notice.font, toolbar.statusLabel.font, name)
+                XCTAssertEqual(notice.textColor, ToolbarPalette.secondary, name)
+                XCTAssertTrue(toolbar.indexNoticeLabel.isHidden, "\(name): in place of the rebuild notice")
+                XCTAssertFalse(toolbar.copyHint.isHidden, name)
+                XCTAssertTrue(toolbar.copyHint.showsTitle, name)
+            }
+        }
+    }
+
+    func testOnceRecordingGoesOnTheRowSaysNothingAboutIt() throws {
+        // Recording again, the notice goes, and the rebuild notice, if any, is back in its place.
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
+        toolbar.hasClips = true
+        toolbar.indexNotice = .rebuilding
+        toolbar.recordingNotice = "Recording paused"
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(toolbar.recordingNoticeLabel.isHidden)
+        XCTAssertTrue(toolbar.indexNoticeLabel.isHidden)
+
+        toolbar.recordingNotice = nil
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(toolbar.recordingNoticeLabel.isHidden)
+        XCTAssertFalse(toolbar.indexNoticeLabel.isHidden)
+
+        toolbar.indexNotice = nil
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(toolbar.recordingNoticeLabel.isHidden)
+        XCTAssertTrue(toolbar.indexNoticeLabel.isHidden)
+    }
+
+    func testOnANarrowRowWhyRecordingStoppedIsCutShortAndReadWhole() throws {
+        // A 960 pt row with the search open, as a 1024 pt screen gives. Why recording stopped can be long: it is cut
+        // short with an ellipsis before Return's hint, its whole text in its help tag, and VoiceOver reads it whole.
+        let reason = "Clipboard access denied. Allow Keeptide in System Settings, then resume recording."
+        let toolbar = makeToolbar(width: 960)
+        toolbar.setSearchExpanded(true)
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
+        toolbar.recordingNotice = reason
+        toolbar.layoutSubtreeIfNeeded()
+        let notice = toolbar.recordingNoticeLabel
+        XCTAssertFalse(notice.isHidden)
+        XCTAssertEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12)
+        XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.copyHint.frame.minX - 12)
+        XCTAssertTrue(isCut(notice), "Cut short")
+        XCTAssertEqual(notice.lineBreakMode, .byTruncatingTail)
+        XCTAssertEqual(notice.toolTip, reason)
+        XCTAssertEqual(notice.accessibilityValue(), reason, "Read whole")
+        XCTAssertFalse(toolbar.copyHint.isHidden)
+
+        // With room for it all, nothing is cut and there is no help tag.
+        toolbar.recordingNotice = "Recording paused"
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(isCut(notice))
+        XCTAssertNil(notice.toolTip)
+    }
+
+    func testTheRecordingNoticeMovesWithTheFiltersAsTheSearchUnfolds() throws {
+        let toolbar = makeToolbar(width: 1376)
+        toolbar.recordingNotice = "Recording paused"
+        toolbar.note = .action(title: "Copy", enabled: true, hint: nil)
+        toolbar.window?.contentView?.wantsLayer = true
+        toolbar.window?.orderFront(nil)
+        toolbar.layoutSubtreeIfNeeded()
+        toolbar.window?.contentView?.layer?.speed = 0
+        toolbar.reducesMotion = { false }
+        XCTAssertFalse(toolbar.recordingNoticeLabel.isHidden)
+        toolbar.setSearchExpanded(true)
+        CATransaction.flush()
+        let layer = try XCTUnwrap(toolbar.recordingNoticeLabel.layer)
+        let animation = try XCTUnwrap(layer.animation(forKey: "fold position") as? CABasicAnimation)
+        XCTAssertEqual(animation.duration, 0.2, accuracy: 0.001)
+        XCTAssertEqual(toolbar.recordingNoticeLabel.frame.minX, toolbar.filters.frame.maxX + 12)
+        toolbar.window?.orderOut(nil)
+    }
+
     func testTheSearchFoldsInAFifthOfASecondOrAtOnceWithReduceMotion() throws {
         let toolbar = makeToolbar(width: 1376)
         toolbar.window?.orderFront(nil)

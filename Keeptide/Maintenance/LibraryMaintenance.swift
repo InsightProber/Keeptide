@@ -20,6 +20,9 @@ final class LibraryMaintenance {
 
     @ObservationIgnored private var settingsModel: LifecycleSettingsModel?
 
+    /// Said while a blocked cleanup intent waits for review, after every action until it no longer does.
+    private static let cleanupNeedsReview = "Some cleanup needs review. Its evidence was preserved."
+
     var settings: LifecycleSettingsModel {
         if let settingsModel { return settingsModel }
         let model = LifecycleSettingsModel(
@@ -129,7 +132,7 @@ final class LibraryMaintenance {
                 for id in ids {
                     try Task.checkCancellation()
                     do { _ = try await reclaimer.resume(id, expecting: self.identity, permit: permit, at: now) }
-                    catch CleanupError.blocked { self.message = "Some cleanup needs review. Its evidence was preserved." }
+                    catch CleanupError.blocked { self.message = Self.cleanupNeedsReview }
                     catch CleanupError.unsupportedIntent {
                         self.message = "Some cleanup needs a newer version. Its evidence was preserved."
                         return // Do not turn a permanent recovery requirement into an expiry retry.
@@ -164,7 +167,7 @@ final class LibraryMaintenance {
                     } catch StoreError.preconditionFailed {
                         guard try await self.controller.identity() == self.identity else { throw StoreError.preconditionFailed }
                     } catch CleanupError.blocked {
-                        self.message = "Some cleanup needs review. Its evidence was preserved."
+                        self.message = Self.cleanupNeedsReview
                     }
                 }
                 candidateCursor = page.next
@@ -209,6 +212,14 @@ final class LibraryMaintenance {
             let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
             guard !isClosed, permit.identity == identity else { throw StoreError.preconditionFailed }
             try await operation(permit)
+            // Every action starts without a message, and a blocked intent is not pending, so no later pass meets one
+            // that an earlier pass blocked. It still holds its evidence for review, so each action that succeeds says
+            // so, among them the refresh Recently Deleted runs as it appears. Not knowing leaves the action as it went.
+            if message == nil, !isClosed {
+                let intents = CleanupIntentStore(controller: controller)
+                let isBlocked = (try? await intents.hasBlockedIntent(expecting: identity, permit: permit)) == true
+                if isBlocked, !isClosed { message = Self.cleanupNeedsReview }
+            }
             return true
         } catch is CancellationError {
             return false

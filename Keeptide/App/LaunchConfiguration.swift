@@ -22,7 +22,7 @@ struct LaunchConfiguration: Sendable {
     init(arguments: [String], environment: [String: String]) {
         let isUITesting = arguments.contains("--ui-testing")
         usesSyntheticHotKey = isUITesting && arguments.contains("--synthetic-hotkey")
-        let isRunningTests = environment["XCTestConfigurationFilePath"] != nil
+        let isRunningTests = Self.isRunningTests(environment)
         shouldRegisterGlobalHotKey = (usesSyntheticHotKey || !isRunningTests)
             && !arguments.contains("--disable-global-hotkey")
         shouldShowQuickAccess = arguments.contains("--show-quick-access")
@@ -44,5 +44,10 @@ struct LaunchConfiguration: Sendable {
         shouldUseEphemeralApplicationState = captureTestSessionID == nil && (isUITesting || isRunningTests)
         shouldPresentOnboardingIfNeeded = !isRunningTests && !isUITesting && !shouldStartManualPasteQA
         shouldInitializeCaptureSession = captureTestSessionID != nil || (!isRunningTests && !isUITesting)
+    }
+
+    /// Whether XCTest runs in the process `environment` belongs to, as in the app that hosts the unit tests.
+    static func isRunningTests(_ environment: [String: String]) -> Bool {
+        environment["XCTestConfigurationFilePath"] != nil
     }
 }

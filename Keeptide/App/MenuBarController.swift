@@ -159,7 +159,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
         let captureToggleItem = menu.addItem(
-            withTitle: "Start Recording",
+            withTitle: "Resume Recording",
             action: #selector(toggleCaptureRecording),
             keyEquivalent: ""
         )
@@ -207,7 +207,8 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func updateCaptureMenuItems() {
         captureToggleItem?.isEnabled = captureIsReady()
-        let toggleTitle = captureIsEnabled() ? "Pause Recording" : "Start Recording"
+        // Recording is on from first launch, so off it has been paused or has stopped, and the switch resumes it.
+        let toggleTitle = captureIsEnabled() ? "Pause Recording" : "Resume Recording"
         if captureToggleItem?.title != toggleTitle { captureToggleItem?.title = toggleTitle }
         let status = captureStatus()
         if captureStatusItem?.title != status { captureStatusItem?.title = status }

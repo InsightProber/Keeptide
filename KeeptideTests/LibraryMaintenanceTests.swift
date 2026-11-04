@@ -4,6 +4,8 @@ import XCTest
 
 @MainActor
 final class LibraryMaintenanceTests: XCTestCase {
+    private let day: TimeInterval = 24 * 60 * 60
+
     func testUnknownCleanupStopsBeforeExpiryAndKeepsTheRecoveryMessage() async throws {
         let harness = try await makeHarness(retention: .preset(.oneDay))
         let fixture = try await insertHistory("preserved-old", lastCopiedAt: .distantPast, into: harness.store)
@@ -35,6 +37,71 @@ final class LibraryMaintenanceTests: XCTestCase {
         XCTAssertEqual(raw, evidence)
     }
 
+    func testBlockedCleanupStillSaysItNeedsReviewOnEveryLaterPass() async throws {
+        let harness = try await makeHarness(retention: .preset(.oneDay))
+        let old = try await insertHistory("expired-old", lastCopiedAt: .distantPast, into: harness.store)
+        let identity = harness.identity
+        let evidence = Data("blocked cleanup evidence".utf8)
+        let intentID = UUID()
+        try await harness.store.perform { context in
+            let row = NSEntityDescription.insertNewObject(forEntityName: "CleanupIntent", into: context)
+            row.setValue(intentID, forKey: "id")
+            row.setValue(CleanupIntentStore.schemaVersion, forKey: "schemaVersion")
+            row.setValue(identity.storeID, forKey: "storeID")
+            row.setValue(identity.generation, forKey: "generation")
+            row.setValue(CleanupIntentPhase.blocked.rawValue, forKey: "phase")
+            row.setValue(evidence, forKey: "payload")
+            row.setValue(Date(), forKey: "createdAt")
+            row.setValue(Date(), forKey: "updatedAt")
+            try context.save()
+        }
+        // A blocked intent is not pending, so no pass resumes it; each still says it waits for review, and goes on with
+        // the rest of its work.
+        for _ in 0..<2 {
+            await harness.maintenance.runScheduledMaintenance()
+            XCTAssertEqual(harness.maintenance.message, "Some cleanup needs review. Its evidence was preserved.")
+        }
+        await assertMissing(.capture(old.capture.id), in: harness.store)
+        let raw = try await harness.store.perform { context in
+            let row = try XCTUnwrap(context.fetch(NSFetchRequest<NSManagedObject>(entityName: "CleanupIntent")).first)
+            return (row.value(forKey: "phase") as? String, row.value(forKey: "payload") as? Data)
+        }
+        XCTAssertEqual(raw.0, CleanupIntentPhase.blocked.rawValue)
+        XCTAssertEqual(raw.1, evidence)
+    }
+
+    func testABlockedCleanupStillNeedsReviewAfterEachActionInRecentlyDeleted() async throws {
+        let harness = try await makeHarness(retention: .permanent)
+        let restored = try await insertHistory("restored", lastCopiedAt: Date(), into: harness.store)
+        let deleted = try await insertHistory("deleted", lastCopiedAt: Date(), into: harness.store)
+        try await insertIntent(phase: CleanupIntentPhase.blocked.rawValue, into: harness)
+        let needsReview = "Some cleanup needs review. Its evidence was preserved."
+
+        // Recently Deleted, the one place the notice shows, refreshes as it appears and after each of its actions, and
+        // each action starts without a message. Each one that succeeds says again that the cleanup waits for review.
+        await harness.maintenance.refreshTrash()
+        XCTAssertEqual(harness.maintenance.message, needsReview)
+        for fixture in [restored, deleted] {
+            let removed = await harness.maintenance.remove(fixture.ref)
+            XCTAssertTrue(removed)
+            XCTAssertEqual(harness.maintenance.message, needsReview)
+        }
+        let restoredResult = await harness.maintenance.restore(
+            .history(itemID: restored.item.id, captureID: restored.capture.id))
+        XCTAssertTrue(restoredResult)
+        XCTAssertEqual(harness.maintenance.message, needsReview)
+        let purged = await harness.maintenance.permanentlyDelete(
+            .history(itemID: deleted.item.id, captureID: deleted.capture.id))
+        XCTAssertTrue(purged)
+        XCTAssertEqual(harness.maintenance.message, needsReview)
+        XCTAssertTrue(harness.maintenance.trash.isEmpty)
+
+        // A cleanup that needs a newer version says so instead.
+        try await insertIntent(phase: "future", schemaVersion: 99, into: harness)
+        await harness.maintenance.runScheduledMaintenance()
+        XCTAssertTrue(harness.maintenance.message?.contains("newer version") == true)
+    }
+
     func testScheduledMaintenanceExpiresAndReclaimsActiveAndPrehiddenHistory() async throws {
         let harness = try await makeHarness(retention: .preset(.oneDay))
         let active = try await insertHistory("active-old", lastCopiedAt: .distantPast, into: harness.store)
@@ -59,6 +126,75 @@ final class LibraryMaintenanceTests: XCTestCase {
         XCTAssertNil(activeItem.captureID)
         XCTAssertNil(hiddenItemAfterMaintenance.captureID)
         XCTAssertEqual(markerCount, 2)
+    }
+
+    func testAMalformedRowInRecentlyDeletedIsLeftOutAndTheRestStillLoads() async throws {
+        let harness = try await makeHarness(retention: .permanent)
+        let valid = try await insertHistory("valid", lastCopiedAt: Date(), into: harness.store)
+        let bad = try await insertHistory("bad window", lastCopiedAt: Date(), into: harness.store)
+        let validTarget = try await LifecycleService(controller: harness.store).remove(
+            ref: valid.ref, at: Date(), expecting: harness.identity,
+            permit: try await StoreSafetyGate(controller: harness.store).permit(.maintenance)
+        ).target
+        // Deleted three days ago and due a day ago: not the seven days every deletion is given. A pass's cleanup meets
+        // it and leaves it; Recently Deleted meets it too.
+        let deletedAt = Date() - 3 * day, purgeAfter = Date() - day
+        try await overwriteRow("LibraryItem", id: bad.item.id.rawValue, in: harness.store) { row in
+            row.setValue(false, forKey: "historyEligible")
+            row.setValue(deletedAt, forKey: "historyDeletedAt")
+            row.setValue(purgeAfter, forKey: "historyPurgeAfter")
+        }
+        let before = try await itemValue(bad.item.id, in: harness.store)
+
+        await harness.maintenance.refreshTrash()
+        XCTAssertNil(harness.maintenance.message)
+        XCTAssertEqual(harness.maintenance.trash.map(\.identity), [validTarget])
+
+        // The pass goes on past Recently Deleted to measure the library.
+        await harness.maintenance.runScheduledMaintenance()
+        XCTAssertNil(harness.maintenance.message)
+        XCTAssertNotNil(harness.maintenance.usage)
+        XCTAssertEqual(harness.maintenance.trash.map(\.identity), [validTarget])
+        // The malformed row is left as it was, and its capture with it.
+        let after = try await itemValue(bad.item.id, in: harness.store)
+        XCTAssertEqual(after, before)
+        _ = try await ContentRepository(controller: harness.store).recordState(.capture(bad.capture.id))
+    }
+
+    func testRecentlyDeletedListsTheSoundFacetsOfRowsItCannotReadWhole() async throws {
+        let harness = try await makeHarness(retention: .permanent)
+        let lifecycle = LifecycleService(controller: harness.store)
+        let gate = StoreSafetyGate(controller: harness.store)
+        // Deleted history whose item record has lost its title.
+        let unreadable = try await insertHistory("unreadable", lastCopiedAt: Date(), into: harness.store)
+        _ = try await lifecycle.remove(ref: unreadable.ref, at: Date(), expecting: harness.identity,
+                                       permit: try await gate.permit(.maintenance))
+        try await overwriteRow("LibraryItem", id: unreadable.item.id.rawValue, in: harness.store) { row in
+            row.setValue(nil, forKey: "title")
+        }
+        // A deleted snippet whose history's deletion window is not the seven days: the snippet is still listed.
+        let snippet = try await insertHistory("snippet", lastCopiedAt: Date(), into: harness.store)
+        _ = try await LibraryService(controller: harness.store).saveAsMemo(snippet.item.id)
+        let snippetTarget = try await lifecycle.remove(itemID: snippet.item.id, facet: .memo, at: Date(),
+                                                       expecting: harness.identity,
+                                                       permit: try await gate.permit(.maintenance)).target
+        let deletedAt = Date() - day, purgeAfter = Date() + day
+        try await overwriteRow("LibraryItem", id: snippet.item.id.rawValue, in: harness.store) { row in
+            row.setValue(false, forKey: "historyEligible")
+            row.setValue(deletedAt, forKey: "historyDeletedAt")
+            row.setValue(purgeAfter, forKey: "historyPurgeAfter")
+        }
+        // Deleted history whose item names a snippet that is not there: the history is still listed.
+        let history = try await insertHistory("history", lastCopiedAt: Date(), into: harness.store)
+        let historyTarget = try await lifecycle.remove(ref: history.ref, at: Date(), expecting: harness.identity,
+                                                       permit: try await gate.permit(.maintenance)).target
+        try await overwriteRow("LibraryItem", id: history.item.id.rawValue, in: harness.store) { row in
+            row.setValue(UUID(), forKey: "memoID")
+        }
+
+        await harness.maintenance.refreshTrash()
+        XCTAssertNil(harness.maintenance.message)
+        XCTAssertEqual(Set(harness.maintenance.trash.map(\.identity)), [snippetTarget, historyTarget])
     }
 
     func testPermanentPolicyPreservesOldCaptureAndVisibleHistory() async throws {
@@ -221,6 +357,45 @@ final class LibraryMaintenanceTests: XCTestCase {
             throw StoreError.corruptStore
         }
         return item
+    }
+
+    /// Puts a cleanup intent of the harness's store generation straight into the store, in `phase`, as an earlier pass
+    /// or a newer build might have left it, holding evidence of its own.
+    private func insertIntent(
+        phase: String,
+        schemaVersion: Int64 = CleanupIntentStore.schemaVersion,
+        into harness: MaintenanceHarness
+    ) async throws {
+        let identity = harness.identity
+        try await harness.store.perform { context in
+            let row = NSEntityDescription.insertNewObject(forEntityName: "CleanupIntent", into: context)
+            row.setValue(UUID(), forKey: "id")
+            row.setValue(schemaVersion, forKey: "schemaVersion")
+            row.setValue(identity.storeID, forKey: "storeID")
+            row.setValue(identity.generation, forKey: "generation")
+            row.setValue(phase, forKey: "phase")
+            row.setValue(Data("\(phase) cleanup evidence".utf8), forKey: "payload")
+            row.setValue(Date(), forKey: "createdAt")
+            row.setValue(Date(), forKey: "updatedAt")
+            try context.save()
+        }
+    }
+
+    /// Changes a row straight in Core Data, past the write coordinator's checks, as a damaged store or a faulty
+    /// earlier build might have left it.
+    private func overwriteRow(
+        _ entityName: String,
+        id: UUID,
+        in store: PersistenceController,
+        _ change: @escaping @Sendable (NSManagedObject) -> Void
+    ) async throws {
+        try await store.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+            let row = try XCTUnwrap(context.fetch(request).first)
+            change(row)
+            try context.save()
+        }
     }
 
     private func facetMarkerCount(in store: PersistenceController) async throws -> Int {

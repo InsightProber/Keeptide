@@ -2,17 +2,23 @@ import AppKit
 
 enum ActionMenuCommand {
     case primary, plainText, copyOnly, togglePreview
-    case saveSnippet, openLibrary, newSnippet, enableDirectPaste
+    case saveSnippet, undoSave, openLibrary, newSnippet, enableDirectPaste
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
-/// and the copy that never pastes, where the panel offers them; then the preview; then Enable Direct Paste… when the
-/// panel only copies for want of access. Unavailable actions are disabled rather than hidden, so the menu's shape stays
-/// predictable: Return's and ⇧Return's are disabled while a command waits on the review card, which alone confirms it.
+/// and the copy that never pastes, where the panel offers them; then the preview; then the library's actions, with
+/// Undo Save as Snippet after Save as Snippet while the clip's save can still be undone; then Enable Direct Paste…
+/// when the panel only copies for want of access. Other unavailable actions are disabled rather than hidden, so the
+/// menu's shape stays predictable: Return's and ⇧Return's are disabled while a command waits on the review card, which
+/// alone confirms it.
+///
+/// The undo has no key of its own: ⌘Z belongs to the search field's text while it has the keys. The menu is how both
+/// the keyboard, with ⌘K, and the pointer reach it.
 @MainActor
 enum ActionMenu {
     static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isReviewing: Bool = false,
-                     isPreviewExpanded: Bool, perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
+                     isPreviewExpanded: Bool, canUndoSave: Bool = false,
+                     perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
         let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
@@ -40,6 +46,9 @@ enum ActionMenu {
         }
         save.isEnabled = canAct
         menu.addItem(save)
+        if canUndoSave {
+            menu.addItem(ActionMenuItem("Undo Save as Snippet", key: "", modifiers: []) { perform(.undoSave) })
+        }
         let open = ActionMenuItem("Open in Library", key: "e", modifiers: .command) {
             perform(.openLibrary)
         }

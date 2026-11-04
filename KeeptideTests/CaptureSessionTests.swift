@@ -195,8 +195,9 @@ final class CaptureSessionTests: XCTestCase {
     func testChoosingALibraryOpensNothingAndATestSessionWinsOverQA() throws {
         let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
         var lookups = 0
+        // As outside a test process, where the user's library may be chosen.
         func choose(_ testSessionID: UUID?, manualPasteQA: Bool) throws -> CaptureLibrary? {
-            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
+            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA, isRunningTests: false,
                                       userLibrary: { lookups += 1; return userLibrary }())
         }
         let id = UUID()
@@ -237,6 +238,25 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(lookups, 1)
     }
 
+    func testATestProcessNeverChoosesTheUsersLibrary() throws {
+        let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
+        var lookups = 0
+
+        // XCTest runs in this process, as in the app that hosts the unit tests: the user's library, which records the
+        // general clipboard, is not chosen, nor even looked up, so nothing opens.
+        XCTAssertNil(try CaptureLibrary.choose(testSessionID: nil, manualPasteQA: false,
+                                               userLibrary: { lookups += 1; return userLibrary }()))
+        XCTAssertNil(try CaptureLibrary.choose(testSessionID: nil, manualPasteQA: false, isRunningTests: true,
+                                               userLibrary: { lookups += 1; return userLibrary }()))
+        XCTAssertEqual(lookups, 0)
+        // A UI test session's library, which records only the session's named clipboard, is chosen as ever.
+        let id = UUID()
+        let library = try XCTUnwrap(CaptureLibrary.choose(testSessionID: id, manualPasteQA: false,
+                                                          isRunningTests: true, userLibrary: userLibrary))
+        guard case .test(let chosen) = library else { return XCTFail("Chose \(library)") }
+        XCTAssertEqual(chosen.id, id)
+    }
+
     #if DEBUG
     func testTheQALibraryIsNeverTheUsersLibrary() throws {
         // Only the path: nothing in it is opened or read.
@@ -248,6 +268,26 @@ final class CaptureSessionTests: XCTestCase {
 
         XCTAssertTrue(library.directory.path.hasPrefix(FileManager.default.temporaryDirectory.path))
         XCTAssertFalse(library.directory.path.hasPrefix(userLibrary.deletingLastPathComponent().path))
+    }
+
+    func testTheManualPasteQASessionSaysSoInQuickAccessAndOffersNoResume() async throws {
+        let qa = ManualPasteQASession(id: UUID())
+        addTeardownBlock { qa.remove() }
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let suiteName = "CaptureSessionTests.qaRecording.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture, pasteboard: board)
+        await session.open(manualPasteQA: qa)
+
+        // It never records, says so wherever recording shows, and its switch cannot be turned on.
+        XCTAssertEqual(session.recordingNotice, "Manual paste QA — not recording")
+        capture.isEnabled = false
+        XCTAssertEqual(session.recordingNotice, "Manual paste QA — not recording")
+        XCTAssertFalse(session.canResumeRecording)
+        await session.shutdown()
     }
 
     func testTheManualPasteQASessionSaysSoInTheMenuAndCannotRecord() async throws {
@@ -435,6 +475,149 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(siblingBoard.string(forType: .string), "sibling")
     }
 
+    func testQuickAccessIsToldWhenNothingIsRecordedAndWhetherItCanResume() async throws {
+        let configuration = try makeIsolatedSession()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture)
+
+        // Before the library opens: on, recording starts as it opens, so there is nothing to say; paused, it says so,
+        // and resuming waits for the library.
+        XCTAssertNil(session.recordingNotice)
+        XCTAssertFalse(session.canResumeRecording)
+        capture.isEnabled = false
+        XCTAssertEqual(session.recordingNotice, "Recording paused")
+        XCTAssertFalse(session.canResumeRecording)
+        capture.isEnabled = true
+
+        // Open and recording: nothing to say and nothing to resume.
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isRecording)
+        XCTAssertNil(session.recordingNotice)
+        XCTAssertFalse(session.canResumeRecording)
+
+        // Paused, it says so and can resume; resumed, it records and says nothing.
+        capture.isEnabled = false
+        XCTAssertFalse(session.isRecording)
+        XCTAssertEqual(session.recordingNotice, "Recording paused")
+        XCTAssertTrue(session.canResumeRecording)
+        capture.isEnabled = true
+        XCTAssertTrue(session.isRecording)
+        XCTAssertNil(session.recordingNotice)
+        XCTAssertFalse(session.canResumeRecording)
+        await session.shutdown()
+    }
+
+    func testALibraryThatCannotOpenSaysWhyAndOffersNoResume() async throws {
+        let configuration = try makeIsolatedSession()
+        // A file where the library's folder goes: the library cannot open, nor recording with it.
+        try FileManager.default.createDirectory(at: configuration.directory.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: configuration.directory.path, contents: Data()))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture)
+        await session.initialize(testSessionID: configuration.id)
+
+        let reason = "The local library could not be opened. Recording is unavailable."
+        XCTAssertFalse(session.isReady)
+        XCTAssertEqual(session.status, reason)
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertFalse(session.canResumeRecording)
+        // Paused, and turned on again, as Settings still can, it keeps saying why, and never offers to resume:
+        // resuming would not bring recording back.
+        capture.isEnabled = false
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertFalse(session.canResumeRecording)
+        capture.isEnabled = true
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertFalse(session.canResumeRecording)
+    }
+
+    func testALibraryThatStopsWorkingKeepsSayingWhyWhateverTheSwitchDoes() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture, clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isRecording)
+
+        // A copy fails in a way the monitor takes for the library's: the library is unavailable until Keeptide
+        // reopens, and the switch stays on.
+        clipboard.failure = LibraryStoppedWorking()
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { !session.isReady }
+        let reason = "The local library is unavailable. Reopen Keeptide to retry."
+        XCTAssertTrue(capture.isEnabled)
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertFalse(session.canResumeRecording)
+        // Settings says why as well, instead of waiting for a library that will not open again by itself.
+        XCTAssertEqual(session.settingsRecordingState, .unavailable(reason))
+
+        // Paused, and turned on again in Settings, it keeps saying why, and never offers to resume.
+        capture.isEnabled = false
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertFalse(session.canResumeRecording)
+        capture.isEnabled = true
+        XCTAssertFalse(session.isRecording)
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertFalse(session.canResumeRecording)
+        await session.shutdown()
+    }
+
+    func testAClipboardTheSystemDeniesSaysWhyAndCanResume() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        clipboard.deniesAccess = true
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture, clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isRecording)
+
+        // A copy the system does not let Keeptide read stops recording and turns its switch off; the session says why.
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { !capture.isEnabled }
+        let reason = "Clipboard access denied. Allow Keeptide in System Settings, then resume recording."
+        XCTAssertEqual(session.status, reason)
+        XCTAssertEqual(session.recordingNotice, reason)
+        XCTAssertTrue(session.canResumeRecording)
+
+        // Resumed, it records again and says nothing.
+        clipboard.deniesAccess = false
+        capture.isEnabled = true
+        XCTAssertTrue(session.isRecording)
+        XCTAssertNil(session.recordingNotice)
+        XCTAssertFalse(session.canResumeRecording)
+        await session.shutdown()
+    }
+
+    func testWhilePausingThereIsNothingToResumeYet() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture, clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+
+        // The user pauses while a copy is still being read: the pause waits for the read.
+        clipboard.holdsReads = true
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { clipboard.readsStarted == 1 }
+        capture.isEnabled = false
+        XCTAssertTrue(session.isPausing)
+        XCTAssertEqual(session.recordingNotice, "Recording paused")
+        XCTAssertFalse(session.canResumeRecording)
+
+        // Once the read is over, the pause is complete, and can be undone.
+        clipboard.finishHeldReads()
+        try await SearchTestSupport.waitUntil { !session.isPausing }
+        XCTAssertEqual(session.recordingNotice, "Recording paused")
+        XCTAssertTrue(session.canResumeRecording)
+        await session.shutdown()
+    }
+
     func testSelectionFailurePublishesVisibleErrorAndStopsLoading() async throws {
         let failed = try content("unavailable")
         let session = CaptureSession(readContent: { _ in throw SelectionTestError.unavailable })
@@ -574,6 +757,9 @@ private enum SelectionTestError: Error {
     case unavailable
 }
 
+/// An error the capture monitor knows nothing of, which it takes for the library's.
+private struct LibraryStoppedWorking: Error {}
+
 private actor SleepingSelectionRead {
     let started: XCTestExpectation
     let cancelled: XCTestExpectation
@@ -642,6 +828,32 @@ private actor DelayedCaptureRead {
     }
 
     func finish() { continuation?.resume(returning: content); continuation = nil }
+}
+
+/// The clipboard a session's monitor reads in place of its named pasteboard, where a copy is a change of count. It can
+/// refuse every read, as the system does when it denies Keeptide the clipboard, fail every read with `failure`, or
+/// hold reads until the test ends them. The panel's tests in `AppLaunchTests` use it too.
+@MainActor
+final class SessionClipboard: SnapshotReading {
+    var changeCount = 0
+    var deniesAccess = false
+    var failure: (any Error)?
+    var holdsReads = false
+    private(set) var readsStarted = 0
+    private var heldReads: [CheckedContinuation<Void, Never>] = []
+
+    func readAsynchronously(sourceApp: String?, expectedChangeCount: Int) async throws -> CaptureSnapshotValue {
+        readsStarted += 1
+        if deniesAccess { throw SnapshotReaderError.permissionDenied }
+        if let failure { throw failure }
+        if holdsReads { await withCheckedContinuation { heldReads.append($0) } }
+        throw SnapshotReaderError.emptyPasteboard
+    }
+
+    func finishHeldReads() {
+        heldReads.forEach { $0.resume() }
+        heldReads = []
+    }
 }
 
 @MainActor

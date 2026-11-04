@@ -1,8 +1,8 @@
 import SwiftUI
 
+/// The welcome only explains: Keeptide records from first launch, and neither choice changes that.
 struct OnboardingActions {
-    var startRecording: @MainActor () -> Void
-    var notNow: @MainActor () -> Void
+    var done: @MainActor () -> Void
     var openLibrary: @MainActor () -> Void
 }
 
@@ -28,7 +28,8 @@ struct OnboardingView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Label("Recording starts only after you choose Start Recording.", systemImage: "record.circle")
+                Label("Keeptide saves what you copy. Pause or resume it anytime from the menu bar or Settings.",
+                      systemImage: "record.circle")
                 Label("You can use the Library and create notes without recording your clipboard.", systemImage: "note.text")
                 Label("Keeptide does not request Accessibility or cloud access here.", systemImage: "hand.raised")
             }
@@ -38,12 +39,9 @@ struct OnboardingView: View {
                 Button("Open Library", action: actions.openLibrary)
                     .accessibilityIdentifier("OnboardingOpenLibrary")
                 Spacer()
-                Button("Not Now", action: actions.notNow)
-                    .keyboardShortcut(.cancelAction)
-                    .accessibilityIdentifier("OnboardingNotNow")
-                Button("Start Recording", action: actions.startRecording)
+                Button("Done", action: actions.done)
                     .keyboardShortcut(.defaultAction)
-                    .accessibilityIdentifier("OnboardingStartRecording")
+                    .accessibilityIdentifier("OnboardingDone")
             }
         }
         .padding(32)
