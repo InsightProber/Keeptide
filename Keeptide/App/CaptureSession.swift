@@ -286,8 +286,8 @@ final class CaptureSession {
 
     /// Keep primary stores and drafts intact. Search remains unavailable until
     /// restart rebuilds it, so a full disk cannot cause a rebuild/eviction loop.
-    /// Each new copy that finds the disk full asks again, and clearing an
-    /// index already cleared does nothing more.
+    /// The monitor asks as the disk fills, not for each copy that finds it
+    /// still full.
     private func recoverFromDiskPressure() async {
         guard let index = searchIndex else { return }
         let consumer = historyConsumer

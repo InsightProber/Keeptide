@@ -118,11 +118,12 @@ final class CaptureMonitorTests: XCTestCase {
             await monitor.poll()
             await monitor.poll()
             XCTAssertEqual(reader.readCount, 1)
-            // A new copy is tried, and finds the disk still full.
+            // A new copy is tried, and finds the disk still full: it only tries to be kept, and the search cache, cleared
+            // as the disk filled, is left as it is.
             reader.changeCount = 2
             await monitor.poll()
             XCTAssertEqual(reader.readCount, 2)
-            XCTAssertEqual(recoveries, 2)
+            XCTAssertEqual(recoveries, 1)
             XCTAssertEqual(monitor.state, .interrupted(full))
             // Once there is room, the next copy is kept, and the reason goes.
             reader.unexpectedFailure = nil
@@ -132,6 +133,12 @@ final class CaptureMonitorTests: XCTestCase {
             XCTAssertEqual(monitor.state, .watching)
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertEqual(rows.count, 1)
+            // The disk fills again: the search cache is cleared again.
+            reader.unexpectedFailure = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
+            reader.changeCount = 4
+            await monitor.poll()
+            XCTAssertEqual(recoveries, 2)
+            XCTAssertEqual(monitor.state, .interrupted(full))
         }
     }
 

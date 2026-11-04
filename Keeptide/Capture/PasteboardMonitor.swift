@@ -166,8 +166,13 @@ final class PasteboardMonitor {
                 state = .failed("Keeping new copies requires a newer Keeptide version or library recovery. Existing content is preserved.")
                 onUnavailable?()
             } else if DiskPressurePolicy.isOutOfSpace(error) {
-                state = .interrupted("Storage is full. Free some space to keep new copies.")
-                await onStorageFull?()
+                // The rebuildable search cache is cleared as the disk fills. Copies that find it still full only try
+                // to be kept.
+                let full = CaptureMonitorState.interrupted("Storage is full. Free some space to keep new copies.")
+                if state != full {
+                    state = full
+                    await onStorageFull?()
+                }
             } else if let reason = Self.reasonNotKept(error) {
                 state = .interrupted(reason)
             } else if !Self.isSkippedQuietly(error) {
