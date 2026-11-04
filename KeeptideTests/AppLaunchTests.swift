@@ -1062,6 +1062,42 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(kept.contains(where: identified("CaptureStatus")))
     }
 
+    func testTheLibrarySaysWhyOverEveryListButRecentlyDeleted() async throws {
+        let clipboard = SessionClipboard()
+        let environment = try await makeCapturingEnvironment(clipboard: clipboard)
+        let library = LibraryWindowController(session: environment.captureSession, autosaveName: nil,
+                                              setActivationPolicy: { _ in })
+        let content = try XCTUnwrap(library.window?.contentView)
+        addTeardownBlock { library.window?.close() }
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        /// What the lines identified as the capture status say, once `shown` holds for the elements on screen.
+        func notices(once shown: ([NSObject]) -> Bool) throws -> [String] {
+            try swiftUIAccessibilityElements(in: content, until: shown).filter(identified("CaptureStatus"))
+                .compactMap { text(of: $0) }
+        }
+        _ = try swiftUIAccessibilityElements(in: content) { $0.contains(where: identified("RecentClipsEmptyState")) }
+
+        // A copy the system does not let Keeptide read.
+        clipboard.deniesAccess = true
+        clipboard.changeCount += 1
+        let reason = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        try await SearchTestSupport.waitUntil { environment.captureSession.captureNotice == reason }
+
+        // Over All Snippets, as over the recent clips, one line says why.
+        try selectLibraryList("All Snippets", in: content)
+        XCTAssertEqual(try notices {
+            $0.contains(where: identified("SnippetsEmptyState")) && $0.contains(where: identified("CaptureStatus"))
+        }, [reason])
+        // Recently Deleted, which new copies never reach, says nothing about them.
+        try selectLibraryList("Recently Deleted", in: content)
+        XCTAssertEqual(try notices { $0.contains(where: identified("RefreshRecentlyDeleted")) }, [])
+        // Back over the recent clips, the line is there again.
+        try selectLibraryList("Recent Clips", in: content)
+        XCTAssertEqual(try notices {
+            $0.contains(where: identified("RecentClipsEmptyState")) && $0.contains(where: identified("CaptureStatus"))
+        }, [reason])
+    }
+
     func testTheMenuBarHasNoRecordingSwitchAndSaysOnlyWhatStopsNewCopies() async throws {
         let clipboard = SessionClipboard()
         let environment = try await makeCapturingEnvironment(clipboard: clipboard)
@@ -4456,6 +4492,27 @@ final class AppLaunchTests: XCTestCase {
             throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
         }
         return elements
+    }
+
+    /// Chooses the list titled `title` in the Library's sidebar, as VoiceOver does: by selecting its row in the outline.
+    private func selectLibraryList(_ title: String, in content: NSView) throws {
+        let isSidebar = { (element: NSObject) in self.identifier(of: element) == "LibrarySidebar" }
+        let sidebar = try XCTUnwrap(try swiftUIAccessibilityElements(in: content) { $0.contains(where: isSidebar) }
+            .first(where: isSidebar))
+        let rows = (accessibility(sidebar, "accessibilityRows") as? [Any] ?? []).compactMap { $0 as? NSObject }
+        let row = try XCTUnwrap(rows.first { sidebarTexts(in: $0).contains(title) }, "No row titled \(title)")
+        _ = sidebar.perform(NSSelectorFromString("setAccessibilitySelectedRows:"), with: [row])
+    }
+
+    /// What an element of the sidebar's outline says, and what its descendants say. A row and its cell give their
+    /// children only through the older accessibility API, and the SwiftUI content of the cell only through the newer.
+    private func sidebarTexts(in element: NSObject) -> [String] {
+        let selector = NSSelectorFromString("accessibilityAttributeValue:")
+        let older = element.responds(to: selector)
+            ? (element.perform(selector, with: "AXChildren")?.takeUnretainedValue() as? [Any] ?? []) : []
+        let children = (older.isEmpty ? accessibility(element, "accessibilityChildren") as? [Any] ?? [] : older)
+            .compactMap { $0 as? NSObject }
+        return [text(of: element)].compactMap { $0 } + children.flatMap { sidebarTexts(in: $0) }
     }
 
     /// The elements below `element`, depth first.

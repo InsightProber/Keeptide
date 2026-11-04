@@ -348,8 +348,17 @@ struct LibraryView: View {
         }
     }
 
-    @ViewBuilder
+    /// The list the sidebar chooses. Why new copies are not kept shows over it, unless it is Recently Deleted, which new
+    /// copies never reach.
     private var contentColumn: some View {
+        VStack(spacing: 0) {
+            if selectedScope != .recentlyDeleted, let notice = session.captureNotice { captureNoticeLine(notice) }
+            scopeColumn
+        }
+    }
+
+    @ViewBuilder
+    private var scopeColumn: some View {
         if selectedScope == .recentlyDeleted {
             if let maintenance = session.maintenance {
                 RecentlyDeletedView(maintenance: maintenance)
@@ -363,7 +372,6 @@ struct LibraryView: View {
             }
         } else if selectedScope == .recentClips {
             VStack(spacing: 0) {
-                if let notice = session.captureNotice { captureNoticeLine(notice) }
                 if session.actionMessage != nil {
                     actionStatus.padding(12)
                     Divider()
@@ -395,7 +403,7 @@ struct LibraryView: View {
         }
     }
 
-    /// Why new copies are not kept, over the recent clips, while that is so. While they are kept, nothing is said.
+    /// Why new copies are not kept, while that is so. While they are kept, nothing is said.
     private func captureNoticeLine(_ notice: String) -> some View {
         VStack(spacing: 0) {
             Label(notice, systemImage: "exclamationmark.triangle")
