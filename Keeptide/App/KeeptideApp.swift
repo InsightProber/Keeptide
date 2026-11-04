@@ -117,10 +117,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The welcome's preferences and capture's, from the defaults this launch uses.
+    /// The welcome's preferences and capture's, from the defaults this launch uses. The welcome looks for what an
+    /// earlier version stored, its recording switch among it, before the launch removes the switch, which nothing reads
+    /// any more: Keeptide keeps new copies whenever it runs.
     static func launchPreferences(in defaults: UserDefaults)
         -> (onboarding: OnboardingPreferences, capture: CapturePreferences) {
-        (OnboardingPreferences(defaults: defaults), CapturePreferences(defaults: defaults))
+        let onboarding = OnboardingPreferences(defaults: defaults)
+        defaults.removeObject(forKey: OnboardingPreferences.retiredRecordingSwitchKey)
+        return (onboarding, CapturePreferences(defaults: defaults))
     }
 
     /// The status menu, wired to `environment`'s panel, windows and capture session.

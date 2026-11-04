@@ -45,13 +45,53 @@ final class AppLaunchTests: XCTestCase {
             let session = CaptureSession(preferences: launched.capture, clipboardReader: clipboard)
             await session.initialize(testSessionID: configuration.id)
 
-            // The next copy is kept, and there is nothing to say about it.
+            // The switch is gone, the next copy is kept, and there is nothing to say about it.
+            XCTAssertNil(defaults.object(forKey: "captureEnabled"), "stored: \(String(describing: stored))")
             clipboard.changeCount += 1
             try await SearchTestSupport.waitUntil { session.recent.count == 1 }
             XCTAssertEqual(session.recent.count, 1, "stored: \(String(describing: stored))")
             XCTAssertNil(session.captureNotice, "stored: \(String(describing: stored))")
             await session.shutdown()
         }
+    }
+
+    func testALaunchLetsTheWelcomeLookForAnEarlierVersionBeforeRemovingItsSwitch() throws {
+        func suite(_ stored: [String: Any]) throws -> UserDefaults {
+            let suiteName = "AppLaunchTests.launchPreferences.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            for (key, value) in stored { defaults.set(value, forKey: key) }
+            return defaults
+        }
+
+        // A version from before the welcome stored only its recording switch, on or off: the welcome counts as seen,
+        // and the switch is gone once it has looked. What else was stored stays.
+        for stored in [false, true] {
+            let earlier = try suite(["captureEnabled": stored, "captureExcludedApplications": ["com.example.ignored"]])
+            let launched = AppDelegate.launchPreferences(in: earlier)
+            XCTAssertFalse(launched.onboarding.snapshot().needsCurrentOnboarding, "stored: \(stored)")
+            XCTAssertNil(earlier.object(forKey: "captureEnabled"), "stored: \(stored)")
+            XCTAssertEqual(launched.capture.excludedApplications, ["com.example.ignored"], "stored: \(stored)")
+            // The next launch takes the user for an earlier version's as well: the welcome is done.
+            XCTAssertFalse(AppDelegate.launchPreferences(in: earlier).onboarding.snapshot().needsCurrentOnboarding)
+        }
+        // A version whose welcome was done, paused: the welcome stays done, and the pause is gone.
+        let welcomed = try suite([OnboardingPreferences.completedVersionKey: 1, "captureEnabled": false])
+        XCTAssertFalse(AppDelegate.launchPreferences(in: welcomed).onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertNil(welcomed.object(forKey: "captureEnabled"))
+        // A new install: the welcome shows, and nothing is stored for a switch. Quit before the welcome is done, the
+        // next launch shows it again.
+        let fresh = try suite([:])
+        XCTAssertTrue(AppDelegate.launchPreferences(in: fresh).onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertNil(fresh.object(forKey: "captureEnabled"))
+        XCTAssertTrue(AppDelegate.launchPreferences(in: fresh).onboarding.snapshot().needsCurrentOnboarding)
+    }
+
+    func testTheAppThatHostsTheUnitTestsLaunchesOnPreferencesOfItsOwn() {
+        // The launch removes the retired switch from the preferences it uses. In the app that hosts the unit tests,
+        // which shares the user's, they are a throwaway suite.
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        XCTAssertTrue(LaunchConfiguration(arguments: [], environment: underXCTest).shouldUseEphemeralApplicationState)
     }
 
     func testDefaultEnvironmentUsesEphemeralPreferencesAndNoSystemLoginController() {
