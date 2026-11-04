@@ -195,8 +195,9 @@ final class CaptureSessionTests: XCTestCase {
     func testChoosingALibraryOpensNothingAndATestSessionWinsOverQA() throws {
         let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
         var lookups = 0
+        // As outside a test process, where the user's library may be chosen.
         func choose(_ testSessionID: UUID?, manualPasteQA: Bool) throws -> CaptureLibrary? {
-            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
+            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA, isRunningTests: false,
                                       userLibrary: { lookups += 1; return userLibrary }())
         }
         let id = UUID()
@@ -235,6 +236,25 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNil(user.directPasteOnlyTo)
         XCTAssertTrue(user.recordsClipboard)
         XCTAssertEqual(lookups, 1)
+    }
+
+    func testATestProcessNeverChoosesTheUsersLibrary() throws {
+        let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
+        var lookups = 0
+
+        // XCTest runs in this process, as in the app that hosts the unit tests: the user's library, which records the
+        // general clipboard, is not chosen, nor even looked up, so nothing opens.
+        XCTAssertNil(try CaptureLibrary.choose(testSessionID: nil, manualPasteQA: false,
+                                               userLibrary: { lookups += 1; return userLibrary }()))
+        XCTAssertNil(try CaptureLibrary.choose(testSessionID: nil, manualPasteQA: false, isRunningTests: true,
+                                               userLibrary: { lookups += 1; return userLibrary }()))
+        XCTAssertEqual(lookups, 0)
+        // A UI test session's library, which records only the session's named clipboard, is chosen as ever.
+        let id = UUID()
+        let library = try XCTUnwrap(CaptureLibrary.choose(testSessionID: id, manualPasteQA: false,
+                                                          isRunningTests: true, userLibrary: userLibrary))
+        guard case .test(let chosen) = library else { return XCTFail("Chose \(library)") }
+        XCTAssertEqual(chosen.id, id)
     }
 
     #if DEBUG

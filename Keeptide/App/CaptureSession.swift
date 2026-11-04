@@ -155,7 +155,8 @@ final class CaptureSession {
             message = "The local library could not be opened. Recording is unavailable."
             return
         }
-        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens.
+        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens; nor does a test
+        // process without a test session.
         guard let library else { return }
         await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips)
     }
@@ -467,8 +468,11 @@ enum CaptureLibrary {
 
     /// A test session wins over the manual paste QA session, which is chosen only when asked for. `userLibrary` is
     /// looked up only when neither is chosen. A Release build has no QA session: asked for one, it chooses nothing
-    /// (nil), so nothing opens; it never falls back to the user's library.
+    /// (nil), so nothing opens; it never falls back to the user's library. Nor does a test process ever choose the
+    /// user's library, which records the general clipboard: where XCTest runs, as in the app that hosts the unit
+    /// tests, it chooses nothing. A test of the choice itself says it is not one with `isRunningTests`.
     static func choose(testSessionID: UUID?, manualPasteQA: Bool,
+                       isRunningTests: Bool = LaunchConfiguration.isRunningTests(ProcessInfo.processInfo.environment),
                        userLibrary: @autoclosure () throws -> URL) rethrows -> CaptureLibrary? {
         if let testSessionID { return .test(CaptureTestConfiguration(id: testSessionID)) }
         if manualPasteQA {
@@ -478,6 +482,7 @@ enum CaptureLibrary {
             return nil
             #endif
         }
+        guard !isRunningTests else { return nil }
         return .user(directory: try userLibrary())
     }
 

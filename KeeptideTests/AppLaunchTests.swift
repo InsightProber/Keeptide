@@ -4509,6 +4509,22 @@ final class AppLaunchTests: XCTestCase {
             .shouldPresentOnboardingIfNeeded)
     }
 
+    func testOnlyARealLaunchOrAUITestSessionOpensALibraryThatRecords() {
+        func initializes(_ arguments: [String], _ environment: [String: String] = [:]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: environment).shouldInitializeCaptureSession
+        }
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+
+        // A real launch opens the user's library, which records the clipboard.
+        XCTAssertTrue(initializes([]))
+        // The app that hosts the unit tests never does, nor a UI test without a session of its own: the clipboard
+        // there is the user's.
+        XCTAssertFalse(initializes([], underXCTest))
+        XCTAssertFalse(initializes(["--ui-testing"]))
+        // A UI test session opens a library of its own, which records only the session's named clipboard.
+        XCTAssertTrue(initializes(["--ui-testing", "--capture-test-session", UUID().uuidString]))
+    }
+
     func testExplicitWelcomeRequiresAnIsolatedUITestSession() {
         let id = UUID().uuidString
         let isolatedArguments = ["--ui-testing", "--capture-test-session", id, "--show-onboarding"]
