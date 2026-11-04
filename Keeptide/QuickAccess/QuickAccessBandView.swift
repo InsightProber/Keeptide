@@ -74,11 +74,6 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: metrics.bottomPadding)
                 .accessibilityHidden(true)
         }
-        .overlay(alignment: .topTrailing) {
-            saveStatus
-                .padding(.top, StripLayout.toolbarTop + QuickAccessToolbar.height + 4)
-                .padding(.trailing, 20)
-        }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
@@ -93,25 +88,6 @@ struct QuickAccessBandView: View {
             HostedView(view: strip)
                 .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * ringRoom)
             if !hasFrames { emptyState }
-        }
-    }
-
-    @ViewBuilder
-    private var saveStatus: some View {
-        if let message = state.saveMessage {
-            HStack(spacing: 10) {
-                Text(message)
-                    .accessibilityIdentifier("QuickAccessSaveStatus")
-                if state.canUndoSave {
-                    Button("Undo") { Task { await state.undoSaveSelection() } }
-                        .buttonStyle(.borderless)
-                        .accessibilityIdentifier("QuickAccessUndoSave")
-                }
-            }
-            .font(.callout)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: Capsule())
         }
     }
 

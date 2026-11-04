@@ -1695,6 +1695,98 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(board.string(forType: .string), "newer")
     }
 
+    func testSaveAsSnippetSaysSoInTheToolbarAndTheActionsMenuUndoesIt() async throws {
+        let (controller, harness) = try await makeSavingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        let saved = try XCTUnwrap(controller.state.copyTarget?.ref)
+        // Nothing saved yet: the menu has no undo.
+        XCTAssertFalse(try actionMenu(of: controller).items.contains { $0.title == "Undo Save as Snippet" })
+
+        // ⌘S says what it did where Return's hint was, and VoiceOver hears it.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        let toolbar = try await toolbarSaying(.status("Saved to Snippets"), in: controller)
+        XCTAssertFalse(toolbar.statusLabel.isHidden)
+        XCTAssertEqual(toolbar.statusLabel.stringValue, "Saved to Snippets")
+        XCTAssertEqual(toolbar.statusLabel.accessibilityIdentifier(), "QuickAccessStatus")
+        XCTAssertTrue(toolbar.copyHint.isHidden)
+        try await SearchTestSupport.waitUntil { announced == ["Saved to Snippets"] }
+
+        // ⌘K offers the undo right after Save as Snippet, with no key of its own, and so does a right-click on the
+        // clip saved; a right-click on another clip does not, since its menu acts on that clip.
+        let menu = try actionMenu(of: controller)
+        let undo = try XCTUnwrap(menu.items.firstIndex { $0.title == "Undo Save as Snippet" })
+        XCTAssertEqual(menu.items[undo - 1].title, "Save as Snippet")
+        XCTAssertEqual(menu.items[undo].keyEquivalent, "")
+        XCTAssertTrue(menu.items[undo].isEnabled)
+        let newer = try drawnFrame(of: "newer", in: strip)
+        let older = try frame(of: "older", in: strip)
+        func rightClick(at frame: NSRect) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(
+                with: .rightMouseDown, location: strip.convert(NSPoint(x: frame.midX, y: frame.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 1, pressure: 1
+            ))
+        }
+        let context = try XCTUnwrap(strip.menu(for: try rightClick(at: newer)))
+        XCTAssertEqual(context.items.map(\.title), menu.items.map(\.title))
+        let otherClip = try XCTUnwrap(strip.menu(for: try rightClick(at: older)))
+        XCTAssertFalse(otherClip.items.contains { $0.title == "Undo Save as Snippet" })
+
+        menu.performActionForItem(at: undo)
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Save undone" }
+        _ = try await toolbarSaying(.status("Save undone"), in: controller)
+        try await SearchTestSupport.waitUntil { announced == ["Saved to Snippets", "Save undone"] }
+        XCTAssertEqual(announced, ["Saved to Snippets", "Save undone"])
+        let item = try await ContentRepository(controller: harness.controller).recordState(.item(saved.itemID))
+        guard case .item(let value) = item.value else { return XCTFail("Missing history") }
+        XCTAssertNil(value.memoID, "The undo removed the snippet the panel saved")
+        XCTAssertFalse(try actionMenu(of: controller).items.contains { $0.title == "Undo Save as Snippet" })
+    }
+
+    func testTheSaveStatusIsTheToolbarsAndNothingLiesOverTheCards() throws {
+        addTeardownBlock { self.panelUnderTest = nil }
+        // The panel is set up and saves in a task, and the test waits for it. What follows asks accessibility for
+        // SwiftUI's elements, which turns the run loop over; it must not run inside a test's own task.
+        let saved = expectation(description: "A clip saved as a snippet")
+        var setupError: (any Error)?
+        Task { @MainActor in
+            defer { saved.fulfill() }
+            do {
+                let (controller, _) = try await self.makeSavingPanel(["older", "newer"])
+                await controller.state.saveSelection(try XCTUnwrap(controller.state.copyTarget))
+                XCTAssertEqual(controller.state.saveMessage, "Saved to Snippets")
+                self.panelUnderTest = controller
+            } catch {
+                setupError = error
+            }
+        }
+        wait(for: [saved], timeout: 20)
+        if let setupError { throw setupError }
+        let controller = try XCTUnwrap(panelUnderTest)
+        defer { controller.state.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+
+        // Only the toolbar's status says so: no capsule lies over the cards, nor takes their clicks.
+        let says = { (element: NSObject) in self.text(of: element) == "Saved to Snippets" }
+        _ = try swiftUIAccessibilityElements(in: content) { $0.contains(where: says) }
+        settleLayout()
+        let elements = accessibilityElements(below: content)
+        // AppKit reads a text field out through its cell; the identifier is the field's.
+        let identifier = { (element: NSObject) -> String? in
+            let owner: NSObject = (element as? NSCell)?.controlView ?? element
+            return self.accessibility(owner, "accessibilityIdentifier") as? String
+        }
+        XCTAssertEqual(elements.filter(says).map(identifier), ["QuickAccessStatus"])
+        XCTAssertFalse(elements.contains { ["QuickAccessSaveStatus", "QuickAccessUndoSave"].contains(identifier($0)) })
+    }
+
     func testClickingTheOlderClipSelectsIt() async throws {
         let (controller, board) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
@@ -3724,6 +3816,30 @@ final class AppLaunchTests: XCTestCase {
         return (controller, board)
     }
 
+    /// A panel over a real temporary store holding one text clip per title, newest last, that saves clips as snippets
+    /// through the library's own service. A shown panel opens the way the shortcut opens it; otherwise only its state
+    /// does. It returns once the clips are listed and the newest can be acted on.
+    private func makeSavingPanel(_ titles: [String], shown: Bool = false) async throws
+        -> (PanelController, SearchHarness) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(titles, into: harness)
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       library: LibraryService(controller: harness.controller))
+        if shown {
+            controller.show()
+            addTeardownBlock { controller.close() }
+        } else {
+            controller.state.open()
+        }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == titles.count && controller.state.copyTarget != nil
+        }
+        return (controller, harness)
+    }
+
     /// Stores a small PNG picture as the newest clip.
     private func insertImageClip(into harness: SearchHarness) async throws {
         let context = try XCTUnwrap(CGContext(
@@ -3778,10 +3894,11 @@ final class AppLaunchTests: XCTestCase {
     /// `search` stands in for the harness's own search service when given, and `visibleFrame` for the screen's visible
     /// area. `system` is what direct paste asks of the system; never the live one, which could paste the general
     /// clipboard into the app in front. The panel reads how often clips were used from `usage`, and without it lists no
-    /// frequent wing. `preferences` are medium cards with the frequent clips turned off unless given.
+    /// frequent wing. `preferences` are medium cards with the frequent clips turned off unless given. The panel saves
+    /// clips as snippets through `library`, and without it saves nothing.
     private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard, search: SearchService? = nil,
                            visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
-                           usage: (any QuickAccessUsage)? = nil,
+                           usage: (any QuickAccessUsage)? = nil, library: LibraryService? = nil,
                            preferences: QuickAccessPreferences? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
@@ -3789,7 +3906,7 @@ final class AppLaunchTests: XCTestCase {
         // A paste the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
-                                           usage: usage)
+                                           usage: usage, library: library)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }
