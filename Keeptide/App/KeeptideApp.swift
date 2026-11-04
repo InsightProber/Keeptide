@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return .standard
         }()
-        let capturePreferences = CapturePreferences(defaults: preferencesDefaults)
+        let (onboardingPreferences, capturePreferences) = Self.launchPreferences(in: preferencesDefaults)
         let captureSession = CaptureSession(preferences: capturePreferences, directPaste: .live)
         let shortcutCoordinator = GlobalShortcutCoordinator(
             preferences: GlobalShortcutPreferences(defaults: preferencesDefaults),
@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             quickAccessPreferences: QuickAccessPreferences(defaults: preferencesDefaults),
             shortcutCoordinator: shortcutCoordinator,
             launchAtLogin: launchAtLogin,
-            onboardingPreferences: OnboardingPreferences(defaults: preferencesDefaults)
+            onboardingPreferences: onboardingPreferences
         )
         self.environment = environment
 
@@ -115,6 +115,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 environment.showSettings()
             }
         }
+    }
+
+    /// The welcome's preferences and recording's, from the defaults this launch uses. The welcome looks for what an
+    /// earlier version stored before recording settles its switch, which stores it: a switch stored first would take a
+    /// new install for an earlier version's, and skip the welcome.
+    static func launchPreferences(in defaults: UserDefaults)
+        -> (onboarding: OnboardingPreferences, capture: CapturePreferences) {
+        let onboarding = OnboardingPreferences(defaults: defaults)
+        CapturePreferences.settleRecordingDefault(in: defaults)
+        return (onboarding, CapturePreferences(defaults: defaults))
     }
 
     /// The status menu, wired to `environment`'s panel, windows and capture session.

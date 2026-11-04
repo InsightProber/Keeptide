@@ -32,8 +32,9 @@ final class AppLaunchTests: XCTestCase {
         let preferences = CapturePreferences(defaults: defaults)
 
         XCTAssertTrue(preferences.isEnabled)
-        // The default is not written. A stored switch marks someone who used Keeptide before, and the launch makes the
-        // capture preferences first, so a written default would skip the welcome for everyone.
+        // Making the preferences writes nothing: the app that hosts the unit tests shares the user's own defaults. Only
+        // the launch stores the switch (`settleRecordingDefault(in:)`), once the welcome has looked for an earlier
+        // version's preferences.
         XCTAssertNil(defaults.object(forKey: "captureEnabled"))
         XCTAssertTrue(OnboardingPreferences(defaults: defaults).snapshot().needsCurrentOnboarding)
     }
@@ -50,6 +51,78 @@ final class AppLaunchTests: XCTestCase {
             XCTAssertEqual(preferences.isEnabled, stored)
             XCTAssertEqual(defaults.object(forKey: "captureEnabled") as? Bool, stored)
         }
+    }
+
+    func testSettlingRecordsForANewInstallAndKeepsAnEarlierVersionsUserPaused() throws {
+        /// The switch settled from what an earlier version left: as stored, and as the preferences read it.
+        func settle(_ stored: [String: Any]) throws -> (stored: Bool?, reads: Bool) {
+            let suiteName = "AppLaunchTests.settleRecording.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            for (key, value) in stored { defaults.set(value, forKey: key) }
+            CapturePreferences.settleRecordingDefault(in: defaults)
+            return (defaults.object(forKey: "captureEnabled") as? Bool, CapturePreferences(defaults: defaults).isEnabled)
+        }
+
+        // A new install records, and stores so: a later launch then knows the choice is made.
+        let fresh = try settle([:])
+        XCTAssertEqual(fresh.stored, true)
+        XCTAssertTrue(fresh.reads)
+        // Someone who finished an earlier version's welcome, when recording waited to be turned on, and never turned it
+        // on stays paused.
+        let welcomed = try settle([OnboardingPreferences.completedVersionKey: 1])
+        XCTAssertEqual(welcomed.stored, false)
+        XCTAssertFalse(welcomed.reads)
+        // So does someone who only changed quick access, before there was a welcome.
+        for key in ["quickAccess.cardSize", "quickAccessClipsPerRow", "quickAccessTrackpadTicks",
+                    "quickAccess.showsFrequentClips", "quickAccess.fadesStripEnds", "quickAccess.selectedCardScale"] {
+            let used = try settle([key: "existing"])
+            XCTAssertEqual(used.stored, false, key)
+            XCTAssertFalse(used.reads, key)
+        }
+        // A switch already stored is kept, a pause included, whatever else is there.
+        for stored in [false, true] {
+            for traces in [[:], [OnboardingPreferences.completedVersionKey: 1]] as [[String: Any]] {
+                let kept = try settle(traces.merging(["captureEnabled": stored]) { $1 })
+                XCTAssertEqual(kept.stored, stored)
+                XCTAssertEqual(kept.reads, stored)
+            }
+        }
+    }
+
+    func testALaunchLetsTheWelcomeLookForAnEarlierVersionBeforeRecordingSettles() throws {
+        func suite() throws -> UserDefaults {
+            let suiteName = "AppLaunchTests.launchPreferences.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            return defaults
+        }
+
+        // A new install: the welcome shows, and Keeptide records. A switch stored before the welcome looked would have
+        // taken the new install for an earlier version's, and skipped the welcome.
+        let fresh = try suite()
+        let first = AppDelegate.launchPreferences(in: fresh)
+        XCTAssertTrue(first.onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertTrue(first.capture.isEnabled)
+        // Once the welcome is done, the next launch neither shows it nor takes the user for an earlier version's.
+        first.onboarding.completeCurrentVersion()
+        let next = AppDelegate.launchPreferences(in: fresh)
+        XCTAssertFalse(next.onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertTrue(next.capture.isEnabled)
+
+        // An earlier version's user who finished its welcome and never turned recording on: no welcome, and paused.
+        let welcomed = try suite()
+        welcomed.set(1, forKey: OnboardingPreferences.completedVersionKey)
+        let upgraded = AppDelegate.launchPreferences(in: welcomed)
+        XCTAssertFalse(upgraded.onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertFalse(upgraded.capture.isEnabled)
+        // One from before the welcome, who only changed quick access: the welcome counts as seen, and recording stays
+        // paused.
+        let older = try suite()
+        older.set("large", forKey: "quickAccess.cardSize")
+        let olderLaunch = AppDelegate.launchPreferences(in: older)
+        XCTAssertFalse(olderLaunch.onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertFalse(olderLaunch.capture.isEnabled)
     }
 
     func testDefaultEnvironmentUsesEphemeralPreferencesAndNoSystemLoginController() {
