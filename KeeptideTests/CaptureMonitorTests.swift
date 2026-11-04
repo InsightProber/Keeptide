@@ -24,6 +24,23 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
+    func testAMonitorMadeRecordingDoesNotImportWhatWasAlreadyCopied() async throws {
+        // As on first launch: recording from the start, over a clipboard that already holds a copy.
+        try await withMonitor(recording: true, clipboardChangeCount: 7) { monitor, reader, preferences, controller in
+            XCTAssertTrue(preferences.isEnabled)
+            monitor.start()
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 0, "What was copied before recording started must not be imported")
+            XCTAssertTrue(monitor.isRecording)
+            // The next copy is recorded.
+            reader.changeCount = 8
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
     func testRecordingPersistsOnlyNewCopiesAndPauseResumeDoesNotBackfill() async throws {
         try await withMonitor { monitor, reader, preferences, controller in
             preferences.isEnabled = true
@@ -334,16 +351,19 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
-    private func withMonitor(_ body: (PasteboardMonitor, FakeReader, CapturePreferences, PersistenceController) async throws -> Void) async throws {
+    /// Each test starts paused, as after the user's pause, and turns recording on where it needs it, unless it starts
+    /// `recording`, as a first launch does; the clipboard's count starts at `clipboardChangeCount`.
+    private func withMonitor(recording: Bool = false, clipboardChangeCount: Int = 0,
+                             _ body: (PasteboardMonitor, FakeReader, CapturePreferences, PersistenceController) async throws -> Void) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Monitor-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let suite = "CaptureMonitor-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
-        // Each test starts paused, as after the user's pause, and turns recording on where it needs it.
-        defaults.set(false, forKey: "captureEnabled")
+        defaults.set(recording, forKey: "captureEnabled")
         let controller = try PersistenceController(directory: directory)
         let reader = FakeReader()
+        reader.changeCount = clipboardChangeCount
         let preferences = CapturePreferences(defaults: defaults)
         let monitor = PasteboardMonitor(reader: reader, service: CaptureService(controller: controller),
             preferences: preferences, sourceApp: { reader.foregroundSource }, matchesOwnWrite: { _ in true })
