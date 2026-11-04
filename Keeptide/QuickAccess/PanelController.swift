@@ -309,11 +309,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// What the toolbar's right end says. A refused action's reason answers what was just done, so it comes first;
-    /// then a status over clips on screen; then, with a clip selected, what Return does, under the name the session
-    /// gives it, with why it only copies when the user can do something about that. With no clips the empty state says
-    /// it all. An index that is rebuilding is told after the filters, and leaves Return's hint in place.
+    /// then what Save as Snippet, or its undo, came to for the selected clip; then a status over clips on screen; then,
+    /// with a clip selected, what Return does, under the name the session gives it, with why it only copies when the
+    /// user can do something about that. With no clips the empty state says it all. An index that is rebuilding is told
+    /// after the filters, and leaves Return's hint in place.
     private var toolbarNote: QuickAccessToolbar.Note {
         if let failure = state.failure { return .failure(failure.message) }
+        if let message = state.saveMessage { return .status(message) }
         if !state.selection.rows.isEmpty,
            let line = QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
                                              isComplete: state.selection.isComplete) {
@@ -735,13 +737,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The actions for one row: the selected one for ⌘K, the one under the pointer for a right-click, named for its
     /// clip. A row other than the selected one is selected before its action runs, so the action is for the row
     /// clicked; one that left the list while the menu was open gets no action at all, never another row's. A clip
-    /// listed in both wings is two rows, and the menu is for the one it was opened on.
+    /// listed in both wings is two rows, and the menu is for the one it was opened on. Only the selected row's menu
+    /// offers to undo its save: selecting another row lets that save go.
     private func actionMenu(for id: QuickAccessRow.ID?) -> NSMenu {
         let row = id.flatMap { id in state.selection.rows.first { $0.id == id } }
+        let canUndoSave = state.canUndoSave && id == state.selection.selectedID
         return ActionMenu.make(actions: state.actions(for: id?.ref), row: row,
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
-                               isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
+                               isPreviewExpanded: state.isPreviewExpanded,
+                               canUndoSave: canUndoSave) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -755,6 +760,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
             case .saveSnippet: saveSelectedSnippet()
+            case .undoSave: undoSave()
             case .openLibrary: openSelectedInLibraryFromMenu()
             case .newSnippet: newSnippetFromMenu()
             case .enableDirectPaste: enableDirectPaste()
@@ -762,9 +768,28 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// ⌘S and the menu's Save as Snippet. The toolbar shows what the save came to, and VoiceOver reads it.
     private func saveSelectedSnippet() {
         guard let target = state.copyTarget else { return }
-        Task { await state.saveSelection(target) }
+        Task {
+            await state.saveSelection(target)
+            announceSaveMessage()
+        }
+    }
+
+    /// The menu's Undo Save as Snippet, which it offers only while the selected clip's save can be undone.
+    private func undoSave() {
+        Task {
+            await state.undoSaveSelection()
+            announceSaveMessage()
+        }
+    }
+
+    /// Reads out what a save or its undo came to, as the toolbar now shows it, while the session that asked is still
+    /// open: a closed or reopened panel has nothing to say about it.
+    private func announceSaveMessage() {
+        guard isSessionOpen, let message = state.saveMessage else { return }
+        announce(message)
     }
 
     private func openSelectedInLibrary() {
@@ -897,6 +922,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // in the active search editor leaves its marked text and caret intact.
         if ["s", "e", "n"].contains(key),
            (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
+        // Held down, ⌘S, ⌘E and ⌘N have acted already: their repeats are taken and do nothing, as ⌘Y's are. A save
+        // again would find the clip already in Snippets and let the first save's undo go.
+        if ["s", "e", "n"].contains(key), event.isARepeat { return true }
         switch key {
         case "s":
             saveSelectedSnippet()
