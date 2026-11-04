@@ -1608,6 +1608,43 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.state.isPreviewExpanded)
     }
 
+    func testAHeldCommandSSavesOnceAndAHeldCommandEOrNHandsOverOnce() async throws {
+        let (controller, _) = try await makeSavingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        var opened: [ContentRef] = []
+        controller.onOpenInLibrary = { opened.append($0) }
+        var newSnippets = 0
+        controller.onNewSnippet = { newSnippets += 1 }
+        let selected = try XCTUnwrap(controller.state.copyTarget?.ref)
+
+        // ⌘S saves the selected clip and says so. Held down, its repeats are taken and do nothing: saved again, the
+        // clip would be already in Snippets, and the save's undo would go.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { announced == ["Saved to Snippets"] }
+        for _ in 0..<3 {
+            XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command,
+                                                                    isARepeat: true)))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(announced, ["Saved to Snippets"])
+        XCTAssertEqual(controller.state.saveMessage, "Saved to Snippets")
+        XCTAssertTrue(controller.state.canUndoSave)
+
+        // ⌘E and ⌘N hand the clip, or a new snippet, to the library once, however long they are held.
+        for (code, character) in [(kVK_ANSI_E, "e"), (kVK_ANSI_N, "n")] {
+            XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)))
+            for _ in 0..<3 {
+                XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command,
+                                                                        isARepeat: true)))
+            }
+        }
+        XCTAssertEqual(opened, [selected])
+        XCTAssertEqual(newSnippets, 1)
+    }
+
     func testOnALowScreenThePreviewCardIsDrawnOverTheBandsTopEdge() async throws {
         // 1024 × 440 has no room for even the shortest card above the band.
         let low = NSRect(x: 0, y: 30, width: 1024, height: 440)

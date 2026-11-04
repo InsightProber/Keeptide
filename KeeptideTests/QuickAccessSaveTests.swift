@@ -56,6 +56,59 @@ final class QuickAccessSaveTests: XCTestCase {
         XCTAssertNotNil(value.memoID)
     }
 
+    func testARefreshThatLosesTheSelectedClipClearsTheSaveStatusAndItsUndo() async throws {
+        let (state, harness, ref) = try await fixture(["older", "command"])
+        await state.saveSelection(try XCTUnwrap(state.copyTarget))
+        XCTAssertEqual(state.saveMessage, "Saved to Snippets")
+        XCTAssertTrue(state.canUndoSave)
+
+        // The clip leaves the history while the panel is open, and the list is read again without it.
+        _ = try await LifecycleService(controller: harness.controller).remove(
+            itemID: ref.itemID, facet: .history, at: Date(), expecting: try await harness.controller.identity(),
+            permit: try await StoreSafetyGate(controller: harness.controller).permit(.maintenance))
+        state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { state.selection.rows.map(\.title) == ["older"] }
+        XCTAssertNil(state.selection.selectedID)
+        XCTAssertNil(state.saveMessage)
+        XCTAssertFalse(state.canUndoSave)
+        // Its save is no longer this selection's to undo.
+        await state.undoSaveSelection()
+        let item = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
+        guard case .item(let value) = item.value else { return XCTFail("Missing history") }
+        XCTAssertNotNil(value.memoID)
+    }
+
+    func testSelectingTheSelectedClipAgainKeepsItsSaveStatus() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let text = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("older".utf8))]])
+        try await ContentStoreFixtures.insert(
+            ItemValue(title: "older", captureID: text.id, historyEligible: true,
+                      lastCopiedAt: Date(timeIntervalSince1970: 1_000), copyCount: 1), text, into: harness.controller)
+        let picture = try ContentStoreFixtures.capture([[("public.png", Data([0x89, 0x50, 0x4E, 0x47]))]])
+        try await ContentStoreFixtures.insert(
+            ItemValue(title: "Picture", captureID: picture.id, historyEligible: true,
+                      lastCopiedAt: Date(timeIntervalSince1970: 1_001), copyCount: 1), picture,
+            into: harness.controller)
+        let state = try await openState(over: harness)
+        await state.saveSelection(try XCTUnwrap(state.copyTarget))
+        await state.copySelection(.plainText)
+        XCTAssertEqual(state.failure, .noPlainText)
+        XCTAssertEqual(state.saveMessage, "Saved to Snippets")
+
+        // A second click on the selected card selects the same clip: its refusal goes, as any selection takes it, and
+        // its save stays, with the undo.
+        let selected = try XCTUnwrap(state.selection.selectedID)
+        state.select(selected)
+        XCTAssertNil(state.failure)
+        XCTAssertEqual(state.saveMessage, "Saved to Snippets")
+        XCTAssertTrue(state.canUndoSave)
+
+        // Another clip's card takes the save's place.
+        state.select(try XCTUnwrap(state.selection.rows.first { $0.id != selected }).id)
+        XCTAssertNil(state.saveMessage)
+        XCTAssertFalse(state.canUndoSave)
+    }
+
     func testANewQueryOrFilterClearsTheSaveStatusAndItsUndo() async throws {
         let (state, _, _) = try await fixture()
         await state.saveSelection(try XCTUnwrap(state.copyTarget))

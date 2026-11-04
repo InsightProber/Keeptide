@@ -331,10 +331,14 @@ final class QuickAccessState {
         }
     }
 
-    /// Selects a listed row. A clip listed in both wings is two rows, and each is selected on its own.
+    /// Selects a listed row. A clip listed in both wings is two rows, and each is selected on its own. Selecting the
+    /// row already selected, as a second click on its card does, keeps what its save came to.
     func select(_ id: QuickAccessRow.ID) {
+        let selected = selection.selectedID
         selection.select(id)
-        selectionChanged()
+        guard selection.selectedID == selected else { return selectionChanged() }
+        failure = nil
+        followSelection()
     }
 
     @discardableResult
@@ -729,7 +733,11 @@ final class QuickAccessState {
     /// of a row that is no longer selected.
     private func applyRows(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool,
                            keepsChosenRow: Bool = false) {
+        let selected = selection.selectedID
         selection.apply(rows, generation: generation, isComplete: isComplete, keepsChosenRow: keepsChosenRow)
+        // A page that moves the selection to another row, or loses it, as a refresh without the clip does, takes the
+        // save of the row that was selected along.
+        if selection.selectedID != selected { clearSaveStatus() }
         dropDetailsOfUnlistedRows()
         followSelection()
     }

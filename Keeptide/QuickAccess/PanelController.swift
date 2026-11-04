@@ -922,6 +922,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // in the active search editor leaves its marked text and caret intact.
         if ["s", "e", "n"].contains(key),
            (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
+        // Held down, ⌘S, ⌘E and ⌘N have acted already: their repeats are taken and do nothing, as ⌘Y's are. A save
+        // again would find the clip already in Snippets and let the first save's undo go.
+        if ["s", "e", "n"].contains(key), event.isARepeat { return true }
         switch key {
         case "s":
             saveSelectedSnippet()
