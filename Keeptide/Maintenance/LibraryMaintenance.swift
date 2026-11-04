@@ -20,6 +20,9 @@ final class LibraryMaintenance {
 
     @ObservationIgnored private var settingsModel: LifecycleSettingsModel?
 
+    /// Said while a blocked cleanup intent waits for review, on every pass until it no longer does.
+    private static let cleanupNeedsReview = "Some cleanup needs review. Its evidence was preserved."
+
     var settings: LifecycleSettingsModel {
         if let settingsModel { return settingsModel }
         let model = LifecycleSettingsModel(
@@ -129,7 +132,7 @@ final class LibraryMaintenance {
                 for id in ids {
                     try Task.checkCancellation()
                     do { _ = try await reclaimer.resume(id, expecting: self.identity, permit: permit, at: now) }
-                    catch CleanupError.blocked { self.message = "Some cleanup needs review. Its evidence was preserved." }
+                    catch CleanupError.blocked { self.message = Self.cleanupNeedsReview }
                     catch CleanupError.unsupportedIntent {
                         self.message = "Some cleanup needs a newer version. Its evidence was preserved."
                         return // Do not turn a permanent recovery requirement into an expiry retry.
@@ -139,6 +142,11 @@ final class LibraryMaintenance {
             }
             try Task.checkCancellation()
             guard !self.isClosed else { throw StoreError.closed }
+            // Every pass starts without a message, and a blocked intent is not pending, so the loop above no longer
+            // meets one that an earlier pass blocked. It still holds its evidence for review, so each pass says so.
+            if try await intents.hasBlockedIntent(expecting: self.identity, permit: permit) {
+                self.message = Self.cleanupNeedsReview
+            }
             _ = try await LifecycleService(controller: self.controller).expireHistory(
                 policy: self.policy, at: now, expecting: self.identity, permit: permit
             )
@@ -164,7 +172,7 @@ final class LibraryMaintenance {
                     } catch StoreError.preconditionFailed {
                         guard try await self.controller.identity() == self.identity else { throw StoreError.preconditionFailed }
                     } catch CleanupError.blocked {
-                        self.message = "Some cleanup needs review. Its evidence was preserved."
+                        self.message = Self.cleanupNeedsReview
                     }
                 }
                 candidateCursor = page.next

@@ -35,6 +35,39 @@ final class LibraryMaintenanceTests: XCTestCase {
         XCTAssertEqual(raw, evidence)
     }
 
+    func testBlockedCleanupStillSaysItNeedsReviewOnEveryLaterPass() async throws {
+        let harness = try await makeHarness(retention: .preset(.oneDay))
+        let old = try await insertHistory("expired-old", lastCopiedAt: .distantPast, into: harness.store)
+        let identity = harness.identity
+        let evidence = Data("blocked cleanup evidence".utf8)
+        let intentID = UUID()
+        try await harness.store.perform { context in
+            let row = NSEntityDescription.insertNewObject(forEntityName: "CleanupIntent", into: context)
+            row.setValue(intentID, forKey: "id")
+            row.setValue(CleanupIntentStore.schemaVersion, forKey: "schemaVersion")
+            row.setValue(identity.storeID, forKey: "storeID")
+            row.setValue(identity.generation, forKey: "generation")
+            row.setValue(CleanupIntentPhase.blocked.rawValue, forKey: "phase")
+            row.setValue(evidence, forKey: "payload")
+            row.setValue(Date(), forKey: "createdAt")
+            row.setValue(Date(), forKey: "updatedAt")
+            try context.save()
+        }
+        // A blocked intent is not pending, so no pass resumes it; each still says it waits for review, and goes on with
+        // the rest of its work.
+        for _ in 0..<2 {
+            await harness.maintenance.runScheduledMaintenance()
+            XCTAssertEqual(harness.maintenance.message, "Some cleanup needs review. Its evidence was preserved.")
+        }
+        await assertMissing(.capture(old.capture.id), in: harness.store)
+        let raw = try await harness.store.perform { context in
+            let row = try XCTUnwrap(context.fetch(NSFetchRequest<NSManagedObject>(entityName: "CleanupIntent")).first)
+            return (row.value(forKey: "phase") as? String, row.value(forKey: "payload") as? Data)
+        }
+        XCTAssertEqual(raw.0, CleanupIntentPhase.blocked.rawValue)
+        XCTAssertEqual(raw.1, evidence)
+    }
+
     func testScheduledMaintenanceExpiresAndReclaimsActiveAndPrehiddenHistory() async throws {
         let harness = try await makeHarness(retention: .preset(.oneDay))
         let active = try await insertHistory("active-old", lastCopiedAt: .distantPast, into: harness.store)

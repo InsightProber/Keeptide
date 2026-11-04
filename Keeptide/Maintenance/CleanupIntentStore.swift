@@ -127,6 +127,25 @@ struct CleanupIntentStore: Sendable {
         }
     }
 
+    /// Whether an intent of this store generation was blocked and still waits for review. A blocked intent is not
+    /// pending, so no pass resumes it, but it keeps its evidence until someone looks at it. Read only.
+    func hasBlockedIntent(expecting identity: StoreIdentity, permit: StorePermit) async throws -> Bool {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            guard identity == controller.runtime.identity else { throw StoreError.preconditionFailed }
+            try StoreSafetyGate.validate(.maintenance, runtime: controller.runtime, permit: permit)
+            let request = NSFetchRequest<NSFetchRequestResult>(entityName: "CleanupIntent")
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                NSPredicate(format: "storeID == %@", identity.storeID as NSUUID),
+                NSPredicate(format: "generation == %@", identity.generation as NSUUID),
+                NSPredicate(format: "phase == %@", CleanupIntentPhase.blocked.rawValue),
+            ])
+            request.fetchLimit = 1
+            return try context.count(for: request) > 0
+        }
+    }
+
     func block(
         _ id: UUID,
         expecting identity: StoreIdentity,
