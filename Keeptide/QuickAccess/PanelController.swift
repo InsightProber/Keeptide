@@ -80,7 +80,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// which takes Keeptide to the front: the panel never does that itself.
     var onEnableDirectPaste: (() -> Void)?
     /// Why new copies are not recorded, which the toolbar says after the filters, or nil while they are. The app reads
-    /// it from the capture session. `update()` reads it, so the panel follows the session as it changes.
+    /// it from the capture session. `update()` reads it, so the panel follows the session as it changes, and VoiceOver
+    /// hears it as it appears or changes while the panel is open.
     var recordingNotice: () -> String? = { nil }
     /// Whether the ⋯ menu offers Resume Recording, and what that does, which the app points at the recording switch.
     var canResumeRecording: () -> Bool = { false }
@@ -305,7 +306,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         toolbar.note = toolbarNote
         toolbar.hasClips = !state.selection.rows.isEmpty
         toolbar.indexNotice = state.indexNotice
-        toolbar.recordingNotice = recordingNotice()
+        let notice = recordingNotice()
+        // VoiceOver hears a notice that appears or changes while the panel is open. One already there as it opens is
+        // only shown: it would be read each time the panel opens.
+        if isSessionOpen, let notice, notice != toolbar.recordingNotice { announce(notice) }
+        toolbar.recordingNotice = notice
         filterRow.queryIsEmpty = state.query.isEmpty
         filterRow.show(kinds: state.kinds)
         strip.queryIsEmpty = state.query.isEmpty

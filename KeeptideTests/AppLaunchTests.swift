@@ -1024,6 +1024,8 @@ final class AppLaunchTests: XCTestCase {
         let controller = environment.panelController
         var menus: [NSMenu] = []
         controller.presentMoreMenu = { menu, _, _ in menus.append(menu) }
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
         controller.show()
         addTeardownBlock { controller.close() }
         let toolbar = try await laidOutToolbar(in: try XCTUnwrap(controller.window))
@@ -1040,7 +1042,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(titles(try moreMenu()), ["Open Library", "Settings…"])
 
         // Paused from the menu bar while the panel is open: the panel follows on its own. With no clips to show, the
-        // toolbar says so after the filters, and ⋯ offers to resume.
+        // toolbar says so after the filters, VoiceOver hears it, and ⋯ offers to resume.
         capture.isEnabled = false
         try await SearchTestSupport.waitUntil {
             toolbar.layoutSubtreeIfNeeded()
@@ -1049,6 +1051,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.state.selection.rows.isEmpty)
         XCTAssertEqual(notice.stringValue, "Recording paused")
         XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessRecordingNotice")
+        XCTAssertEqual(announced, ["Recording paused"])
         let menu = try moreMenu()
         XCTAssertEqual(titles(menu), ["Open Library", "Settings…", "—", "Resume Recording"])
         XCTAssertTrue(menu.items.last?.isEnabled == true)
@@ -1065,6 +1068,58 @@ final class AppLaunchTests: XCTestCase {
             return notice.isHidden
         }
         XCTAssertEqual(titles(try moreMenu()), ["Open Library", "Settings…"])
+        // A notice that goes has nothing to read.
+        XCTAssertEqual(announced, ["Recording paused"])
+    }
+
+    func testVoiceOverHearsTheRecordingNoticeAsItAppearsOrChangesWhileThePanelIsOpen() async throws {
+        // A panel over clips, given its notice as the app gives it, once the panel is made: the panel follows the
+        // notice from the next time it follows its state, as when the clips load.
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older", "newer"], into: harness)
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board)
+        let source = RecordingNoticeSource()
+        controller.recordingNotice = { source.notice }
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        let paused = "Recording paused"
+        let denied = "Clipboard access denied. Allow Keeptide in System Settings, then resume recording."
+
+        // A notice there as the panel opens is shown, not read: VoiceOver would hear it each time the panel opens.
+        source.notice = paused
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
+        let toolbar = try await laidOutToolbar(in: try XCTUnwrap(controller.window))
+        XCTAssertEqual(toolbar.recordingNotice, paused)
+        // The panel follows what opening changed, with the notice as it was.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(announced, [])
+
+        // Changed to another while the panel is open, it is read, once.
+        source.notice = denied
+        try await SearchTestSupport.waitUntil { toolbar.recordingNotice == denied }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(announced, [denied])
+
+        // Gone, there is nothing to read; back while the panel is open, it is read again.
+        source.notice = nil
+        try await SearchTestSupport.waitUntil { toolbar.recordingNotice == nil }
+        source.notice = paused
+        try await SearchTestSupport.waitUntil { toolbar.recordingNotice == paused }
+        XCTAssertEqual(announced, [denied, paused])
+
+        // Changed while the panel is closed, it is not read, nor as the panel opens again.
+        controller.close()
+        source.notice = denied
+        try await SearchTestSupport.waitUntil { toolbar.recordingNotice == denied }
+        controller.show()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(toolbar.recordingNotice, denied)
+        XCTAssertEqual(announced, [denied, paused])
     }
 
     func testQuickAccessSaysWhyRecordingStoppedAndOffersToResume() async throws {
@@ -4766,6 +4821,12 @@ final class AppLaunchTests: XCTestCase {
 @MainActor
 private final class QueryLog {
     var queries: [String] = []
+}
+
+/// A recording notice a test changes, which the panel follows as it follows the capture session's.
+@MainActor @Observable
+private final class RecordingNoticeSource {
+    var notice: String?
 }
 
 @MainActor
