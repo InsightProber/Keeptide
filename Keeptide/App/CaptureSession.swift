@@ -99,7 +99,8 @@ final class CaptureSession {
 
     /// What quick access says while new copies are not recorded, or nil while they are. A stop that the clipboard, the
     /// disk or the library caused says why, as `status` does, ahead of a switch that is off, which says "Recording
-    /// paused". A library that is still opening says nothing: recording starts as it opens.
+    /// paused". A library that could not open, or stopped working, keeps saying why while it is not ready, whatever
+    /// the switch does. A library that is still opening says nothing: recording starts as it opens.
     var recordingNotice: String? {
         #if DEBUG
         // The QA session never records, and says so wherever recording shows.
@@ -111,8 +112,9 @@ final class CaptureSession {
         return preferences.isEnabled ? nil : QuickAccessStatus.recordingPaused
     }
 
-    /// Whether quick access offers Resume Recording: while the switch is off and may be turned on now.
-    var canResumeRecording: Bool { !preferences.isEnabled && canChangeRecordingConsent }
+    /// Whether quick access offers Resume Recording: once the library is ready, while the switch is off and may be
+    /// turned on now. Resumed while the library is not ready, recording would not start.
+    var canResumeRecording: Bool { isReady && !preferences.isEnabled && canChangeRecordingConsent }
 
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
@@ -245,7 +247,12 @@ final class CaptureSession {
                                     matchesOwnWrite: { $0.matches(pasteboard: board) })
                 : nil
             monitor?.onCapture = { [weak self] in await self?.refresh() }
-            monitor?.onUnavailable = { [weak self] in self?.isReady = false }
+            monitor?.onUnavailable = { [weak self, weak monitor] in
+                guard let self else { return }
+                isReady = false
+                // Only reopening Keeptide brings the library back, so why it stopped stays, whatever the switch does.
+                if case .failed(let reason)? = monitor?.state { message = reason }
+            }
             monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
             if let monitor {
                 foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
