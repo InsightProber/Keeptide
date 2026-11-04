@@ -4,7 +4,7 @@ import Observation
 enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
     case general
     case shortcuts
-    case recordingAndPrivacy
+    case privacy
     case iCloud
 
     var id: Self { self }
@@ -13,7 +13,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .general: "General"
         case .shortcuts: "Shortcuts"
-        case .recordingAndPrivacy: "Recording & Privacy"
+        case .privacy: "Privacy"
         case .iCloud: "iCloud"
         }
     }
@@ -22,7 +22,7 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .general: "gearshape"
         case .shortcuts: "keyboard"
-        case .recordingAndPrivacy: "hand.raised"
+        case .privacy: "hand.raised"
         case .iCloud: "icloud.slash"
         }
     }
@@ -30,26 +30,6 @@ enum SettingsTab: String, CaseIterable, Identifiable, Sendable {
 
 enum CloudSettingsState: Equatable, Sendable {
     case unavailableInThisBuild
-}
-
-enum SettingsRecordingState: Equatable {
-    case waitingForLibrary
-    case recording
-    case pausing
-    case paused
-    case unavailable(String)
-
-    func message(consentEnabled: Bool) -> String {
-        switch self {
-        case .waitingForLibrary:
-            return consentEnabled ? "Recording will start when the local library is ready."
-                : "Recording is off. The local library is opening."
-        case .recording: return "Recording new copies."
-        case .pausing: return "Finishing the current capture before pausing."
-        case .paused: return "Recording is paused."
-        case .unavailable(let reason): return reason
-        }
-    }
 }
 
 struct SettingsActions {
@@ -69,13 +49,8 @@ final class SettingsModel {
     let launchAtLogin: any LaunchAtLoginControlling
     let cloud: CloudSettingsState
     let actions: SettingsActions
-    @ObservationIgnored private let readRecordingState: @MainActor () -> SettingsRecordingState
-    @ObservationIgnored private let canChangeRecording: @MainActor () -> Bool
     @ObservationIgnored private let canExport: @MainActor () -> Bool
     var canExportLibrary: Bool { canExport() }
-    var recordingState: SettingsRecordingState { readRecordingState() }
-    var canChangeRecordingConsent: Bool { canChangeRecording() }
-    var recordingStatusDescription: String { recordingState.message(consentEnabled: capture.isEnabled) }
     @ObservationIgnored private var temporaryPreferencesSuite: String?
     var selectedTab: SettingsTab = .general
 
@@ -87,8 +62,6 @@ final class SettingsModel {
         launchAtLogin: any LaunchAtLoginControlling,
         cloud: CloudSettingsState = .unavailableInThisBuild,
         actions: SettingsActions = .inert,
-        recordingState: @escaping @MainActor () -> SettingsRecordingState = { .unavailable("Recording is unavailable.") },
-        canChangeRecording: @escaping @MainActor () -> Bool = { false },
         canExport: @escaping @MainActor () -> Bool = { false }
     ) {
         self.quickAccess = quickAccess
@@ -98,8 +71,6 @@ final class SettingsModel {
         self.launchAtLogin = launchAtLogin
         self.cloud = cloud
         self.actions = actions
-        readRecordingState = recordingState
-        self.canChangeRecording = canChangeRecording
         self.canExport = canExport
     }
 

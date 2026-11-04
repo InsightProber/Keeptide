@@ -58,63 +58,20 @@ final class CaptureSession {
     @ObservationIgnored private var manualPasteQASession: ManualPasteQASession?
     #endif
 
-    var status: String {
+    /// Why new copies are not kept, while that is so, which quick access, the menu bar and the Library say; nil while
+    /// they are kept, and while the library is still opening, since Keeptide keeps them as it opens. The system may
+    /// deny Keeptide the clipboard, or the disk be full, until a new copy is kept; or the library could not open, or
+    /// stopped working, until Keeptide reopens.
+    var captureNotice: String? {
         #if DEBUG
-        // Wherever recording shows, so that the QA session is never taken for the user's own.
-        if manualPasteQASession != nil { return "Manual paste QA — not recording" }
+        // The QA session keeps no copies, and says so, so that it is never taken for the user's own.
+        if manualPasteQASession != nil { return "Manual paste QA — new copies are not kept" }
         #endif
-        return monitor?.status ?? message ?? "Not recording"
-    }
-    var isPausing: Bool { monitor?.isPausing ?? false }
-    var isRecording: Bool { isReady && (monitor?.isRecording ?? false) }
-    /// Whether recording can be started or paused now. The manual paste QA session never records.
-    var canToggleRecording: Bool {
-        #if DEBUG
-        if manualPasteQASession != nil { return false }
-        #endif
-        return isReady && !isPausing
-    }
-    var settingsRecordingState: SettingsRecordingState {
-        #if DEBUG
-        if manualPasteQASession != nil { return .unavailable("Manual paste QA does not record clipboard content.") }
-        #endif
-        if !isReady {
-            if let libraryInitializationError { return .unavailable(libraryInitializationError) }
-            if let message { return .unavailable(message) }
-            return .waitingForLibrary
+        switch monitor?.state {
+        case .interrupted(let reason)?, .failed(let reason)?: return reason
+        default: return isReady ? nil : message
         }
-        if isRecording { return .recording }
-        if isPausing { return .pausing }
-        return preferences.isEnabled ? .unavailable(status) : .paused
     }
-
-    /// A user may consent before storage finishes opening, but QA and a
-    /// pending pause must not present an actionable recording switch.
-    var canChangeRecordingConsent: Bool {
-        #if DEBUG
-        if manualPasteQASession != nil { return false }
-        #endif
-        return !isPausing
-    }
-
-    /// What quick access says while new copies are not recorded, or nil while they are. A stop that the clipboard, the
-    /// disk or the library caused says why, as `status` does, ahead of a switch that is off, which says "Recording
-    /// paused". A library that could not open, or stopped working, keeps saying why while it is not ready, whatever
-    /// the switch does. A library that is still opening says nothing: recording starts as it opens.
-    var recordingNotice: String? {
-        #if DEBUG
-        // The QA session never records, and says so wherever recording shows.
-        if manualPasteQASession != nil { return status }
-        #endif
-        if isRecording { return nil }
-        if case .failed(let reason)? = monitor?.state { return reason }
-        if !isReady, let message { return message }
-        return preferences.isEnabled ? nil : QuickAccessStatus.recordingPaused
-    }
-
-    /// Whether quick access offers Resume Recording: once the library is ready, while the switch is off and may be
-    /// turned on now. Resumed while the library is not ready, recording would not start.
-    var canResumeRecording: Bool { isReady && !preferences.isEnabled && canChangeRecordingConsent }
 
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
@@ -154,7 +111,7 @@ final class CaptureSession {
             library = try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
                                                 userLibrary: CaptureLibrary.userLibraryDirectory())
         } catch {
-            message = "The local library could not be opened. Recording is unavailable."
+            message = "The local library could not be opened."
             return
         }
         // A Release build asked for the manual paste QA session chooses nothing, and nothing opens; nor does a test
@@ -216,7 +173,7 @@ final class CaptureSession {
             do { _ = try await StoreSafetyGate(controller: store).permit(.write) }
             catch {
                 try? await store.close()
-                message = "The library requires recovery before recording can resume."
+                message = "The library requires recovery before it can keep new copies."
                 return
             }
             let storeIdentity: StoreIdentity
@@ -247,12 +204,8 @@ final class CaptureSession {
                                     matchesOwnWrite: { $0.matches(pasteboard: board) })
                 : nil
             monitor?.onCapture = { [weak self] in await self?.refresh() }
-            monitor?.onUnavailable = { [weak self, weak monitor] in
-                guard let self else { return }
-                isReady = false
-                // Only reopening Keeptide brings the library back, so why it stopped stays, whatever the switch does.
-                if case .failed(let reason)? = monitor?.state { message = reason }
-            }
+            // Only reopening Keeptide brings the library back. Until then, the monitor says why it stopped.
+            monitor?.onUnavailable = { [weak self] in self?.isReady = false }
             monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
             if let monitor {
                 foregroundObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -307,11 +260,11 @@ final class CaptureSession {
             monitor?.start()
             onServicesChanged?()
         } catch {
-            message = "The local library could not be opened. Recording is unavailable."
+            message = "The local library could not be opened."
         }
     }
 
-    /// A search index failure leaves recording and the library usable; searches
+    /// A search index failure leaves capture and the library usable; searches
     /// then report the index as unavailable.
     private func startSearch(store: PersistenceController, directory: URL) async {
         let status = SearchIndexStatus()
@@ -333,6 +286,8 @@ final class CaptureSession {
 
     /// Keep primary stores and drafts intact. Search remains unavailable until
     /// restart rebuilds it, so a full disk cannot cause a rebuild/eviction loop.
+    /// Each new copy that finds the disk full asks again, and clearing an
+    /// index already cleared does nothing more.
     private func recoverFromDiskPressure() async {
         guard let index = searchIndex else { return }
         let consumer = historyConsumer
@@ -346,7 +301,7 @@ final class CaptureSession {
             actionMessage = "Search cache cleared. Your content and drafts are preserved. Restart after freeing space to rebuild search."
         } catch {
             guard searchIndex === index else { return }
-            actionMessage = "Recording is paused. Your content and drafts are preserved; the search cache could not be cleared."
+            actionMessage = "Your content and drafts are preserved; the search cache could not be cleared."
         }
     }
 

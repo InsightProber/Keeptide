@@ -22,11 +22,9 @@ struct SettingsView: View {
             page("ShortcutSettingsPage") { shortcutPage }
                 .tabItem { Label(SettingsTab.shortcuts.title, systemImage: SettingsTab.shortcuts.systemImage) }
                 .tag(SettingsTab.shortcuts)
-            page("RecordingPrivacySettingsPage") { recordingPage }
-                .tabItem {
-                    Label(SettingsTab.recordingAndPrivacy.title, systemImage: SettingsTab.recordingAndPrivacy.systemImage)
-                }
-                .tag(SettingsTab.recordingAndPrivacy)
+            page("PrivacySettingsPage") { privacyPage }
+                .tabItem { Label(SettingsTab.privacy.title, systemImage: SettingsTab.privacy.systemImage) }
+                .tag(SettingsTab.privacy)
             page("CloudSettingsPage") { cloudPage }
                 .tabItem { Label(SettingsTab.iCloud.title, systemImage: SettingsTab.iCloud.systemImage) }
                 .tag(SettingsTab.iCloud)
@@ -131,18 +129,9 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    private var recordingPage: some View {
+    private var privacyPage: some View {
         Form {
-            Section {
-                Toggle("Record new clipboard content", isOn: captureEnabled)
-                    .disabled(!model.canChangeRecordingConsent)
-                    .accessibilityIdentifier("CaptureEnabledToggle")
-                Text(model.recordingStatusDescription)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("RecordingAvailabilityStatus")
-                Text("Recording affects only new copies. Turning it off does not remove existing history or saved snippets.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Ignored Apps") {
                 HStack {
                     Text(ignoredApplicationsDescription)
                         .foregroundStyle(.secondary)
@@ -150,8 +139,6 @@ struct SettingsView: View {
                     Button("Manage Ignored Apps…", action: model.actions.manageIgnoredApplications)
                         .accessibilityIdentifier("ManageIgnoredApplicationsButton")
                 }
-            } header: {
-                Text("Recording")
             }
 
             Section("History & Storage") {
@@ -207,10 +194,6 @@ struct SettingsView: View {
                     .foregroundStyle(.red)
             }
         }
-    }
-
-    private var captureEnabled: Binding<Bool> {
-        Binding(get: { model.capture.isEnabled }, set: { model.capture.isEnabled = $0 })
     }
 
     private var shortcutSelection: Binding<QuickAccessShortcut> {

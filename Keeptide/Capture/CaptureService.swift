@@ -5,7 +5,7 @@ enum CaptureError: Error, Equatable {
 }
 
 /// Revocation can be checked synchronously on the store queue immediately before
-/// mutation, including when Pause happens while a capture is awaiting disk work.
+/// mutation, including when the monitor stops while a capture is awaiting disk work.
 final class CapturePermit: @unchecked Sendable {
     private let lock = NSLock()
     private var valid = true

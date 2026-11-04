@@ -95,15 +95,10 @@ final class AppEnvironment {
             manageIgnoredApplications: { [weak self] in self?.showIgnoredApplications() },
             exportArchive: { [weak self] in self?.exportLibrary() }
         ),
-        recordingState: { [weak captureSession] in
-            captureSession?.settingsRecordingState ?? .unavailable("Recording is unavailable.")
-        },
-        canChangeRecording: { [weak captureSession] in captureSession?.canChangeRecordingConsent ?? false },
         canExport: { [weak self] in self?.canExportLibrary ?? false }
     )
 
-    /// Done, and closing the welcome, only complete it; Open Library completes it and opens the Library. Neither
-    /// touches recording, which is on from first launch unless the user paused it.
+    /// Done, and closing the welcome, only complete it; Open Library completes it and opens the Library.
     var onboardingActions: OnboardingActions {
         OnboardingActions(
             done: { [weak self] in self?.onboardingPreferences.completeCurrentVersion() },
@@ -132,10 +127,8 @@ final class AppEnvironment {
         }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
         panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
-        // The toolbar says when new copies are not recorded, and the ⋯ menu resumes as the menu bar's switch does.
-        panel.recordingNotice = { [weak self] in self?.captureSession.recordingNotice }
-        panel.canResumeRecording = { [weak self] in self?.captureSession.canResumeRecording ?? false }
-        panel.onResumeRecording = { [weak self] in self?.captureSession.preferences.isEnabled = true }
+        // The toolbar says why new copies are not kept, while that is so.
+        panel.captureNotice = { [weak self] in self?.captureSession.captureNotice }
         return panel
     }
 

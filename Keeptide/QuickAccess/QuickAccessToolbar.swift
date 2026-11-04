@@ -2,8 +2,8 @@ import AppKit
 
 /// The band's top row. At the left end, the search, folded to a round icon until it is wanted, and the filters; at the
 /// right end what Return does, with why it only copies when the user can do something about it, or in its place what
-/// the panel has to say, and the ⋯ menu; between them, why new copies are not recorded, or while the index rebuilds,
-/// that results may be incomplete.
+/// the panel has to say, and the ⋯ menu; between them, why new copies are not kept, or while the index rebuilds, that
+/// results may be incomplete.
 /// The search field is in the row all the time and keeps the keys while it is folded, its caret hidden with it, so
 /// the first key typed goes straight into it, an input method's composition included.
 @MainActor
@@ -48,8 +48,8 @@ final class QuickAccessToolbar: NSView {
     let moreButton = QuickAccessMoreButton()
     /// The rebuild notice after the filters, in a status's type.
     let indexNoticeLabel = NSTextField(labelWithString: QuickAccessStatus.rebuilding)
-    /// Why new copies are not recorded, in the rebuild notice's place and type.
-    let recordingNoticeLabel = NSTextField(labelWithString: "")
+    /// Why new copies are not kept, in the rebuild notice's place and type.
+    let captureNoticeLabel = NSTextField(labelWithString: "")
     var note = Note.none {
         didSet { if note != oldValue { showNote() } }
     }
@@ -61,12 +61,13 @@ final class QuickAccessToolbar: NSView {
     var indexNotice: IndexNotice? {
         didSet { if indexNotice != oldValue { needsLayout = true } }
     }
-    /// Why new copies are not recorded, such as "Recording paused", or nil while they are. It shows over clips and
-    /// without them, where the empty state's "Copy something" would not hold, and the rebuild notice gives way to it.
-    var recordingNotice: String? {
+    /// Why new copies are not kept, as when the system denies Keeptide the clipboard, or nil while they are. It shows
+    /// over clips and without them, where the empty state's "Copy something" would not hold, and the rebuild notice
+    /// gives way to it.
+    var captureNotice: String? {
         didSet {
-            guard recordingNotice != oldValue else { return }
-            recordingNoticeLabel.stringValue = recordingNotice ?? ""
+            guard captureNotice != oldValue else { return }
+            captureNoticeLabel.stringValue = captureNotice ?? ""
             needsLayout = true
         }
     }
@@ -89,23 +90,23 @@ final class QuickAccessToolbar: NSView {
         super.init(frame: .zero)
         // Layers let the search grow and shrink, and the filters and notice move with it, as one animation.
         wantsLayer = true
-        for label in [statusLabel, indexNoticeLabel, recordingNoticeLabel, directPasteHint] {
+        for label in [statusLabel, indexNoticeLabel, captureNoticeLabel, directPasteHint] {
             label.font = .systemFont(ofSize: 13)
             label.lineBreakMode = .byTruncatingTail
             label.maximumNumberOfLines = 1
             label.isHidden = true
         }
-        for notice in [indexNoticeLabel, recordingNoticeLabel] {
+        for notice in [indexNoticeLabel, captureNoticeLabel] {
             notice.wantsLayer = true
             notice.textColor = ToolbarPalette.secondary
         }
         indexNoticeLabel.setAccessibilityIdentifier("QuickAccessIndexNotice")
-        recordingNoticeLabel.setAccessibilityIdentifier("QuickAccessRecordingNotice")
+        captureNoticeLabel.setAccessibilityIdentifier("QuickAccessCaptureNotice")
         directPasteHint.textColor = ToolbarPalette.secondary
         directPasteHint.setAccessibilityIdentifier("QuickAccessDirectPasteHint")
         copyHint.isHidden = true
         focusHalo.isHidden = true
-        for view in [focusHalo, indexNoticeLabel, recordingNoticeLabel, search, filters, directPasteHint, copyHint,
+        for view in [focusHalo, indexNoticeLabel, captureNoticeLabel, search, filters, directPasteHint, copyHint,
                      statusLabel, moreButton] as [NSView] {
             addSubview(view)
         }
@@ -118,7 +119,7 @@ final class QuickAccessToolbar: NSView {
     /// as when the panel opens again, and with Reduce Motion it all switches at once.
     func setSearchExpanded(_ expanded: Bool) {
         guard expanded != search.isExpanded else { return }
-        let moving = [search, focusHalo, filters, indexNoticeLabel, recordingNoticeLabel] + search.subviews
+        let moving = [search, focusHalo, filters, indexNoticeLabel, captureNoticeLabel] + search.subviews
         let before = moving.map { ($0.layer, $0.layer?.position, $0.layer?.bounds, $0.layer?.opacity) }
         search.isExpanded = expanded
         updateHalo()
@@ -164,19 +165,19 @@ final class QuickAccessToolbar: NSView {
         layoutNotice(endingBefore: firstRight.map { $0 - Self.trailingGap } ?? end)
     }
 
-    /// The notice after the filters: why new copies are not recorded, or else, over clips, that the index rebuilds. It
+    /// The notice after the filters: why new copies are not kept, or else, over clips, that the index rebuilds. It
     /// starts `trailingGap` after the filters and ends by `end`, before the first visible part of the right end: it
     /// takes only the room left once the right end has what it needs.
     /// Short of that room it is cut short with an ellipsis, its whole text in its help tag; below `shortestStatus` it is
     /// left out. VoiceOver reads its whole text either way.
     private func layoutNotice(endingBefore end: CGFloat) {
-        for notice in [recordingNoticeLabel, indexNoticeLabel] {
+        for notice in [captureNoticeLabel, indexNoticeLabel] {
             notice.isHidden = true
             notice.toolTip = nil
         }
         let label: NSTextField
-        if recordingNotice != nil {
-            label = recordingNoticeLabel
+        if captureNotice != nil {
+            label = captureNoticeLabel
         } else if hasClips, indexNotice == .rebuilding {
             label = indexNoticeLabel
         } else {
@@ -731,8 +732,7 @@ final class QuickAccessCopyHint: NSButton {
     }
 }
 
-/// The ⋯ at the toolbar's right end, which opens a menu with Open Library and Settings…, and Resume Recording while
-/// recording is paused.
+/// The ⋯ at the toolbar's right end, which opens a menu with Open Library and Settings….
 @MainActor
 final class QuickAccessMoreButton: NSButton {
     static let side: CGFloat = 28
