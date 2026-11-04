@@ -278,12 +278,19 @@ final class CaptureSessionTests: XCTestCase {
         let suiteName = "CaptureSessionTests.qaCapture.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), pasteboard: board)
+        let clipboard = SessionClipboard()
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), pasteboard: board,
+                                     clipboardReader: clipboard)
         await session.open(manualPasteQA: qa)
 
         // It keeps no copies, and says so wherever Keeptide says why, so that it is never taken for the user's own.
         XCTAssertTrue(session.isReady)
         XCTAssertEqual(session.captureNotice, "Manual paste QA — new copies are not kept")
+        // A copy made while it is open is never even read, over a few rounds of sampling: only its six clips are there.
+        clipboard.changeCount += 1
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(clipboard.readsStarted, 0)
+        XCTAssertEqual(session.recent.count, 6)
         await session.shutdown()
     }
 

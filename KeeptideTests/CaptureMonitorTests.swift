@@ -270,9 +270,29 @@ final class CaptureMonitorTests: XCTestCase {
             await polling.value
             reader.suspendedReadStarted = nil
             await monitor.poll()
+            XCTAssertEqual(reader.cancelledReads, 0)
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertEqual(rows.count, 1)
             XCTAssertEqual(monitor.state, .watching)
+        }
+    }
+
+    func testIgnoringTheAppOfACopyBeingReadLetsTheCopyGo() async throws {
+        try await withMonitor { monitor, reader, preferences, controller in
+            reader.changeCount = 1
+            let started = self.expectation(description: "read pending")
+            reader.suspendedReadStarted = started
+            let polling = Task { await monitor.poll() }
+            await self.fulfillment(of: [started], timeout: 3)
+            // The app the copy came from is ignored while the copy is read: the read is let go, and nothing is kept,
+            // nor said.
+            preferences.addExclusion("test.source")
+            reader.finishSuspendedRead()
+            await polling.value
+            XCTAssertEqual(reader.cancelledReads, 1)
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertTrue(rows.isEmpty)
         }
     }
 
@@ -469,6 +489,8 @@ private final class FakeReader: SnapshotReading {
     var typeIdentifier = "public.utf8-plain-text"
     var body = Data("synthetic".utf8)
     var suspendedReadStarted: XCTestExpectation?
+    /// Suspended reads whose capture was let go while they waited.
+    private(set) var cancelledReads = 0
     private var continuation: CheckedContinuation<Void, Never>?
 
     func readAsynchronously(sourceApp: String?, expectedChangeCount: Int) async throws -> CaptureSnapshotValue {
@@ -482,6 +504,7 @@ private final class FakeReader: SnapshotReading {
                 self.continuation = continuation
                 suspendedReadStarted.fulfill()
             }
+            if Task.isCancelled { cancelledReads += 1 }
         }
         if let failureAfterRead { throw failureAfterRead }
         return snapshot
