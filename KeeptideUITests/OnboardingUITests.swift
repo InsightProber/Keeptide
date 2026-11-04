@@ -41,6 +41,16 @@ final class OnboardingUITests: XCTestCase {
         waitForExpectations(timeout: 8)
     }
 
+    func testEscapeClosesWelcomeAsDoneDoes() {
+        let (app, sessionID) = launchWelcome()
+        defer { removeTestSession(sessionID, app: app) }
+        let window = app.windows["KeeptideOnboardingWindow"]
+        XCTAssertTrue(window.waitForExistence(timeout: 8))
+        window.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        XCTAssertTrue(window.waitForNonExistence(timeout: 3))
+        XCTAssertFalse(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 2), app.debugDescription)
+    }
+
     func testOpenLibraryClosesWelcomeAndTheIsolatedMonitorRecords() {
         let (app, sessionID) = launchWelcome()
         defer { removeTestSession(sessionID, app: app) }

@@ -81,6 +81,30 @@ final class OnboardingWindowTests: XCTestCase {
         XCTAssertEqual(libraries, 0)
     }
 
+    func testEscapeIsDone() throws {
+        var dones = 0
+        var libraries = 0
+        let controller = makeController(done: { dones += 1 }, openLibrary: { libraries += 1 })
+        let window = try XCTUnwrap(controller.window)
+        controller.show()
+        addTeardownBlock { window.close() }
+
+        // No button of the welcome takes Escape, so the key window sends cancelOperation up the responder chain from
+        // whatever holds the keys, as it does for ⌘.: that is Done, and the welcome closes. The test host cannot make
+        // the window key, so the test sends what the window would.
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                    windowNumber: window.windowNumber, context: nil,
+                                                    characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+                                                    isARepeat: false, keyCode: UInt16(53)))
+        XCTAssertFalse(window.performKeyEquivalent(with: escape))
+        let keys = try XCTUnwrap(window.firstResponder)
+        XCTAssertTrue(keys.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: nil))
+
+        XCTAssertEqual(dones, 1)
+        XCTAssertEqual(libraries, 0)
+        XCTAssertFalse(window.isVisible)
+    }
+
     func testClosingDoesNotHideTheDockWhenAnotherWindowStillNeedsIt() {
         var policies: [NSApplication.ActivationPolicy] = []
         let controller = makeController(

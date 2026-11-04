@@ -17,13 +17,14 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         self.actions = actions
         self.setActivationPolicy = setActivationPolicy
         self.shouldRestoreAccessory = shouldRestoreAccessory
-        let window = NSWindow(
+        let window = OnboardingWindow(
             contentRect: .zero,
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         super.init(window: window)
+        window.onCancel = { [weak self] in self?.finish(with: .done) }
         window.title = "Welcome to Keeptide"
         window.identifier = NSUserInterfaceItemIdentifier("KeeptideOnboardingWindow")
         window.setAccessibilityIdentifier("KeeptideOnboardingWindow")
@@ -75,5 +76,15 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         case .done: actions.done()
         case .openLibrary: actions.openLibrary()
         }
+    }
+}
+
+/// The welcome's window, where Escape and ⌘. are Done, as its close button is. NSWindow takes them itself otherwise,
+/// and they never reach the window's controller.
+private final class OnboardingWindow: NSWindow {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
     }
 }
