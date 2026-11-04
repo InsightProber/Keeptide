@@ -70,6 +70,38 @@ final class LibraryMaintenanceTests: XCTestCase {
         XCTAssertEqual(raw.1, evidence)
     }
 
+    func testABlockedCleanupStillNeedsReviewAfterEachActionInRecentlyDeleted() async throws {
+        let harness = try await makeHarness(retention: .permanent)
+        let restored = try await insertHistory("restored", lastCopiedAt: Date(), into: harness.store)
+        let deleted = try await insertHistory("deleted", lastCopiedAt: Date(), into: harness.store)
+        try await insertIntent(phase: CleanupIntentPhase.blocked.rawValue, into: harness)
+        let needsReview = "Some cleanup needs review. Its evidence was preserved."
+
+        // Recently Deleted, the one place the notice shows, refreshes as it appears and after each of its actions, and
+        // each action starts without a message. Each one that succeeds says again that the cleanup waits for review.
+        await harness.maintenance.refreshTrash()
+        XCTAssertEqual(harness.maintenance.message, needsReview)
+        for fixture in [restored, deleted] {
+            let removed = await harness.maintenance.remove(fixture.ref)
+            XCTAssertTrue(removed)
+            XCTAssertEqual(harness.maintenance.message, needsReview)
+        }
+        let restoredResult = await harness.maintenance.restore(
+            .history(itemID: restored.item.id, captureID: restored.capture.id))
+        XCTAssertTrue(restoredResult)
+        XCTAssertEqual(harness.maintenance.message, needsReview)
+        let purged = await harness.maintenance.permanentlyDelete(
+            .history(itemID: deleted.item.id, captureID: deleted.capture.id))
+        XCTAssertTrue(purged)
+        XCTAssertEqual(harness.maintenance.message, needsReview)
+        XCTAssertTrue(harness.maintenance.trash.isEmpty)
+
+        // A cleanup that needs a newer version says so instead.
+        try await insertIntent(phase: "future", schemaVersion: 99, into: harness)
+        await harness.maintenance.runScheduledMaintenance()
+        XCTAssertTrue(harness.maintenance.message?.contains("newer version") == true)
+    }
+
     func testScheduledMaintenanceExpiresAndReclaimsActiveAndPrehiddenHistory() async throws {
         let harness = try await makeHarness(retention: .preset(.oneDay))
         let active = try await insertHistory("active-old", lastCopiedAt: .distantPast, into: harness.store)
@@ -325,6 +357,28 @@ final class LibraryMaintenanceTests: XCTestCase {
             throw StoreError.corruptStore
         }
         return item
+    }
+
+    /// Puts a cleanup intent of the harness's store generation straight into the store, in `phase`, as an earlier pass
+    /// or a newer build might have left it, holding evidence of its own.
+    private func insertIntent(
+        phase: String,
+        schemaVersion: Int64 = CleanupIntentStore.schemaVersion,
+        into harness: MaintenanceHarness
+    ) async throws {
+        let identity = harness.identity
+        try await harness.store.perform { context in
+            let row = NSEntityDescription.insertNewObject(forEntityName: "CleanupIntent", into: context)
+            row.setValue(UUID(), forKey: "id")
+            row.setValue(schemaVersion, forKey: "schemaVersion")
+            row.setValue(identity.storeID, forKey: "storeID")
+            row.setValue(identity.generation, forKey: "generation")
+            row.setValue(phase, forKey: "phase")
+            row.setValue(Data("\(phase) cleanup evidence".utf8), forKey: "payload")
+            row.setValue(Date(), forKey: "createdAt")
+            row.setValue(Date(), forKey: "updatedAt")
+            try context.save()
+        }
     }
 
     /// Changes a row straight in Core Data, past the write coordinator's checks, as a damaged store or a faulty

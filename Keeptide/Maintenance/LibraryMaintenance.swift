@@ -20,7 +20,7 @@ final class LibraryMaintenance {
 
     @ObservationIgnored private var settingsModel: LifecycleSettingsModel?
 
-    /// Said while a blocked cleanup intent waits for review, on every pass until it no longer does.
+    /// Said while a blocked cleanup intent waits for review, after every action until it no longer does.
     private static let cleanupNeedsReview = "Some cleanup needs review. Its evidence was preserved."
 
     var settings: LifecycleSettingsModel {
@@ -142,11 +142,6 @@ final class LibraryMaintenance {
             }
             try Task.checkCancellation()
             guard !self.isClosed else { throw StoreError.closed }
-            // Every pass starts without a message, and a blocked intent is not pending, so the loop above no longer
-            // meets one that an earlier pass blocked. It still holds its evidence for review, so each pass says so.
-            if try await intents.hasBlockedIntent(expecting: self.identity, permit: permit) {
-                self.message = Self.cleanupNeedsReview
-            }
             _ = try await LifecycleService(controller: self.controller).expireHistory(
                 policy: self.policy, at: now, expecting: self.identity, permit: permit
             )
@@ -217,6 +212,14 @@ final class LibraryMaintenance {
             let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
             guard !isClosed, permit.identity == identity else { throw StoreError.preconditionFailed }
             try await operation(permit)
+            // Every action starts without a message, and a blocked intent is not pending, so no later pass meets one
+            // that an earlier pass blocked. It still holds its evidence for review, so each action that succeeds says
+            // so, among them the refresh Recently Deleted runs as it appears. Not knowing leaves the action as it went.
+            if message == nil, !isClosed {
+                let intents = CleanupIntentStore(controller: controller)
+                let isBlocked = (try? await intents.hasBlockedIntent(expecting: identity, permit: permit)) == true
+                if isBlocked, !isClosed { message = Self.cleanupNeedsReview }
+            }
             return true
         } catch is CancellationError {
             return false
