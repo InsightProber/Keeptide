@@ -2,7 +2,7 @@ import XCTest
 
 @MainActor
 final class OnboardingUITests: XCTestCase {
-    func testWelcomeSaysKeeptideRecordsWithoutPermissionPrompts() {
+    func testWelcomeSaysWhatKeeptideSavesWithoutPermissionPrompts() {
         let (app, sessionID) = launchWelcome()
         defer { removeTestSession(sessionID, app: app) }
         XCTAssertTrue(app.windows["KeeptideOnboardingWindow"].waitForExistence(timeout: 8))
@@ -10,11 +10,12 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["OnboardingDone"].exists)
         XCTAssertFalse(app.buttons["OnboardingStartRecording"].exists)
         XCTAssertFalse(app.buttons["OnboardingNotNow"].exists)
-        let recordingExplanation = "Keeptide saves what you copy. "
-            + "Pause or resume it anytime from the menu bar or Settings."
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@ OR value CONTAINS %@", recordingExplanation, recordingExplanation
-        )).firstMatch.exists, app.debugDescription)
+        for explanation in ["Keeptide saves what you copy so you can find and reuse it.",
+                            "Apps you ignore and private content, such as passwords, are never saved."] {
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@", explanation, explanation
+            )).firstMatch.exists, app.debugDescription)
+        }
         XCTAssertFalse(app.buttons["Allow Accessibility"].exists)
         XCTAssertFalse(app.buttons["Enable iCloud"].exists)
     }
