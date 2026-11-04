@@ -111,11 +111,12 @@ been uploaded. Recovered references may require the user to locate a file again.
 
 ## Permissions and reuse
 
-Recording is enabled intentionally. Direct paste uses the system's Accessibility
-(send keys) permission, which the user grants in System Settings. Without it,
-quick access copies. Quick access notes the app window it was opened from. It
-checks the front app and window before it sends a paste and again after the
-panel hides. If they changed, or anything is uncertain, it copies the clip
+Recording starts on first launch, and the user can pause and resume it at any
+time; while it is off, quick access says so. Direct paste uses the system's
+Accessibility (send keys) permission, which the user grants in System Settings.
+Without it, quick access copies. Quick access notes the app window it was opened
+from. It checks the front app and window before it sends a paste and again after
+the panel hides. If they changed, or anything is uncertain, it copies the clip
 instead and says so. Keeptide sends the paste and does not confirm that the app
 received it.
 

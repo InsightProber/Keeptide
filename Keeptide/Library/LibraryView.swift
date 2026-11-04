@@ -414,7 +414,7 @@ struct LibraryView: View {
                     session.preferences.isEnabled.toggle()
                 } label: {
                     Label(
-                        session.isRecording ? "Pause Recording" : "Start Recording",
+                        session.isRecording ? "Pause Recording" : "Resume Recording",
                         systemImage: session.isRecording ? "pause.fill" : "record.circle"
                     )
                 }
@@ -770,7 +770,7 @@ struct LibraryView: View {
                 } description: {
                     Text(workspace.query.isEmpty
                          ? (recentStyle
-                            ? "Start recording to keep new copies. Existing clipboard content is not imported."
+                            ? "New copies appear here. Existing clipboard content is not imported."
                             : "Create a snippet or save a recent clip to keep it here.")
                          : "No items match your search.")
                 }

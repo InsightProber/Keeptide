@@ -102,19 +102,11 @@ final class AppEnvironment {
         canExport: { [weak self] in self?.canExportLibrary ?? false }
     )
 
+    /// Done, and closing the welcome, only complete it; Open Library completes it and opens the Library. Neither
+    /// touches recording, which is on from first launch unless the user paused it.
     var onboardingActions: OnboardingActions {
         OnboardingActions(
-            startRecording: { [weak self] in
-                guard let self else { return }
-                self.captureSession.preferences.isEnabled = true
-                self.onboardingPreferences.completeCurrentVersion()
-                self.showLibrary()
-            },
-            notNow: { [weak self] in
-                guard let self else { return }
-                self.onboardingPreferences.completeCurrentVersion()
-                self.showLibrary()
-            },
+            done: { [weak self] in self?.onboardingPreferences.completeCurrentVersion() },
             openLibrary: { [weak self] in
                 guard let self else { return }
                 self.onboardingPreferences.completeCurrentVersion()
@@ -140,6 +132,10 @@ final class AppEnvironment {
         }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
         panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
+        // The toolbar says when new copies are not recorded, and the ⋯ menu resumes as the menu bar's switch does.
+        panel.recordingNotice = { [weak self] in self?.captureSession.recordingNotice }
+        panel.canResumeRecording = { [weak self] in self?.captureSession.canResumeRecording ?? false }
+        panel.onResumeRecording = { [weak self] in self?.captureSession.preferences.isEnabled = true }
         return panel
     }
 

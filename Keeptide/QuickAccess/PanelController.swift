@@ -79,6 +79,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The actions menu's Enable Direct Paste…, once the panel has closed. The app explains it and asks for access,
     /// which takes Keeptide to the front: the panel never does that itself.
     var onEnableDirectPaste: (() -> Void)?
+    /// Why new copies are not recorded, which the toolbar says after the filters, or nil while they are. The app reads
+    /// it from the capture session. `update()` reads it, so the panel follows the session as it changes, and VoiceOver
+    /// hears it as it appears or changes while the panel is open.
+    var recordingNotice: () -> String? = { nil }
+    /// Whether the ⋯ menu offers Resume Recording, and what that does, which the app points at the recording switch.
+    var canResumeRecording: () -> Bool = { false }
+    var onResumeRecording: (() -> Void)?
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
@@ -299,6 +306,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         toolbar.note = toolbarNote
         toolbar.hasClips = !state.selection.rows.isEmpty
         toolbar.indexNotice = state.indexNotice
+        let notice = recordingNotice()
+        // VoiceOver hears a notice that appears or changes while the panel is open. One already there as it opens is
+        // only shown: it would be read each time the panel opens.
+        if isSessionOpen, let notice, notice != toolbar.recordingNotice { announce(notice) }
+        toolbar.recordingNotice = notice
         filterRow.queryIsEmpty = state.query.isEmpty
         filterRow.show(kinds: state.kinds)
         strip.queryIsEmpty = state.query.isEmpty
@@ -707,7 +719,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Menus
 
-    /// The ⋯ menu, below its button. Each item closes the panel, then opens what it names.
+    /// The ⋯ menu, below its button. Open Library and Settings… close the panel, then open what they name. While the
+    /// recording switch is off and may be turned on, Resume Recording turns it on and leaves the panel open, which
+    /// brings its toolbar up to date at once.
     @objc private func showMoreMenu() {
         let menu = NSMenu(title: "More")
         menu.autoenablesItems = false
@@ -719,6 +733,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             self?.close()
             self?.onOpenSettings?()
         })
+        if canResumeRecording(), onResumeRecording != nil {
+            menu.addItem(.separator())
+            menu.addItem(ClosureMenuItem("Resume Recording") { [weak self] in
+                self?.onResumeRecording?()
+                self?.update()
+            })
+        }
         let button = toolbar.moreButton
         presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
     }
