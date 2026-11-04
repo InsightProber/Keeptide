@@ -3,8 +3,8 @@ import SwiftUI
 
 /// The quick access band, backed as the app switcher is: the system's material in a rounded rectangle with a hairline
 /// edge and a soft shadow. Along its top the toolbar, below it the strip of clips, which the band's rounded edge cuts
-/// off where it goes on beyond either end, with the strip's section icons below the cards; and a card above it: the
-/// preview while it is open, and in its place the review of a command that waits for one. The panel owns the
+/// off where it goes on beyond either end, with the strip's section icons below the cards. A browsing preview floats
+/// over the band; a command review stands above it. The panel owns the
 /// AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
@@ -44,14 +44,14 @@ struct QuickAccessBandView: View {
     private var selectedRow: QuickAccessRow? { state.selection.selectedRow }
 
     var body: some View {
-        VStack(spacing: layout.previewGap) {
+        ZStack(alignment: .bottom) {
+            band.padding(.bottom, layout.roomBelow)
             if let size = layout.previewSize {
-                // Over the band's shadow, which reaches up toward the card, and over the band itself on a low screen.
-                card.frame(width: size.width, height: size.height).zIndex(1)
+                card.frame(width: size.width, height: size.height)
+                    .offset(y: -(layout.roomBelow + StripLayout.bandHeight(metrics) + layout.previewGap))
+                    .zIndex(1)
             }
-            band
         }
-        .padding(.bottom, layout.roomBelow)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
@@ -124,7 +124,8 @@ struct QuickAccessBandView: View {
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
             } else {
-                QuickAccessPreviewView(preview: state.preview,
+                QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
+                    QuickAccessPreviewView(preview: state.preview,
                                        applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
                                        onCommand: actions.previewCommand,
                                        fileAccessStore: state.fileAccessStore,
@@ -132,10 +133,54 @@ struct QuickAccessBandView: View {
                                        isLoadingOriginal: state.isLoadingOriginalPreview,
                                        previewMessage: state.previewMessage,
                                        onRequestOriginal: state.loadOriginalPreview)
+                }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+    }
+}
+
+/// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target.
+private struct QuickAccessPreviewCard<Content: View>: View {
+    let onClose: () -> Void
+    @ViewBuilder let content: () -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .background(.quaternary, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close Preview")
+                .accessibilityIdentifier("CloseQuickAccessPreview")
+                .help("Close Preview (Esc)")
+                Text("Preview").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            content()
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.92)
+        .opacity(appeared || reduceMotion ? 1 : 0)
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { appeared = true }
+        }
     }
 }
 
