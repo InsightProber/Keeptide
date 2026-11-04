@@ -135,7 +135,8 @@ final class StagedArchiveWriter: @unchecked Sendable {
                 try handle.close()
             }
         } catch { try? handle.close(); throw error }
-        return ArchiveFileDigest(path: relativePath, byteCount: Int64(data.count), sha256: Self.hex(hasher.finalize()))
+        return ArchiveFileDigest(path: relativePath, byteCount: Int64(data.count),
+                                 sha256: ArchiveManifest.hex(hasher.finalize()))
     }
 
     func finishEntries() throws -> ArchiveFileDigest {
@@ -146,7 +147,7 @@ final class StagedArchiveWriter: @unchecked Sendable {
         }
         entriesHandle = nil
         return ArchiveFileDigest(path: "entries.ndjson", byteCount: entriesBytes,
-                                 sha256: Self.hex(entriesHasher.finalize()))
+                                 sha256: ArchiveManifest.hex(entriesHasher.finalize()))
     }
 
     func writeManifest(_ manifest: ArchiveManifest) throws {
@@ -276,9 +277,5 @@ final class StagedArchiveWriter: @unchecked Sendable {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
         return encoder
-    }
-
-    static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
-        bytes.map { String(format: "%02x", $0) }.joined()
     }
 }
