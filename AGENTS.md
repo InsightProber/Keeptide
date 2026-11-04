@@ -18,9 +18,10 @@ The repository contains an early native foundation: the `Keeptide` application,
 unit and UI test targets, a separate `KeeptideSystemTestHost`, and a shared Xcode
 scheme. The storage foundation includes two local Core Data stores, typed
 transactions, content validation, consistent snapshots, and persistent change
-consumption. Local capture includes explicit recording, privacy filters, exact
-deduplication, recent clips, and original-format copy-back. A rebuildable local
-full-text index consumes persistent history, and the quick-access panel is a
+consumption. Local capture records from first launch and can be paused and
+resumed; it includes privacy filters, exact deduplication, recent clips, and
+original-format copy-back. A rebuildable local full-text index consumes
+persistent history, and the quick-access panel is a
 centered band of large clip cards (small, medium or large, with trackpad ticks
 and a minimal Settings window) that browses recent clips, searches all content,
 previews text and images, and copies the selected item. Clips copied or pasted

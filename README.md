@@ -114,11 +114,14 @@ benchmark logs, result bundles, and JSON reports stay under the ignored
 `.local/benchmarks/` directory. See [Contributing](CONTRIBUTING.md) for focused
 commands and validation boundaries.
 
-Recording is disabled on first launch. Open the library or menu-bar
-menu and choose **Start Recording** to record new copies; **Pause Recording**
-stops collection. Ignored applications can be configured in the library. Source
-attribution uses observed foreground-application changes and is best effort;
-it cannot authenticate which application wrote the clipboard.
+Recording starts on first launch, and the welcome explains how to pause it.
+**Pause Recording** in the menu-bar menu or the library stops collecting new
+copies, and **Start Recording** there resumes it; Settings has the same switch.
+While recording is paused or stopped, the quick-access panel says so, and its
+**⋯** menu offers **Resume Recording**. Ignored applications can be configured
+in the library. Source attribution uses observed foreground-application changes
+and is best effort; it cannot authenticate which application wrote the
+clipboard.
 
 Recording preserves whole items and their available representations. Private or
 transient content is skipped when the source marks it accordingly. A copy above

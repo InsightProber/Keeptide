@@ -770,7 +770,7 @@ struct LibraryView: View {
                 } description: {
                     Text(workspace.query.isEmpty
                          ? (recentStyle
-                            ? "Start recording to keep new copies. Existing clipboard content is not imported."
+                            ? "New copies appear here. Existing clipboard content is not imported."
                             : "Create a snippet or save a recent clip to keep it here.")
                          : "No items match your search.")
                 }
