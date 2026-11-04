@@ -132,6 +132,10 @@ final class AppEnvironment {
         }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
         panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
+        // The toolbar says when new copies are not recorded, and the ⋯ menu resumes as the menu bar's switch does.
+        panel.recordingNotice = { [weak self] in self?.captureSession.recordingNotice }
+        panel.canResumeRecording = { [weak self] in self?.captureSession.canResumeRecording ?? false }
+        panel.onResumeRecording = { [weak self] in self?.captureSession.preferences.isEnabled = true }
         return panel
     }
 

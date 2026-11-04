@@ -946,6 +946,90 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(panel.onOpenLibrary)
     }
 
+    func testQuickAccessSaysWhenRecordingIsPausedAndItsMoreMenuResumesIt() async throws {
+        let (environment, capture) = try await makeRecordingEnvironment()
+        let controller = environment.panelController
+        var menus: [NSMenu] = []
+        controller.presentMoreMenu = { menu, _, _ in menus.append(menu) }
+        controller.show()
+        addTeardownBlock { controller.close() }
+        let toolbar = try await laidOutToolbar(in: try XCTUnwrap(controller.window))
+        let notice = toolbar.recordingNoticeLabel
+        func moreMenu() throws -> NSMenu {
+            toolbar.moreButton.performClick(nil)
+            return try XCTUnwrap(menus.last)
+        }
+        func titles(_ menu: NSMenu) -> [String] { menu.items.map { $0.isSeparatorItem ? "—" : $0.title } }
+
+        // Recording, the toolbar says nothing about it, and ⋯ has nothing to resume.
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(notice.isHidden)
+        XCTAssertEqual(titles(try moreMenu()), ["Open Library", "Settings…"])
+
+        // Paused from the menu bar while the panel is open: the panel follows on its own. With no clips to show, the
+        // toolbar says so after the filters, and ⋯ offers to resume.
+        capture.isEnabled = false
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return !notice.isHidden
+        }
+        XCTAssertTrue(controller.state.selection.rows.isEmpty)
+        XCTAssertEqual(notice.stringValue, "Recording paused")
+        XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessRecordingNotice")
+        let menu = try moreMenu()
+        XCTAssertEqual(titles(menu), ["Open Library", "Settings…", "—", "Resume Recording"])
+        XCTAssertTrue(menu.items.last?.isEnabled == true)
+
+        // Resume Recording turns recording back on, and the notice goes at once. The panel stays open: there is nothing
+        // to open.
+        menu.performActionForItem(at: menu.items.count - 1)
+        XCTAssertTrue(capture.isEnabled)
+        XCTAssertTrue(environment.captureSession.isRecording)
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertNil(toolbar.recordingNotice)
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return notice.isHidden
+        }
+        XCTAssertEqual(titles(try moreMenu()), ["Open Library", "Settings…"])
+    }
+
+    func testQuickAccessSaysWhyRecordingStoppedAndOffersToResume() async throws {
+        let clipboard = SessionClipboard()
+        clipboard.deniesAccess = true
+        let (environment, capture) = try await makeRecordingEnvironment(clipboard: clipboard)
+        let controller = environment.panelController
+        var menus: [NSMenu] = []
+        controller.presentMoreMenu = { menu, _, _ in menus.append(menu) }
+        controller.show()
+        addTeardownBlock { controller.close() }
+        let toolbar = try await laidOutToolbar(in: try XCTUnwrap(controller.window))
+        let notice = toolbar.recordingNoticeLabel
+
+        // With the panel open, a copy the system does not let Keeptide read stops recording: the panel follows on its
+        // own, the toolbar says why, VoiceOver reads it whole, and ⋯ offers to resume.
+        clipboard.changeCount += 1
+        let reason = "Clipboard access denied. Allow Keeptide in System Settings, then resume recording."
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return !notice.isHidden && notice.stringValue == reason
+        }
+        XCTAssertFalse(capture.isEnabled)
+        XCTAssertEqual(notice.accessibilityValue(), reason)
+        toolbar.moreButton.performClick(nil)
+        let menu = try XCTUnwrap(menus.last)
+        XCTAssertEqual(menu.items.last?.title, "Resume Recording")
+
+        // Allowed meanwhile and resumed, Keeptide records again, and the toolbar says nothing about it.
+        clipboard.deniesAccess = false
+        menu.performActionForItem(at: menu.items.count - 1)
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return notice.isHidden
+        }
+        XCTAssertTrue(environment.captureSession.isRecording)
+    }
+
     func testAClickBesideTheBandClosesThePanel() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -4040,6 +4124,29 @@ final class AppLaunchTests: XCTestCase {
         NSApp.postEvent(try event(.leftMouseUp), atStart: false)
         window.sendEvent(try event(.leftMouseDown))
         NSApp.discardEvents(matching: .leftMouseUp, before: nil)
+    }
+
+    /// The app's environment over a fresh isolated test library, recording as a first launch does, its monitor reading
+    /// `clipboard` when given in place of the session's named pasteboard. It returns once the library is open and
+    /// records; the library goes when the test ends.
+    private func makeRecordingEnvironment(clipboard: (any SnapshotReading)? = nil) async throws
+        -> (AppEnvironment, CapturePreferences) {
+        let configuration = CaptureTestConfiguration(id: UUID())
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        defaults.removePersistentDomain(forName: configuration.preferencesSuite)
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture, clipboardReader: clipboard)
+        addTeardownBlock {
+            await session.shutdown()
+            UserDefaults(suiteName: configuration.preferencesSuite)?
+                .removePersistentDomain(forName: configuration.preferencesSuite)
+            try? FileManager.default.removeItem(at: configuration.directory)
+            NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
+        }
+        let environment = AppEnvironment(captureSession: session, quickAccessPreferences: try makePreferences(.medium))
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isRecording)
+        return (environment, capture)
     }
 
     /// Settings of the panel's own, so its card size does not depend on this machine's. The frequent clips are off

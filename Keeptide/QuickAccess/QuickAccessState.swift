@@ -915,6 +915,8 @@ enum QuickAccessStatus {
     }
 
     static let rebuilding = "Index is rebuilding — results may be incomplete"
+    /// What the toolbar says after the filters while the user's pause holds.
+    static let recordingPaused = "Recording paused"
 
     /// What an empty result area says.
     static func empty(phase: QuickAccessPhase, notice: IndexNotice?) -> Message {

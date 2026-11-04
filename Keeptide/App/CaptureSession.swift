@@ -47,6 +47,9 @@ final class CaptureSession {
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
     /// What direct paste asks of the system. Every paste service this session makes uses it.
     @ObservationIgnored private let directPaste: DirectPasteSystem
+    /// A clipboard a test gives in place of the real one. Without it, the session reads the clipboard its library
+    /// records.
+    @ObservationIgnored private let clipboardReader: (any SnapshotReading)?
     /// An app-level preference object is injected before asynchronous store initialization so Settings, onboarding,
     /// and the monitor keep one identity. Legacy tests that do not inject one still adopt the selected test/QA suite.
     @ObservationIgnored private var keepsPreferenceIdentity: Bool
@@ -94,19 +97,39 @@ final class CaptureSession {
         return !isPausing
     }
 
+    /// What quick access says while new copies are not recorded, or nil while they are. A stop that the clipboard, the
+    /// disk or the library caused says why, as `status` does, ahead of a switch that is off, which says "Recording
+    /// paused". A library that is still opening says nothing: recording starts as it opens.
+    var recordingNotice: String? {
+        #if DEBUG
+        // The QA session never records, and says so wherever recording shows.
+        if manualPasteQASession != nil { return status }
+        #endif
+        if isRecording { return nil }
+        if case .failed(let reason)? = monitor?.state { return reason }
+        if !isReady, let message { return message }
+        return preferences.isEnabled ? nil : QuickAccessStatus.recordingPaused
+    }
+
+    /// Whether quick access offers Resume Recording: while the switch is off and may be turned on now.
+    var canResumeRecording: Bool { !preferences.isEnabled && canChangeRecordingConsent }
+
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
 
-    /// `directPaste` stays `.unavailable` everywhere but in the app delegate: tests use a fake.
+    /// `directPaste` stays `.unavailable` everywhere but in the app delegate, and `clipboardReader` reads the real
+    /// clipboard everywhere but in tests: tests use fakes.
     init(preferences: CapturePreferences? = nil,
          readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil,
-         directPaste: DirectPasteSystem = .unavailable) {
+         directPaste: DirectPasteSystem = .unavailable,
+         clipboardReader: (any SnapshotReading)? = nil) {
         self.preferences = preferences ?? CapturePreferences()
         keepsPreferenceIdentity = preferences != nil
         self.readContent = readContent
         self.pasteboard = pasteboard
         self.directPaste = directPaste
+        self.clipboardReader = clipboardReader
         if let readContent, let pasteboard {
             pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in },
                                         didWrite: { _ in }, system: directPaste)
@@ -214,10 +237,12 @@ final class CaptureSession {
             }
             readContent = read
             pasteboard = board
-            let monitor = library.recordsClipboard ? PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
-                service: CaptureService(controller: store), preferences: preferences,
-                sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
-                matchesOwnWrite: { $0.matches(pasteboard: board) }) : nil
+            let monitor = library.recordsClipboard
+                ? PasteboardMonitor(reader: clipboardReader ?? SnapshotReader(pasteboard: board),
+                                    service: CaptureService(controller: store), preferences: preferences,
+                                    sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
+                                    matchesOwnWrite: { $0.matches(pasteboard: board) })
+                : nil
             monitor?.onCapture = { [weak self] in await self?.refresh() }
             monitor?.onUnavailable = { [weak self] in self?.isReady = false }
             monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
