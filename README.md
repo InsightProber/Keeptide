@@ -158,8 +158,9 @@ cannot authenticate which application wrote the clipboard.
 
 Capture preserves whole items and their available representations. Private or
 transient content is skipped when the source marks it accordingly. A copy above
-50 MiB, or one whose advertised formats cannot all be read, is skipped without
-notice. Clipboard bodies are read in an isolated helper process so a
+50 MiB, or one whose advertised formats cannot all be read, is not kept, and
+Keeptide says why until a later copy is kept. Clipboard bodies are read in an
+isolated helper process so a
 slow or faulty provider does not block the interface. Rapidly replaced clipboard
 contents may not be captured. Detail text previews show a bounded prefix.
 The library searches recent clips and saved snippets. History retention, Recently

@@ -135,6 +135,69 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
+    func testACopyThatCouldNotBeReadSaysWhyUntilALaterCopyIsKept() async throws {
+        let unreadable = "The last copy was not kept because Keeptide could not read the clipboard. Copy it again to retry."
+        try await withMonitor { monitor, reader, _, controller in
+            var unavailable = false
+            monitor.onUnavailable = { unavailable = true }
+            // The clipboard reader cannot run: the copy is not kept, and the monitor says why. It goes on watching.
+            reader.failure = .readerUnavailable
+            reader.changeCount = 1
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .interrupted(unreadable))
+            XCTAssertFalse(unavailable)
+            // Without a new copy, nothing is read again.
+            await monitor.poll()
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            // The next copy that is kept ends the reason.
+            reader.failure = nil
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
+    func testACopyLargerThan50MiBSaysWhyUntilALaterCopyIsKept() async throws {
+        try await withMonitor { monitor, reader, _, _ in
+            reader.failure = .payloadTooLarge(maximumBytes: CaptureWire.maximumPayloadBytes)
+            reader.changeCount = 1
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .interrupted("The last copy was not kept because it is larger than 50 MiB."))
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            reader.failure = nil
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .watching)
+        }
+    }
+
+    func testAPrivateEmptyOrChangingCopySaysNothing() async throws {
+        try await withMonitor { monitor, reader, _, controller in
+            // Copies Keeptide skips without a word: private ones, whether the reader or the capture policy finds them
+            // so, empty ones, and ones that changed while they were read.
+            let failures: [SnapshotReaderError] = [.privacyRestricted, .emptyPasteboard,
+                                                   .changedDuringRead(expected: 3, actual: 4)]
+            for (index, failure) in failures.enumerated() {
+                reader.failure = failure
+                reader.changeCount = index + 1
+                await monitor.poll()
+                XCTAssertEqual(monitor.state, .watching, "\(failure)")
+            }
+            reader.failure = nil
+            reader.typeIdentifier = CapturePolicy.concealedType
+            reader.changeCount = 4
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 4)
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertTrue(rows.isEmpty)
+        }
+    }
+
     func testOnlyAKeptCopyEndsTheReason() async throws {
         try await withMonitor { monitor, reader, preferences, _ in
             reader.failure = .permissionDenied
@@ -396,6 +459,7 @@ private final class FakeReader: SnapshotReading {
     var failure: SnapshotReaderError?
     var failureAfterRead: SnapshotReaderError?
     var advanceCountOnRead = false
+    var typeIdentifier = "public.utf8-plain-text"
     var body = Data("synthetic".utf8)
     var suspendedReadStarted: XCTestExpectation?
     private var continuation: CheckedContinuation<Void, Never>?
@@ -423,7 +487,7 @@ private final class FakeReader: SnapshotReading {
         if let unexpectedFailure { throw unexpectedFailure }
         if let failure { throw failure }
         return CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: [
-            CapturedRepresentation(typeIdentifier: "public.utf8-plain-text", bytes: body)
+            CapturedRepresentation(typeIdentifier: typeIdentifier, bytes: body)
         ])], changeCount: changeCount, sourceApp: sourceApp)
     }
 }
