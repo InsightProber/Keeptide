@@ -29,8 +29,8 @@ struct OnboardingView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Label("Keeptide saves what you copy so you can find and reuse it.", systemImage: "doc.on.clipboard")
-                Label("Apps you ignore and private content, such as passwords, are never saved.",
-                      systemImage: "eye.slash")
+                Label("Keeptide skips apps you ignore and content that apps mark as private, such as passwords "
+                      + "from a password manager.", systemImage: "eye.slash")
                 Label("Keeptide does not request Accessibility or cloud access here.", systemImage: "hand.raised")
             }
             .fixedSize(horizontal: false, vertical: true)

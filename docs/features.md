@@ -95,7 +95,7 @@ and performance. They are not first-release promises.
 
 The native Settings window groups appearance, keyboard shortcuts, privacy, and
 cloud availability. Keeptide saves new copies from first launch; the welcome
-says what it saves and what it never saves, and there is no switch to turn it
-off. Shortcut changes preserve the last working registration if a new choice
+says what it saves and what it skips, and there is no switch to turn it off.
+Shortcut changes preserve the last working registration if a new choice
 fails. Login-item controls reflect the operating system status. iCloud is
 explicitly unavailable in the current build.

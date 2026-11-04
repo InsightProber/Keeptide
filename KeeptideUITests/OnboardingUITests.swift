@@ -11,7 +11,8 @@ final class OnboardingUITests: XCTestCase {
         XCTAssertFalse(app.buttons["OnboardingStartRecording"].exists)
         XCTAssertFalse(app.buttons["OnboardingNotNow"].exists)
         for explanation in ["Keeptide saves what you copy so you can find and reuse it.",
-                            "Apps you ignore and private content, such as passwords, are never saved."] {
+                            "Keeptide skips apps you ignore and content that apps mark as private, such as passwords "
+                                + "from a password manager."] {
             XCTAssertTrue(app.staticTexts.matching(NSPredicate(
                 format: "label CONTAINS %@ OR value CONTAINS %@", explanation, explanation
             )).firstMatch.exists, app.debugDescription)

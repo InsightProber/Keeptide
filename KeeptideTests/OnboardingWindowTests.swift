@@ -57,13 +57,14 @@ final class OnboardingWindowTests: XCTestCase {
         let content = try XCTUnwrap(window.contentView)
         content.layoutSubtreeIfNeeded()
         let saves = "Keeptide saves what you copy so you can find and reuse it."
-        let skips = "Apps you ignore and private content, such as passwords, are never saved."
+        let skips = "Keeptide skips apps you ignore and content that apps mark as private, such as passwords from a "
+            + "password manager."
         let elements = try swiftUIAccessibilityElements(in: content) { elements in
             elements.contains { self.text(of: $0)?.contains(saves) == true }
         }
         let described = elements.map { "\(self.role(of: $0) ?? "?") \(self.text(of: $0) ?? "")" }
 
-        // It says what Keeptide saves and what it never does. There is nothing to start, pause or resume, and it never
+        // It says what Keeptide saves and what it skips. There is nothing to start, pause or resume, and it never
         // speaks of recording.
         XCTAssertTrue(elements.contains { self.text(of: $0)?.contains(saves) == true }, "\(described)")
         XCTAssertTrue(elements.contains { self.text(of: $0)?.contains(skips) == true }, "\(described)")
