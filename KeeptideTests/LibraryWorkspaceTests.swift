@@ -667,7 +667,7 @@ final class LibraryWorkspaceTests: XCTestCase {
             ContentStoreFixtures.ref(trashed, trashedCapture), ContentStoreFixtures.ref(last, lastCapture),
         ]
 
-        let outcome = await workspace.saveHistory(refs)
+        let outcome = await workspace.saveCheckedHistory(refs)
 
         XCTAssertEqual(outcome.saved.map(\.itemID), [first.id])
         XCTAssertEqual(outcome.saved.map(\.facet), [.memo])
@@ -681,6 +681,48 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertFalse(workspace.canUndoNewSave)
         XCTAssertNil(workspace.editor)
         XCTAssertEqual(workspace.entries.first { $0.id == first.id }?.isMemo, true)
+    }
+
+    func testBatchSaveRefusesAClipWhoseSnippetIsInRecentlyDeleted() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (fine, fineCapture) = try await insertHistory("fine", into: harness)
+        let (trashed, trashedCapture) = try await insertHistory("its snippet is in recently deleted", into: harness)
+        let trashedMemo = try await LibraryService(controller: harness.controller).saveAsMemo(trashed.id).ref
+        let identity = try await harness.controller.identity()
+        _ = try await LifecycleService(controller: harness.controller).remove(
+            ref: trashedMemo, at: Date(), expecting: identity,
+            permit: StoreSafetyGate(controller: harness.controller).permit(.maintenance)
+        )
+        let workspace = try await makeWorkspace(harness)
+        let refs = [ContentStoreFixtures.ref(fine, fineCapture), ContentStoreFixtures.ref(trashed, trashedCapture)]
+
+        let outcome = await workspace.saveHistory(refs)
+
+        XCTAssertTrue(outcome.saved.isEmpty)
+        XCTAssertEqual(outcome.failure?.ref, refs[1])
+        XCTAssertEqual(outcome.failure?.error as? LibraryWorkspaceError, .snippetInRecentlyDeleted)
+        let untouched = try await storedItem(fine.id, in: harness)
+        XCTAssertNil(untouched.memoID)
+    }
+
+    func testSavingHistoryKeepsTheLoadedPagesAndTheSelection() async throws {
+        let harness = try SearchHarness.make(in: self)
+        try await harness.insertTextItems(count: 105, prefix: "clip")
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.loadMore()
+        XCTAssertEqual(workspace.entries.count, 105)
+        let beyondTheFirstPage = try XCTUnwrap(workspace.entries.last)
+        await workspace.select(beyondTheFirstPage.id)
+        XCTAssertEqual(workspace.selectedEntryID, beyondTheFirstPage.id)
+
+        _ = try await workspace.saveSelectedHistory()
+
+        XCTAssertEqual(workspace.entries.count, 105)
+        XCTAssertEqual(workspace.selectedEntryID, beyondTheFirstPage.id)
+        XCTAssertEqual(workspace.entries.last?.id, beyondTheFirstPage.id)
+        XCTAssertEqual(workspace.entries.last?.isMemo, true)
+        XCTAssertEqual(workspace.editor?.ref?.facet, .memo)
     }
 
     func testBatchSaveRefusesAnUnavailableClipBeforeSavingAnything() async throws {

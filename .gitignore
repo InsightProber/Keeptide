@@ -8,6 +8,7 @@
 /docs/qa/
 
 # Machine-specific agent state. Shared AGENTS.md and CLAUDE.md stay tracked.
+/.omc/
 /.omx/
 /.claude/
 /.codex/

@@ -30,7 +30,8 @@ enum SearchError: Error, Equatable {
 /// How an empty query lists its rows; a query ranks by relevance instead.
 enum SearchOrder: String, Sendable {
     case lastCopied
-    /// The last local use, or the copy time for a row never used.
+    /// The last local use, or the copy time for a row never used. Meant for memo scopes; a history browse keeps the
+    /// indexed copy-time order, which the usage join cannot use.
     case lastUsed
 }
 
