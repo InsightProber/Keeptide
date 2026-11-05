@@ -52,7 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return .standard
         }()
-        let capturePreferences = CapturePreferences(defaults: preferencesDefaults)
+        let (onboardingPreferences, capturePreferences) = Self.launchPreferences(in: preferencesDefaults)
         let captureSession = CaptureSession(preferences: capturePreferences, directPaste: .live)
         let shortcutCoordinator = GlobalShortcutCoordinator(
             preferences: GlobalShortcutPreferences(defaults: preferencesDefaults),
@@ -71,7 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             quickAccessPreferences: QuickAccessPreferences(defaults: preferencesDefaults),
             shortcutCoordinator: shortcutCoordinator,
             launchAtLogin: launchAtLogin,
-            onboardingPreferences: OnboardingPreferences(defaults: preferencesDefaults)
+            onboardingPreferences: onboardingPreferences
         )
         self.environment = environment
 
@@ -117,6 +117,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The welcome's preferences and capture's, from the defaults this launch uses. The welcome looks for what an
+    /// earlier version stored, its recording switch among it, before the launch removes the switch, which nothing reads
+    /// any more: Keeptide keeps new copies whenever it runs.
+    static func launchPreferences(in defaults: UserDefaults)
+        -> (onboarding: OnboardingPreferences, capture: CapturePreferences) {
+        let onboarding = OnboardingPreferences(defaults: defaults)
+        defaults.removeObject(forKey: OnboardingPreferences.retiredRecordingSwitchKey)
+        return (onboarding, CapturePreferences(defaults: defaults))
+    }
+
     /// The status menu, wired to `environment`'s panel, windows and capture session.
     static func makeMenuBarController(environment: AppEnvironment, launchConfiguration: LaunchConfiguration,
                                       canRequestQuit: @escaping () -> Bool) -> MenuBarController {
@@ -126,12 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showLibrary: { environment.showLibrary() },
             showSettings: { environment.showSettings() },
             showWelcome: { environment.showOnboarding() },
-            captureIsReady: { environment.captureSession.canToggleRecording },
-            captureIsEnabled: { environment.captureSession.isRecording },
-            captureStatus: { environment.captureSession.status },
-            toggleCapture: {
-                environment.captureSession.preferences.isEnabled.toggle()
-            },
+            captureNotice: { environment.captureSession.captureNotice },
             canRequestQuit: canRequestQuit,
             shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
             shortcutCoordinator: environment.shortcutCoordinator

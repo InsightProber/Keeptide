@@ -18,9 +18,11 @@ The repository contains an early native foundation: the `Keeptide` application,
 unit and UI test targets, a separate `KeeptideSystemTestHost`, and a shared Xcode
 scheme. The storage foundation includes two local Core Data stores, typed
 transactions, content validation, consistent snapshots, and persistent change
-consumption. Local capture includes explicit recording, privacy filters, exact
-deduplication, recent clips, and original-format copy-back. A rebuildable local
-full-text index consumes persistent history, and the quick-access panel is a
+consumption. Local capture saves new copies whenever Keeptide is open, with no
+pause switch: ignored applications and privacy filters decide what is skipped,
+and it includes exact deduplication, recent clips, and original-format
+copy-back. A rebuildable local full-text index consumes
+persistent history, and the quick-access panel is a
 centered band of large clip cards (small, medium or large, with trackpad ticks
 and a minimal Settings window) that browses recent clips, searches all content,
 previews text and images, and copies the selected item. Clips copied or pasted
@@ -141,6 +143,9 @@ Planned capabilities must stay labelled until implemented and verified.
   service-level latency evidence does not establish UI presentation latency.
 - Run `python3 -m unittest discover -s scripts/tests -v` when changing the
   verification script. These checks do not substitute for native XCTest.
+- Package an ad-hoc Release DMG with `python3 scripts/package_dmg.py --version VERSION --build-number NUMBER --output NEW_DIRECTORY`.
+  The workflow tests disk-image integrity and mounted app signatures; this does
+  not establish Developer ID or notarization readiness.
 - Test behavior and failure boundaries. For meaningful changes, run focused
   tests first, then the relevant integration/build checks. Do not add tests that
   merely mirror formatting or implementation details.

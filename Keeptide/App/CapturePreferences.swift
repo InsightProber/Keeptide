@@ -1,18 +1,13 @@
 import Foundation
 import Observation
 
+/// What Keeptide skips of what is copied: the apps whose copies it never keeps. It keeps every other new copy whenever
+/// it runs, and has no switch for that.
 @MainActor @Observable
 final class CapturePreferences {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored var onChange: (() -> Void)?
 
-    var isEnabled: Bool {
-        didSet {
-            guard oldValue != isEnabled else { return }
-            defaults.set(isEnabled, forKey: "captureEnabled")
-            onChange?()
-        }
-    }
     var excludedApplications: [String] {
         didSet {
             guard oldValue != excludedApplications else { return }
@@ -23,7 +18,6 @@ final class CapturePreferences {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        isEnabled = defaults.bool(forKey: "captureEnabled")
         excludedApplications = Array(Set((defaults.stringArray(forKey: "captureExcludedApplications") ?? []).map(Self.normalized))).sorted()
     }
 

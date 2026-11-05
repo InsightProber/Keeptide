@@ -217,4 +217,56 @@ final class CleanupIntentStoreTests: XCTestCase {
             throw error
         }
     }
+
+    func testBlockedIntentQueryFindsOnlyThisGenerationsBlockedIntents() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CleanupIntentBlockedTests-" + UUID().uuidString, isDirectory: true)
+        let controller = try PersistenceController(directory: directory)
+        do {
+            let identity = try await controller.identity()
+            let pendingID = UUID()
+            try await controller.perform { context in
+                // A completed and a pending intent of this generation, and a blocked one of another.
+                let rows: [(UUID, UUID, CleanupIntentPhase)] = [
+                    (UUID(), identity.generation, .completed),
+                    (pendingID, identity.generation, .prepared),
+                    (UUID(), UUID(), .blocked),
+                ]
+                for (id, generation, phase) in rows {
+                    let row = NSEntityDescription.insertNewObject(forEntityName: "CleanupIntent", into: context)
+                    row.setValue(id, forKey: "id")
+                    row.setValue(CleanupIntentStore.schemaVersion, forKey: "schemaVersion")
+                    row.setValue(identity.storeID, forKey: "storeID")
+                    row.setValue(generation, forKey: "generation")
+                    row.setValue(phase.rawValue, forKey: "phase")
+                    row.setValue(Data("synthetic".utf8), forKey: "payload")
+                    row.setValue(Date(timeIntervalSince1970: 1), forKey: "createdAt")
+                    row.setValue(Date(timeIntervalSince1970: 1), forKey: "updatedAt")
+                }
+                try context.save()
+                context.reset()
+            }
+            let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+            let store = CleanupIntentStore(controller: controller)
+            let before = try await store.hasBlockedIntent(expecting: identity, permit: permit)
+            XCTAssertFalse(before)
+
+            try await store.block(pendingID, expecting: identity, permit: permit, at: Date(timeIntervalSince1970: 2))
+            let after = try await store.hasBlockedIntent(expecting: identity, permit: permit)
+            XCTAssertTrue(after)
+            do {
+                let other = StoreIdentity(storeID: identity.storeID, generation: UUID())
+                _ = try await store.hasBlockedIntent(expecting: other, permit: permit)
+                XCTFail("Another generation's blocked intents were read")
+            } catch {
+                XCTAssertEqual(error as? StoreError, .preconditionFailed)
+            }
+            try await controller.close()
+            try FileManager.default.removeItem(at: directory)
+        } catch {
+            try? await controller.close()
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+    }
 }

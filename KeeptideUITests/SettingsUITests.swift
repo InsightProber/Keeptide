@@ -9,7 +9,7 @@ final class SettingsUITests: XCTestCase {
 
         // The form can be taller than the bounded window on a small display.
         XCTAssertTrue(app.scrollViews["GeneralSettingsPage"].waitForExistence(timeout: 3))
-        for title in ["General", "Shortcuts", "Recording & Privacy", "iCloud"] {
+        for title in ["General", "Shortcuts", "Privacy", "iCloud"] {
             XCTAssertTrue(app.tabs[title].exists, "Missing settings page \(title)")
         }
         app.tabs["iCloud"].click()
@@ -32,14 +32,14 @@ final class SettingsUITests: XCTestCase {
         XCTAssertFalse(app.switches["iCloud"].exists)
     }
 
-    func testRecordingPageUsesTheRealCapturePreferenceAndExplainsSnippetRetention() {
+    func testPrivacyPageManagesIgnoredAppsWithNoSwitchAndExplainsSnippetRetention() {
         let (app, sessionID) = launchSettings()
         defer { removeTestSession(sessionID, app: app) }
         XCTAssertTrue(app.windows["KeeptideSettingsWindow"].waitForExistence(timeout: 8))
-        app.tabs["Recording & Privacy"].click()
+        app.tabs["Privacy"].click()
 
-        XCTAssertTrue(app.switches["CaptureEnabledToggle"].waitForExistence(timeout: 3))
-        XCTAssertTrue(app.staticTexts["SavedSnippetRetentionExplanation"].exists)
+        XCTAssertTrue(app.staticTexts["SavedSnippetRetentionExplanation"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.switches["CaptureEnabledToggle"].exists)
         let manage = app.buttons["ManageIgnoredApplicationsButton"]
         XCTAssertTrue(manage.exists)
         manage.click()

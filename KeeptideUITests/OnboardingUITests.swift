@@ -2,54 +2,60 @@ import XCTest
 
 @MainActor
 final class OnboardingUITests: XCTestCase {
-    func testWelcomeMakesRecordingAnExplicitChoiceWithoutPermissionPrompts() {
+    func testWelcomeSaysWhatKeeptideSavesWithoutPermissionPrompts() {
         let (app, sessionID) = launchWelcome()
         defer { removeTestSession(sessionID, app: app) }
         XCTAssertTrue(app.windows["KeeptideOnboardingWindow"].waitForExistence(timeout: 8))
-        XCTAssertTrue(app.buttons["OnboardingStartRecording"].exists)
-        XCTAssertTrue(app.buttons["OnboardingNotNow"].exists)
         XCTAssertTrue(app.buttons["OnboardingOpenLibrary"].exists)
-        let recordingExplanation = "Recording starts only after you choose Start Recording."
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(
-            format: "label CONTAINS %@ OR value CONTAINS %@", recordingExplanation, recordingExplanation
-        )).firstMatch.exists)
+        XCTAssertTrue(app.buttons["OnboardingDone"].exists)
+        XCTAssertFalse(app.buttons["OnboardingStartRecording"].exists)
+        XCTAssertFalse(app.buttons["OnboardingNotNow"].exists)
+        for explanation in ["Keeptide saves what you copy so you can find and reuse it.",
+                            "Keeptide skips apps you ignore and content that apps mark as private, such as passwords "
+                                + "from a password manager."] {
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(
+                format: "label CONTAINS %@ OR value CONTAINS %@", explanation, explanation
+            )).firstMatch.exists, app.debugDescription)
+        }
         XCTAssertFalse(app.buttons["Allow Accessibility"].exists)
         XCTAssertFalse(app.buttons["Enable iCloud"].exists)
     }
 
-    func testNotNowClosesWelcomeWithoutStartingRecording() {
+    func testDoneClosesWelcomeWithoutOpeningTheLibrary() {
         let (app, sessionID) = launchWelcome()
         defer { removeTestSession(sessionID, app: app) }
         let window = app.windows["KeeptideOnboardingWindow"]
         XCTAssertTrue(window.waitForExistence(timeout: 8))
-        app.buttons["OnboardingNotNow"].click()
+        app.buttons["OnboardingDone"].click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 3))
+        XCTAssertFalse(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 2), app.debugDescription)
     }
 
-    func testStartRecordingClosesWelcomeAndEnablesTheIsolatedMonitor() {
+    func testEscapeClosesWelcomeAsDoneDoes() {
         let (app, sessionID) = launchWelcome()
         defer { removeTestSession(sessionID, app: app) }
         let window = app.windows["KeeptideOnboardingWindow"]
         XCTAssertTrue(window.waitForExistence(timeout: 8))
-        app.buttons["OnboardingStartRecording"].click()
+        window.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
         XCTAssertTrue(window.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 8))
-        let toggle = app.buttons["CaptureRecordingToggle"]
-        expectation(for: NSPredicate(format: "label == %@", "Pause Recording"), evaluatedWith: toggle)
-        waitForExpectations(timeout: 8)
+        XCTAssertFalse(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 2), app.debugDescription)
     }
 
-    func testOpenLibraryClosesWelcomeWithoutEnablingRecording() {
+    func testOpenLibraryClosesWelcomeAndOpensTheLibraryWithNothingToTurnOn() {
         let (app, sessionID) = launchWelcome()
         defer { removeTestSession(sessionID, app: app) }
         let window = app.windows["KeeptideOnboardingWindow"]
         XCTAssertTrue(window.waitForExistence(timeout: 8))
         app.buttons["OnboardingOpenLibrary"].click()
         XCTAssertTrue(window.waitForNonExistence(timeout: 3))
-        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 8))
-        let toggle = app.buttons["CaptureRecordingToggle"]
-        expectation(for: NSPredicate(format: "label == %@", "Start Recording"), evaluatedWith: toggle)
+        let library = app.windows["KeeptideLibraryWindow"]
+        XCTAssertTrue(library.waitForExistence(timeout: 8))
+        // Once the isolated library is open, there is no switch for new copies.
+        let initialized = library.buttons["NewSnippet"]
+        XCTAssertTrue(initialized.waitForExistence(timeout: 8), app.debugDescription)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: initialized)
         waitForExpectations(timeout: 8)
+        XCTAssertFalse(app.buttons["CaptureRecordingToggle"].exists, app.debugDescription)
     }
 
     private func launchWelcome() -> (XCUIApplication, UUID) {

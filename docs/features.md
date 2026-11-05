@@ -1,9 +1,11 @@
 # Feature scope
 
 The table below describes the planned first release. Development builds
-currently include local recording, explicit start/pause controls, ignored
-applications, exact capture deduplication, a recent-clips list, original-format
-and plain-text copying, and a quick-access panel. The panel shows clips as a
+currently save new copies whenever Keeptide is open, with no pause switch, while
+ignored applications and privacy filters decide what is skipped. They include
+exact capture deduplication, a recent-clips list, original-format and plain-text
+copying, and a quick-access panel that says why when new copies cannot be saved.
+The panel shows clips as a
 row of large cards in a wide band, in small, medium or large sizes as set in a
 minimal Settings window, which also sets how much larger the selected card is
 drawn and whether the band's ends fade where more cards continue. The panel
@@ -16,6 +18,11 @@ folds into an icon at the band's left end until you type, filters by type,
 previews text and images, and can paste the selected clip directly into the app
 window it was opened from. The native library supports editable snippets;
 iCloud saving remains planned. There is no application release yet.
+
+Space opens a preview over the stationary quick-access band, with a brief zoom
+that respects Reduce Motion. Its close button, a click on the exposed band, or
+Escape dismisses the preview while preserving the current search and selection.
+Escape continues through the existing search layers before closing quick access.
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
@@ -52,7 +59,7 @@ planned.
 | Recovery | Recently deleted content, clear storage errors and protection against partial writes |
 | iCloud | Background saving of portable content and recovery after reinstalling |
 | Export | Readable text/Markdown and a content archive with a verifiable manifest |
-| Privacy controls | Explicit recording, pause/resume, ignored applications and local handling of file permissions |
+| Privacy controls | Ignored applications and privacy filters decide what is skipped, with no pause switch; a visible notice while new copies cannot be saved; local handling of file permissions |
 | Accessibility | Keyboard access, native text composition, VoiceOver and system appearance preferences |
 
 ## Product boundaries
@@ -63,7 +70,8 @@ planned.
 - iCloud mirrors current data, including deletions. It does not provide an
   unlimited version history or guarantee immediate delivery of offline changes.
 - Permanent retention avoids automatic age, count or capacity eviction. If the
-  disk cannot safely accept new content, recording must pause visibly.
+  disk cannot safely accept new content, new copies are not saved, and Keeptide
+  says so until there is room.
 - Saved commands are content. Reusing them must not automatically execute them.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
@@ -85,8 +93,9 @@ and performance. They are not first-release promises.
 
 ## Application preferences and welcome
 
-The native Settings window groups appearance, keyboard shortcuts, recording and
-privacy, and cloud availability. Recording requires an explicit choice; the
-Library remains usable without recording. Shortcut changes preserve the last
-working registration if a new choice fails. Login-item controls reflect the
-operating system status. iCloud is explicitly unavailable in the current build.
+The native Settings window groups appearance, keyboard shortcuts, privacy, and
+cloud availability. Keeptide saves new copies from first launch; the welcome
+says what it saves and what it skips, and there is no switch to turn it off.
+Shortcut changes preserve the last working registration if a new choice
+fails. Login-item controls reflect the operating system status. iCloud is
+explicitly unavailable in the current build.

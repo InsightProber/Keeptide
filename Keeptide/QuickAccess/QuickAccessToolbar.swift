@@ -2,7 +2,8 @@ import AppKit
 
 /// The band's top row. At the left end, the search, folded to a round icon until it is wanted, and the filters; at the
 /// right end what Return does, with why it only copies when the user can do something about it, or in its place what
-/// the panel has to say, and the ⋯ menu; between them, while the index rebuilds, that results may be incomplete.
+/// the panel has to say, and the ⋯ menu; between them, why new copies are not kept, or while the index rebuilds, that
+/// results may be incomplete.
 /// The search field is in the row all the time and keeps the keys while it is folded, its caret hidden with it, so
 /// the first key typed goes straight into it, an input method's composition included.
 @MainActor
@@ -26,7 +27,7 @@ final class QuickAccessToolbar: NSView {
     /// Between the search and the filters.
     static let searchGap: CGFloat = 12
     /// The right end keeps this far from the row's edge, and its parts this far from each other and from the filters.
-    /// The rebuild notice keeps the same gap from the filters and the first visible part of the right end.
+    /// The notice after the filters keeps the same gap from them and from the first visible part of the right end.
     static let trailingInset: CGFloat = 16
     static let trailingGap: CGFloat = 12
     /// The search starts this far from the row's left edge, whatever the right end says.
@@ -47,6 +48,8 @@ final class QuickAccessToolbar: NSView {
     let moreButton = QuickAccessMoreButton()
     /// The rebuild notice after the filters, in a status's type.
     let indexNoticeLabel = NSTextField(labelWithString: QuickAccessStatus.rebuilding)
+    /// Why new copies are not kept, in the rebuild notice's place and type.
+    let captureNoticeLabel = NSTextField(labelWithString: "")
     var note = Note.none {
         didSet { if note != oldValue { showNote() } }
     }
@@ -57,6 +60,16 @@ final class QuickAccessToolbar: NSView {
     }
     var indexNotice: IndexNotice? {
         didSet { if indexNotice != oldValue { needsLayout = true } }
+    }
+    /// Why new copies are not kept, as when the system denies Keeptide the clipboard, or nil while they are. It shows
+    /// over clips and without them, where the empty state's "Copy something" would not hold, and the rebuild notice
+    /// gives way to it.
+    var captureNotice: String? {
+        didSet {
+            guard captureNotice != oldValue else { return }
+            captureNoticeLabel.stringValue = captureNotice ?? ""
+            needsLayout = true
+        }
     }
     /// Whether the search field has the keys. The open search is ringed then.
     var showsSearchFocus = false {
@@ -77,21 +90,24 @@ final class QuickAccessToolbar: NSView {
         super.init(frame: .zero)
         // Layers let the search grow and shrink, and the filters and notice move with it, as one animation.
         wantsLayer = true
-        for label in [statusLabel, indexNoticeLabel, directPasteHint] {
+        for label in [statusLabel, indexNoticeLabel, captureNoticeLabel, directPasteHint] {
             label.font = .systemFont(ofSize: 13)
             label.lineBreakMode = .byTruncatingTail
             label.maximumNumberOfLines = 1
             label.isHidden = true
         }
-        indexNoticeLabel.wantsLayer = true
-        indexNoticeLabel.textColor = ToolbarPalette.secondary
+        for notice in [indexNoticeLabel, captureNoticeLabel] {
+            notice.wantsLayer = true
+            notice.textColor = ToolbarPalette.secondary
+        }
         indexNoticeLabel.setAccessibilityIdentifier("QuickAccessIndexNotice")
+        captureNoticeLabel.setAccessibilityIdentifier("QuickAccessCaptureNotice")
         directPasteHint.textColor = ToolbarPalette.secondary
         directPasteHint.setAccessibilityIdentifier("QuickAccessDirectPasteHint")
         copyHint.isHidden = true
         focusHalo.isHidden = true
-        for view in [focusHalo, indexNoticeLabel, search, filters, directPasteHint, copyHint, statusLabel,
-                     moreButton] as [NSView] {
+        for view in [focusHalo, indexNoticeLabel, captureNoticeLabel, search, filters, directPasteHint, copyHint,
+                     statusLabel, moreButton] as [NSView] {
             addSubview(view)
         }
     }
@@ -99,11 +115,11 @@ final class QuickAccessToolbar: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Folds or unfolds the search. The views take their new places at once, and on screen the pill grows out of the
-    /// circle while the filters and rebuild notice move over to make room, in a fifth of a second. Off screen, as
-    /// when the panel opens again, and with Reduce Motion it all switches at once.
+    /// circle while the filters and the notice after them move over to make room, in a fifth of a second. Off screen,
+    /// as when the panel opens again, and with Reduce Motion it all switches at once.
     func setSearchExpanded(_ expanded: Bool) {
         guard expanded != search.isExpanded else { return }
-        let moving = [search, focusHalo, filters, indexNoticeLabel] + search.subviews
+        let moving = [search, focusHalo, filters, indexNoticeLabel, captureNoticeLabel] + search.subviews
         let before = moving.map { ($0.layer, $0.layer?.position, $0.layer?.bounds, $0.layer?.opacity) }
         search.isExpanded = expanded
         updateHalo()
@@ -126,8 +142,8 @@ final class QuickAccessToolbar: NSView {
         layer.add(animation, forKey: "fold \(keyPath)")
     }
 
-    /// The search and filters start at the left inset. The right end is laid out from the edge in, and the rebuild
-    /// notice takes the room between them.
+    /// The search and filters start at the left inset. The right end is laid out from the edge in, and the notice
+    /// after the filters takes the room between them.
     override func layout() {
         super.layout()
         let row = rowFrame
@@ -146,18 +162,27 @@ final class QuickAccessToolbar: NSView {
         moreButton.frame = moreFrame
         layoutNote(endingAt: end, room: end - (filtersFrame.maxX + Self.trailingGap))
         let firstRight = [directPasteHint, copyHint, statusLabel].filter { !$0.isHidden }.map { $0.frame.minX }.min()
-        layoutIndexNotice(endingBefore: firstRight.map { $0 - Self.trailingGap } ?? end)
+        layoutNotice(endingBefore: firstRight.map { $0 - Self.trailingGap } ?? end)
     }
 
-    /// The rebuild notice starts `trailingGap` after the filters and ends by `end`, before the first visible part of
-    /// the right end: it takes only the room left once the right end has what it needs.
+    /// The notice after the filters: why new copies are not kept, or else, over clips, that the index rebuilds. It
+    /// starts `trailingGap` after the filters and ends by `end`, before the first visible part of the right end: it
+    /// takes only the room left once the right end has what it needs.
     /// Short of that room it is cut short with an ellipsis, its whole text in its help tag; below `shortestStatus` it is
     /// left out. VoiceOver reads its whole text either way.
-    private func layoutIndexNotice(endingBefore end: CGFloat) {
-        let label = indexNoticeLabel
-        label.isHidden = true
-        label.toolTip = nil
-        guard hasClips, indexNotice == .rebuilding else { return }
+    private func layoutNotice(endingBefore end: CGFloat) {
+        for notice in [captureNoticeLabel, indexNoticeLabel] {
+            notice.isHidden = true
+            notice.toolTip = nil
+        }
+        let label: NSTextField
+        if captureNotice != nil {
+            label = captureNoticeLabel
+        } else if hasClips, indexNotice == .rebuilding {
+            label = indexNoticeLabel
+        } else {
+            return
+        }
         let start = filters.frame.maxX + Self.trailingGap
         let full = Self.fullWidth(of: label)
         let width = min(full, end - start)

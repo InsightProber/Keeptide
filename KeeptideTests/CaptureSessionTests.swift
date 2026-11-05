@@ -23,7 +23,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(try reopened.metadata()?.state, .ready)
     }
 
-    func testSearchIndexFailureDoesNotPreventRecording() async throws {
+    func testSearchIndexFailureDoesNotPreventCapture() async throws {
         let configuration = try makeIsolatedSession()
         try FileManager.default.createDirectory(at: configuration.directory, withIntermediateDirectories: true)
         try Data("not a directory".utf8).write(to: configuration.directory.appendingPathComponent("Search"))
@@ -195,8 +195,9 @@ final class CaptureSessionTests: XCTestCase {
     func testChoosingALibraryOpensNothingAndATestSessionWinsOverQA() throws {
         let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
         var lookups = 0
+        // As outside a test process, where the user's library may be chosen.
         func choose(_ testSessionID: UUID?, manualPasteQA: Bool) throws -> CaptureLibrary? {
-            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
+            try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA, isRunningTests: false,
                                       userLibrary: { lookups += 1; return userLibrary }())
         }
         let id = UUID()
@@ -237,6 +238,25 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertEqual(lookups, 1)
     }
 
+    func testATestProcessNeverChoosesTheUsersLibrary() throws {
+        let userLibrary = URL(fileURLWithPath: "/synthetic/Application Support/Keeptide/Library", isDirectory: true)
+        var lookups = 0
+
+        // XCTest runs in this process, as in the app that hosts the unit tests: the user's library, which records the
+        // general clipboard, is not chosen, nor even looked up, so nothing opens.
+        XCTAssertNil(try CaptureLibrary.choose(testSessionID: nil, manualPasteQA: false,
+                                               userLibrary: { lookups += 1; return userLibrary }()))
+        XCTAssertNil(try CaptureLibrary.choose(testSessionID: nil, manualPasteQA: false, isRunningTests: true,
+                                               userLibrary: { lookups += 1; return userLibrary }()))
+        XCTAssertEqual(lookups, 0)
+        // A UI test session's library, which records only the session's named clipboard, is chosen as ever.
+        let id = UUID()
+        let library = try XCTUnwrap(CaptureLibrary.choose(testSessionID: id, manualPasteQA: false,
+                                                          isRunningTests: true, userLibrary: userLibrary))
+        guard case .test(let chosen) = library else { return XCTFail("Chose \(library)") }
+        XCTAssertEqual(chosen.id, id)
+    }
+
     #if DEBUG
     func testTheQALibraryIsNeverTheUsersLibrary() throws {
         // Only the path: nothing in it is opened or read.
@@ -250,7 +270,31 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertFalse(library.directory.path.hasPrefix(userLibrary.deletingLastPathComponent().path))
     }
 
-    func testTheManualPasteQASessionSaysSoInTheMenuAndCannotRecord() async throws {
+    func testTheManualPasteQASessionSaysItKeepsNoCopies() async throws {
+        let qa = ManualPasteQASession(id: UUID())
+        addTeardownBlock { qa.remove() }
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        let suiteName = "CaptureSessionTests.qaCapture.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+        let clipboard = SessionClipboard()
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), pasteboard: board,
+                                     clipboardReader: clipboard)
+        await session.open(manualPasteQA: qa)
+
+        // It keeps no copies, and says so wherever Keeptide says why, so that it is never taken for the user's own.
+        XCTAssertTrue(session.isReady)
+        XCTAssertEqual(session.captureNotice, "Manual paste QA — new copies are not kept")
+        // A copy made while it is open is never even read, over a few rounds of sampling: only its six clips are there.
+        clipboard.changeCount += 1
+        try await Task.sleep(for: .milliseconds(800))
+        XCTAssertEqual(clipboard.readsStarted, 0)
+        XCTAssertEqual(session.recent.count, 6)
+        await session.shutdown()
+    }
+
+    func testTheManualPasteQASessionSaysSoInTheMenuAndKeepsNoCopies() async throws {
         let qa = ManualPasteQASession(id: UUID())
         addTeardownBlock { qa.remove() }
         // Opened as the QA library directly, never chosen from launch flags, on a clipboard of the test's own: the QA
@@ -260,8 +304,8 @@ final class CaptureSessionTests: XCTestCase {
         let session = CaptureSession(pasteboard: board)
         await session.open(manualPasteQA: qa)
         let configuration = try makeIsolatedSession()
-        let recording = CaptureSession()
-        await recording.initialize(testSessionID: configuration.id)
+        let keeping = CaptureSession()
+        await keeping.initialize(testSessionID: configuration.id)
 
         // The status menu as the app builds it, as it opens.
         let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
@@ -277,17 +321,17 @@ final class CaptureSessionTests: XCTestCase {
             try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == identifier })
         }
         let qaMenu = try openedMenu(for: session)
-        let recordingMenu = try openedMenu(for: recording)
+        let keepingMenu = try openedMenu(for: keeping)
 
-        // Only the six harmless clips, and the menu says this is the QA session, which cannot record.
+        // Only the six harmless clips, and the menu says this is the QA session, which keeps no copies.
         XCTAssertTrue(session.isReady)
         XCTAssertEqual(session.recent.count, 6)
-        XCTAssertEqual(try item("CaptureStatusMenuItem", in: qaMenu).title, "Manual paste QA — not recording")
-        XCTAssertFalse(try item("CaptureRecordingToggleMenuItem", in: qaMenu).isEnabled)
-        XCTAssertFalse(session.isRecording)
-        // A session that records can still start and pause, and keeps its own status.
-        XCTAssertTrue(try item("CaptureRecordingToggleMenuItem", in: recordingMenu).isEnabled)
-        XCTAssertNotEqual(try item("CaptureStatusMenuItem", in: recordingMenu).title, "Manual paste QA — not recording")
+        let qaNotice = try item("CaptureStatusMenuItem", in: qaMenu)
+        XCTAssertEqual(qaNotice.title, "Manual paste QA — new copies are not kept")
+        XCTAssertFalse(qaNotice.isHidden)
+        XCTAssertFalse(qaNotice.isEnabled)
+        // A session that keeps new copies says nothing about them.
+        XCTAssertTrue(try item("CaptureStatusMenuItem", in: keepingMenu).isHidden)
         // The QA session copies to the clipboard it was given, the test's own.
         let before = board.changeCount
         let newest = try XCTUnwrap(session.recent.first?.history)
@@ -296,7 +340,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNotNil(board.string(forType: .string))
 
         await session.shutdown()
-        await recording.shutdown()
+        await keeping.shutdown()
         XCTAssertFalse(FileManager.default.fileExists(atPath: qa.directory.path))
     }
 
@@ -320,7 +364,7 @@ final class CaptureSessionTests: XCTestCase {
             try FileManager.default.createDirectory(at: session.directory, withIntermediateDirectories: true)
             let marker = session.directory.appendingPathComponent("marker")
             XCTAssertTrue(FileManager.default.createFile(atPath: marker.path, contents: Data("qa".utf8)))
-            sessionDefaults.set(true, forKey: "captureEnabled")
+            sessionDefaults.set(["com.example.marker"], forKey: "captureExcludedApplications")
         }
 
         qa.remove()
@@ -329,7 +373,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertTrue(defaults.persistentDomain(forName: qa.preferencesSuite)?.isEmpty ?? true)
         // Another session's library and preferences stay.
         XCTAssertTrue(FileManager.default.fileExists(atPath: other.directory.appendingPathComponent("marker").path))
-        XCTAssertTrue(otherDefaults.bool(forKey: "captureEnabled"))
+        XCTAssertEqual(otherDefaults.stringArray(forKey: "captureExcludedApplications"), ["com.example.marker"])
     }
 
     #endif
@@ -353,10 +397,10 @@ final class CaptureSessionTests: XCTestCase {
         return try XCTUnwrap(last)
     }
 
-    func testMissingLocalStateKeepsEnabledTestSessionInRecoveryAndNotRecording() async throws {
+    func testMissingLocalStateKeepsATestSessionInRecoveryAndSaysWhy() async throws {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
-        defaults.set(true, forKey: "captureEnabled")
+        defaults.set(["com.example.marker"], forKey: "captureExcludedApplications")
         addTeardownBlock {
             if FileManager.default.fileExists(atPath: configuration.directory.path) {
                 try FileManager.default.removeItem(at: configuration.directory)
@@ -377,26 +421,23 @@ final class CaptureSessionTests: XCTestCase {
         await session.initialize(testSessionID: configuration.id)
 
         XCTAssertFalse(session.isReady)
-        XCTAssertFalse(session.isRecording)
-        XCTAssertTrue(session.preferences.isEnabled)
-        XCTAssertEqual(session.status, "The library requires recovery before recording can resume.")
+        XCTAssertEqual(session.captureNotice, "The library requires recovery before it can keep new copies.")
 
         await session.shutdown()
         let cleanup = CaptureSession()
         await cleanup.initialize(testSessionID: configuration.id, cleanupTestSession: true)
-        XCTAssertEqual(cleanup.status, "Test session removed")
+        XCTAssertEqual(cleanup.captureNotice, "Test session removed")
         XCTAssertFalse(FileManager.default.fileExists(atPath: configuration.directory.path))
         XCTAssertTrue(defaults.persistentDomain(forName: configuration.preferencesSuite)?.isEmpty ?? true)
     }
 
-    func testCleanupInitializationRemovesOnlyItsSyntheticSessionAndDisablesRecording() async throws {
+    func testCleanupInitializationRemovesOnlyItsSyntheticSessionAndKeepsNoCopies() async throws {
         let target = CaptureTestConfiguration(id: UUID())
         let sibling = CaptureTestConfiguration(id: UUID())
         let targetDefaults = try XCTUnwrap(UserDefaults(suiteName: target.preferencesSuite))
         let siblingDefaults = try XCTUnwrap(UserDefaults(suiteName: sibling.preferencesSuite))
-        targetDefaults.set(true, forKey: "captureEnabled")
         targetDefaults.set(["com.example.target"], forKey: "captureExcludedApplications")
-        siblingDefaults.set(true, forKey: "captureEnabled")
+        siblingDefaults.set(["com.example.sibling"], forKey: "captureExcludedApplications")
         try FileManager.default.createDirectory(at: target.directory, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: sibling.directory, withIntermediateDirectories: true)
         let targetMarker = target.directory.appendingPathComponent("target-marker")
@@ -425,14 +466,147 @@ final class CaptureSessionTests: XCTestCase {
         let cleanup = CaptureSession()
         await cleanup.initialize(testSessionID: target.id, cleanupTestSession: true)
 
-        XCTAssertEqual(cleanup.status, "Test session removed")
+        XCTAssertEqual(cleanup.captureNotice, "Test session removed")
         XCTAssertFalse(cleanup.isReady)
-        XCTAssertFalse(cleanup.isRecording)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.directory.path))
         XCTAssertTrue(targetDefaults.persistentDomain(forName: target.preferencesSuite)?.isEmpty ?? true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: siblingMarker.path))
-        XCTAssertTrue(siblingDefaults.bool(forKey: "captureEnabled"))
+        XCTAssertEqual(siblingDefaults.stringArray(forKey: "captureExcludedApplications"), ["com.example.sibling"])
         XCTAssertEqual(siblingBoard.string(forType: .string), "sibling")
+    }
+
+    func testQuickAccessIsToldNothingWhileNewCopiesAreKept() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+
+        // Before the library opens there is nothing to say: Keeptide keeps new copies as it opens.
+        XCTAssertNil(session.captureNotice)
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isReady)
+        XCTAssertNil(session.captureNotice)
+        // A new copy is kept, and there is still nothing to say.
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+        XCTAssertNil(session.captureNotice)
+        await session.shutdown()
+        XCTAssertNil(session.captureNotice)
+    }
+
+    func testALibraryThatCannotOpenSaysWhy() async throws {
+        let configuration = try makeIsolatedSession()
+        // A file where the library's folder goes: the library cannot open, nor keep new copies.
+        try FileManager.default.createDirectory(at: configuration.directory.deletingLastPathComponent(),
+                                                withIntermediateDirectories: true)
+        XCTAssertTrue(FileManager.default.createFile(atPath: configuration.directory.path, contents: Data()))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults))
+        await session.initialize(testSessionID: configuration.id)
+
+        XCTAssertFalse(session.isReady)
+        XCTAssertEqual(session.captureNotice, "The local library could not be opened.")
+    }
+
+    func testALibraryThatStopsWorkingSaysWhyUntilKeeptideReopens() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isReady)
+
+        // A copy fails in a way the monitor takes for the library's: the library is unavailable until Keeptide
+        // reopens, and the session says why.
+        clipboard.failure = LibraryStoppedWorking()
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { !session.isReady }
+        let reason = "The local library is unavailable. Reopen Keeptide to retry."
+        XCTAssertEqual(session.captureNotice, reason)
+        // Later copies are not even read, and the reason stays.
+        clipboard.failure = nil
+        clipboard.changeCount += 1
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertEqual(clipboard.readsStarted, 1)
+        XCTAssertEqual(session.captureNotice, reason)
+        await session.shutdown()
+    }
+
+    func testAClipboardTheSystemDeniesSaysWhyUntilANewCopyCanBeRead() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        clipboard.deniesAccess = true
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+
+        // A copy the system does not let Keeptide read: the session says why, and the library stays open.
+        clipboard.changeCount += 1
+        let reason = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        try await SearchTestSupport.waitUntil { session.captureNotice == reason }
+        XCTAssertTrue(session.isReady)
+        // Still denied, the next copy is tried, and the session still says why.
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { clipboard.readsStarted == 2 }
+        XCTAssertEqual(session.captureNotice, reason)
+        // Allowed meanwhile, the next copy is kept without anything turned back on, and there is nothing to say.
+        clipboard.deniesAccess = false
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+        XCTAssertEqual(session.recent.first?.title, "Synthetic copy 3")
+        XCTAssertNil(session.captureNotice)
+        await session.shutdown()
+    }
+
+    func testAFullDiskSaysWhyClearsTheSearchCacheAndTriesEachNewCopy() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        clipboard.failure = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+
+        // A copy that finds the disk full: the session says why, and the rebuildable search cache is cleared.
+        clipboard.changeCount += 1
+        let reason = "Storage is full. Free some space to keep new copies."
+        try await SearchTestSupport.waitUntil { session.captureNotice == reason }
+        let index = configuration.directory.appendingPathComponent("Search/\(SQLiteSearchIndex.fileName)")
+        try await SearchTestSupport.waitUntil { !FileManager.default.fileExists(atPath: index.path) }
+        XCTAssertTrue(session.isReady)
+        // The next copy is tried as it comes, and still finds the disk full.
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { clipboard.readsStarted == 2 }
+        XCTAssertEqual(session.captureNotice, reason)
+        // Once there is room, the next copy is kept, and there is nothing to say.
+        clipboard.failure = nil
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+        XCTAssertNil(session.captureNotice)
+        await session.shutdown()
+    }
+
+    func testShuttingDownWhileACopyIsReadKeepsNothingAndSaysNothing() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+
+        // Keeptide quits while a copy is still being read: the shutdown waits for the read, which keeps nothing.
+        clipboard.holdsReads = true
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { clipboard.readsStarted == 1 }
+        var closed = false
+        let shutdown = Task { await session.shutdown(); closed = true }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(closed)
+        clipboard.finishHeldReads()
+        await shutdown.value
+        XCTAssertNil(session.captureNotice)
+        let store = try PersistenceController(directory: configuration.directory)
+        let rows = try await ContentRepository(controller: store).recent(limit: 10)
+        try await store.close()
+        XCTAssertTrue(rows.isEmpty)
     }
 
     func testSelectionFailurePublishesVisibleErrorAndStopsLoading() async throws {
@@ -574,6 +748,9 @@ private enum SelectionTestError: Error {
     case unavailable
 }
 
+/// An error the capture monitor knows nothing of, which it takes for the library's.
+private struct LibraryStoppedWorking: Error {}
+
 private actor SleepingSelectionRead {
     let started: XCTestExpectation
     let cancelled: XCTestExpectation
@@ -642,6 +819,36 @@ private actor DelayedCaptureRead {
     }
 
     func finish() { continuation?.resume(returning: content); continuation = nil }
+}
+
+/// The clipboard a session's monitor reads in place of its named pasteboard, where a copy is a change of count and
+/// holds the synthetic text "Synthetic copy <count>". It can refuse every read, as the system does when it denies
+/// Keeptide the clipboard, fail every read with `failure`, or hold reads until the test ends them. The panel's tests in
+/// `AppLaunchTests` use it too.
+@MainActor
+final class SessionClipboard: SnapshotReading {
+    var changeCount = 0
+    var deniesAccess = false
+    var failure: (any Error)?
+    var holdsReads = false
+    private(set) var readsStarted = 0
+    private var heldReads: [CheckedContinuation<Void, Never>] = []
+
+    func readAsynchronously(sourceApp: String?, expectedChangeCount: Int) async throws -> CaptureSnapshotValue {
+        readsStarted += 1
+        if deniesAccess { throw SnapshotReaderError.permissionDenied }
+        if let failure { throw failure }
+        if holdsReads { await withCheckedContinuation { heldReads.append($0) } }
+        let text = CapturedRepresentation(typeIdentifier: "public.utf8-plain-text",
+                                          bytes: Data("Synthetic copy \(expectedChangeCount)".utf8))
+        return CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: [text])],
+                                    changeCount: expectedChangeCount, sourceApp: sourceApp)
+    }
+
+    func finishHeldReads() {
+        heldReads.forEach { $0.resume() }
+        heldReads = []
+    }
 }
 
 @MainActor

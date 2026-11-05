@@ -7,25 +7,49 @@ import XCTest
 
 @MainActor
 final class SettingsTests: XCTestCase {
-    func testRecordingConsentIsDistinctFromActualAvailability() throws {
-        XCTAssertEqual(SettingsRecordingState.waitingForLibrary.message(consentEnabled: true),
-                       "Recording will start when the local library is ready.")
-        XCTAssertEqual(SettingsRecordingState.waitingForLibrary.message(consentEnabled: false),
-                       "Recording is off. The local library is opening.")
-        XCTAssertEqual(SettingsRecordingState.unavailable("The local library could not be opened.")
-            .message(consentEnabled: true), "The local library could not be opened.")
-        let preferences = CapturePreferences(defaults: try makeDefaults())
-        let session = CaptureSession(preferences: preferences)
-        preferences.isEnabled = true
-        XCTAssertFalse(session.isRecording)
-        XCTAssertEqual(session.settingsRecordingState, .waitingForLibrary)
-        XCTAssertTrue(session.canChangeRecordingConsent)
-    }
-
     func testSettingsTabsHaveTheProductOrder() {
         XCTAssertEqual(SettingsTab.allCases.map(\.title), [
-            "General", "Shortcuts", "Recording & Privacy", "iCloud",
+            "General", "Shortcuts", "Privacy", "iCloud",
         ])
+    }
+
+    func testThePrivacyPageManagesIgnoredAppsAndHasNoRecordingSwitch() throws {
+        let model = makeSettingsModel()
+        model.selectedTab = .privacy
+        let hosting = NSHostingView(rootView: SettingsView(model: model))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 500), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        var applicationRole: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        func identified(_ identifier: String) -> (NSObject) -> Bool {
+            { self.attribute(of: $0, "accessibilityIdentifier") as? String == identifier }
+        }
+        let built = waitUntil { accessibilityElements(in: hosting).contains(where: identified("ManageIgnoredApplicationsButton")) }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let elements = accessibilityElements(in: hosting)
+        let described = elements.map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+
+        // The ignored apps are managed here, and history and storage are set here as before.
+        XCTAssertTrue(built, "\(described)")
+        XCTAssertTrue(elements.contains(where: identified("LifecycleSettingsUnavailable")), "\(described)")
+        // There is no switch for new copies, no state of one, and nothing speaks of recording, the page's tab included.
+        for identifier in ["CaptureEnabledToggle", "RecordingAvailabilityStatus"] {
+            XCTAssertFalse(elements.contains(where: identified(identifier)), "\(identifier): \(described)")
+        }
+        XCTAssertFalse(elements.contains { element in
+            ["accessibilityLabel", "accessibilityValue", "accessibilityTitle", "accessibilityHelp"].contains {
+                (attribute(of: element, $0) as? String)?.localizedCaseInsensitiveContains("record") == true
+            }
+        }, "\(described)")
     }
 
     func testSettingsModelKeepsSharedReferencesAndCanReleaseAStoreScopedLifecycle() throws {
@@ -62,13 +86,13 @@ final class SettingsTests: XCTestCase {
         let model = makeSettingsModel()
         let controller = SettingsWindowController(model: model, setActivationPolicy: { _ in })
         defer { controller.close() }
-        model.selectedTab = .recordingAndPrivacy
+        model.selectedTab = .privacy
 
         controller.updateLifecycle(
             LifecycleSettingsModel(preferences: LifecyclePreferences(defaults: try makeDefaults()))
         )
 
-        XCTAssertEqual(model.selectedTab, .recordingAndPrivacy)
+        XCTAssertEqual(model.selectedTab, .privacy)
     }
 
     func testClosingSettingsDoesNotRestoreAccessoryWhileAnotherWindowNeedsTheDock() throws {

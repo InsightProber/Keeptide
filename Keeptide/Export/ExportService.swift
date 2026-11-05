@@ -136,7 +136,7 @@ struct ExportService: Exporting, Sendable {
             let manifest = ArchiveManifest(format: ArchiveManifest.currentFormat,
                 schemaVersion: ArchiveManifest.currentSchemaVersion, createdAt: createdAt,
                 source: ArchiveSource(token: .currentLocalSnapshot, label: ArchiveSourceKind.currentLocalSnapshot.publicLabel),
-                scope: scope, exportID: exportID, snapshotBoundarySHA256: Self.hex(opened.boundary),
+                scope: scope, exportID: exportID, snapshotBoundarySHA256: ArchiveManifest.hex(opened.boundary),
                 expectedEntryCount: ordinal, expectedRepresentationCount: representationsByID.count,
                 expectedPortablePayloadCount: payloadIDs.count, expectedReadableFileCount: readablePaths.count,
                 containsFileReferencesRequiringRelocation: containsRelocation, readme: readme, entries: entries,
@@ -189,7 +189,7 @@ private extension ExportService {
                 archiveRepresentations.append(ArchiveRepresentation(id: value.id, itemIndex: value.itemIndex,
                     representationIndex: value.representationIndex, typeIdentifier: value.typeIdentifier,
                     storage: .localReference, byteCount: 0, digestSHA256: nil,
-                    relocationTokenHex: Self.hex(value.digest), payloadPath: nil, readable: nil))
+                    relocationTokenHex: ArchiveManifest.hex(value.digest), payloadPath: nil, readable: nil))
                 continue
             }
             guard let bytes = value.bytes, Int64(bytes.count) == value.byteCount,
@@ -203,7 +203,7 @@ private extension ExportService {
             }
             archiveRepresentations.append(ArchiveRepresentation(id: value.id, itemIndex: value.itemIndex,
                 representationIndex: value.representationIndex, typeIdentifier: value.typeIdentifier,
-                storage: .portable, byteCount: value.byteCount, digestSHA256: Self.hex(value.digest),
+                storage: .portable, byteCount: value.byteCount, digestSHA256: ArchiveManifest.hex(value.digest),
                 relocationTokenHex: nil, payloadPath: payloadPath, readable: readableDigest))
         }
         let availability: ArchiveAvailability = values.contains { $0.storage == .localReference }
@@ -211,7 +211,7 @@ private extension ExportService {
         return ArchiveEntry(ordinal: ordinal, itemID: content.ref.itemID.rawValue,
             facet: content.ref.facet == .history ? .clipboardHistory : .memo,
             facetLabel: content.ref.facet == .history ? ArchiveFacetKind.clipboardHistory.publicLabel : ArchiveFacetKind.memo.publicLabel,
-            contentVersion: content.ref.version.rawValue, contentDigestSHA256: Self.hex(content.ref.digest),
+            contentVersion: content.ref.version.rawValue, contentDigestSHA256: ArchiveManifest.hex(content.ref.digest),
             origin: ownedMemo
                 ? ArchiveContentOrigin(
                     kind: memo?.bodyMode == .ownedMarkdown ? .ownedMarkdown : .ownedPlainText,
@@ -244,7 +244,8 @@ private extension ExportService {
                                           requestedRefCount: nil, selectedRefsSHA256: nil)
         case .selected:
             return ArchiveScopeDescriptor(kind: .selected, label: ArchiveScopeKind.selected.publicLabel,
-                                          requestedRefCount: exportedCount, selectedRefsSHA256: Self.hex(boundary))
+                                          requestedRefCount: exportedCount,
+                                          selectedRefsSHA256: ArchiveManifest.hex(boundary))
         }
     }
 
@@ -267,8 +268,6 @@ private extension ExportService {
         }
         return .unknown
     }
-
-    static func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
 
     static let readmeData = Data("""
     Keeptide Local Export

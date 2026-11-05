@@ -198,7 +198,7 @@ private extension ArchiveVerifier {
             guard readResult.file.byteCount == manifest.entries.byteCount,
                   readResult.file.sha256 == manifest.entries.sha256,
                   entryCount == manifest.expectedEntryCount,
-                  hex(boundaryHasher.finalize()) == manifest.snapshotBoundarySHA256 else {
+                  ArchiveManifest.hex(boundaryHasher.finalize()) == manifest.snapshotBoundarySHA256 else {
                 throw ArchiveVerificationError.integrityMismatch
             }
             verifiedFiles.append(readResult.file)
@@ -449,7 +449,7 @@ private extension ArchiveVerifier {
         }
         guard pending.isEmpty else { throw ArchiveVerificationError.malformedArchive }
         return EntryReadResult(
-            file: VerifiedFile(path: "entries.ndjson", byteCount: total, sha256: hex(hasher.finalize()))
+            file: VerifiedFile(path: "entries.ndjson", byteCount: total, sha256: ArchiveManifest.hex(hasher.finalize()))
         )
     }
 
@@ -467,7 +467,7 @@ private extension ArchiveVerifier {
             total = try adding(Int64(chunk.count), to: total)
             hasher.update(data: chunk)
         }
-        let digest = hex(hasher.finalize())
+        let digest = ArchiveManifest.hex(hasher.finalize())
         guard total == expectedByteCount, digest == expectedSHA256 else {
             throw ArchiveVerificationError.integrityMismatch
         }
@@ -631,11 +631,7 @@ private extension ArchiveVerifier {
         return sha256Hex(transcript)
     }
 
-    static func sha256Hex(_ data: Data) -> String { hex(SHA256.hash(data: data)) }
-
-    static func hex<D: Digest>(_ digest: D) -> String {
-        digest.map { String(format: "%02x", $0) }.joined()
-    }
+    static func sha256Hex(_ data: Data) -> String { ArchiveManifest.hex(SHA256.hash(data: data)) }
 
     static func isLowercaseSHA256(_ value: String) -> Bool {
         data(fromLowercaseSHA256: value) != nil

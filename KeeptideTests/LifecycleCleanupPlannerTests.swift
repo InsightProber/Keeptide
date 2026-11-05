@@ -622,6 +622,129 @@ final class LifecycleCleanupPlannerTests: XCTestCase {
         XCTAssertNil(page.next)
     }
 
+    func testMalformedRecentlyDeletedHistoryIsSkippedAndTheRestIsStillFound() async throws {
+        let store = try makeStore()
+        let identity = try await store.identity()
+        let gate = StoreSafetyGate(controller: store)
+        let badWindow = try await insertHistory("bad window", into: store)
+        let missingCapture = try await insertHistory("missing capture", into: store)
+        let valid = try await insertHistory("valid", into: store)
+        let validTarget = try await LifecycleService(controller: store).remove(
+            itemID: valid.item.id,
+            facet: .history,
+            at: now,
+            expecting: identity,
+            permit: try await gate.permit(.maintenance)
+        ).target
+        // Both bad rows fall due before the valid one, so a pass meets them first. One's window is not the seven days
+        // every deletion is given; the other's is, but its capture is gone.
+        let shortDeletedAt = now - day, shortPurgeAfter = now + day
+        try await overwriteRow("LibraryItem", id: badWindow.item.id.rawValue, in: store) { row in
+            row.setValue(false, forKey: "historyEligible")
+            row.setValue(shortDeletedAt, forKey: "historyDeletedAt")
+            row.setValue(shortPurgeAfter, forKey: "historyPurgeAfter")
+        }
+        let deletedAt = now - day, purgeAfter = now - day + DeletionWindow.duration
+        try await overwriteRow("LibraryItem", id: missingCapture.item.id.rawValue, in: store) { row in
+            row.setValue(false, forKey: "historyEligible")
+            row.setValue(deletedAt, forKey: "historyDeletedAt")
+            row.setValue(purgeAfter, forKey: "historyPurgeAfter")
+            row.setValue(UUID(), forKey: "captureID")
+        }
+        let badWindowBefore = try await itemValue(badWindow.item.id, in: store)
+        let missingCaptureBefore = try await itemValue(missingCapture.item.id, in: store)
+        let planner = LifecycleCleanupPlanner(controller: store)
+
+        let page = try await planner.candidates(
+            policy: .permanent,
+            at: now + DeletionWindow.duration,
+            expecting: identity,
+            permit: try await gate.permit(.maintenance)
+        )
+        XCTAssertEqual(page.candidates, [LifecycleCleanupCandidate(target: validTarget, trigger: .deletionWindowExpired)])
+        XCTAssertNil(page.next)
+
+        // A row at a time, the cursor passes each bad row and goes on to the valid one.
+        var paged: [LifecycleCleanupCandidate] = []
+        var cursor: LifecycleCleanupCandidateCursor?
+        var pages = 0
+        repeat {
+            let next = try await planner.candidates(
+                policy: .permanent,
+                at: now + DeletionWindow.duration,
+                expecting: identity,
+                permit: try await gate.permit(.maintenance),
+                after: cursor,
+                limit: 1
+            )
+            paged += next.candidates
+            cursor = next.next
+            pages += 1
+        } while cursor != nil && pages < 10
+        XCTAssertNil(cursor)
+        XCTAssertEqual(paged, page.candidates)
+
+        // The bad rows are left as they were: their items, and the capture that is still there.
+        let badWindowAfter = try await itemValue(badWindow.item.id, in: store)
+        let missingCaptureAfter = try await itemValue(missingCapture.item.id, in: store)
+        XCTAssertEqual(badWindowAfter, badWindowBefore)
+        XCTAssertEqual(missingCaptureAfter, missingCaptureBefore)
+        _ = try await ContentRepository(controller: store).recordState(.capture(badWindow.capture.id))
+    }
+
+    func testNaturallyExpiredHistoryWhoseCaptureIsGoneIsSkippedAndTheRestIsStillFound() async throws {
+        let store = try makeStore()
+        let identity = try await store.identity()
+        let gate = StoreSafetyGate(controller: store)
+        let missingCapture = try await insertHistory("missing capture", lastCopiedAt: now - 20 * day, into: store)
+        let valid = try await insertHistory("valid", lastCopiedAt: now - 10 * day, into: store)
+        _ = try await LifecycleService(controller: store).expireHistory(
+            policy: .days(1),
+            at: now,
+            expecting: identity,
+            permit: try await gate.permit(.maintenance)
+        )
+        // The older clip, which a pass meets first, no longer has its capture.
+        try await overwriteRow("LibraryItem", id: missingCapture.item.id.rawValue, in: store) { row in
+            row.setValue(UUID(), forKey: "captureID")
+        }
+        let before = try await itemValue(missingCapture.item.id, in: store)
+
+        let page = try await LifecycleCleanupPlanner(controller: store).candidates(
+            policy: .days(1),
+            at: now,
+            expecting: identity,
+            permit: try await gate.permit(.maintenance)
+        )
+        XCTAssertEqual(page.candidates, [LifecycleCleanupCandidate(
+            target: .history(itemID: valid.item.id, captureID: valid.capture.id),
+            trigger: .naturalExpiration(.days(1))
+        )])
+        let after = try await itemValue(missingCapture.item.id, in: store)
+        XCTAssertEqual(after, before)
+    }
+
+    func testDeletedMemoWithAMalformedWindowIsSkippedAndTheRestIsStillFound() async throws {
+        let store = try makeStore()
+        let bad = try await makeSoftDeletedMemo(in: store, text: "bad window")
+        let valid = try await makeSoftDeletedMemo(in: store, text: "valid")
+        // The bad memo falls due first, and its window is not the seven days every deletion is given.
+        let shortPurgeAfter = now + day
+        try await overwriteRow("MemoDocument", id: bad.memo.id, in: store) { row in
+            row.setValue(shortPurgeAfter, forKey: "purgeAfter")
+        }
+
+        let page = try await LifecycleCleanupPlanner(controller: store).candidates(
+            policy: .permanent,
+            at: now + DeletionWindow.duration,
+            expecting: valid.identity,
+            permit: try await StoreSafetyGate(controller: store).permit(.maintenance)
+        )
+        XCTAssertEqual(page.candidates, [LifecycleCleanupCandidate(target: valid.target, trigger: .deletionWindowExpired)])
+        _ = try await ContentRepository(controller: store).recordState(.memo(bad.memo.id))
+        _ = try await itemValue(bad.target.itemID, in: store)
+    }
+
     func testPreparedIntentFencesTargetChangesAndItemPurgeRequiresExplicitRequest() async throws {
         let store = try makeStore()
         let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("stale".utf8))]])
@@ -723,6 +846,35 @@ final class LifecycleCleanupPlannerTests: XCTestCase {
             identity: try await store.identity(),
             mutations: [.insert(.capture(capture)), .insert(.memo(memo)), .insert(.item(item))]
         ))
+    }
+
+    private func insertHistory(
+        _ text: String,
+        lastCopiedAt: Date? = nil,
+        into store: PersistenceController
+    ) async throws -> (item: ItemValue, capture: CaptureValue) {
+        let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(text.utf8))]])
+        var item = ContentStoreFixtures.item(capture)
+        if let lastCopiedAt { item.lastCopiedAt = lastCopiedAt }
+        try await ContentStoreFixtures.insert(item, capture, into: store)
+        return (item, capture)
+    }
+
+    /// Changes a row straight in Core Data, past the write coordinator's checks, as a damaged store or a faulty
+    /// earlier build might have left it.
+    private func overwriteRow(
+        _ entityName: String,
+        id: UUID,
+        in store: PersistenceController,
+        _ change: @escaping @Sendable (NSManagedObject) -> Void
+    ) async throws {
+        try await store.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: entityName)
+            request.predicate = NSPredicate(format: "id == %@", id as NSUUID)
+            let row = try XCTUnwrap(context.fetch(request).first)
+            change(row)
+            try context.save()
+        }
     }
 
     private func makeSoftDeletedMemo(

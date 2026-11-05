@@ -25,6 +25,9 @@ final class StagedArchiveWriter: @unchecked Sendable {
     private var createdFiles = ["entries.ndjson"]
     private var createdDirectories = Set<String>()
     private var directoryFDs: [String: Int32] = [:]
+    /// Set once the stage was renamed to the destination, under the lock. From then on the descriptors above reach the
+    /// published archive, so nothing may be unlinked through them.
+    private var isPublished = false
     private let lock = NSRecursiveLock()
     private let writeBytes: WriteBytes
 
@@ -132,7 +135,8 @@ final class StagedArchiveWriter: @unchecked Sendable {
                 try handle.close()
             }
         } catch { try? handle.close(); throw error }
-        return ArchiveFileDigest(path: relativePath, byteCount: Int64(data.count), sha256: Self.hex(hasher.finalize()))
+        return ArchiveFileDigest(path: relativePath, byteCount: Int64(data.count),
+                                 sha256: ArchiveManifest.hex(hasher.finalize()))
     }
 
     func finishEntries() throws -> ArchiveFileDigest {
@@ -143,7 +147,7 @@ final class StagedArchiveWriter: @unchecked Sendable {
         }
         entriesHandle = nil
         return ArchiveFileDigest(path: "entries.ndjson", byteCount: entriesBytes,
-                                 sha256: Self.hex(entriesHasher.finalize()))
+                                 sha256: ArchiveManifest.hex(entriesHasher.finalize()))
     }
 
     func writeManifest(_ manifest: ArchiveManifest) throws {
@@ -164,6 +168,7 @@ final class StagedArchiveWriter: @unchecked Sendable {
             default: throw StagedArchiveWriterError.ioFailure(errno)
             }
         }
+        isPublished = true
         _ = fsync(parentFD)
         return destinationURL
     }
@@ -179,6 +184,10 @@ final class StagedArchiveWriter: @unchecked Sendable {
     func cleanup() {
         lock.lock(); defer { lock.unlock() }
         try? entriesHandle?.close(); entriesHandle = nil
+        // The rename moved the directory `stageFD` and `directoryFDs` were opened on: they now name the published
+        // archive, and only the final rmdir below checks a path. Unlinking through them would empty the user's export,
+        // so after publication there is no stage left to clean.
+        guard !isPublished else { return }
         for path in createdFiles.reversed() {
             let components = path.split(separator: "/").map(String.init)
             if components.count == 2 {
@@ -268,9 +277,5 @@ final class StagedArchiveWriter: @unchecked Sendable {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         encoder.dateEncodingStrategy = .iso8601
         return encoder
-    }
-
-    static func hex<S: Sequence>(_ bytes: S) -> String where S.Element == UInt8 {
-        bytes.map { String(format: "%02x", $0) }.joined()
     }
 }

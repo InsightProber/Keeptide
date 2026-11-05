@@ -47,6 +47,9 @@ final class CaptureSession {
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
     /// What direct paste asks of the system. Every paste service this session makes uses it.
     @ObservationIgnored private let directPaste: DirectPasteSystem
+    /// A clipboard a test gives in place of the real one. Without it, the session reads the clipboard its library
+    /// records.
+    @ObservationIgnored private let clipboardReader: (any SnapshotReading)?
     /// An app-level preference object is injected before asynchronous store initialization so Settings, onboarding,
     /// and the monitor keep one identity. Legacy tests that do not inject one still adopt the selected test/QA suite.
     @ObservationIgnored private var keepsPreferenceIdentity: Bool
@@ -55,58 +58,37 @@ final class CaptureSession {
     @ObservationIgnored private var manualPasteQASession: ManualPasteQASession?
     #endif
 
-    var status: String {
+    /// Why new copies are not kept, while that is so, which quick access, the menu bar and the Library say; nil while
+    /// they are kept, and while the library is still opening, since Keeptide keeps them as it opens. The system may
+    /// deny Keeptide the clipboard, or the disk be full, until a new copy is kept; or the library could not open, or
+    /// stopped working, until Keeptide reopens.
+    var captureNotice: String? {
         #if DEBUG
-        // Wherever recording shows, so that the QA session is never taken for the user's own.
-        if manualPasteQASession != nil { return "Manual paste QA — not recording" }
+        // The QA session keeps no copies, and says so, so that it is never taken for the user's own.
+        if manualPasteQASession != nil { return "Manual paste QA — new copies are not kept" }
         #endif
-        return monitor?.status ?? message ?? "Not recording"
-    }
-    var isPausing: Bool { monitor?.isPausing ?? false }
-    var isRecording: Bool { isReady && (monitor?.isRecording ?? false) }
-    /// Whether recording can be started or paused now. The manual paste QA session never records.
-    var canToggleRecording: Bool {
-        #if DEBUG
-        if manualPasteQASession != nil { return false }
-        #endif
-        return isReady && !isPausing
-    }
-    var settingsRecordingState: SettingsRecordingState {
-        #if DEBUG
-        if manualPasteQASession != nil { return .unavailable("Manual paste QA does not record clipboard content.") }
-        #endif
-        if !isReady {
-            if let libraryInitializationError { return .unavailable(libraryInitializationError) }
-            if let message { return .unavailable(message) }
-            return .waitingForLibrary
+        switch monitor?.state {
+        case .interrupted(let reason)?, .failed(let reason)?: return reason
+        default: return isReady ? nil : message
         }
-        if isRecording { return .recording }
-        if isPausing { return .pausing }
-        return preferences.isEnabled ? .unavailable(status) : .paused
-    }
-
-    /// A user may consent before storage finishes opening, but QA and a
-    /// pending pause must not present an actionable recording switch.
-    var canChangeRecordingConsent: Bool {
-        #if DEBUG
-        if manualPasteQASession != nil { return false }
-        #endif
-        return !isPausing
     }
 
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
 
-    /// `directPaste` stays `.unavailable` everywhere but in the app delegate: tests use a fake.
+    /// `directPaste` stays `.unavailable` everywhere but in the app delegate, and `clipboardReader` reads the real
+    /// clipboard everywhere but in tests: tests use fakes.
     init(preferences: CapturePreferences? = nil,
          readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil,
-         directPaste: DirectPasteSystem = .unavailable) {
+         directPaste: DirectPasteSystem = .unavailable,
+         clipboardReader: (any SnapshotReading)? = nil) {
         self.preferences = preferences ?? CapturePreferences()
         keepsPreferenceIdentity = preferences != nil
         self.readContent = readContent
         self.pasteboard = pasteboard
         self.directPaste = directPaste
+        self.clipboardReader = clipboardReader
         if let readContent, let pasteboard {
             pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in },
                                         didWrite: { _ in }, system: directPaste)
@@ -129,10 +111,11 @@ final class CaptureSession {
             library = try CaptureLibrary.choose(testSessionID: testSessionID, manualPasteQA: manualPasteQA,
                                                 userLibrary: CaptureLibrary.userLibraryDirectory())
         } catch {
-            message = "The local library could not be opened. Recording is unavailable."
+            message = "The local library could not be opened."
             return
         }
-        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens.
+        // A Release build asked for the manual paste QA session chooses nothing, and nothing opens; nor does a test
+        // process without a test session.
         guard let library else { return }
         await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips)
     }
@@ -190,7 +173,7 @@ final class CaptureSession {
             do { _ = try await StoreSafetyGate(controller: store).permit(.write) }
             catch {
                 try? await store.close()
-                message = "The library requires recovery before recording can resume."
+                message = "The library requires recovery before it can keep new copies."
                 return
             }
             let storeIdentity: StoreIdentity
@@ -214,11 +197,14 @@ final class CaptureSession {
             }
             readContent = read
             pasteboard = board
-            let monitor = library.recordsClipboard ? PasteboardMonitor(reader: SnapshotReader(pasteboard: board),
-                service: CaptureService(controller: store), preferences: preferences,
-                sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
-                matchesOwnWrite: { $0.matches(pasteboard: board) }) : nil
+            let monitor = library.recordsClipboard
+                ? PasteboardMonitor(reader: clipboardReader ?? SnapshotReader(pasteboard: board),
+                                    service: CaptureService(controller: store), preferences: preferences,
+                                    sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
+                                    matchesOwnWrite: { $0.matches(pasteboard: board) })
+                : nil
             monitor?.onCapture = { [weak self] in await self?.refresh() }
+            // Only reopening Keeptide brings the library back. Until then, the monitor says why it stopped.
             monitor?.onUnavailable = { [weak self] in self?.isReady = false }
             monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
             if let monitor {
@@ -274,11 +260,11 @@ final class CaptureSession {
             monitor?.start()
             onServicesChanged?()
         } catch {
-            message = "The local library could not be opened. Recording is unavailable."
+            message = "The local library could not be opened."
         }
     }
 
-    /// A search index failure leaves recording and the library usable; searches
+    /// A search index failure leaves capture and the library usable; searches
     /// then report the index as unavailable.
     private func startSearch(store: PersistenceController, directory: URL) async {
         let status = SearchIndexStatus()
@@ -300,6 +286,8 @@ final class CaptureSession {
 
     /// Keep primary stores and drafts intact. Search remains unavailable until
     /// restart rebuilds it, so a full disk cannot cause a rebuild/eviction loop.
+    /// The monitor asks as the disk fills, not for each copy that finds it
+    /// still full.
     private func recoverFromDiskPressure() async {
         guard let index = searchIndex else { return }
         let consumer = historyConsumer
@@ -313,7 +301,7 @@ final class CaptureSession {
             actionMessage = "Search cache cleared. Your content and drafts are preserved. Restart after freeing space to rebuild search."
         } catch {
             guard searchIndex === index else { return }
-            actionMessage = "Recording is paused. Your content and drafts are preserved; the search cache could not be cleared."
+            actionMessage = "Your content and drafts are preserved; the search cache could not be cleared."
         }
     }
 
@@ -442,8 +430,11 @@ enum CaptureLibrary {
 
     /// A test session wins over the manual paste QA session, which is chosen only when asked for. `userLibrary` is
     /// looked up only when neither is chosen. A Release build has no QA session: asked for one, it chooses nothing
-    /// (nil), so nothing opens; it never falls back to the user's library.
+    /// (nil), so nothing opens; it never falls back to the user's library. Nor does a test process ever choose the
+    /// user's library, which records the general clipboard: where XCTest runs, as in the app that hosts the unit
+    /// tests, it chooses nothing. A test of the choice itself says it is not one with `isRunningTests`.
     static func choose(testSessionID: UUID?, manualPasteQA: Bool,
+                       isRunningTests: Bool = LaunchConfiguration.isRunningTests(ProcessInfo.processInfo.environment),
                        userLibrary: @autoclosure () throws -> URL) rethrows -> CaptureLibrary? {
         if let testSessionID { return .test(CaptureTestConfiguration(id: testSessionID)) }
         if manualPasteQA {
@@ -453,6 +444,7 @@ enum CaptureLibrary {
             return nil
             #endif
         }
+        guard !isRunningTests else { return nil }
         return .user(directory: try userLibrary())
     }
 

@@ -3,8 +3,8 @@ import SwiftUI
 
 /// The quick access band, backed as the app switcher is: the system's material in a rounded rectangle with a hairline
 /// edge and a soft shadow. Along its top the toolbar, below it the strip of clips, which the band's rounded edge cuts
-/// off where it goes on beyond either end, with the strip's section icons below the cards; and a card above it: the
-/// preview while it is open, and in its place the review of a command that waits for one. The panel owns the
+/// off where it goes on beyond either end, with the strip's section icons below the cards. A browsing preview floats
+/// over the band; a command review stands above it. The panel owns the
 /// AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
@@ -44,14 +44,14 @@ struct QuickAccessBandView: View {
     private var selectedRow: QuickAccessRow? { state.selection.selectedRow }
 
     var body: some View {
-        VStack(spacing: layout.previewGap) {
+        ZStack(alignment: .bottom) {
+            band.padding(.bottom, layout.roomBelow)
             if let size = layout.previewSize {
-                // Over the band's shadow, which reaches up toward the card, and over the band itself on a low screen.
-                card.frame(width: size.width, height: size.height).zIndex(1)
+                card.frame(width: size.width, height: size.height)
+                    .offset(y: -(layout.roomBelow + StripLayout.bandHeight(metrics) + layout.previewGap))
+                    .zIndex(1)
             }
-            band
         }
-        .padding(.bottom, layout.roomBelow)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 
@@ -74,15 +74,11 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: metrics.bottomPadding)
                 .accessibilityHidden(true)
         }
-        .overlay(alignment: .topTrailing) {
-            saveStatus
-                .padding(.top, StripLayout.toolbarTop + QuickAccessToolbar.height + 4)
-                .padding(.trailing, 20)
-        }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
-            BandBackdrop(reducesTransparency: reduceTransparency, increasesContrast: contrast == .increased)
+            BandBackdrop(layout: layout, reducesTransparency: reduceTransparency,
+                         increasesContrast: contrast == .increased)
                 .padding(EdgeInsets(top: -StripLayout.shadowRoom.above, leading: -StripLayout.sideMargin,
                                     bottom: -StripLayout.shadowRoom.below, trailing: -StripLayout.sideMargin))
         }
@@ -93,25 +89,6 @@ struct QuickAccessBandView: View {
             HostedView(view: strip)
                 .frame(width: metrics.bandWidth, height: metrics.frameSize.height + 2 * ringRoom)
             if !hasFrames { emptyState }
-        }
-    }
-
-    @ViewBuilder
-    private var saveStatus: some View {
-        if let message = state.saveMessage {
-            HStack(spacing: 10) {
-                Text(message)
-                    .accessibilityIdentifier("QuickAccessSaveStatus")
-                if state.canUndoSave {
-                    Button("Undo") { Task { await state.undoSaveSelection() } }
-                        .buttonStyle(.borderless)
-                        .accessibilityIdentifier("QuickAccessUndoSave")
-                }
-            }
-            .font(.callout)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.regularMaterial, in: Capsule())
         }
     }
 
@@ -147,7 +124,8 @@ struct QuickAccessBandView: View {
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
             } else {
-                QuickAccessPreviewView(preview: state.preview,
+                QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
+                    QuickAccessPreviewView(preview: state.preview,
                                        applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
                                        onCommand: actions.previewCommand,
                                        fileAccessStore: state.fileAccessStore,
@@ -155,10 +133,54 @@ struct QuickAccessBandView: View {
                                        isLoadingOriginal: state.isLoadingOriginalPreview,
                                        previewMessage: state.previewMessage,
                                        onRequestOriginal: state.loadOriginalPreview)
+                }
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
+    }
+}
+
+/// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target.
+private struct QuickAccessPreviewCard<Content: View>: View {
+    let onClose: () -> Void
+    @ViewBuilder let content: () -> Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .background(.quaternary, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close Preview")
+                .accessibilityIdentifier("CloseQuickAccessPreview")
+                .help("Close Preview (Esc)")
+                Text("Preview").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            content()
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
+                .allowsHitTesting(false)
+        }
+        .scaleEffect(appeared || reduceMotion ? 1 : 0.92)
+        .opacity(appeared || reduceMotion ? 1 : 0)
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { appeared = true }
+        }
     }
 }
 
@@ -171,12 +193,14 @@ private struct HostedView<Content: NSView>: NSViewRepresentable {
 
 /// Places the band's backdrop behind it, reaching into the room the panel leaves around the band for the shadow.
 private struct BandBackdrop: NSViewRepresentable {
+    let layout: QuickAccessBandView.Layout
     let reducesTransparency: Bool
     let increasesContrast: Bool
 
     func makeNSView(context: Context) -> QuickAccessBandBackdrop { QuickAccessBandBackdrop() }
 
     func updateNSView(_ backdrop: QuickAccessBandBackdrop, context: Context) {
+        backdrop.panelLayout = layout
         backdrop.reducesTransparency = reducesTransparency
         backdrop.increasesContrast = increasesContrast
     }
@@ -202,6 +226,26 @@ final class QuickAccessBandBackdrop: NSView {
         didSet { if increasesContrast != oldValue { restyle() } }
     }
     private var maskedSize = NSSize.zero
+    /// The shadow fades out over this much inside the window's edges. Its soft edge reaches farther than the room the
+    /// panel leaves it, 40 points above the band, 100 below and 32 beside it, and less on a low screen; cut short where
+    /// the window ends, it would show as a faint band with a hard edge.
+    static let shadowFade: CGFloat = 24
+    /// The part of the view the window shows, where the shadow is drawn to, as it was last drawn.
+    private(set) var drawnShadowArea = NSRect.zero
+    /// How the panel lays the band out. As the preview or a command's review opens and closes, the band moves in the
+    /// window and the window grows or shrinks around it, while the view keeps its size, so AppKit does not lay it out
+    /// again; the shadow is drawn again to end where the window now does.
+    var panelLayout: QuickAccessBandView.Layout? {
+        didSet { if panelLayout != oldValue { needsDisplay = true } }
+    }
+
+    /// The part of the view the window shows: all of it where the panel leaves the shadow its whole room, and less
+    /// where the edge of a low screen leaves the window short of it.
+    var shadowArea: NSRect {
+        guard let content = window?.contentView else { return bounds }
+        let shown = bounds.intersection(convert(content.bounds, from: content))
+        return shown.isEmpty ? bounds : shown
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -242,6 +286,29 @@ final class QuickAccessBandBackdrop: NSView {
             }
             needsDisplay = true
         }
+        // The window's edges may lie elsewhere in the view at its new size, and the shadow ends with them.
+        if shadowArea != drawnShadowArea { needsDisplay = true }
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if let window {
+            NotificationCenter.default.removeObserver(self, name: NSWindow.didResizeNotification, object: window)
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        needsDisplay = true
+        guard let window else { return }
+        NotificationCenter.default.addObserver(self, selector: #selector(windowDidResize),
+                                               name: NSWindow.didResizeNotification, object: window)
+    }
+
+    /// The window grows and shrinks around the band, which need not lay the view out again, and the shadow ends with
+    /// the window.
+    @objc private func windowDidResize(_ notification: Notification) {
+        if shadowArea != drawnShadowArea { needsDisplay = true }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -264,12 +331,17 @@ final class QuickAccessBandBackdrop: NSView {
     }
 
     /// The shadow: 30 pt down and 90 pt soft, black at 55 percent in dark mode; 80 pt soft and a faint blue-grey at 22
-    /// percent in light mode. It is drawn only outside the band, so none of it shows through the material.
+    /// percent in light mode. It is drawn only outside the band, so none of it shows through the material, and it fades
+    /// out over `shadowFade` inside the window's edges, so it never ends in a hard edge where the window does.
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let band = Self.outline(in: bandRect)
+        let area = shadowArea
+        drawnShadowArea = area
         context.saveGState()
         defer { context.restoreGState() }
+        context.beginTransparencyLayer(in: area, auxiliaryInfo: nil)
+        context.saveGState()
         context.addRect(bounds)
         context.addPath(band)
         context.clip(using: .evenOdd)
@@ -284,6 +356,31 @@ final class QuickAccessBandBackdrop: NSView {
         context.addPath(band)
         context.setFillColor(CGColor(gray: 0, alpha: 1))
         context.fillPath()
+        context.restoreGState()
+        Self.fadeEdges(of: area, in: context)
+        context.endTransparencyLayer()
+    }
+
+    /// Keeps what is drawn in `area` at full strength `shadowFade` in from its edges, and fades it to nothing at them:
+    /// one ramp across, one down, each keeping only as much of what lies under it as its own opacity.
+    private static func fadeEdges(of area: NSRect, in context: CGContext) {
+        guard area.width > 0, area.height > 0 else { return }
+        let gray = CGColorSpaceCreateDeviceGray()
+        func ramp(_ length: CGFloat) -> CGGradient? {
+            let inset = min(shadowFade, length / 2) / length
+            // Gray and opacity: none at the edges, all of it `inset` in from them.
+            return CGGradient(colorSpace: gray, colorComponents: [0, 0, 0, 1, 0, 1, 0, 0],
+                              locations: [0, inset, 1 - inset, 1], count: 4)
+        }
+        guard let across = ramp(area.width), let down = ramp(area.height) else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.setBlendMode(.destinationIn)
+        let beyond: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
+        context.drawLinearGradient(across, start: CGPoint(x: area.minX, y: area.midY),
+                                   end: CGPoint(x: area.maxX, y: area.midY), options: beyond)
+        context.drawLinearGradient(down, start: CGPoint(x: area.midX, y: area.minY),
+                                   end: CGPoint(x: area.midX, y: area.maxY), options: beyond)
     }
 }
 

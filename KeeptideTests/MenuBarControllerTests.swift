@@ -5,6 +5,26 @@ import XCTest
 
 @MainActor
 final class MenuBarControllerTests: XCTestCase {
+    func testMenuBarUsesBrandedTemplateImageWithNativeAccessibility() throws {
+        XCTAssertNotNil(NSImage(named: "KeeptideStatusTemplate"))
+        XCTAssertNotNil(NSImage(named: "BrandMark"))
+
+        let controller = MenuBarController(
+            showQuickAccess: {},
+            toggleQuickAccess: {},
+            showLibrary: {},
+            shouldRegisterHotKey: false
+        )
+        let button = try XCTUnwrap(controller.statusButton)
+        let image = try XCTUnwrap(button.image)
+
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertEqual(image.size, NSSize(width: 18, height: 18))
+        XCTAssertEqual(button.imagePosition, .imageOnly)
+        XCTAssertEqual(button.toolTip, "Keeptide")
+        XCTAssertEqual(button.accessibilityLabel(), "Keeptide")
+    }
+
     func testLegacySyntheticRegistrationInitializerRemainsSourceCompatible() {
         let controller = MenuBarController(
             showQuickAccess: {},
@@ -55,6 +75,43 @@ final class MenuBarControllerTests: XCTestCase {
 
         XCTAssertTrue(coordinator.apply(.commandOptionV))
         XCTAssertNil(controller.menu?.items.first { $0.identifier?.rawValue == "ShortcutFallback" })
+    }
+
+    func testTheMenuHasNoRecordingSwitch() throws {
+        let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
+                                           shouldRegisterHotKey: false)
+        let menu = try XCTUnwrap(controller.menu)
+        controller.menuWillOpen(menu)
+        let shown = menu.items.filter { !$0.isHidden && !$0.isSeparatorItem }.map(\.title)
+
+        // Nothing starts, pauses or resumes new copies, and nothing speaks of recording.
+        XCTAssertNil(menu.items.first { $0.identifier?.rawValue == "CaptureRecordingToggleMenuItem" })
+        for word in ["record", "pause", "resume"] {
+            XCTAssertFalse(shown.contains { $0.localizedCaseInsensitiveContains(word) }, "\(word): \(shown)")
+        }
+    }
+
+    func testTheMenuSaysWhyNewCopiesAreNotKeptOnALineThatCannotBeChosen() throws {
+        var notice: String?
+        let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
+                                           captureNotice: { notice }, shouldRegisterHotKey: false)
+        let menu = try XCTUnwrap(controller.menu)
+        let line = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "CaptureStatusMenuItem" })
+
+        // While new copies are kept, there is no such line.
+        controller.menuWillOpen(menu)
+        XCTAssertTrue(line.isHidden)
+        // While they are not, the line says why as the menu opens, and cannot be chosen.
+        notice = "Storage is full. Free some space to keep new copies."
+        controller.menuWillOpen(menu)
+        XCTAssertFalse(line.isHidden)
+        XCTAssertEqual(line.title, "Storage is full. Free some space to keep new copies.")
+        XCTAssertFalse(line.isEnabled)
+        XCTAssertNil(line.action)
+        // Kept again, the line goes.
+        notice = nil
+        controller.menuWillOpen(menu)
+        XCTAssertTrue(line.isHidden)
     }
 
     func testQuitMenuRequestsTerminationOnlyOnceWhileShutdownIsPending() throws {

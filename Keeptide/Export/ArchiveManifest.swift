@@ -157,6 +157,15 @@ struct ArchiveManifest: Codable, Equatable, Sendable {
     var verifierSchemaVersion: Int
 }
 
+extension ArchiveManifest {
+    /// Bytes as the archive spells them: two lowercase hexadecimal digits a byte. Every digest and token the manifest
+    /// and the entries record is spelled this way, and the verifier compares what it computes in the same spelling,
+    /// so the writer, the export and the verifier all spell bytes here. Changing it changes the archive format.
+    static func hex<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
+        bytes.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 struct ArchiveVerification: Equatable, Sendable {
     let entryCount: Int
     let representationCount: Int

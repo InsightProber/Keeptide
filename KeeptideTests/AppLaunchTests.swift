@@ -10,28 +10,88 @@ final class AppLaunchTests: XCTestCase {
     /// A panel a test set up in a task of its own, for the test to look at once the task is done.
     private var panelUnderTest: PanelController?
 
-    func testCaptureMenuDoesNotEnableRecordingBeforeItsStoreIsReady() throws {
-        var toggled = false
-        let controller = MenuBarController(showQuickAccess: {}, toggleQuickAccess: {}, showLibrary: {},
-            captureIsReady: { false }, toggleCapture: { toggled = true }, shouldRegisterHotKey: false)
-        let menu = try XCTUnwrap(controller.menu)
-        menu.update()
-        let item = try XCTUnwrap(menu.items.first { $0.identifier?.rawValue == "CaptureRecordingToggleMenuItem" })
-        XCTAssertFalse(item.isEnabled)
-        XCTAssertFalse(toggled)
-    }
     func testDefaultLibraryInitializerCreatesItsWindow() {
         XCTAssertNotNil(LibraryWindowController(session: CaptureSession()).window)
     }
 
-    func testCaptureStartsDisabled() {
-        let suiteName = "AppLaunchTests.captureStartsDisabled.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suiteName)!
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+    func testMakingCapturePreferencesWritesNothing() throws {
+        let suiteName = "AppLaunchTests.capturePreferences.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
 
-        let preferences = CapturePreferences(defaults: defaults)
+        _ = CapturePreferences(defaults: defaults)
 
-        XCTAssertFalse(preferences.isEnabled)
+        // The app that hosts the unit tests shares the user's own defaults, and a new install still gets its welcome.
+        XCTAssertTrue(defaults.persistentDomain(forName: suiteName)?.isEmpty ?? true)
+        XCTAssertTrue(OnboardingPreferences(defaults: defaults).snapshot().needsCurrentOnboarding)
+    }
+
+    func testALaunchKeepsNewCopiesWhateverSwitchAnEarlierVersionStored() async throws {
+        // Earlier versions stored a recording switch, on or off; a new install has none.
+        for stored in [false, true, nil] as [Bool?] {
+            let suiteName = "AppLaunchTests.retiredSwitch.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            if let stored { defaults.set(stored, forKey: "captureEnabled") }
+            let launched = AppDelegate.launchPreferences(in: defaults)
+            let configuration = CaptureTestConfiguration(id: UUID())
+            addTeardownBlock {
+                UserDefaults(suiteName: configuration.preferencesSuite)?
+                    .removePersistentDomain(forName: configuration.preferencesSuite)
+                try? FileManager.default.removeItem(at: configuration.directory)
+                NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
+            }
+            let clipboard = SessionClipboard()
+            let session = CaptureSession(preferences: launched.capture, clipboardReader: clipboard)
+            await session.initialize(testSessionID: configuration.id)
+
+            // The switch is gone, the next copy is kept, and there is nothing to say about it.
+            XCTAssertNil(defaults.object(forKey: "captureEnabled"), "stored: \(String(describing: stored))")
+            clipboard.changeCount += 1
+            try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+            XCTAssertEqual(session.recent.count, 1, "stored: \(String(describing: stored))")
+            XCTAssertNil(session.captureNotice, "stored: \(String(describing: stored))")
+            await session.shutdown()
+        }
+    }
+
+    func testALaunchLetsTheWelcomeLookForAnEarlierVersionBeforeRemovingItsSwitch() throws {
+        func suite(_ stored: [String: Any]) throws -> UserDefaults {
+            let suiteName = "AppLaunchTests.launchPreferences.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            for (key, value) in stored { defaults.set(value, forKey: key) }
+            return defaults
+        }
+
+        // A version from before the welcome stored only its recording switch, on or off: the welcome counts as seen,
+        // and the switch is gone once it has looked. What else was stored stays.
+        for stored in [false, true] {
+            let earlier = try suite(["captureEnabled": stored, "captureExcludedApplications": ["com.example.ignored"]])
+            let launched = AppDelegate.launchPreferences(in: earlier)
+            XCTAssertFalse(launched.onboarding.snapshot().needsCurrentOnboarding, "stored: \(stored)")
+            XCTAssertNil(earlier.object(forKey: "captureEnabled"), "stored: \(stored)")
+            XCTAssertEqual(launched.capture.excludedApplications, ["com.example.ignored"], "stored: \(stored)")
+            // The next launch takes the user for an earlier version's as well: the welcome is done.
+            XCTAssertFalse(AppDelegate.launchPreferences(in: earlier).onboarding.snapshot().needsCurrentOnboarding)
+        }
+        // A version whose welcome was done, paused: the welcome stays done, and the pause is gone.
+        let welcomed = try suite([OnboardingPreferences.completedVersionKey: 1, "captureEnabled": false])
+        XCTAssertFalse(AppDelegate.launchPreferences(in: welcomed).onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertNil(welcomed.object(forKey: "captureEnabled"))
+        // A new install: the welcome shows, and nothing is stored for a switch. Quit before the welcome is done, the
+        // next launch shows it again.
+        let fresh = try suite([:])
+        XCTAssertTrue(AppDelegate.launchPreferences(in: fresh).onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertNil(fresh.object(forKey: "captureEnabled"))
+        XCTAssertTrue(AppDelegate.launchPreferences(in: fresh).onboarding.snapshot().needsCurrentOnboarding)
+    }
+
+    func testTheAppThatHostsTheUnitTestsLaunchesOnPreferencesOfItsOwn() {
+        // The launch removes the retired switch from the preferences it uses. In the app that hosts the unit tests,
+        // which shares the user's, they are a throwaway suite.
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        XCTAssertTrue(LaunchConfiguration(arguments: [], environment: underXCTest).shouldUseEphemeralApplicationState)
     }
 
     func testDefaultEnvironmentUsesEphemeralPreferencesAndNoSystemLoginController() {
@@ -39,7 +99,6 @@ final class AppLaunchTests: XCTestCase {
 
         XCTAssertNotNil(environment.ephemeralPreferencesSuiteName)
         XCTAssertEqual(environment.settingsModel.launchAtLogin.state, .unavailable)
-        XCTAssertFalse(environment.captureSession.preferences.isEnabled)
     }
 
     func testEnvironmentUsesOneSettingsModelForCaptureShortcutAndLoginState() throws {
@@ -67,17 +126,19 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(environment.settingsModel.launchAtLogin === login)
     }
 
-    func testStartRecordingBeforeStoreInitializationSurvivesOpeningTheIsolatedStore() async throws {
+    func testDoneOnlyCompletesTheWelcomeAndTheIsolatedStoreOpensWithTheSamePreferences() async throws {
         let configuration = CaptureTestConfiguration(id: UUID())
         let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
         defaults.removePersistentDomain(forName: configuration.preferencesSuite)
         addTeardownBlock {
             defaults.removePersistentDomain(forName: configuration.preferencesSuite)
             try? FileManager.default.removeItem(at: configuration.directory)
+            NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
         }
         let capture = CapturePreferences(defaults: defaults)
         let session = CaptureSession(preferences: capture)
         let onboarding = OnboardingPreferences(defaults: defaults)
+        var libraryShows = 0
         let environment = AppEnvironment(
             captureSession: session,
             quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
@@ -87,20 +148,24 @@ final class AppLaunchTests: XCTestCase {
             ),
             launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
             onboardingPreferences: onboarding,
-            showLibrary: {}
+            showLibrary: { libraryShows += 1 }
         )
         XCTAssertNil(environment.settingsModel.lifecycle)
         XCTAssertFalse(environment.settingsModel.canExportLibrary)
         XCTAssertFalse(environment.canExportLibrary)
 
-        environment.onboardingActions.startRecording()
-        XCTAssertTrue(capture.isEnabled)
+        // Done only completes the welcome.
+        XCTAssertTrue(onboarding.snapshot().needsCurrentOnboarding)
+        environment.onboardingActions.done()
         XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding)
+        XCTAssertEqual(libraryShows, 0)
 
         await session.initialize(testSessionID: configuration.id)
 
+        // The store opens with the same preferences, ready, with nothing to say about new copies.
         XCTAssertTrue(session.preferences === capture)
-        XCTAssertTrue(session.preferences.isEnabled)
+        XCTAssertTrue(session.isReady)
+        XCTAssertNil(session.captureNotice)
         XCTAssertNotNil(environment.settingsModel.lifecycle)
         XCTAssertTrue(environment.settingsModel.canExportLibrary)
         XCTAssertTrue(environment.canExportLibrary)
@@ -109,30 +174,37 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(environment.settingsModel.canExportLibrary)
     }
 
-    func testSkippingOrClosingWelcomeCompletesItWithoutEnablingCapture() throws {
-        let suiteName = "AppLaunchTests.skipWelcome.\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
-        let capture = CapturePreferences(defaults: defaults)
-        let onboarding = OnboardingPreferences(defaults: defaults)
-        var libraryShows = 0
-        let environment = AppEnvironment(
-            captureSession: CaptureSession(preferences: capture),
-            quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
-            shortcutCoordinator: GlobalShortcutCoordinator(
-                preferences: GlobalShortcutPreferences(defaults: defaults),
-                shouldInstallHandler: false
-            ),
-            launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
-            onboardingPreferences: onboarding,
-            showLibrary: { libraryShows += 1 }
-        )
+    func testDoneAndOpenLibraryCompleteTheWelcome() throws {
+        for opensLibrary in [false, true] {
+            let suiteName = "AppLaunchTests.welcome.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+            addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
+            let onboarding = OnboardingPreferences(defaults: defaults)
+            var libraryShows = 0
+            let environment = AppEnvironment(
+                captureSession: CaptureSession(preferences: CapturePreferences(defaults: defaults)),
+                quickAccessPreferences: QuickAccessPreferences(defaults: defaults),
+                shortcutCoordinator: GlobalShortcutCoordinator(
+                    preferences: GlobalShortcutPreferences(defaults: defaults),
+                    shouldInstallHandler: false
+                ),
+                launchAtLogin: LaunchAtLoginModel(service: AppLaunchFakeLoginService()),
+                onboardingPreferences: onboarding,
+                showLibrary: { libraryShows += 1 }
+            )
+            let name = "Open Library: \(opensLibrary)"
+            XCTAssertTrue(onboarding.snapshot().needsCurrentOnboarding, name)
 
-        environment.onboardingActions.notNow()
+            if opensLibrary {
+                environment.onboardingActions.openLibrary()
+            } else {
+                environment.onboardingActions.done()
+            }
 
-        XCTAssertFalse(capture.isEnabled)
-        XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding)
-        XCTAssertEqual(libraryShows, 1)
+            XCTAssertFalse(onboarding.snapshot().needsCurrentOnboarding, name)
+            // Only Open Library opens the Library. Done, like closing the window, only completes the welcome.
+            XCTAssertEqual(libraryShows, opensLibrary ? 1 : 0, name)
+        }
     }
 
     func testApplicationActivationRefreshesTheExternalLoginItemStateWithoutRegistering() throws {
@@ -906,6 +978,217 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(panel.onOpenLibrary)
     }
 
+    func testQuickAccessSaysWhyNewCopiesAreNotKeptAndOffersNothingToTurnOn() async throws {
+        let clipboard = SessionClipboard()
+        let environment = try await makeCapturingEnvironment(clipboard: clipboard)
+        let controller = environment.panelController
+        var menus: [NSMenu] = []
+        controller.presentMoreMenu = { menu, _, _ in menus.append(menu) }
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        controller.show()
+        addTeardownBlock { controller.close() }
+        let toolbar = try await laidOutToolbar(in: try XCTUnwrap(controller.window))
+        let notice = toolbar.captureNoticeLabel
+        func moreMenu() throws -> [String] {
+            toolbar.moreButton.performClick(nil)
+            return try XCTUnwrap(menus.last).items.map { $0.isSeparatorItem ? "—" : $0.title }
+        }
+
+        // While new copies are kept, the toolbar says nothing about them, and ⋯ has nothing to turn on.
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertTrue(notice.isHidden)
+        XCTAssertEqual(try moreMenu(), ["Open Library", "Settings…"])
+
+        // With the panel open, a copy the system does not let Keeptide read: the panel follows on its own, the toolbar
+        // says why, VoiceOver hears it, whole, and ⋯ still has nothing to turn on.
+        clipboard.deniesAccess = true
+        clipboard.changeCount += 1
+        let reason = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return !notice.isHidden && notice.stringValue == reason
+        }
+        XCTAssertEqual(notice.accessibilityValue(), reason)
+        XCTAssertEqual(announced, [reason])
+        XCTAssertEqual(try moreMenu(), ["Open Library", "Settings…"])
+
+        // Allowed meanwhile, the next copy is kept, and the notice goes with nothing more to read.
+        clipboard.deniesAccess = false
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil {
+            toolbar.layoutSubtreeIfNeeded()
+            return notice.isHidden
+        }
+        XCTAssertEqual(environment.captureSession.recent.count, 1)
+        XCTAssertEqual(announced, [reason])
+        XCTAssertEqual(try moreMenu(), ["Open Library", "Settings…"])
+    }
+
+    func testTheLibraryHasNoRecordingSwitchAndSaysOnlyWhatStopsNewCopies() async throws {
+        let clipboard = SessionClipboard()
+        let environment = try await makeCapturingEnvironment(clipboard: clipboard)
+        let library = LibraryWindowController(session: environment.captureSession, autosaveName: nil,
+                                              setActivationPolicy: { _ in })
+        let content = try XCTUnwrap(library.window?.contentView)
+        addTeardownBlock { library.window?.close() }
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+
+        // Over the recent clips, while new copies are kept: no switch, and no line about them. The Ignored Apps button
+        // in the toolbar, outside this view, stays.
+        let ready = try swiftUIAccessibilityElements(in: content) { $0.contains(where: identified("RecentClipsEmptyState")) }
+        let described = ready.map { "\(self.identifier(of: $0) ?? "?") \(self.text(of: $0) ?? "")" }
+        for identifier in ["CaptureRecordingToggle", "IgnoredApplications", "CaptureStatus"] {
+            XCTAssertFalse(ready.contains(where: identified(identifier)), "\(identifier): \(described)")
+        }
+        XCTAssertFalse(ready.contains { self.text(of: $0)?.localizedCaseInsensitiveContains("record") == true },
+                       "\(described)")
+
+        // A copy the system does not let Keeptide read: one line says why.
+        clipboard.deniesAccess = true
+        clipboard.changeCount += 1
+        let reason = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        try await SearchTestSupport.waitUntil { environment.captureSession.captureNotice == reason }
+        let denied = try swiftUIAccessibilityElements(in: content) { elements in
+            elements.contains { identified("CaptureStatus")($0) && self.text(of: $0) == reason }
+        }
+        XCTAssertEqual(denied.filter(identified("CaptureStatus")).compactMap { text(of: $0) }, [reason])
+
+        // Allowed meanwhile, the next copy is kept, and the line goes.
+        clipboard.deniesAccess = false
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { environment.captureSession.recent.count == 1 }
+        let kept = try swiftUIAccessibilityElements(in: content) { !$0.contains(where: identified("CaptureStatus")) }
+        XCTAssertFalse(kept.contains(where: identified("CaptureStatus")))
+    }
+
+    func testTheLibrarySaysWhyOverEveryListButRecentlyDeleted() async throws {
+        let clipboard = SessionClipboard()
+        let environment = try await makeCapturingEnvironment(clipboard: clipboard)
+        let library = LibraryWindowController(session: environment.captureSession, autosaveName: nil,
+                                              setActivationPolicy: { _ in })
+        let content = try XCTUnwrap(library.window?.contentView)
+        addTeardownBlock { library.window?.close() }
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        /// What the lines identified as the capture status say, once `shown` holds for the elements on screen.
+        func notices(once shown: ([NSObject]) -> Bool) throws -> [String] {
+            try swiftUIAccessibilityElements(in: content, until: shown).filter(identified("CaptureStatus"))
+                .compactMap { text(of: $0) }
+        }
+        _ = try swiftUIAccessibilityElements(in: content) { $0.contains(where: identified("RecentClipsEmptyState")) }
+
+        // A copy the system does not let Keeptide read.
+        clipboard.deniesAccess = true
+        clipboard.changeCount += 1
+        let reason = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        try await SearchTestSupport.waitUntil { environment.captureSession.captureNotice == reason }
+
+        // Over All Snippets, as over the recent clips, one line says why.
+        try selectLibraryList("All Snippets", in: content)
+        XCTAssertEqual(try notices {
+            $0.contains(where: identified("SnippetsEmptyState")) && $0.contains(where: identified("CaptureStatus"))
+        }, [reason])
+        // Recently Deleted, which new copies never reach, says nothing about them.
+        try selectLibraryList("Recently Deleted", in: content)
+        XCTAssertEqual(try notices { $0.contains(where: identified("RefreshRecentlyDeleted")) }, [])
+        // Back over the recent clips, the line is there again.
+        try selectLibraryList("Recent Clips", in: content)
+        XCTAssertEqual(try notices {
+            $0.contains(where: identified("RecentClipsEmptyState")) && $0.contains(where: identified("CaptureStatus"))
+        }, [reason])
+    }
+
+    func testTheMenuBarHasNoRecordingSwitchAndSaysOnlyWhatStopsNewCopies() async throws {
+        let clipboard = SessionClipboard()
+        let environment = try await makeCapturingEnvironment(clipboard: clipboard)
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+        let bar = AppDelegate.makeMenuBarController(
+            environment: environment, launchConfiguration: LaunchConfiguration(arguments: [], environment: underXCTest),
+            canRequestQuit: { true }
+        )
+        let menu = try XCTUnwrap(bar.menu)
+        /// The menu as it opens: each item's title, with "hidden" for an item it does not show.
+        func opened() -> [String] {
+            bar.menuWillOpen(menu)
+            return menu.items.map { $0.isSeparatorItem ? "—" : $0.isHidden ? "hidden" : $0.title }
+        }
+        let notice = { menu.items.first { $0.identifier?.rawValue == "CaptureStatusMenuItem" } }
+
+        // While new copies are kept, the menu has no switch and says nothing about them.
+        func items(saying line: String) -> [String] {
+            ["Open Quick Access", "Open Library", "Settings…", "Show Welcome", "—", line,
+             "iCloud: Not available in this build", "—",
+             "Global shortcut disabled for this test run — open Quick Access here", "—", "Quit Keeptide"]
+        }
+        let kept = items(saying: "hidden")
+        XCTAssertEqual(opened(), kept)
+
+        // A copy the system does not let Keeptide read: one line says why, and cannot be chosen.
+        clipboard.deniesAccess = true
+        clipboard.changeCount += 1
+        let reason = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        try await SearchTestSupport.waitUntil { environment.captureSession.captureNotice == reason }
+        XCTAssertEqual(opened(), items(saying: reason))
+        XCTAssertEqual(notice()?.isEnabled, false)
+        XCTAssertNil(notice()?.action)
+
+        // Allowed meanwhile, the next copy is kept, and the line goes.
+        clipboard.deniesAccess = false
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { environment.captureSession.recent.count == 1 }
+        XCTAssertEqual(opened(), kept)
+    }
+
+    func testVoiceOverHearsTheCaptureNoticeAsItAppearsOrChangesWhileThePanelIsOpen() async throws {
+        // A panel over clips, given its notice as the app gives it, once the panel is made: the panel follows the
+        // notice from the next time it follows its state, as when the clips load.
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older", "newer"], into: harness)
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board)
+        let source = CaptureNoticeSource()
+        controller.captureNotice = { source.notice }
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        let full = "Storage is full. Free some space to keep new copies."
+        let denied = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+
+        // A notice there as the panel opens is shown, not read: VoiceOver would hear it each time the panel opens.
+        source.notice = full
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
+        let toolbar = try await laidOutToolbar(in: try XCTUnwrap(controller.window))
+        XCTAssertEqual(toolbar.captureNotice, full)
+        // The panel follows what opening changed, with the notice as it was.
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(announced, [])
+
+        // Changed to another while the panel is open, it is read, once.
+        source.notice = denied
+        try await SearchTestSupport.waitUntil { toolbar.captureNotice == denied }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(announced, [denied])
+
+        // Gone, there is nothing to read; back while the panel is open, it is read again.
+        source.notice = nil
+        try await SearchTestSupport.waitUntil { toolbar.captureNotice == nil }
+        source.notice = full
+        try await SearchTestSupport.waitUntil { toolbar.captureNotice == full }
+        XCTAssertEqual(announced, [denied, full])
+
+        // Changed while the panel is closed, it is not read, nor as the panel opens again.
+        controller.close()
+        source.notice = denied
+        try await SearchTestSupport.waitUntil { toolbar.captureNotice == denied }
+        controller.show()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(toolbar.captureNotice, denied)
+        XCTAssertEqual(announced, [denied, full])
+    }
+
     func testAClickBesideTheBandClosesThePanel() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -922,28 +1205,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.isSessionOpen)
     }
 
-    func testClicksAroundTheOpenPreviewKeepTheCardAndCloseInTheGap() async throws {
-        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+    func testClickingTheExposedBandClosesOnlyThePreviewAndConsumesTheClick() async throws {
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
-        _ = try searchEditor(in: controller)
+        let (field, editor) = try searchEditor(in: controller)
+        editor.insertText("e", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "e" }
         controller.perform(.focusResults)
         controller.perform(.togglePreview)
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
         window.contentView?.layoutSubtreeIfNeeded()
         settleLayout()
         let band = try bandRect(in: window)
-        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
-        let card = text.convert(text.bounds, to: nil)
-        XCTAssertGreaterThan(card.minY, band.maxY)
+        let selection = controller.state.selection.selectedID
+        board.declareTypes([.string], owner: nil)
+        XCTAssertTrue(board.setString("untouched", forType: .string))
+        let changeCount = board.changeCount
 
-        // The preview card is the panel's own: a click on it keeps the panel and the card open.
-        try click(at: NSPoint(x: card.midX, y: card.midY), in: window)
+        // The preview leaves at least 24 pt of the band visible at either side. This click is only a dismissal gesture:
+        // it does not reach the toolbar or strip underneath and does not close the Quick Access session.
+        try click(at: NSPoint(x: band.minX + 12, y: band.midY), in: window)
+        XCTAssertFalse(controller.state.isPreviewExpanded)
         XCTAssertTrue(controller.isSessionOpen)
-        XCTAssertTrue(controller.state.isPreviewExpanded)
-
-        // The 16 pt between the card and the band holds only the band's shadow: a click there closes the panel.
-        try click(at: NSPoint(x: band.midX, y: band.maxY + StripLayout.previewGap / 2), in: window)
-        XCTAssertFalse(controller.isSessionOpen)
+        XCTAssertEqual(controller.state.selection.selectedID, selection)
+        XCTAssertEqual(controller.state.query, "e")
+        XCTAssertEqual(field.stringValue, "e")
+        XCTAssertEqual(board.changeCount, changeCount)
+        XCTAssertEqual(board.string(forType: .string), "untouched")
     }
 
     func testCommandFKeepsTheEditingSession() async throws {
@@ -1555,13 +1843,13 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testSpaceOpensThePreviewAboveTheBandAndEscapeClosesIt() async throws {
+    func testSpaceOpensThePreviewOverTheStationaryBandAndEscapeClosesIt() async throws {
         // Freeze the layout input: Dock/menu-bar changes can update NSScreen during the async preview load.
         let visibleFrame = try XCTUnwrap(NSScreen.main).visibleFrame
         let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: visibleFrame)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
-        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
+        let bandBefore = window.convertToScreen(try bandRect(in: window))
         controller.perform(.focusResults)
         let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
 
@@ -1570,20 +1858,53 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
         settleLayout()
 
-        // The panel grows to hold the card above the band, and the band moves down if the card has no room there.
-        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium, withPreview: true))
+        // The preview floats over the band instead of laying out above it: opening it cannot move the strip the
+        // pointer and keyboard are already using.
+        let band = try bandRect(in: window)
+        assertFrame(window.convertToScreen(band), places: bandBefore)
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let scroll = try XCTUnwrap(text.enclosingScrollView)
+        let previewBody = scroll.convert(scroll.bounds, to: nil)
         XCTAssertEqual(text.string, "newer")
-        XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
+        XCTAssertTrue(previewBody.intersects(band))
+        XCTAssertEqual(previewBody.midX, band.midX, accuracy: 0.5)
         XCTAssertTrue(window.firstResponder === strip, "The strip keeps the keys")
 
         // Escape closes the card and leaves the band as it was.
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(controller.state.isPreviewExpanded)
-        assertFrame(window.frame, places: panelFrame(in: visibleFrame, cardSize: .medium))
+        assertFrame(window.convertToScreen(try bandRect(in: window)), places: bandBefore)
         XCTAssertTrue(window.firstResponder === strip)
         controller.state.close()
+    }
+
+    func testEscapeFromANativeControlDismissesOnlyThePreviewWithoutInterruptingComposition() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        controller.togglePreview()
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+
+        // Escape still belongs to an active input-method composition before it belongs to the preview.
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        XCTAssertFalse(editor.hasMarkedText())
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertTrue(controller.isSessionOpen)
+
+        // Escape also works while a non-text native control has focus. Its key repeat is consumed after the preview
+        // disappears instead of immediately peeling the next layer and closing Quick Access too. The SwiftUI close
+        // control's pointer and accessibility action are covered by the UI tests; this native button pins responder
+        // routing.
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        XCTAssertTrue(window.makeFirstResponder(toolbar.moreButton))
+        window.sendEvent(try key(kVK_Escape, "\u{1B}", windowNumber: window.windowNumber))
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+        XCTAssertTrue(controller.isSessionOpen)
+        window.sendEvent(try key(kVK_Escape, "\u{1B}", windowNumber: window.windowNumber, isARepeat: true))
+        XCTAssertTrue(controller.isSessionOpen)
     }
 
     func testAHeldCommandYTogglesThePreviewOnce() async throws {
@@ -1608,7 +1929,44 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.state.isPreviewExpanded)
     }
 
-    func testOnALowScreenThePreviewCardIsDrawnOverTheBandsTopEdge() async throws {
+    func testAHeldCommandSSavesOnceAndAHeldCommandEOrNHandsOverOnce() async throws {
+        let (controller, _) = try await makeSavingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        var opened: [ContentRef] = []
+        controller.onOpenInLibrary = { opened.append($0) }
+        var newSnippets = 0
+        controller.onNewSnippet = { newSnippets += 1 }
+        let selected = try XCTUnwrap(controller.state.copyTarget?.ref)
+
+        // ⌘S saves the selected clip and says so. Held down, its repeats are taken and do nothing: saved again, the
+        // clip would be already in Snippets, and the save's undo would go.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { announced == ["Saved to Snippets"] }
+        for _ in 0..<3 {
+            XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command,
+                                                                    isARepeat: true)))
+        }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(announced, ["Saved to Snippets"])
+        XCTAssertEqual(controller.state.saveMessage, "Saved to Snippets")
+        XCTAssertTrue(controller.state.canUndoSave)
+
+        // ⌘E and ⌘N hand the clip, or a new snippet, to the library once, however long they are held.
+        for (code, character) in [(kVK_ANSI_E, "e"), (kVK_ANSI_N, "n")] {
+            XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)))
+            for _ in 0..<3 {
+                XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command,
+                                                                        isARepeat: true)))
+            }
+        }
+        XCTAssertEqual(opened, [selected])
+        XCTAssertEqual(newSnippets, 1)
+    }
+
+    func testOnALowScreenThePreviewStaysCentredOverTheStationaryBand() async throws {
         // 1024 × 440 has no room for even the shortest card above the band.
         let low = NSRect(x: 0, y: 30, width: 1024, height: 440)
         let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: low)
@@ -1617,36 +1975,28 @@ final class AppLaunchTests: XCTestCase {
         controller.perform(.focusResults)
         controller.perform(.togglePreview)
         try await SearchTestSupport.waitUntil { controller.state.preview != nil }
-        let metrics = StripLayout.metrics(for: .medium, visibleWidth: low.width)
-        let placed = StripLayout.previewLayout(band: StripLayout.bandFrame(metrics, in: low), in: low)
-        XCTAssertLessThan(placed.preview.minY, placed.band.maxY)
+        let expectedBand = StripLayout.bandFrame(
+            StripLayout.metrics(for: .medium, visibleWidth: low.width), in: low
+        )
+        let band = try bandRect(in: window)
+        assertFrame(window.convertToScreen(band), places: expectedBand)
 
-        // The panel stays on the screen, around the band and the card as they are placed.
-        assertFrame(window.frame, places: StripLayout.panelFrame(band: placed.band, preview: placed.preview, in: low))
-        // The card is drawn where it is placed: over the band's top edge, whole, and inside the window.
+        // The card is screen-safe and centred over the band. Its native text viewport is 40 pt shorter than the
+        // card because the close-button header stands above it.
         var card = NSRect.zero
         try await SearchTestSupport.waitUntil {
             window.contentView?.layoutSubtreeIfNeeded()
             let text = self.views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor }
             card = text?.enclosingScrollView.map { $0.convert($0.bounds, to: nil) } ?? .zero
-            return card.height > 0
+            return card.height > 0 && abs(card.midY - (band.midY - 20)) <= 0.5
         }
-        let band = try bandRect(in: window)
-        XCTAssertEqual(card.height, placed.preview.height, accuracy: 0.5)
-        XCTAssertEqual(card.minY - band.maxY, placed.preview.minY - placed.band.maxY, accuracy: 0.5)
-        XCTAssertLessThan(card.minY, band.maxY, "Over the band")
+        XCTAssertTrue(card.intersects(band), "Over the band")
+        XCTAssertEqual(card.midX, band.midX, accuracy: 0.5)
+        XCTAssertEqual(card.midY, band.midY - 20, accuracy: 0.5)
         let content = try XCTUnwrap(window.contentView)
+        XCTAssertGreaterThanOrEqual(card.minY, content.bounds.minY - 0.5, "Inside the window")
         XCTAssertLessThanOrEqual(card.maxY, content.bounds.maxY + 0.5, "Inside the window")
 
-        // Where the centered card lies over the toolbar it takes the pointer too. The search now stays at the left.
-        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: content).first)
-        let overlap = card.intersection(toolbar.convert(toolbar.rowFrame, to: nil))
-        XCTAssertGreaterThan(overlap.width, 0)
-        XCTAssertGreaterThan(overlap.height, 0)
-        let middle = NSPoint(x: overlap.midX, y: overlap.midY)
-        let scroll = try XCTUnwrap(views(NSTextView.self, in: content).first { !$0.isFieldEditor }?.enclosingScrollView)
-        let hit = content.hitTest(middle)
-        XCTAssertTrue(hit?.isDescendant(of: scroll) == true, "\(hit.map { "\(type(of: $0))" } ?? "nothing")")
         controller.state.close()
     }
 
@@ -1693,6 +2043,98 @@ final class AppLaunchTests: XCTestCase {
         copy.performClick(nil)
         try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
         XCTAssertEqual(board.string(forType: .string), "newer")
+    }
+
+    func testSaveAsSnippetSaysSoInTheToolbarAndTheActionsMenuUndoesIt() async throws {
+        let (controller, harness) = try await makeSavingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        let saved = try XCTUnwrap(controller.state.copyTarget?.ref)
+        // Nothing saved yet: the menu has no undo.
+        XCTAssertFalse(try actionMenu(of: controller).items.contains { $0.title == "Undo Save as Snippet" })
+
+        // ⌘S says what it did where Return's hint was, and VoiceOver hears it.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        let toolbar = try await toolbarSaying(.status("Saved to Snippets"), in: controller)
+        XCTAssertFalse(toolbar.statusLabel.isHidden)
+        XCTAssertEqual(toolbar.statusLabel.stringValue, "Saved to Snippets")
+        XCTAssertEqual(toolbar.statusLabel.accessibilityIdentifier(), "QuickAccessStatus")
+        XCTAssertTrue(toolbar.copyHint.isHidden)
+        try await SearchTestSupport.waitUntil { announced == ["Saved to Snippets"] }
+
+        // ⌘K offers the undo right after Save as Snippet, with no key of its own, and so does a right-click on the
+        // clip saved; a right-click on another clip does not, since its menu acts on that clip.
+        let menu = try actionMenu(of: controller)
+        let undo = try XCTUnwrap(menu.items.firstIndex { $0.title == "Undo Save as Snippet" })
+        XCTAssertEqual(menu.items[undo - 1].title, "Save as Snippet")
+        XCTAssertEqual(menu.items[undo].keyEquivalent, "")
+        XCTAssertTrue(menu.items[undo].isEnabled)
+        let newer = try drawnFrame(of: "newer", in: strip)
+        let older = try frame(of: "older", in: strip)
+        func rightClick(at frame: NSRect) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(
+                with: .rightMouseDown, location: strip.convert(NSPoint(x: frame.midX, y: frame.midY), to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                clickCount: 1, pressure: 1
+            ))
+        }
+        let context = try XCTUnwrap(strip.menu(for: try rightClick(at: newer)))
+        XCTAssertEqual(context.items.map(\.title), menu.items.map(\.title))
+        let otherClip = try XCTUnwrap(strip.menu(for: try rightClick(at: older)))
+        XCTAssertFalse(otherClip.items.contains { $0.title == "Undo Save as Snippet" })
+
+        menu.performActionForItem(at: undo)
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Save undone" }
+        _ = try await toolbarSaying(.status("Save undone"), in: controller)
+        try await SearchTestSupport.waitUntil { announced == ["Saved to Snippets", "Save undone"] }
+        XCTAssertEqual(announced, ["Saved to Snippets", "Save undone"])
+        let item = try await ContentRepository(controller: harness.controller).recordState(.item(saved.itemID))
+        guard case .item(let value) = item.value else { return XCTFail("Missing history") }
+        XCTAssertNil(value.memoID, "The undo removed the snippet the panel saved")
+        XCTAssertFalse(try actionMenu(of: controller).items.contains { $0.title == "Undo Save as Snippet" })
+    }
+
+    func testTheSaveStatusIsTheToolbarsAndNothingLiesOverTheCards() throws {
+        addTeardownBlock { self.panelUnderTest = nil }
+        // The panel is set up and saves in a task, and the test waits for it. What follows asks accessibility for
+        // SwiftUI's elements, which turns the run loop over; it must not run inside a test's own task.
+        let saved = expectation(description: "A clip saved as a snippet")
+        var setupError: (any Error)?
+        Task { @MainActor in
+            defer { saved.fulfill() }
+            do {
+                let (controller, _) = try await self.makeSavingPanel(["older", "newer"])
+                await controller.state.saveSelection(try XCTUnwrap(controller.state.copyTarget))
+                XCTAssertEqual(controller.state.saveMessage, "Saved to Snippets")
+                self.panelUnderTest = controller
+            } catch {
+                setupError = error
+            }
+        }
+        wait(for: [saved], timeout: 20)
+        if let setupError { throw setupError }
+        let controller = try XCTUnwrap(panelUnderTest)
+        defer { controller.state.close() }
+        let window = try XCTUnwrap(controller.window)
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+
+        // Only the toolbar's status says so: no capsule lies over the cards, nor takes their clicks.
+        let says = { (element: NSObject) in self.text(of: element) == "Saved to Snippets" }
+        _ = try swiftUIAccessibilityElements(in: content) { $0.contains(where: says) }
+        settleLayout()
+        let elements = accessibilityElements(below: content)
+        // AppKit reads a text field out through its cell; the identifier is the field's.
+        let identifier = { (element: NSObject) -> String? in
+            let owner: NSObject = (element as? NSCell)?.controlView ?? element
+            return self.accessibility(owner, "accessibilityIdentifier") as? String
+        }
+        XCTAssertEqual(elements.filter(says).map(identifier), ["QuickAccessStatus"])
+        XCTAssertFalse(elements.contains { ["QuickAccessSaveStatus", "QuickAccessUndoSave"].contains(identifier($0)) })
     }
 
     func testClickingTheOlderClipSelectsIt() async throws {
@@ -1993,7 +2435,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(strip.convert(try frame(of: "clip 0", in: strip), to: nil).minY - band.minY, 43, accuracy: 0.5)
     }
 
-    func testWithAFrequentWingSpaceOpensTheNewestClipsPreviewAboveTheBand() async throws {
+    func testWithAFrequentWingSpaceOverlaysTheNewestClipsPreviewOnTheStationaryBand() async throws {
         let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
         let state = controller.state
         let window = try XCTUnwrap(controller.window)
@@ -2007,27 +2449,27 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === strip)
 
         // Space opens the preview of the selected clip, the newest, and not of the least used one, which leads the
-        // rows.
-        // The panel grows to hold the card above the band, and the band moves down since the card has no room there.
+        // rows. The band remains exactly where it opened while the preview floats over it.
         strip.keyDown(with: try key(kVK_Space, " "))
         XCTAssertTrue(state.isPreviewExpanded)
         try await SearchTestSupport.waitUntil { state.preview != nil }
         settleLayout()
-        let placed = StripLayout.previewLayout(band: band, in: Self.wingScreen)
-        XCTAssertLessThan(placed.band.minY, band.minY)
-        assertFrame(window.frame, places: StripLayout.panelFrame(band: placed.band, preview: placed.preview,
-                                                                 in: Self.wingScreen))
+        assertFrame(window.convertToScreen(try bandRect(in: window)), places: band)
         let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let scroll = try XCTUnwrap(text.enclosingScrollView)
+        let previewBody = scroll.convert(scroll.bounds, to: nil)
+        let currentBand = try bandRect(in: window)
         XCTAssertEqual(state.selection.rows.first?.title, "clip 9")
         XCTAssertEqual(text.string, "clip 0")
-        XCTAssertGreaterThan(text.convert(text.bounds, to: nil).minY, strip.convert(strip.bounds, to: nil).maxY)
+        XCTAssertTrue(previewBody.intersects(currentBand))
+        XCTAssertEqual(previewBody.midX, currentBand.midX, accuracy: 0.5)
         XCTAssertTrue(window.firstResponder === strip, "The strip keeps the keys")
 
         // Escape closes the card and leaves the band as it was, the wing still before the newest clip.
         strip.keyDown(with: try key(kVK_Escape, "\u{1B}"))
         settleLayout()
         XCTAssertFalse(state.isPreviewExpanded)
-        assertFrame(window.frame, places: StripLayout.panelFrame(band: band, preview: nil, in: Self.wingScreen))
+        assertFrame(window.convertToScreen(try bandRect(in: window)), places: band)
         XCTAssertEqual(state.selection.frequentCount, 3)
         XCTAssertTrue(window.firstResponder === strip)
     }
@@ -3724,6 +4166,30 @@ final class AppLaunchTests: XCTestCase {
         return (controller, board)
     }
 
+    /// A panel over a real temporary store holding one text clip per title, newest last, that saves clips as snippets
+    /// through the library's own service. A shown panel opens the way the shortcut opens it; otherwise only its state
+    /// does. It returns once the clips are listed and the newest can be acted on.
+    private func makeSavingPanel(_ titles: [String], shown: Bool = false) async throws
+        -> (PanelController, SearchHarness) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(titles, into: harness)
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       library: LibraryService(controller: harness.controller))
+        if shown {
+            controller.show()
+            addTeardownBlock { controller.close() }
+        } else {
+            controller.state.open()
+        }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == titles.count && controller.state.copyTarget != nil
+        }
+        return (controller, harness)
+    }
+
     /// Stores a small PNG picture as the newest clip.
     private func insertImageClip(into harness: SearchHarness) async throws {
         let context = try XCTUnwrap(CGContext(
@@ -3778,10 +4244,11 @@ final class AppLaunchTests: XCTestCase {
     /// `search` stands in for the harness's own search service when given, and `visibleFrame` for the screen's visible
     /// area. `system` is what direct paste asks of the system; never the live one, which could paste the general
     /// clipboard into the app in front. The panel reads how often clips were used from `usage`, and without it lists no
-    /// frequent wing. `preferences` are medium cards with the frequent clips turned off unless given.
+    /// frequent wing. `preferences` are medium cards with the frequent clips turned off unless given. The panel saves
+    /// clips as snippets through `library`, and without it saves nothing.
     private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard, search: SearchService? = nil,
                            visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
-                           usage: (any QuickAccessUsage)? = nil,
+                           usage: (any QuickAccessUsage)? = nil, library: LibraryService? = nil,
                            preferences: QuickAccessPreferences? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
@@ -3789,7 +4256,7 @@ final class AppLaunchTests: XCTestCase {
         // A paste the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
-                                           usage: usage)
+                                           usage: usage, library: library)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }
@@ -3846,6 +4313,29 @@ final class AppLaunchTests: XCTestCase {
         NSApp.postEvent(try event(.leftMouseUp), atStart: false)
         window.sendEvent(try event(.leftMouseDown))
         NSApp.discardEvents(matching: .leftMouseUp, before: nil)
+    }
+
+    /// The app's environment over a fresh isolated test library, its monitor reading `clipboard` when given in place of
+    /// the session's named pasteboard. It returns once the library is open and keeps new copies; the library goes when
+    /// the test ends.
+    private func makeCapturingEnvironment(clipboard: (any SnapshotReading)? = nil) async throws -> AppEnvironment {
+        let configuration = CaptureTestConfiguration(id: UUID())
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        defaults.removePersistentDomain(forName: configuration.preferencesSuite)
+        let capture = CapturePreferences(defaults: defaults)
+        let session = CaptureSession(preferences: capture, clipboardReader: clipboard)
+        addTeardownBlock {
+            await session.shutdown()
+            UserDefaults(suiteName: configuration.preferencesSuite)?
+                .removePersistentDomain(forName: configuration.preferencesSuite)
+            try? FileManager.default.removeItem(at: configuration.directory)
+            NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
+        }
+        let environment = AppEnvironment(captureSession: session, quickAccessPreferences: try makePreferences(.medium))
+        await session.initialize(testSessionID: configuration.id)
+        XCTAssertTrue(session.isReady)
+        XCTAssertNil(session.captureNotice)
+        return environment
     }
 
     /// Settings of the panel's own, so its card size does not depend on this machine's. The frequent clips are off
@@ -4004,6 +4494,27 @@ final class AppLaunchTests: XCTestCase {
         return elements
     }
 
+    /// Chooses the list titled `title` in the Library's sidebar, as VoiceOver does: by selecting its row in the outline.
+    private func selectLibraryList(_ title: String, in content: NSView) throws {
+        let isSidebar = { (element: NSObject) in self.identifier(of: element) == "LibrarySidebar" }
+        let sidebar = try XCTUnwrap(try swiftUIAccessibilityElements(in: content) { $0.contains(where: isSidebar) }
+            .first(where: isSidebar))
+        let rows = (accessibility(sidebar, "accessibilityRows") as? [Any] ?? []).compactMap { $0 as? NSObject }
+        let row = try XCTUnwrap(rows.first { sidebarTexts(in: $0).contains(title) }, "No row titled \(title)")
+        _ = sidebar.perform(NSSelectorFromString("setAccessibilitySelectedRows:"), with: [row])
+    }
+
+    /// What an element of the sidebar's outline says, and what its descendants say. A row and its cell give their
+    /// children only through the older accessibility API, and the SwiftUI content of the cell only through the newer.
+    private func sidebarTexts(in element: NSObject) -> [String] {
+        let selector = NSSelectorFromString("accessibilityAttributeValue:")
+        let older = element.responds(to: selector)
+            ? (element.perform(selector, with: "AXChildren")?.takeUnretainedValue() as? [Any] ?? []) : []
+        let children = (older.isEmpty ? accessibility(element, "accessibilityChildren") as? [Any] ?? [] : older)
+            .compactMap { $0 as? NSObject }
+        return [text(of: element)].compactMap { $0 } + children.flatMap { sidebarTexts(in: $0) }
+    }
+
     /// The elements below `element`, depth first.
     private func accessibilityElements(below element: NSObject) -> [NSObject] {
         let children = (accessibility(element, "accessibilityChildren") as? [Any] ?? []).compactMap { $0 as? NSObject }
@@ -4133,6 +4644,22 @@ final class AppLaunchTests: XCTestCase {
         ).shouldPresentOnboardingIfNeeded)
         XCTAssertFalse(LaunchConfiguration(arguments: ["--manual-paste-qa"], environment: [:])
             .shouldPresentOnboardingIfNeeded)
+    }
+
+    func testOnlyARealLaunchOrAUITestSessionOpensALibraryThatRecords() {
+        func initializes(_ arguments: [String], _ environment: [String: String] = [:]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: environment).shouldInitializeCaptureSession
+        }
+        let underXCTest = ["XCTestConfigurationFilePath": "/synthetic/test.xctestconfiguration"]
+
+        // A real launch opens the user's library, which records the clipboard.
+        XCTAssertTrue(initializes([]))
+        // The app that hosts the unit tests never does, nor a UI test without a session of its own: the clipboard
+        // there is the user's.
+        XCTAssertFalse(initializes([], underXCTest))
+        XCTAssertFalse(initializes(["--ui-testing"]))
+        // A UI test session opens a library of its own, which records only the session's named clipboard.
+        XCTAssertTrue(initializes(["--ui-testing", "--capture-test-session", UUID().uuidString]))
     }
 
     func testExplicitWelcomeRequiresAnIsolatedUITestSession() {
@@ -4376,6 +4903,12 @@ final class AppLaunchTests: XCTestCase {
 @MainActor
 private final class QueryLog {
     var queries: [String] = []
+}
+
+/// A capture notice a test changes, which the panel follows as it follows the capture session's.
+@MainActor @Observable
+private final class CaptureNoticeSource {
+    var notice: String?
 }
 
 @MainActor

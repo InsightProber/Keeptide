@@ -95,26 +95,13 @@ final class AppEnvironment {
             manageIgnoredApplications: { [weak self] in self?.showIgnoredApplications() },
             exportArchive: { [weak self] in self?.exportLibrary() }
         ),
-        recordingState: { [weak captureSession] in
-            captureSession?.settingsRecordingState ?? .unavailable("Recording is unavailable.")
-        },
-        canChangeRecording: { [weak captureSession] in captureSession?.canChangeRecordingConsent ?? false },
         canExport: { [weak self] in self?.canExportLibrary ?? false }
     )
 
+    /// Done, and closing the welcome, only complete it; Open Library completes it and opens the Library.
     var onboardingActions: OnboardingActions {
         OnboardingActions(
-            startRecording: { [weak self] in
-                guard let self else { return }
-                self.captureSession.preferences.isEnabled = true
-                self.onboardingPreferences.completeCurrentVersion()
-                self.showLibrary()
-            },
-            notNow: { [weak self] in
-                guard let self else { return }
-                self.onboardingPreferences.completeCurrentVersion()
-                self.showLibrary()
-            },
+            done: { [weak self] in self?.onboardingPreferences.completeCurrentVersion() },
             openLibrary: { [weak self] in
                 guard let self else { return }
                 self.onboardingPreferences.completeCurrentVersion()
@@ -140,6 +127,8 @@ final class AppEnvironment {
         }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
         panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
+        // The toolbar says why new copies are not kept, while that is so.
+        panel.captureNotice = { [weak self] in self?.captureSession.captureNotice }
         return panel
     }
 

@@ -257,58 +257,29 @@ struct LifecycleRepository: Sendable {
             request.predicate = NSPredicate(format: "deletedAt == nil AND (historyDeletedAt != nil OR memoID != nil)")
             request.fetchBatchSize = Self.batchSize
             var result: [TrashFacetSnapshot] = []
+            // A malformed row, or a malformed facet of one, is left as it is: it is not listed, nothing of it is
+            // cleared, and it does not keep the rest of Recently Deleted from showing. A sound facet of the same row
+            // is still listed. Any other failure, such as a fetch that fails, still ends the read.
             for object in try context.fetch(request) {
-                guard let rawID = object.value(forKey: "id") as? UUID,
-                      case .item(let item)? = try StoredRecords.value(
-                        .item(ItemID(rawValue: rawID)),
-                        in: context
-                      ) else { throw StoreError.corruptStore }
+                let item: ItemValue
+                do {
+                    guard let rawID = object.value(forKey: "id") as? UUID,
+                          case .item(let value)? = try StoredRecords.value(
+                            .item(ItemID(rawValue: rawID)),
+                            in: context
+                          ) else { continue }
+                    item = value
+                } catch StoreError.corruptStore { continue }
                 guard try StoredRecords.object(.itemMarker(item.id), in: context) == nil else { continue }
 
-                if !item.historyEligible,
-                   let captureID = item.captureID,
-                   try !hasFacetMarker(itemID: item.id, facet: .history, generationID: captureID, in: context),
-                   let window = try deletionWindow(
-                    deletedAt: item.historyDeletedAt,
-                    purgeAfter: item.historyPurgeAfter
-                   ) {
-                    guard try StoredRecords.object(.capture(captureID), in: context) != nil else {
-                        throw StoreError.corruptStore
+                do {
+                    if let history = try trashedHistory(of: item, policy: policy, at: now, in: context) {
+                        result.append(history)
                     }
-                    result.append(TrashFacetSnapshot(
-                        identity: .history(itemID: item.id, captureID: captureID),
-                        title: item.title,
-                        deletedAt: window.deletedAt,
-                        purgeAfter: window.purgeAfter,
-                        canRestore: try policy.canRestoreHistory(
-                            lastCopiedAt: item.lastCopiedAt,
-                            deletedAt: window.deletedAt,
-                            purgeAfter: window.purgeAfter,
-                            at: now
-                        )
-                    ))
-                }
-
-                if let memoID = item.memoID,
-                   try !hasFacetMarker(itemID: item.id, facet: .memo, generationID: memoID, in: context) {
-                    guard let object = try StoredRecords.object(.memo(memoID), in: context) else {
-                        throw StoreError.corruptStore
-                    }
-                    let memoItemID = ItemID(rawValue: try required(object, "itemID"))
-                    guard memoItemID == item.id,
-                          let window = try deletionWindow(
-                            deletedAt: object.value(forKey: "deletedAt") as? Date,
-                            purgeAfter: object.value(forKey: "purgeAfter") as? Date
-                          ) else { continue }
-                    let memoTitle: String = try required(object, "title")
-                    result.append(TrashFacetSnapshot(
-                        identity: .memo(itemID: item.id, memoID: memoID),
-                        title: memoTitle.isEmpty ? item.title : memoTitle,
-                        deletedAt: window.deletedAt,
-                        purgeAfter: window.purgeAfter,
-                        canRestore: try window.canRestore(at: now)
-                    ))
-                }
+                } catch StoreError.corruptStore {}
+                do {
+                    if let memo = try trashedMemo(of: item, at: now, in: context) { result.append(memo) }
+                } catch StoreError.corruptStore {}
             }
             return result.sorted {
                 if $0.deletedAt != $1.deletedAt { return $0.deletedAt > $1.deletedAt }
@@ -318,6 +289,67 @@ struct LifecycleRepository: Sendable {
                 return $0.identity.facet.rawValue < $1.identity.facet.rawValue
             }
         }
+    }
+
+    /// The item's history as Recently Deleted lists it, or nil while it is not deleted. A deletion window that is not
+    /// a valid one, or a capture that is gone, is corrupt.
+    private func trashedHistory(
+        of item: ItemValue,
+        policy: RetentionPolicy,
+        at now: Date,
+        in context: NSManagedObjectContext
+    ) throws -> TrashFacetSnapshot? {
+        guard !item.historyEligible,
+              let captureID = item.captureID,
+              try !hasFacetMarker(itemID: item.id, facet: .history, generationID: captureID, in: context),
+              let window = try deletionWindow(
+                deletedAt: item.historyDeletedAt,
+                purgeAfter: item.historyPurgeAfter
+              ) else { return nil }
+        guard try StoredRecords.object(.capture(captureID), in: context) != nil else {
+            throw StoreError.corruptStore
+        }
+        return TrashFacetSnapshot(
+            identity: .history(itemID: item.id, captureID: captureID),
+            title: item.title,
+            deletedAt: window.deletedAt,
+            purgeAfter: window.purgeAfter,
+            canRestore: try policy.canRestoreHistory(
+                lastCopiedAt: item.lastCopiedAt,
+                deletedAt: window.deletedAt,
+                purgeAfter: window.purgeAfter,
+                at: now
+            )
+        )
+    }
+
+    /// The item's snippet as Recently Deleted lists it, or nil while it is not deleted or belongs to another item. A
+    /// snippet that is not there, one whose item ID or title cannot be read, or one whose deletion window is not a
+    /// valid one, is corrupt.
+    private func trashedMemo(
+        of item: ItemValue,
+        at now: Date,
+        in context: NSManagedObjectContext
+    ) throws -> TrashFacetSnapshot? {
+        guard let memoID = item.memoID,
+              try !hasFacetMarker(itemID: item.id, facet: .memo, generationID: memoID, in: context) else { return nil }
+        guard let object = try StoredRecords.object(.memo(memoID), in: context) else {
+            throw StoreError.corruptStore
+        }
+        let memoItemID = ItemID(rawValue: try required(object, "itemID"))
+        guard memoItemID == item.id,
+              let window = try deletionWindow(
+                deletedAt: object.value(forKey: "deletedAt") as? Date,
+                purgeAfter: object.value(forKey: "purgeAfter") as? Date
+              ) else { return nil }
+        let memoTitle: String = try required(object, "title")
+        return TrashFacetSnapshot(
+            identity: .memo(itemID: item.id, memoID: memoID),
+            title: memoTitle.isEmpty ? item.title : memoTitle,
+            deletedAt: window.deletedAt,
+            purgeAfter: window.purgeAfter,
+            canRestore: try window.canRestore(at: now)
+        )
     }
 
     private func validateRead(expecting identity: StoreIdentity, permit: StorePermit?) throws {

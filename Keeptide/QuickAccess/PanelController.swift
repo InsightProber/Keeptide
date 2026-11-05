@@ -53,6 +53,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// What the panel shows in its window: the band, and the preview card while it is open. A click anywhere else
     /// falls on the room left around them for the band's shadow.
     private var contentFrames: [NSRect] = []
+    private var previewFrameInWindow: NSRect?
     /// Whether the strip's last row is the oldest there is: not while a search is still scanning, nor while another
     /// page may follow. While a new query has brought no rows yet, the rows still on screen keep what they had.
     private var oldestIsLoaded = true
@@ -79,6 +80,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The actions menu's Enable Direct Paste…, once the panel has closed. The app explains it and asks for access,
     /// which takes Keeptide to the front: the panel never does that itself.
     var onEnableDirectPaste: (() -> Void)?
+    /// Why new copies are not kept, which the toolbar says after the filters, or nil while they are. The app reads it
+    /// from the capture session. `update()` reads it, so the panel follows the session as it changes, and VoiceOver
+    /// hears it as it appears or changes while the panel is open.
+    var captureNotice: () -> String? = { nil }
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
@@ -134,6 +139,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             close()
         }
         panel.onKeyEvent = { [weak self] in self?.followReturnKey($0) }
+        panel.onPreviewKeyDown = { [weak self] in self?.handlePreviewKeyDown($0) ?? false }
+        panel.onContentMouseDown = { [weak self] point in
+            guard let self, state.isPreviewExpanded, state.commandReview == nil,
+                  let previewFrameInWindow, !previewFrameInWindow.contains(point),
+                  contentFrames.first?.contains(point) == true else { return false }
+            // Dismissal owns this click: it must not also select a clip or activate the copy button beneath it.
+            togglePreview()
+            return true
+        }
         announce = { [weak panel] message in
             guard let panel else { return }
             NSAccessibility.post(element: panel, notification: .announcementRequested, userInfo: [
@@ -299,6 +313,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         toolbar.note = toolbarNote
         toolbar.hasClips = !state.selection.rows.isEmpty
         toolbar.indexNotice = state.indexNotice
+        let notice = captureNotice()
+        // VoiceOver hears a notice that appears or changes while the panel is open. One already there as it opens is
+        // only shown: it would be read each time the panel opens.
+        if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
+        toolbar.captureNotice = notice
         filterRow.queryIsEmpty = state.query.isEmpty
         filterRow.show(kinds: state.kinds)
         strip.queryIsEmpty = state.query.isEmpty
@@ -309,11 +328,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// What the toolbar's right end says. A refused action's reason answers what was just done, so it comes first;
-    /// then a status over clips on screen; then, with a clip selected, what Return does, under the name the session
-    /// gives it, with why it only copies when the user can do something about that. With no clips the empty state says
-    /// it all. An index that is rebuilding is told after the filters, and leaves Return's hint in place.
+    /// then what Save as Snippet, or its undo, came to for the selected clip; then a status over clips on screen; then,
+    /// with a clip selected, what Return does, under the name the session gives it, with why it only copies when the
+    /// user can do something about that. With no clips the empty state says it all. An index that is rebuilding is told
+    /// after the filters, and leaves Return's hint in place.
     private var toolbarNote: QuickAccessToolbar.Note {
         if let failure = state.failure { return .failure(failure.message) }
+        if let message = state.saveMessage { return .status(message) }
         if !state.selection.rows.isEmpty,
            let line = QuickAccessStatus.line(selectionLost: state.selection.selectionLost, phase: state.phase,
                                              isComplete: state.selection.isComplete) {
@@ -327,21 +348,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                        hint: actions.hint)
     }
 
-    /// Whether a card lies above the band: the preview, or in its place a command's review.
     private var hasCard: Bool { state.isPreviewExpanded || state.commandReview != nil }
 
-    /// Places the panel around the band, and around the card above it while the preview or a command's review is
-    /// open, and lays the band out to match. The band sits in the middle of the screen's visible area; a card with no
-    /// room above it moves the band down, and on a screen too low for that it lies over the band's top edge. The panel
-    /// leaves room around them for the band's shadow, as much as the screen has.
+    /// The preview overlays the stationary band; only a command review uses the separate card above it.
+    /// The transparent host expands to fit the content without animating or moving the band's screen coordinates.
     private func layoutPanel() {
         guard let window, let hosting else { return }
         var band = StripLayout.bandFrame(metrics, in: visibleFrame)
         var preview: NSRect?
-        if hasCard {
+        if state.commandReview != nil {
             let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
+        } else if state.isPreviewExpanded {
+            preview = StripLayout.previewOverlayFrame(band: band, in: visibleFrame)
         }
         // On whole points, which are whole pixels on every screen; AppKit would cut a window's frame to them anyway.
         let frame = NSIntegralRectWithOptions(StripLayout.panelFrame(band: band, preview: preview, in: visibleFrame),
@@ -354,10 +374,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if window.frame != frame { window.setFrame(frame, display: window.isVisible) }
         let bandInWindow = NSRect(x: StripLayout.sideMargin, y: roomBelow, width: band.width, height: band.height)
         bandFrame = bandInWindow.offsetBy(dx: frame.minX, dy: frame.minY)
-        contentFrames = [bandInWindow] + (preview.map { [NSRect(
+        previewFrameInWindow = preview.map { NSRect(
             x: bandInWindow.midX - $0.width / 2, y: bandInWindow.maxY + previewGap, width: $0.width,
             height: $0.height
-        )] } ?? [])
+        ) }
+        contentFrames = [bandInWindow] + (previewFrameInWindow.map { [$0] } ?? [])
     }
 
     private func bandView(_ layout: QuickAccessBandView.Layout) -> QuickAccessBandView {
@@ -705,7 +726,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Menus
 
-    /// The ⋯ menu, below its button. Each item closes the panel, then opens what it names.
+    /// The ⋯ menu, below its button. Open Library and Settings… close the panel, then open what they name.
     @objc private func showMoreMenu() {
         let menu = NSMenu(title: "More")
         menu.autoenablesItems = false
@@ -735,13 +756,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The actions for one row: the selected one for ⌘K, the one under the pointer for a right-click, named for its
     /// clip. A row other than the selected one is selected before its action runs, so the action is for the row
     /// clicked; one that left the list while the menu was open gets no action at all, never another row's. A clip
-    /// listed in both wings is two rows, and the menu is for the one it was opened on.
+    /// listed in both wings is two rows, and the menu is for the one it was opened on. Only the selected row's menu
+    /// offers to undo its save: selecting another row lets that save go.
     private func actionMenu(for id: QuickAccessRow.ID?) -> NSMenu {
         let row = id.flatMap { id in state.selection.rows.first { $0.id == id } }
+        let canUndoSave = state.canUndoSave && id == state.selection.selectedID
         return ActionMenu.make(actions: state.actions(for: id?.ref), row: row,
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
-                               isPreviewExpanded: state.isPreviewExpanded) { [weak self] command in
+                               isPreviewExpanded: state.isPreviewExpanded,
+                               canUndoSave: canUndoSave) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -755,6 +779,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
             case .saveSnippet: saveSelectedSnippet()
+            case .undoSave: undoSave()
             case .openLibrary: openSelectedInLibraryFromMenu()
             case .newSnippet: newSnippetFromMenu()
             case .enableDirectPaste: enableDirectPaste()
@@ -762,9 +787,28 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// ⌘S and the menu's Save as Snippet. The toolbar shows what the save came to, and VoiceOver reads it.
     private func saveSelectedSnippet() {
         guard let target = state.copyTarget else { return }
-        Task { await state.saveSelection(target) }
+        Task {
+            await state.saveSelection(target)
+            announceSaveMessage()
+        }
+    }
+
+    /// The menu's Undo Save as Snippet, which it offers only while the selected clip's save can be undone.
+    private func undoSave() {
+        Task {
+            await state.undoSaveSelection()
+            announceSaveMessage()
+        }
+    }
+
+    /// Reads out what a save or its undo came to, as the toolbar now shows it, while the session that asked is still
+    /// open: a closed or reopened panel has nothing to say about it.
+    private func announceSaveMessage() {
+        guard isSessionOpen, let message = state.saveMessage else { return }
+        announce(message)
     }
 
     private func openSelectedInLibrary() {
@@ -835,6 +879,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Escape
 
+    /// Native controls and embedded previews may consume Escape before the responder chain reaches the panel.
+    /// Route it here while preserving input-method and sheet ownership. A held key cannot peel a second layer.
+    private func handlePreviewKeyDown(_ event: NSEvent) -> Bool {
+        guard event.keyCode == kVK_Escape,
+              event.modifierFlags.intersection([.command, .shift, .option, .control]).isEmpty,
+              window?.attachedSheet == nil,
+              (window?.firstResponder as? NSTextInputClient)?.hasMarkedText() != true else { return false }
+        if event.isARepeat { return true }
+        guard state.isPreviewExpanded || state.commandReview != nil else { return false }
+        escape()
+        return true
+    }
+
     /// Escape from the strip, the filters, the preview or the review card; the search field peels its own layers first.
     /// A panel that waits for Return after its action has nothing left to peel, and closes.
     private func escape() {
@@ -897,6 +954,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // in the active search editor leaves its marked text and caret intact.
         if ["s", "e", "n"].contains(key),
            (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
+        // Held down, ⌘S, ⌘E and ⌘N have acted already: their repeats are taken and do nothing, as ⌘Y's are. A save
+        // again would find the clip already in Snippets and let the first save's undo go.
+        if ["s", "e", "n"].contains(key), event.isARepeat { return true }
         switch key {
         case "s":
             saveSelectedSnippet()
@@ -949,6 +1009,8 @@ private final class QuickAccessPanel: NSPanel {
     /// Whether a point in the window lies outside what the panel shows, in the room left for the band's shadow.
     var isOutsideContent: ((NSPoint) -> Bool)?
     var onClickOutside: (() -> Void)?
+    var onContentMouseDown: ((NSPoint) -> Bool)?
+    var onPreviewKeyDown: ((NSEvent) -> Bool)?
 
     // A borderless window cannot become key unless it says so.
     override var canBecomeKey: Bool { true }
@@ -984,11 +1046,14 @@ private final class QuickAccessPanel: NSPanel {
     /// there come to the panel. Such a click is a click beside the panel, and closes it as one would.
     override func sendEvent(_ event: NSEvent) {
         if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
+           onContentMouseDown?(event.locationInWindow) == true { return }
+        if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type),
            isOutsideContent?(event.locationInWindow) == true {
             onClickOutside?()
             return
         }
         if event.type == .keyDown || event.type == .keyUp { onKeyEvent?(event) }
+        if event.type == .keyDown, onPreviewKeyDown?(event) == true { return }
         super.sendEvent(event)
     }
 }

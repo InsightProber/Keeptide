@@ -102,7 +102,10 @@ final class QuickAccessState {
     private(set) var isLoadingOriginalPreview = false
     private(set) var previewMessage: String?
     private(set) var failure: PasteRefusal?
+    /// What the selected clip's last Save as Snippet, or its undo, came to. It belongs to that clip as `failure` does,
+    /// and goes with it when the selection, the query or the filters change.
     private(set) var saveMessage: String?
+    /// Whether the selected clip's last save made a snippet that Undo Save as Snippet may still remove.
     private(set) var canUndoSave = false
     /// What strip frames show of a clip beyond its title. Only clips still in the list keep one.
     private(set) var details: [ContentRef: ClipDetail] = [:]
@@ -212,9 +215,7 @@ final class QuickAccessState {
     /// many clips before them (`StripLayout.recentShownWhole`). With it the frequent wing leads the recent clips,
     /// without the clips the band shows whole; nil lists no wing.
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
-        saveMessage = nil
-        savedUndo = nil
-        canUndoSave = false
+        clearSaveStatus()
         isOpen = true
         frequentWingFirstScreen = firstScreen
         query = ""
@@ -330,10 +331,14 @@ final class QuickAccessState {
         }
     }
 
-    /// Selects a listed row. A clip listed in both wings is two rows, and each is selected on its own.
+    /// Selects a listed row. A clip listed in both wings is two rows, and each is selected on its own. Selecting the
+    /// row already selected, as a second click on its card does, keeps what its save came to.
     func select(_ id: QuickAccessRow.ID) {
+        let selected = selection.selectedID
         selection.select(id)
-        selectionChanged()
+        guard selection.selectedID == selected else { return selectionChanged() }
+        failure = nil
+        followSelection()
     }
 
     @discardableResult
@@ -479,17 +484,25 @@ final class QuickAccessState {
     }
 
     /// Saves the captured selection without changing or duplicating its immutable payload.
-    /// Every await is fenced by the panel session and captured selection.
+    /// Every await is fenced by the panel session and captured selection. A clip whose content is not all there, such
+    /// as a file reference that has to be found again, is not saved, and the message says why.
     func saveSelection(_ target: CopyTarget) async {
         guard isOpen, !saving, copyTarget == target, let currentSession = session,
               let services = services(), let library = services.library else { return }
         saving = true
         defer { saving = false }
+        // The save is what was done last: a refused copy's reason before it no longer answers it.
+        failure = nil
         do {
             let identity = try await library.controller.identity()
             let content = try await services.repository.read(target.ref)
-            guard content.integrity == .complete, isOpen, session === currentSession,
-                  copyTarget == target else { return }
+            guard isOpen, session === currentSession, copyTarget == target else { return }
+            guard content.integrity == .complete else {
+                savedUndo = nil
+                canUndoSave = false
+                saveMessage = "This clip can't be saved as a snippet until its content is available."
+                return
+            }
             let outcome = try await library.saveAsMemo(target.ref.itemID, expecting: identity)
             guard isOpen, session === currentSession, copyTarget == target else { return }
             switch outcome {
@@ -516,6 +529,7 @@ final class QuickAccessState {
               let library = services()?.library else { return }
         saving = true
         defer { saving = false }
+        failure = nil
         do {
             try await library.undoSaveAsMemo(
                 savedUndo.itemID,
@@ -611,6 +625,7 @@ final class QuickAccessState {
     private func reload() {
         cancelLoads()
         failure = nil
+        clearSaveStatus()
         preview = nil
         // A review belongs to the query it was made under, even when the new one keeps the clip selected.
         dropCommandReview()
@@ -718,7 +733,11 @@ final class QuickAccessState {
     /// of a row that is no longer selected.
     private func applyRows(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool,
                            keepsChosenRow: Bool = false) {
+        let selected = selection.selectedID
         selection.apply(rows, generation: generation, isComplete: isComplete, keepsChosenRow: keepsChosenRow)
+        // A page that moves the selection to another row, or loses it, as a refresh without the clip does, takes the
+        // save of the row that was selected along.
+        if selection.selectedID != selected { clearSaveStatus() }
         dropDetailsOfUnlistedRows()
         followSelection()
     }
@@ -736,7 +755,16 @@ final class QuickAccessState {
 
     private func selectionChanged() {
         failure = nil
+        clearSaveStatus()
         followSelection()
+    }
+
+    /// A save's message and its undo belong to the clip selected when it was saved. Once another clip, query or filter
+    /// takes its place, Undo Save as Snippet would remove a snippet the user is no longer looking at, so both go.
+    private func clearSaveStatus() {
+        saveMessage = nil
+        savedUndo = nil
+        canUndoSave = false
     }
 
     /// The clipboard is written, so the review, if any, is done with. The panel closes on `onCompleted`.

@@ -17,20 +17,20 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         self.actions = actions
         self.setActivationPolicy = setActivationPolicy
         self.shouldRestoreAccessory = shouldRestoreAccessory
-        let window = NSWindow(
+        let window = OnboardingWindow(
             contentRect: .zero,
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         super.init(window: window)
+        window.onCancel = { [weak self] in self?.finish(with: .done) }
         window.title = "Welcome to Keeptide"
         window.identifier = NSUserInterfaceItemIdentifier("KeeptideOnboardingWindow")
         window.setAccessibilityIdentifier("KeeptideOnboardingWindow")
         window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: OnboardingView(actions: .init(
-            startRecording: { [weak self] in self?.finish(with: .startRecording) },
-            notNow: { [weak self] in self?.finish(with: .notNow) },
+            done: { [weak self] in self?.finish(with: .done) },
             openLibrary: { [weak self] in self?.finish(with: .openLibrary) }
         )))
         window.setContentSize(window.contentViewController?.view.fittingSize ?? NSSize(width: 560, height: 400))
@@ -51,8 +51,9 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
+    /// Closing the window is Done.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        complete(.notNow)
+        complete(.done)
         return true
     }
 
@@ -61,7 +62,7 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         if shouldRestoreAccessory() { setActivationPolicy(.accessory) }
     }
 
-    enum Completion { case startRecording, notNow, openLibrary }
+    enum Completion { case done, openLibrary }
 
     func finish(with completion: Completion) {
         complete(completion)
@@ -72,9 +73,18 @@ final class OnboardingWindowController: NSWindowController, NSWindowDelegate {
         guard !didFinish else { return }
         didFinish = true
         switch completion {
-        case .startRecording: actions.startRecording()
-        case .notNow: actions.notNow()
+        case .done: actions.done()
         case .openLibrary: actions.openLibrary()
         }
+    }
+}
+
+/// The welcome's window, where Escape and ⌘. are Done, as its close button is. NSWindow takes them itself otherwise,
+/// and they never reach the window's controller.
+private final class OnboardingWindow: NSWindow {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        onCancel?()
     }
 }

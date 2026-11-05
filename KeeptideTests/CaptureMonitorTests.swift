@@ -4,39 +4,52 @@ import XCTest
 
 @MainActor
 final class CaptureMonitorTests: XCTestCase {
-    func testDisabledPausedAndExcludedSourcesNeverReadBodies() async throws {
-        try await withMonitor { monitor, reader, preferences, _ in
+    private let denied = "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+    private let full = "Storage is full. Free some space to keep new copies."
+
+    func testCopiesFromIgnoredAppsAreNeverRead() async throws {
+        try await withMonitor { monitor, reader, preferences, controller in
+            // The app in front is ignored: its copies are never read, before the ignoring or after it.
+            preferences.addExclusion("test.source")
             reader.changeCount = 1
             await monitor.poll()
-            XCTAssertEqual(reader.readCount, 0)
-            preferences.isEnabled = true
-            await monitor.poll()
-            XCTAssertEqual(reader.readCount, 0, "Starting must not capture the preexisting clipboard")
             reader.changeCount = 2
-            preferences.addExclusion("test.source")
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 0)
+            XCTAssertEqual(monitor.state, .watching)
+            // No longer ignored, its next copy is kept.
+            preferences.removeExclusion("test.source")
             reader.changeCount = 3
             await monitor.poll()
-            XCTAssertEqual(reader.readCount, 0)
-            preferences.isEnabled = false
-            reader.changeCount = 4
-            await monitor.poll()
-            XCTAssertEqual(reader.readCount, 0)
+            XCTAssertEqual(reader.readCount, 1)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
         }
     }
 
-    func testRecordingPersistsOnlyNewCopiesAndPauseResumeDoesNotBackfill() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
+    func testAMonitorMadeRecordingDoesNotImportWhatWasAlreadyCopied() async throws {
+        // As on first launch: watching from the start, over a clipboard that already holds a copy.
+        try await withMonitor(clipboardChangeCount: 7) { monitor, reader, _, controller in
+            monitor.start()
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 0, "What was copied before the monitor was made must not be imported")
+            XCTAssertEqual(monitor.state, .watching)
+            // The next copy is kept.
+            reader.changeCount = 8
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
+    func testTheSameCopyAgainIsKeptOnceAndCountedTwice() async throws {
+        try await withMonitor { monitor, reader, _, controller in
             reader.changeCount = 1
             await monitor.poll()
             await monitor.poll()
             XCTAssertEqual(reader.readCount, 1)
-            preferences.isEnabled = false
             reader.changeCount = 2
-            preferences.isEnabled = true
-            await monitor.poll()
-            XCTAssertEqual(reader.readCount, 1)
-            reader.changeCount = 3
             await monitor.poll()
             let repository = ContentRepository(controller: controller)
             let rows = try await repository.recent(limit: 10)
@@ -48,8 +61,7 @@ final class CaptureMonitorTests: XCTestCase {
     }
 
     func testOwnWriteSkipsOneCountButNextExternalCopyIsCaptured() async throws {
-        try await withMonitor { monitor, reader, preferences, _ in
-            preferences.isEnabled = true
+        try await withMonitor { monitor, reader, _, _ in
             reader.changeCount = 1
             monitor.suppressOwnWrite(OwnWriteToken(changeCount: 1, marker: "test"))
             await monitor.poll()
@@ -60,21 +72,164 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
-    func testFailedReadDoesNotTightLoopAndNextCopyCanSucceed() async throws {
-        try await withMonitor { monitor, reader, preferences, _ in
-            preferences.isEnabled = true
+    func testADeniedClipboardSaysWhyAndANewCopyRecoversOnItsOwn() async throws {
+        try await withMonitor { monitor, reader, _, controller in
+            var unavailable = false
+            monitor.onUnavailable = { unavailable = true }
             reader.failure = .permissionDenied
             reader.changeCount = 1
             await monitor.poll()
             await monitor.poll()
+            // The copy is tried once, and the monitor says why it could not keep it. It goes on watching.
             XCTAssertEqual(reader.readCount, 1)
-            XCTAssertTrue(monitor.status.contains("access"))
-            XCTAssertFalse(preferences.isEnabled)
-            reader.failure = nil
-            preferences.isEnabled = true
+            XCTAssertEqual(monitor.state, .interrupted(denied))
+            XCTAssertFalse(unavailable)
+            // Still denied, the next copy is tried, and the reason stays.
             reader.changeCount = 2
             await monitor.poll()
             XCTAssertEqual(reader.readCount, 2)
+            XCTAssertEqual(monitor.state, .interrupted(denied))
+            // Allowed meanwhile, the next copy is kept, and the reason goes, with nothing turned back on.
+            reader.failure = nil
+            reader.changeCount = 3
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 3)
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
+    func testAFullDiskSaysWhyAndTriesEachNewCopyUntilOneIsKept() async throws {
+        try await withMonitor { monitor, reader, _, controller in
+            reader.unexpectedFailure = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
+            var recoveries = 0
+            var unavailable = false
+            monitor.onStorageFull = { recoveries += 1 }
+            monitor.onUnavailable = { unavailable = true }
+            reader.changeCount = 1
+            await monitor.poll()
+            // The rebuildable search cache is cleared, the library stays, and the monitor says why. It goes on
+            // watching.
+            XCTAssertEqual(recoveries, 1)
+            XCTAssertFalse(unavailable)
+            XCTAssertEqual(monitor.state, .interrupted(full))
+            // The same copy is not tried again and again.
+            await monitor.poll()
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            // A new copy is tried, and finds the disk still full: it only tries to be kept, and the search cache, cleared
+            // as the disk filled, is left as it is.
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 2)
+            XCTAssertEqual(recoveries, 1)
+            XCTAssertEqual(monitor.state, .interrupted(full))
+            // Once there is room, the next copy is kept, and the reason goes.
+            reader.unexpectedFailure = nil
+            reader.changeCount = 3
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 3)
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+            // The disk fills again: the search cache is cleared again.
+            reader.unexpectedFailure = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
+            reader.changeCount = 4
+            await monitor.poll()
+            XCTAssertEqual(recoveries, 2)
+            XCTAssertEqual(monitor.state, .interrupted(full))
+        }
+    }
+
+    func testACopyThatCouldNotBeReadSaysWhyUntilALaterCopyIsKept() async throws {
+        let unreadable = "The last copy was not kept because Keeptide could not read the clipboard. Copy it again to retry."
+        try await withMonitor { monitor, reader, _, controller in
+            var unavailable = false
+            monitor.onUnavailable = { unavailable = true }
+            // The clipboard reader cannot run: the copy is not kept, and the monitor says why. It goes on watching.
+            reader.failure = .readerUnavailable
+            reader.changeCount = 1
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .interrupted(unreadable))
+            XCTAssertFalse(unavailable)
+            // Without a new copy, nothing is read again.
+            await monitor.poll()
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            // The next copy that is kept ends the reason.
+            reader.failure = nil
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertEqual(rows.count, 1)
+        }
+    }
+
+    func testACopyLargerThan50MiBSaysWhyUntilALaterCopyIsKept() async throws {
+        try await withMonitor { monitor, reader, _, _ in
+            reader.failure = .payloadTooLarge(maximumBytes: CaptureWire.maximumPayloadBytes)
+            reader.changeCount = 1
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .interrupted("The last copy was not kept because it is larger than 50 MiB."))
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 1)
+            reader.failure = nil
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .watching)
+        }
+    }
+
+    func testAPrivateEmptyOrChangingCopySaysNothing() async throws {
+        try await withMonitor { monitor, reader, _, controller in
+            // Copies Keeptide skips without a word: private ones, whether the reader or the capture policy finds them
+            // so, empty ones, and ones that changed while they were read.
+            let failures: [SnapshotReaderError] = [.privacyRestricted, .emptyPasteboard,
+                                                   .changedDuringRead(expected: 3, actual: 4)]
+            for (index, failure) in failures.enumerated() {
+                reader.failure = failure
+                reader.changeCount = index + 1
+                await monitor.poll()
+                XCTAssertEqual(monitor.state, .watching, "\(failure)")
+            }
+            reader.failure = nil
+            reader.typeIdentifier = CapturePolicy.concealedType
+            reader.changeCount = 4
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 4)
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertTrue(rows.isEmpty)
+        }
+    }
+
+    func testOnlyAKeptCopyEndsTheReason() async throws {
+        try await withMonitor { monitor, reader, preferences, _ in
+            reader.failure = .permissionDenied
+            reader.changeCount = 1
+            await monitor.poll()
+            XCTAssertEqual(monitor.state, .interrupted(denied))
+            // Neither a copy Keeptide does not keep, such as a private one, nor one from an ignored app, nor its own
+            // copy, shows that the clipboard can be read: the reason stays until a copy is kept.
+            reader.failure = .privacyRestricted
+            reader.changeCount = 2
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 2)
+            XCTAssertEqual(monitor.state, .interrupted(denied))
+            reader.failure = nil
+            preferences.addExclusion("test.source")
+            reader.changeCount = 3
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 2)
+            XCTAssertEqual(monitor.state, .interrupted(denied))
+            preferences.removeExclusion("test.source")
+            monitor.suppressOwnWrite(OwnWriteToken(changeCount: 4, marker: "test"))
+            reader.changeCount = 4
+            await monitor.poll()
+            XCTAssertEqual(reader.readCount, 2)
+            XCTAssertEqual(monitor.state, .interrupted(denied))
         }
     }
 
@@ -83,44 +238,20 @@ final class CaptureMonitorTests: XCTestCase {
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let first = CapturePreferences(defaults: defaults)
-        XCTAssertFalse(first.isEnabled)
-        first.isEnabled = true
         first.addExclusion("test.source")
         first.addExclusion("test.source")
         let second = CapturePreferences(defaults: defaults)
-        XCTAssertTrue(second.isEnabled)
         XCTAssertEqual(second.excludedApplications, ["test.source"])
         second.removeExclusion("test.source")
         XCTAssertTrue(CapturePreferences(defaults: defaults).excludedApplications.isEmpty)
     }
 
-    func testPauseRemainsPendingUntilInFlightReadDrainsWithoutSaving() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
-            reader.changeCount = 1
-            let started = self.expectation(description: "Deferred read started")
-            reader.suspendedReadStarted = started
-            let polling = Task { await monitor.poll() }
-            await self.fulfillment(of: [started], timeout: 3)
-            preferences.isEnabled = false
-            XCTAssertTrue(monitor.isPausing)
-            XCTAssertTrue(monitor.status.hasPrefix("Pausing"))
-            reader.finishSuspendedRead()
-            await polling.value
-            XCTAssertFalse(monitor.isPausing)
-            XCTAssertEqual(monitor.status, "Not recording")
-            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
-            XCTAssertTrue(rows.isEmpty)
-        }
-    }
-
-    func testNULInCopiedTextDoesNotDisableRecording() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
+    func testNULInCopiedTextDoesNotStopNewCopies() async throws {
+        try await withMonitor { monitor, reader, _, controller in
             reader.body = Data("hello\u{0000}world".utf8)
             reader.changeCount = 1
             await monitor.poll()
-            XCTAssertTrue(preferences.isEnabled)
+            XCTAssertEqual(monitor.state, .watching)
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertEqual(rows.count, 1)
             XCTAssertFalse(rows.first?.title.utf8.contains(0) ?? true)
@@ -129,7 +260,6 @@ final class CaptureMonitorTests: XCTestCase {
 
     func testUnrelatedExclusionChangeDoesNotConsumePendingCopy() async throws {
         try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
             reader.changeCount = 1
             let started = self.expectation(description: "read pending")
             reader.suspendedReadStarted = started
@@ -140,45 +270,64 @@ final class CaptureMonitorTests: XCTestCase {
             await polling.value
             reader.suspendedReadStarted = nil
             await monitor.poll()
+            XCTAssertEqual(reader.cancelledReads, 0)
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertEqual(rows.count, 1)
-            XCTAssertTrue(preferences.isEnabled)
+            XCTAssertEqual(monitor.state, .watching)
+        }
+    }
+
+    func testIgnoringTheAppOfACopyBeingReadLetsTheCopyGo() async throws {
+        try await withMonitor { monitor, reader, preferences, controller in
+            reader.changeCount = 1
+            let started = self.expectation(description: "read pending")
+            reader.suspendedReadStarted = started
+            let polling = Task { await monitor.poll() }
+            await self.fulfillment(of: [started], timeout: 3)
+            // The app the copy came from is ignored while the copy is read: the read is let go, and nothing is kept,
+            // nor said.
+            preferences.addExclusion("test.source")
+            reader.finishSuspendedRead()
+            await polling.value
+            XCTAssertEqual(reader.cancelledReads, 1)
+            XCTAssertEqual(monitor.state, .watching)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertTrue(rows.isEmpty)
         }
     }
 
     func testCaptureCannotSwitchToANewerCountBetweenObservationAndRead() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
+        try await withMonitor { monitor, reader, _, controller in
             reader.changeCount = 1
             reader.advanceCountOnRead = true
             await monitor.poll()
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertTrue(rows.isEmpty, "The snapshot must bind to the count admitted by policy")
             XCTAssertEqual(reader.readCount, 0, "Replaced copies must be rejected before reading bodies")
-            XCTAssertTrue(preferences.isEnabled)
+            XCTAssertEqual(monitor.state, .watching)
         }
     }
 
-    func testPauseOwnsStatusEvenWhenPendingReaderFails() async throws {
-        try await withMonitor { monitor, reader, preferences, _ in
-            preferences.isEnabled = true
+    func testAStopOwnsTheStateEvenWhenThePendingReadIsDenied() async throws {
+        try await withMonitor { monitor, reader, _, controller in
             reader.changeCount = 1
             let started = self.expectation(description: "read pending")
             reader.suspendedReadStarted = started
-            reader.failureAfterRead = .emptyPasteboard
+            reader.failureAfterRead = .permissionDenied
             let polling = Task { await monitor.poll() }
             await self.fulfillment(of: [started], timeout: 3)
-            preferences.isEnabled = false
+            monitor.stop()
             reader.finishSuspendedRead()
             await polling.value
-            XCTAssertEqual(monitor.status, "Not recording")
-            XCTAssertFalse(monitor.isPausing)
+            // A denial that comes in after the stop says nothing, and keeps nothing.
+            XCTAssertEqual(monitor.state, .stopped)
+            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
+            XCTAssertTrue(rows.isEmpty)
         }
     }
 
     func testStopAndDrainWaitsForInFlightReadBeforeStoreCanClose() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
+        try await withMonitor { monitor, reader, _, controller in
             reader.changeCount = 1
             let started = expectation(description: "read started")
             reader.suspendedReadStarted = started
@@ -188,7 +337,7 @@ final class CaptureMonitorTests: XCTestCase {
             let shutdown = Task { await monitor.stopAndDrain(); drained = true }
             await Task.yield()
             XCTAssertFalse(drained)
-            XCTAssertTrue(monitor.isPausing)
+            XCTAssertEqual(monitor.state, .stopped)
             reader.finishSuspendedRead()
             await shutdown.value
             await poll.value
@@ -202,7 +351,6 @@ final class CaptureMonitorTests: XCTestCase {
     func testFocusBoundaryKeepsCopyAttributedToTheIgnoredPreviousApp() async throws {
         try await withMonitor { monitor, reader, preferences, controller in
             preferences.addExclusion("  TEST.SOURCE  ")
-            preferences.isEnabled = true
             reader.changeCount = 1
             reader.foregroundSource = "allowed.app"
             monitor.foregroundApplicationChanged(to: reader.foregroundSource)
@@ -216,7 +364,6 @@ final class CaptureMonitorTests: XCTestCase {
     func testIgnoredCopyObservedWhileBusyRevokesOldWorkAndIsNotReadLater() async throws {
         try await withMonitor { monitor, reader, preferences, controller in
             preferences.addExclusion("secret.app")
-            preferences.isEnabled = true
             reader.changeCount = 1
             let started = expectation(description: "old copy pending")
             reader.suspendedReadStarted = started
@@ -234,34 +381,31 @@ final class CaptureMonitorTests: XCTestCase {
             XCTAssertEqual(reader.readCount, 1)
             let rows = try await ContentRepository(controller: controller).recent(limit: 10)
             XCTAssertTrue(rows.isEmpty)
-            XCTAssertTrue(monitor.isRecording)
+            XCTAssertEqual(monitor.state, .watching)
         }
     }
 
-    func testPausedMonitorDoesNotKeepPolling() async throws {
-        try await withMonitor { monitor, reader, preferences, _ in
-            preferences.isEnabled = true
+    func testAStoppedMonitorNoLongerPolls() async throws {
+        try await withMonitor { monitor, reader, _, _ in
             monitor.start()
             await Task.yield()
-            preferences.isEnabled = false
+            monitor.stop()
             let samples = reader.sampleCount
             try await Task.sleep(for: .milliseconds(350))
             XCTAssertEqual(reader.sampleCount, samples)
-            XCTAssertFalse(monitor.isRecording)
+            XCTAssertEqual(monitor.state, .stopped)
         }
     }
 
-    func testStorageFailureStopsLiveRecordingWithoutChangingUserIntent() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
+    func testALibraryThatStopsWorkingStopsWatchingUntilKeeptideReopens() async throws {
+        try await withMonitor { monitor, reader, _, controller in
             try await controller.close()
             reader.changeCount = 1
             var unavailable = false
             monitor.onUnavailable = { unavailable = true }
             await monitor.poll()
             XCTAssertTrue(unavailable)
-            XCTAssertFalse(monitor.isRecording)
-            XCTAssertTrue(preferences.isEnabled)
+            XCTAssertEqual(monitor.state, .failed("The local library is unavailable. Reopen Keeptide to retry."))
             reader.changeCount = 2
             await monitor.poll()
             XCTAssertEqual(reader.readCount, 1)
@@ -269,15 +413,16 @@ final class CaptureMonitorTests: XCTestCase {
     }
 
     func testUnknownMaintenanceRequiresRecoveryWithoutTransientRetry() async throws {
-        try await withMonitor { monitor, reader, preferences, _ in
-            preferences.isEnabled = true
+        try await withMonitor { monitor, reader, _, _ in
             reader.unexpectedFailure = StoreError.operationDenied
             reader.changeCount = 1
             var unavailable = false
             monitor.onUnavailable = { unavailable = true }
             await monitor.poll()
             XCTAssertTrue(unavailable)
-            XCTAssertTrue(monitor.status.contains("newer Keeptide version or library recovery"))
+            XCTAssertEqual(monitor.state, .failed(
+                "Keeping new copies requires a newer Keeptide version or library recovery. Existing content is preserved."
+            ))
             reader.unexpectedFailure = nil
             reader.changeCount = 2
             await monitor.poll()
@@ -285,45 +430,15 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
-    func testDiskFullPausesWithoutDisablingTheLibraryAndRequiresANewCopyAfterResume() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
-            reader.unexpectedFailure = NSError(domain: NSCocoaErrorDomain, code: CocoaError.fileWriteOutOfSpace.rawValue)
-            reader.changeCount = 1
-            var recoveries = 0
-            var unavailable = false
-            monitor.onStorageFull = { recoveries += 1 }
-            monitor.onUnavailable = { unavailable = true }
-            await monitor.poll()
-            XCTAssertEqual(recoveries, 1)
-            XCTAssertFalse(unavailable)
-            XCTAssertFalse(preferences.isEnabled)
-            XCTAssertTrue(monitor.status.contains("storage is full"))
-            reader.changeCount = 2
-            await monitor.poll()
-            XCTAssertEqual(reader.readCount, 1)
-            reader.unexpectedFailure = nil
-            preferences.isEnabled = true
-            await monitor.poll()
-            XCTAssertEqual(reader.readCount, 1)
-            reader.changeCount = 3
-            await monitor.poll()
-            let rows = try await ContentRepository(controller: controller).recent(limit: 10)
-            XCTAssertEqual(rows.count, 1)
-        }
-    }
-
-    func testMaintenanceContentionRetriesTheCurrentCopyWithoutDisablingRecording() async throws {
-        try await withMonitor { monitor, reader, preferences, controller in
-            preferences.isEnabled = true
+    func testMaintenanceContentionRetriesTheCurrentCopyWithoutAProblem() async throws {
+        try await withMonitor { monitor, reader, _, controller in
             reader.unexpectedFailure = StoreError.maintenanceInProgress
             reader.changeCount = 1
             var unavailable = false
             monitor.onUnavailable = { unavailable = true }
             await monitor.poll()
             XCTAssertFalse(unavailable)
-            XCTAssertTrue(preferences.isEnabled)
-            XCTAssertTrue(monitor.isRecording)
+            XCTAssertEqual(monitor.state, .watching)
             reader.unexpectedFailure = nil
             try await Task.sleep(for: .milliseconds(300))
             await monitor.poll()
@@ -332,7 +447,10 @@ final class CaptureMonitorTests: XCTestCase {
         }
     }
 
-    private func withMonitor(_ body: (PasteboardMonitor, FakeReader, CapturePreferences, PersistenceController) async throws -> Void) async throws {
+    /// Each test watches from the start, as Keeptide does whenever it runs; the clipboard's count starts at
+    /// `clipboardChangeCount`.
+    private func withMonitor(clipboardChangeCount: Int = 0,
+                             _ body: (PasteboardMonitor, FakeReader, CapturePreferences, PersistenceController) async throws -> Void) async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("Monitor-\(UUID())")
         defer { try? FileManager.default.removeItem(at: directory) }
         let suite = "CaptureMonitor-\(UUID())"
@@ -340,6 +458,7 @@ final class CaptureMonitorTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let controller = try PersistenceController(directory: directory)
         let reader = FakeReader()
+        reader.changeCount = clipboardChangeCount
         let preferences = CapturePreferences(defaults: defaults)
         let monitor = PasteboardMonitor(reader: reader, service: CaptureService(controller: controller),
             preferences: preferences, sourceApp: { reader.foregroundSource }, matchesOwnWrite: { _ in true })
@@ -367,8 +486,11 @@ private final class FakeReader: SnapshotReading {
     var failure: SnapshotReaderError?
     var failureAfterRead: SnapshotReaderError?
     var advanceCountOnRead = false
+    var typeIdentifier = "public.utf8-plain-text"
     var body = Data("synthetic".utf8)
     var suspendedReadStarted: XCTestExpectation?
+    /// Suspended reads whose capture was let go while they waited.
+    private(set) var cancelledReads = 0
     private var continuation: CheckedContinuation<Void, Never>?
 
     func readAsynchronously(sourceApp: String?, expectedChangeCount: Int) async throws -> CaptureSnapshotValue {
@@ -382,6 +504,7 @@ private final class FakeReader: SnapshotReading {
                 self.continuation = continuation
                 suspendedReadStarted.fulfill()
             }
+            if Task.isCancelled { cancelledReads += 1 }
         }
         if let failureAfterRead { throw failureAfterRead }
         return snapshot
@@ -394,7 +517,7 @@ private final class FakeReader: SnapshotReading {
         if let unexpectedFailure { throw unexpectedFailure }
         if let failure { throw failure }
         return CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: [
-            CapturedRepresentation(typeIdentifier: "public.utf8-plain-text", bytes: body)
+            CapturedRepresentation(typeIdentifier: typeIdentifier, bytes: body)
         ])], changeCount: changeCount, sourceApp: sourceApp)
     }
 }
