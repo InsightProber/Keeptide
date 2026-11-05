@@ -116,8 +116,8 @@ final class QuickAccessState {
     /// What the checks allowed for the session's target when the session started: a paste, or why not. nil without
     /// a library.
     private(set) var directPaste: DirectPasteAvailability?
-    /// Whether the session started without permission while Keeptide is allowed, or asked for access in this run:
-    /// the system lets Keeptide send keystrokes only once it reopens, so the panel says so.
+    /// Whether the session started without permission after this run asked for access: the system lets Keeptide send
+    /// keystrokes only once it reopens, so the panel says so. Closing the panel keeps the request.
     private(set) var directPasteAwaitsReopen = false
     /// The command the selected clip's last action is waiting on. Nothing has been written or sent for it.
     private(set) var commandReview: CommandReview?

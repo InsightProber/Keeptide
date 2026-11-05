@@ -20,8 +20,8 @@ struct QuickAccessActions: Equatable {
     var hint: String?
 
     /// `availability` is what the session's checks found as the panel opened, nil without a library; `kind` is the
-    /// selected row's, nil with nothing selected. `awaitsReopen` says that Keeptide is allowed, or asked for access in
-    /// this run, but can send keystrokes only once it reopens.
+    /// selected row's, nil with nothing selected. `awaitsReopen` says that this run asked for access, which Keeptide
+    /// can use only once it reopens.
     static func make(target: PasteTarget?, availability: DirectPasteAvailability?, kind: ContentKind?,
                      awaitsReopen: Bool = false) -> QuickAccessActions {
         var actions = QuickAccessActions(primaryTitle: "Copy", plainTextTitle: "Copy as Plain Text", copyOnlyTitle: nil,
@@ -67,8 +67,8 @@ struct QuickAccessActions: Equatable {
     }
 
     /// The reasons the user can act on. Without permission Return only copies, which the panel says, and the menu
-    /// offers Enable Direct Paste…; once Keeptide is allowed, the system lets it send keystrokes only after it reopens,
-    /// which the panel says instead. A changed window or no target needs nothing from the user, and a held Return is
+    /// offers Enable Direct Paste…; once access was asked for, the system lets Keeptide send keystrokes only after it
+    /// reopens, which the panel says instead. A changed window or no target needs nothing from the user, and a held Return is
     /// found only as a paste is sent, never as the panel opens.
     private static func hint(for fallback: DirectPasteFallback, awaitsReopen: Bool) -> String? {
         switch fallback {

@@ -201,16 +201,11 @@ final class PasteGuardTests: XCTestCase {
         let paste = fixture.service(system: fake.system)
         XCTAssertEqual(paste.accessState(), .on)
 
-        // Neither allowed in Accessibility nor asked for: off.
+        // Not permitted, and not asked for in this run: off.
         fake.permitted = false
         XCTAssertEqual(paste.accessState(), .off)
 
-        // Allowed in Accessibility, which this run cannot use yet: it waits for Keeptide to reopen.
-        fake.trusted = true
-        XCTAssertEqual(paste.accessState(), .awaitsReopen)
-
-        // Asked for in this run, whatever the system answered: the grant, if any, also waits for a reopen.
-        fake.trusted = false
+        // Asked for in this run, whatever the system answered: any grant waits for Keeptide to reopen.
         paste.requestDirectPasteAccess()
         XCTAssertEqual(fake.accessRequests, 1)
         XCTAssertEqual(paste.accessState(), .awaitsReopen)

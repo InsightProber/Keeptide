@@ -208,8 +208,7 @@ final class PasteService {
 
     /// Whether Keeptide can paste directly, for Settings and the panel to say. It only asks the system.
     func accessState() -> DirectPasteAccessState {
-        DirectPasteAccessState(canPostEvents: system.canPostEvents(), isTrusted: system.isAccessibilityTrusted(),
-                               accessRequested: hasRequestedAccess)
+        DirectPasteAccessState(canPostEvents: system.canPostEvents(), accessRequested: hasRequestedAccess)
     }
 
     func execute(_ request: PasteRequest) async -> PasteOutcome {
