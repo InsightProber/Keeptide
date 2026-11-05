@@ -180,7 +180,9 @@ final class EditorTextController: NSObject, NSTextViewDelegate {
             ? NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
             : NSFont.preferredFont(forTextStyle: .body)
         textView.font = font
+        textView.textColor = .textColor
         textView.typingAttributes[.font] = font
+        textView.typingAttributes[.foregroundColor] = NSColor.textColor
     }
 
     private func schedulePendingFocusIfPossible() {

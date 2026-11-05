@@ -21,6 +21,68 @@ final class EditorBridgeTests: XCTestCase {
         XCTAssertTrue(controller.scrollView.documentView === editor)
     }
 
+    func testLongBodyWrapsToTheVisibleViewportAndReflowsWithoutChangingEditingState() throws {
+        let documentID = UUID()
+        let (controller, window) = hostedController()
+        defer { window.close() }
+        let body = """
+        Once you've decided, this long sentence must wrap inside the library detail column as the window changes size.
+        同一段中文内容也必须跟随详情栏宽度换行，不能从窗口左边或右边被裁掉。
+        unbroken-token-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
+        """
+        controller.update(documentID: documentID, text: body, isCode: false,
+                          isEditable: true, focusRequest: 0)
+        let editor = controller.textView
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        editor.setSelectedRange(NSRange(location: 14, length: 9))
+        editor.insertText("retained ", replacementRange: editor.selectedRange())
+        let expectedText = editor.string
+        let expectedSelection = editor.selectedRange()
+        let undo = try XCTUnwrap(editor.undoManager)
+        XCTAssertTrue(undo.canUndo, "The regression must preserve a real native undo entry across reflow")
+
+        layout(window, controller: controller, width: 500)
+        let wideFragments = try lineFragments(in: editor)
+        assertFragmentsFitViewport(wideFragments, editor: editor)
+
+        layout(window, controller: controller, width: 280)
+        let narrowFragments = try lineFragments(in: editor)
+        assertFragmentsFitViewport(narrowFragments, editor: editor)
+        XCTAssertGreaterThan(narrowFragments.count, wideFragments.count,
+                             "Narrowing the detail column must reflow the body instead of clipping it")
+
+        layout(window, controller: controller, width: 640)
+        let widenedFragments = try lineFragments(in: editor)
+        assertFragmentsFitViewport(widenedFragments, editor: editor)
+        XCTAssertLessThan(widenedFragments.count, narrowFragments.count)
+        XCTAssertEqual(editor.string, expectedText)
+        XCTAssertEqual(editor.selectedRange(), expectedSelection)
+        XCTAssertTrue(undo.canUndo)
+    }
+
+    func testLoadedAndReplacementTextUseSemanticForegroundAcrossAppearances() throws {
+        let (controller, window) = hostedController()
+        defer { window.close() }
+        let editor = controller.textView
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        window.appearance = light
+        controller.update(documentID: UUID(), text: "Loaded in light appearance", isCode: false,
+                          isEditable: true, focusRequest: 0)
+
+        for appearance in [light, dark] {
+            window.appearance = appearance
+            window.contentView?.layoutSubtreeIfNeeded()
+            assertSemanticTextColor(editor, appearance: appearance)
+        }
+
+        controller.update(documentID: UUID(), text: "let replacement = \"dark\"", isCode: true,
+                          isEditable: true, focusRequest: 0)
+        assertSemanticTextColor(editor, appearance: dark)
+        XCTAssertEqual(editor.font,
+                       NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular))
+    }
+
     func testTextChangesReportMarkedTextUntilCompositionCommits() {
         var changes: [(String, Bool)] = []
         let controller = EditorTextController { changes.append(($0, $1)) }
@@ -606,6 +668,76 @@ final class EditorBridgeTests: XCTestCase {
         window.contentView = controller.scrollView
         window.makeKeyAndOrderFront(nil)
         return (controller, window)
+    }
+
+    private func layout(_ window: NSWindow, controller: EditorTextController, width: CGFloat) {
+        window.setContentSize(NSSize(width: width, height: 320))
+        window.contentView?.layoutSubtreeIfNeeded()
+        controller.scrollView.layoutSubtreeIfNeeded()
+        controller.textView.layoutSubtreeIfNeeded()
+    }
+
+    private func lineFragments(in editor: NSTextView) throws -> [NSRect] {
+        let layoutManager = try XCTUnwrap(editor.layoutManager)
+        let textContainer = try XCTUnwrap(editor.textContainer)
+        layoutManager.ensureLayout(for: textContainer)
+        let glyphRange = layoutManager.glyphRange(for: textContainer)
+        var fragments: [NSRect] = []
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, _, _ in
+            fragments.append(usedRect)
+        }
+        XCTAssertFalse(fragments.isEmpty)
+        return fragments
+    }
+
+    private func assertFragmentsFitViewport(
+        _ fragments: [NSRect], editor: NSTextView,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        guard let textContainer = editor.textContainer else {
+            return XCTFail("Missing native text container", file: file, line: line)
+        }
+        let viewportWidth = editor.enclosingScrollView?.contentSize.width ?? 0
+        XCTAssertGreaterThan(viewportWidth, 0, file: file, line: line)
+        XCTAssertEqual(editor.frame.width, viewportWidth, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(textContainer.size.width, viewportWidth - editor.textContainerInset.width * 2,
+                       accuracy: 1, file: file, line: line)
+        for fragment in fragments {
+            XCTAssertLessThanOrEqual(fragment.maxX, textContainer.size.width + 1,
+                                     "Every rendered line must remain inside the visible detail width",
+                                     file: file, line: line)
+        }
+    }
+
+    private func assertSemanticTextColor(
+        _ editor: NSTextView, appearance: NSAppearance,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        guard !editor.string.isEmpty else {
+            return XCTFail("The color assertion requires loaded text", file: file, line: line)
+        }
+        let glyphColor = (editor.textStorage?.attribute(
+            .foregroundColor, at: 0, effectiveRange: nil
+        ) as? NSColor) ?? editor.textColor
+        let typingColor = editor.typingAttributes[.foregroundColor] as? NSColor
+
+        XCTAssertEqual(editor.textColor, .textColor, file: file, line: line)
+        XCTAssertEqual(glyphColor, .textColor, file: file, line: line)
+        XCTAssertEqual(typingColor, .textColor, file: file, line: line)
+        XCTAssertEqual(resolvedRGBA(glyphColor, appearance: appearance),
+                       resolvedRGBA(.textColor, appearance: appearance),
+                       "Existing glyphs must follow the effective light or dark appearance",
+                       file: file, line: line)
+    }
+
+    private func resolvedRGBA(_ color: NSColor?, appearance: NSAppearance) -> [CGFloat] {
+        var components: [CGFloat] = []
+        appearance.performAsCurrentDrawingAppearance {
+            guard let converted = color?.usingColorSpace(.deviceRGB) else { return }
+            components = [converted.redComponent, converted.greenComponent,
+                          converted.blueComponent, converted.alphaComponent]
+        }
+        return components
     }
 
 }

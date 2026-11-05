@@ -1250,6 +1250,13 @@ private struct ComposingTextField: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
 
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSTextField, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite else { return nil }
+        // Read-only NSTextFields otherwise insist on the full title's intrinsic
+        // width, expanding the entire split-view detail beyond its visible column.
+        return CGSize(width: width, height: proposal.height ?? nsView.fittingSize.height)
+    }
+
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
         field.isBordered = false
