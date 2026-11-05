@@ -52,6 +52,9 @@ final class PasteFixture {
 final class FakeDirectPasteSystem {
     var front: PasteTarget? = .textEdit
     var permitted = true
+    /// Whether Keeptide is listed and allowed in Accessibility, which the system can report before it lets this run
+    /// of Keeptide send keystrokes.
+    var trusted = false
     var secureInput = false
     var keyCode: CGKeyCode? = 9
     var grantsOnRequest = false
@@ -75,6 +78,7 @@ final class FakeDirectPasteSystem {
                 return self.front
             },
             canPostEvents: { self.permitted },
+            isAccessibilityTrusted: { self.trusted },
             requestPostEventAccess: {
                 self.accessRequests += 1
                 return self.grantsOnRequest

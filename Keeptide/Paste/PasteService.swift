@@ -152,6 +152,8 @@ final class PasteService {
     private let directPasteOnlyTo: String?
     /// Only the newest session may paste.
     private var latestSessionGeneration: UInt64 = 0
+    /// Whether access was asked for in this run of Keeptide. Any grant it brings waits for Keeptide to reopen.
+    private(set) var hasRequestedAccess = false
     /// Called on a caller's programming error. Debug builds stop here; tests replace it to watch for a call.
     var reportProgrammingError: @MainActor (String) -> Void = { assertionFailure($0) }
 
@@ -200,7 +202,14 @@ final class PasteService {
     /// Asks the system for access, and opens Accessibility settings when it is not granted: once the user has
     /// denied it, the system no longer asks.
     func requestDirectPasteAccess() {
+        hasRequestedAccess = true
         if !system.requestPostEventAccess() { system.openAccessibilitySettings() }
+    }
+
+    /// Whether Keeptide can paste directly, for Settings and the panel to say. It only asks the system.
+    func accessState() -> DirectPasteAccessState {
+        DirectPasteAccessState(canPostEvents: system.canPostEvents(), isTrusted: system.isAccessibilityTrusted(),
+                               accessRequested: hasRequestedAccess)
     }
 
     func execute(_ request: PasteRequest) async -> PasteOutcome {

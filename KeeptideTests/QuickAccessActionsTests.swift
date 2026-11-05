@@ -35,14 +35,14 @@ final class QuickAccessActionsTests: XCTestCase {
         for kind in [ContentKind.text, .url] {
             assertActions(.make(target: .terminal, availability: .copy(.notPermitted), kind: kind),
                           primary: "Copy Command", plainText: nil, copyOnly: Self.copyCommandAsIs, enable: true,
-                          "\(kind)")
+                          hint: "Direct paste is off", "\(kind)")
         }
         // A terminal's image, file or other clip is copied like any other clip's, and Copy As-Is still copies it
         // whole.
         for kind in [ContentKind.image, .file, .other] {
             assertActions(.make(target: .terminal, availability: .copy(.notPermitted), kind: kind),
                           primary: "Copy", plainText: "Copy as Plain Text", copyOnly: Self.copyAsIs, enable: true,
-                          "\(kind)")
+                          hint: "Direct paste is off", "\(kind)")
         }
     }
 
@@ -79,8 +79,8 @@ final class QuickAccessActionsTests: XCTestCase {
             (.secureInput, "Secure input is on"),
             (.cannotSendKeystroke, "⌘V isn't on this keyboard layout"),
             (.testSessionTarget, "Test sessions paste only into the system test host"),
-            // The menu offers Enable Direct Paste… instead.
-            (.notPermitted, nil),
+            // Return only copies, and the menu offers Enable Direct Paste… as well.
+            (.notPermitted, "Direct paste is off"),
             (.targetChanged, nil),
         ]
         for (reason, hint) in reasons {
@@ -97,24 +97,25 @@ final class QuickAccessActionsTests: XCTestCase {
         }
     }
 
-    func testAfterAskingForAccessTheHintSaysToReopenKeeptide() {
+    func testWhileAccessAwaitsAReopenTheHintSaysToReopenKeeptide() {
         // Access granted in System Settings reaches Keeptide only once it reopens, so the panel says so.
         for (target, kind) in [(PasteTarget.textEdit, ContentKind.text), (.terminal, .image), (.terminal, .text)] {
-            let asked = QuickAccessActions.make(target: target, availability: .copy(.notPermitted), kind: kind,
-                                                accessRequested: true)
-            XCTAssertEqual(asked.hint, "Reopen Keeptide to finish turning on direct paste", "\(target.name), \(kind)")
-            XCTAssertTrue(asked.offersEnableDirectPaste, "\(target.name), \(kind)")
-            let notAsked = QuickAccessActions.make(target: target, availability: .copy(.notPermitted), kind: kind,
-                                                   accessRequested: false)
-            XCTAssertNil(notAsked.hint, "\(target.name), \(kind)")
+            let waiting = QuickAccessActions.make(target: target, availability: .copy(.notPermitted), kind: kind,
+                                                  awaitsReopen: true)
+            XCTAssertEqual(waiting.hint, "Reopen Keeptide to finish turning on direct paste",
+                           "\(target.name), \(kind)")
+            XCTAssertTrue(waiting.offersEnableDirectPaste, "\(target.name), \(kind)")
+            let off = QuickAccessActions.make(target: target, availability: .copy(.notPermitted), kind: kind,
+                                              awaitsReopen: false)
+            XCTAssertEqual(off.hint, "Direct paste is off", "\(target.name), \(kind)")
         }
-        // Asking changes nothing for the other reasons.
+        // A reopen changes nothing for the other reasons.
         XCTAssertEqual(QuickAccessActions.make(target: .textEdit, availability: .copy(.secureInput), kind: .text,
-                                               accessRequested: true).hint, "Secure input is on")
+                                               awaitsReopen: true).hint, "Secure input is on")
         XCTAssertNil(QuickAccessActions.make(target: .textEdit, availability: .copy(.targetChanged), kind: .text,
-                                             accessRequested: true).hint)
+                                             awaitsReopen: true).hint)
         XCTAssertNil(QuickAccessActions.make(target: .textEdit, availability: .paste(.textEdit), kind: .text,
-                                             accessRequested: true).hint)
+                                             awaitsReopen: true).hint)
     }
 
     func testConfirmTitlesFollowTheReviewDelivery() {

@@ -20,10 +20,10 @@ struct QuickAccessActions: Equatable {
     var hint: String?
 
     /// `availability` is what the session's checks found as the panel opened, nil without a library; `kind` is the
-    /// selected row's, nil with nothing selected. `accessRequested` says whether direct paste access was asked for
-    /// in this run of Keeptide.
+    /// selected row's, nil with nothing selected. `awaitsReopen` says that Keeptide is allowed, or asked for access in
+    /// this run, but can send keystrokes only once it reopens.
     static func make(target: PasteTarget?, availability: DirectPasteAvailability?, kind: ContentKind?,
-                     accessRequested: Bool = false) -> QuickAccessActions {
+                     awaitsReopen: Bool = false) -> QuickAccessActions {
         var actions = QuickAccessActions(primaryTitle: "Copy", plainTextTitle: "Copy as Plain Text", copyOnlyTitle: nil,
                                          copyOnlyMode: .original, offersEnableDirectPaste: false, hint: nil)
         // With no target, or no library to check it, the panel copies as it did before direct paste.
@@ -34,7 +34,7 @@ struct QuickAccessActions: Equatable {
         case .copy(let reason): fallback = reason
         }
         actions.offersEnableDirectPaste = fallback == .notPermitted
-        actions.hint = fallback.flatMap { hint(for: $0, accessRequested: accessRequested) }
+        actions.hint = fallback.flatMap { hint(for: $0, awaitsReopen: awaitsReopen) }
         if target.isTerminal, kind == .text || kind == .url {
             // Only Copy As-Is keeps the clip as captured, trailing line break included.
             actions.primaryTitle = fallback == nil ? "Paste Command" : "Copy Command"
@@ -66,16 +66,16 @@ struct QuickAccessActions: Equatable {
         }
     }
 
-    /// The reasons the user can act on. Without permission the menu offers Enable Direct Paste… instead, until access
-    /// was asked for: the system lets Keeptide see it granted only once Keeptide reopens. A changed window or no
-    /// target needs nothing from the user, and a held Return is found only as a paste is sent, never as the panel
-    /// opens.
-    private static func hint(for fallback: DirectPasteFallback, accessRequested: Bool) -> String? {
+    /// The reasons the user can act on. Without permission Return only copies, which the panel says, and the menu
+    /// offers Enable Direct Paste…; once Keeptide is allowed, the system lets it send keystrokes only after it reopens,
+    /// which the panel says instead. A changed window or no target needs nothing from the user, and a held Return is
+    /// found only as a paste is sent, never as the panel opens.
+    private static func hint(for fallback: DirectPasteFallback, awaitsReopen: Bool) -> String? {
         switch fallback {
         case .secureInput: "Secure input is on"
         case .cannotSendKeystroke: "⌘V isn't on this keyboard layout"
         case .testSessionTarget: "Test sessions paste only into the system test host"
-        case .notPermitted: accessRequested ? "Reopen Keeptide to finish turning on direct paste" : nil
+        case .notPermitted: awaitsReopen ? "Reopen Keeptide to finish turning on direct paste" : "Direct paste is off"
         case .targetChanged, .noTarget, .returnHeld: nil
         }
     }

@@ -1735,7 +1735,7 @@ final class QuickAccessStateTests: XCTestCase {
         state.open()
         try await settled(state)
         XCTAssertEqual(state.directPaste, .copy(.notPermitted))
-        XCTAssertNil(state.actions.hint)
+        XCTAssertEqual(state.actions.hint, "Direct paste is off")
 
         // Access is granted in System Settings, which this run of Keeptide cannot see yet.
         state.requestDirectPasteAccess()
@@ -1747,6 +1747,24 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.directPaste, .copy(.notPermitted))
         XCTAssertEqual(state.actions.hint, "Reopen Keeptide to finish turning on direct paste")
         XCTAssertTrue(state.actions.offersEnableDirectPaste)
+    }
+
+    func testAShowingWhileKeeptideIsAllowedButNotYetReopenedSaysToReopen() async throws {
+        // Allowed in Accessibility before this run asked for anything, as when the grant came from System Settings
+        // directly: this run still cannot send keystrokes, and the panel says why.
+        let fake = FakeDirectPasteSystem()
+        fake.permitted = false
+        fake.trusted = true
+        let fixture = try makeFixture(system: fake.system)
+        try await insert("copy me", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        XCTAssertEqual(state.directPaste, .copy(.notPermitted))
+        XCTAssertEqual(state.actions.primaryTitle, "Copy")
+        XCTAssertEqual(state.actions.hint, "Reopen Keeptide to finish turning on direct paste")
+        XCTAssertEqual(fake.accessRequests, 0)
     }
 
     func testAShowingThatOpenedAsCopyOnlyCopiesWhateverItIsAsked() async throws {

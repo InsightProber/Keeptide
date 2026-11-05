@@ -18,11 +18,32 @@ enum DirectPasteKeystroke {
     }
 }
 
+/// Whether Keeptide can paste directly, as Settings and the panel say it.
+enum DirectPasteAccessState: Equatable, Sendable {
+    /// This run of Keeptide may send ⌘V.
+    case on
+    /// Keeptide is allowed in Accessibility, or this run asked for access, but this run still cannot send ⌘V: the
+    /// system lets Keeptide use a grant once it reopens.
+    case awaitsReopen
+    case off
+
+    init(canPostEvents: Bool, isTrusted: Bool, accessRequested: Bool) {
+        if canPostEvents {
+            self = .on
+        } else {
+            self = isTrusted || accessRequested ? .awaitsReopen : .off
+        }
+    }
+}
+
 /// Everything direct paste asks of the system. Tests inject a fake or `unavailable`.
 @MainActor
 struct DirectPasteSystem {
     var frontmostTarget: () -> PasteTarget?
     var canPostEvents: () -> Bool
+    /// Whether Keeptide is allowed in Accessibility now. Unlike `canPostEvents`, the system answers it afresh, so it
+    /// can tell that a grant made while Keeptide runs waits for a reopen. It never decides whether to paste.
+    var isAccessibilityTrusted: () -> Bool
     var requestPostEventAccess: () -> Bool
     var openAccessibilitySettings: () -> Void
     var isSecureInputEnabled: () -> Bool
@@ -48,6 +69,7 @@ struct DirectPasteSystem {
             // Preflight answers for this process: after the user grants access, posting works at
             // once, but preflight stays false until Keeptide relaunches.
             canPostEvents: { CGPreflightPostEventAccess() },
+            isAccessibilityTrusted: { AXIsProcessTrusted() },
             requestPostEventAccess: { CGRequestPostEventAccess() },
             openAccessibilitySettings: {
                 guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
@@ -68,7 +90,8 @@ struct DirectPasteSystem {
     }
 
     static var unavailable: DirectPasteSystem {
-        DirectPasteSystem(frontmostTarget: { nil }, canPostEvents: { false }, requestPostEventAccess: { false },
+        DirectPasteSystem(frontmostTarget: { nil }, canPostEvents: { false }, isAccessibilityTrusted: { false },
+                          requestPostEventAccess: { false },
                           openAccessibilitySettings: {}, isSecureInputEnabled: { false }, commandVKeyCode: { nil },
                           postCommandV: { _ in false })
     }
