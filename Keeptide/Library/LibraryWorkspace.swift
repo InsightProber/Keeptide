@@ -24,6 +24,9 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     let kind: ContentKind
     let isMemo: Bool
     var isFavorite = false
+    var sourceApp: String? = nil
+    /// The memo's collection; nil for an unfiled memo and for every clip.
+    var collectionID: CollectionID? = nil
 }
 
 struct RecoveredDraftSummary: Identifiable, Equatable, Sendable {
@@ -38,6 +41,23 @@ enum LibraryWorkspaceError: Error, Equatable {
     case unavailableSelection
     case saveFailed
     case searchUnavailable
+    /// A clip's content is not complete, so it cannot become a memo yet.
+    case contentUnavailable
+}
+
+/// What a batch save did, in request order.
+struct HistorySaveOutcome: Sendable {
+    /// The memos this call created.
+    var saved: [ContentRef] = []
+    /// The memos of clips that already had one; nothing was written for them.
+    var alreadySaved: [ContentRef] = []
+    /// The clip that stopped the batch, and why; the clips after it were not attempted.
+    var failure: HistorySaveFailure?
+}
+
+struct HistorySaveFailure: Sendable {
+    let ref: ContentRef
+    let error: any Error
 }
 
 @MainActor @Observable
@@ -412,7 +432,11 @@ final class LibraryWorkspace {
         message = nil
     }
 
-    func saveSelectedHistory() async throws -> SaveMemoOutcome {
+    /// Saves the selected clip as a memo, straight into `collectionID` and as a favorite when asked, in one
+    /// transaction. The editor then holds the memo, and a new save can be undone.
+    func saveSelectedHistory(
+        collectionID: CollectionID? = nil, isFavorite: Bool = false
+    ) async throws -> SaveMemoOutcome {
         guard let current = editor, let ref = current.ref else {
             throw LibraryWorkspaceError.unavailableSelection
         }
@@ -422,13 +446,16 @@ final class LibraryWorkspace {
         let outcome: SaveMemoOutcome
         let snapshot: MemoEditingSnapshot
         do {
-            outcome = try await libraryService.saveAsMemo(ref.itemID, expecting: storeIdentity)
+            outcome = try await libraryService.saveAsMemo(
+                ref.itemID, collectionID: collectionID, isFavorite: isFavorite, expecting: storeIdentity
+            )
             snapshot = try await libraryService.editingSnapshot(outcome.ref)
         } catch {
             message = "This clip could not be saved as a snippet."
             throw error
         }
         guard navigation == navigationGeneration, editor?.draftID == draftID, editor?.ref == ref else {
+            if case .created = outcome { await refreshRowsAfterSave() }
             return outcome
         }
         if case .created = outcome {
@@ -440,7 +467,60 @@ final class LibraryWorkspace {
         }
         install(makeSession(snapshot), preservingUndo: true)
         selectedEntryID = ref.itemID
+        if case .created = outcome { await refreshRowsAfterSave() }
         return outcome
+    }
+
+    /// Saves several clips as memos, one transaction each, in the order given. Every clip's content is read first:
+    /// one that is not complete stops the batch before anything is written. A failure while saving stops it too; the
+    /// memos saved before it stay, and the clips after it are left alone. Clips that already have a memo are reported,
+    /// not failed. No editing session is installed, and the single-clip undo is untouched.
+    func saveHistory(
+        _ refs: [ContentRef], collectionID: CollectionID? = nil, isFavorite: Bool = false
+    ) async -> HistorySaveOutcome {
+        var outcome = HistorySaveOutcome()
+        guard !isClosing, !isClosed else { return outcome }
+        for ref in refs where ref.facet == .history {
+            do {
+                guard try await repository.read(ref).integrity == .complete else {
+                    throw LibraryWorkspaceError.contentUnavailable
+                }
+            } catch {
+                outcome.failure = HistorySaveFailure(ref: ref, error: error)
+                return outcome
+            }
+        }
+        for ref in refs {
+            if ref.facet == .memo {
+                outcome.alreadySaved.append(ref)
+                continue
+            }
+            do {
+                switch try await libraryService.saveAsMemo(
+                    ref.itemID, collectionID: collectionID, isFavorite: isFavorite, expecting: storeIdentity
+                ) {
+                case .created(let memo): outcome.saved.append(memo)
+                case .existing(let memo): outcome.alreadySaved.append(memo)
+                }
+            } catch {
+                outcome.failure = HistorySaveFailure(ref: ref, error: error)
+                break
+            }
+        }
+        if !outcome.saved.isEmpty { await refreshRowsAfterSave() }
+        return outcome
+    }
+
+    /// A row's bookmark comes from the index, which the consumer brings up to date on its own later. After a save
+    /// the index is refreshed and the list reloaded, so the bookmark shows at once.
+    private func refreshRowsAfterSave() async {
+        guard !isClosing, !isClosed else { return }
+        do {
+            try await refreshSearch()
+            if !isClosing, !isClosed { await reload(refreshIndex: false) }
+        } catch {
+            message = "Saved. Library results are still updating."
+        }
     }
 
     func undoNewSave() async throws -> Bool {
@@ -751,6 +831,8 @@ final class LibraryWorkspace {
             for try await page in searchService.search(SearchRequest(
                 query: query, scope: searchScope, collection: collection,
                 favoritesOnly: scope == .favorites,
+                // An owned memo's copy time is its creation time and never moves, so memos are listed by use.
+                order: searchScope == .memo ? .lastUsed : .lastCopied,
                 generation: generation, offset: offset, limit: 100
             )) where page.generation == generation {
                 latest = page.results
@@ -774,7 +856,8 @@ final class LibraryWorkspace {
             guard let ref else { return nil }
             return LibraryEntry(
                 id: summary.itemID, ref: ref, title: summary.title, snippet: nil,
-                lastCopiedAt: summary.lastCopiedAt, kind: summary.kind, isMemo: summary.memo != nil
+                lastCopiedAt: summary.lastCopiedAt, kind: summary.kind, isMemo: summary.memo != nil,
+                sourceApp: summary.sourceApp
             )
         }
         let page = Array(all.dropFirst(offset).prefix(100))
@@ -828,7 +911,7 @@ final class LibraryWorkspace {
             id: result.ref.itemID, ref: result.ref, title: result.title,
             snippet: result.snippet?.text, lastCopiedAt: result.lastCopiedAt,
             kind: result.kind, isMemo: result.ref.facet == .memo || result.savedAsMemo,
-            isFavorite: result.isFavorite
+            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionID
         )
     }
 
@@ -836,7 +919,8 @@ final class LibraryWorkspace {
         guard let ref = summary.history else { return nil }
         return LibraryEntry(
             id: summary.itemID, ref: ref, title: summary.title, snippet: nil,
-            lastCopiedAt: summary.lastCopiedAt, kind: summary.kind, isMemo: summary.memo != nil
+            lastCopiedAt: summary.lastCopiedAt, kind: summary.kind, isMemo: summary.memo != nil,
+            sourceApp: summary.sourceApp
         )
     }
 

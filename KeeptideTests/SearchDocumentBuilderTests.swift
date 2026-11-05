@@ -115,7 +115,8 @@ final class SearchDocumentBuilderTests: XCTestCase {
         let history = try XCTUnwrap(documents.first { $0.ref.facet == .history })
         let memo = try XCTUnwrap(documents.first { $0.ref.facet == .memo })
 
-        XCTAssertFalse(history.savedAsMemo)
+        // An edited snippet still marks its clip's row as saved; only an inherited one lends its title and note.
+        XCTAssertTrue(history.savedAsMemo)
         XCTAssertEqual(history.title, "Item title")
         XCTAssertEqual(history.kind, .image)
         XCTAssertFalse(memo.merged)

@@ -27,6 +27,13 @@ enum SearchError: Error, Equatable {
     case invalidRequest
 }
 
+/// How an empty query lists its rows; a query ranks by relevance instead.
+enum SearchOrder: String, Sendable {
+    case lastCopied
+    /// The last local use, or the copy time for a row never used.
+    case lastUsed
+}
+
 struct SearchRequest: Sendable {
     /// Literal text; never interpreted as SQL or FTS syntax.
     var query: String
@@ -36,6 +43,7 @@ struct SearchRequest: Sendable {
     var collection: CollectionFilter?
     var sourceApp: String?
     var favoritesOnly = false
+    var order: SearchOrder = .lastCopied
     var generation: UInt64
     var offset = 0
     var limit = 200
@@ -59,6 +67,8 @@ struct SearchResult: Equatable, Sendable {
     let lastCopiedAt: Date
     let savedAsMemo: Bool
     let isFavorite: Bool
+    /// The memo's collection; nil for an unfiled memo and for every history row.
+    let collectionID: CollectionID?
     let isPartiallyIndexed: Bool
     let isTextUnavailable: Bool
 }
@@ -221,9 +231,10 @@ struct SearchService: Sendable {
         let filter = conditions(query, request, &builder)
         let limit = builder.bind(.integer(Int64(request.limit)))
         let offset = builder.bind(.integer(Int64(request.offset)))
+        let (usage, ordering) = Self.browseOrdering(request.order)
         let rows = try reader.rows("""
-            SELECT d.id FROM doc d WHERE \(filter)
-            ORDER BY d.last_copied_at DESC, d.item_id, d.facet LIMIT \(limit) OFFSET \(offset)
+            SELECT d.id FROM doc d\(usage) WHERE \(filter)
+            ORDER BY \(ordering) LIMIT \(limit) OFFSET \(offset)
             """, builder.bindings)
         let keys = try rows.map { row -> (id: Int64, tier: Int64) in
             guard case .integer(let id) = row[0] else { throw SearchIndexError.corrupt }
@@ -231,6 +242,18 @@ struct SearchService: Sendable {
         }
         return page(request, query, try results(for: keys, query: query, reader), total: total, complete: true,
                     state: state)
+    }
+
+    /// The join and `ORDER BY` of a browse. A row never used keeps its copy time; a used row takes its last use
+    /// instead, even one earlier than the copy.
+    private static func browseOrdering(_ order: SearchOrder) -> (join: String, orderBy: String) {
+        switch order {
+        case .lastCopied:
+            return ("", "d.last_copied_at DESC, d.item_id, d.facet")
+        case .lastUsed:
+            return (" LEFT JOIN usage u ON u.item_id = d.item_id AND u.facet = d.facet",
+                    "COALESCE(u.last_used_at, d.last_copied_at) DESC, d.last_copied_at DESC, d.item_id, d.facet")
+        }
     }
 
     private func ranked(
@@ -392,13 +415,13 @@ struct SearchService: Sendable {
         let rows = try reader.rows("""
             SELECT d.id, d.item_id, d.facet, d.version, d.digest, d.saved_as_memo, d.kind, d.source_app,
                    d.last_copied_at, d.title, d.body_partial, d.is_favorite, \(hits.joined(separator: ", ")),
-                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable
+                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable, d.collection_id
             FROM doc d WHERE d.id IN (\(ids))
             """, builder.bindings)
         var byID: [Int64: SearchResult] = [:]
         let tiers = Dictionary(keys.map { ($0.id, $0.tier) }, uniquingKeysWith: { first, _ in first })
         for row in rows {
-            guard row.count == 20, case .integer(let id) = row[0], let itemID = row[1].uuid,
+            guard row.count == 21, case .integer(let id) = row[0], let itemID = row[1].uuid,
                   case .text(let facetText) = row[2], let facet = ContentFacet(rawValue: facetText),
                   let version = row[3].uuid, case .blob(let digest) = row[4],
                   case .integer(let savedAsMemo) = row[5], case .text(let kindText) = row[6],
@@ -423,7 +446,9 @@ struct SearchService: Sendable {
                 relevance: SearchRelevance(rawValue: Int(tiers[id] ?? 4)) ?? .allTermsAnywhere,
                 kind: kind, sourceApp: row[7].text,
                 lastCopiedAt: Date(timeIntervalSinceReferenceDate: copiedAt),
-                savedAsMemo: savedAsMemo != 0, isFavorite: favorite != 0, isPartiallyIndexed: partial != 0,
+                savedAsMemo: savedAsMemo != 0, isFavorite: favorite != 0,
+                collectionID: row[20].uuid.map(CollectionID.init(rawValue:)),
+                isPartiallyIndexed: partial != 0,
                 isTextUnavailable: unavailable != 0
             )
         }
