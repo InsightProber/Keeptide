@@ -348,8 +348,17 @@ struct LibraryView: View {
         }
     }
 
-    @ViewBuilder
+    /// The list the sidebar chooses. Why new copies are not kept shows over it, unless it is Recently Deleted, which new
+    /// copies never reach.
     private var contentColumn: some View {
+        VStack(spacing: 0) {
+            if selectedScope != .recentlyDeleted, let notice = session.captureNotice { captureNoticeLine(notice) }
+            scopeColumn
+        }
+    }
+
+    @ViewBuilder
+    private var scopeColumn: some View {
         if selectedScope == .recentlyDeleted {
             if let maintenance = session.maintenance {
                 RecentlyDeletedView(maintenance: maintenance)
@@ -363,9 +372,10 @@ struct LibraryView: View {
             }
         } else if selectedScope == .recentClips {
             VStack(spacing: 0) {
-                captureStatus
-                if session.actionMessage != nil { actionStatus.padding(12) }
-                Divider()
+                if session.actionMessage != nil {
+                    actionStatus.padding(12)
+                    Divider()
+                }
                 if let workspace = session.libraryWorkspace {
                     snippetList(workspace, recentStyle: true)
                 } else if let error = session.libraryInitializationError {
@@ -393,43 +403,17 @@ struct LibraryView: View {
         }
     }
 
-    private var captureStatus: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: session.isRecording ? "record.circle.fill" : "pause.circle")
-                    .foregroundStyle(session.isRecording ? Color.accentColor : Color.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(captureHeadline)
-                        .font(.headline)
-                    Text(session.status)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .accessibilityIdentifier("CaptureStatus")
-                }
-                Spacer()
-            }
-            HStack {
-                Button {
-                    session.preferences.isEnabled.toggle()
-                } label: {
-                    Label(
-                        session.isRecording ? "Pause Recording" : "Resume Recording",
-                        systemImage: session.isRecording ? "pause.fill" : "record.circle"
-                    )
-                }
-                .accessibilityIdentifier("CaptureRecordingToggle")
-                .disabled(!session.canToggleRecording)
-
-                Button {
-                    showsIgnoredApplications = true
-                } label: {
-                    Label("Ignored Apps", systemImage: "hand.raised")
-                }
-                .accessibilityIdentifier("IgnoredApplications")
-            }
+    /// Why new copies are not kept, while that is so. While they are kept, nothing is said.
+    private func captureNoticeLine(_ notice: String) -> some View {
+        VStack(spacing: 0) {
+            Label(notice, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(12)
+                .accessibilityIdentifier("CaptureStatus")
+            Divider()
         }
-        .padding(12)
         .background(.regularMaterial)
     }
 
@@ -896,12 +880,6 @@ struct LibraryView: View {
             if !selected.isEmpty { return selected }
         }
         return [entry]
-    }
-
-    private var captureHeadline: String {
-        if session.isPausing { return "Pausing recording…" }
-        if session.isRecording { return "Recording new copies" }
-        return session.isReady ? "Recording paused" : "Recording unavailable"
     }
 
     @ViewBuilder

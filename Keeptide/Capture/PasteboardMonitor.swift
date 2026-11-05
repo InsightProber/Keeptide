@@ -2,29 +2,21 @@ import Foundation
 import Observation
 
 enum CaptureMonitorState: Equatable {
-    case stopped, recording, reading, pausing
-    case skipped(String), failed(String)
-
-    var message: String {
-        switch self {
-        case .stopped: "Not recording"
-        case .recording: "Recording"
-        case .reading: "Reading new copy…"
-        case .pausing: "Pausing… finishing the current operation"
-        case .skipped(let message), .failed(let message): message
-        }
-    }
+    /// Watching the clipboard, and keeping each new copy.
+    case watching
+    /// The last new copy could not be kept, for this reason: the system denies Keeptide the clipboard, the disk is full,
+    /// or the copy could not be read whole or is too large. Watching goes on and each new copy is tried, and the reason
+    /// holds until one is kept.
+    case interrupted(String)
+    /// The library takes no new copies until Keeptide reopens, for this reason, and the clipboard is no longer watched.
+    case failed(String)
+    /// No longer watching, as when the library closes.
+    case stopped
 }
 
 @MainActor @Observable
 final class PasteboardMonitor {
-    private(set) var state: CaptureMonitorState = .stopped
-    var status: String { state.message }
-    var isPausing: Bool { state == .pausing }
-    var isRecording: Bool {
-        guard preferences.isEnabled, !stopping else { return false }
-        switch state { case .recording, .reading, .skipped: return true; default: return false }
-    }
+    private(set) var state: CaptureMonitorState = .watching
     private struct CopyObservation { let count: Int; let source: String? }
     @ObservationIgnored private let reader: any SnapshotReading
     @ObservationIgnored private let service: CaptureService
@@ -39,40 +31,50 @@ final class PasteboardMonitor {
     @ObservationIgnored private var permit: CapturePermit?
     @ObservationIgnored private var pollingTask: Task<Void, Never>?
     @ObservationIgnored private var captureTask: Task<Void, Never>?
-    @ObservationIgnored private var started = false
     @ObservationIgnored private var stopping = false
-    @ObservationIgnored private var enabled: Bool
     @ObservationIgnored private var ownWrite: OwnWriteToken?
     @ObservationIgnored var onCapture: (() async -> Void)?
     @ObservationIgnored var onUnavailable: (() -> Void)?
     @ObservationIgnored var onStorageFull: (() async -> Void)?
     @ObservationIgnored private var retryAfter: ContinuousClock.Instant?
 
+    /// What the clipboard already holds is never kept: only the copies made after this.
     init(reader: any SnapshotReading, service: CaptureService, preferences: CapturePreferences,
          sourceApp: @escaping () -> String?, matchesOwnWrite: @escaping (OwnWriteToken) -> Bool) {
         self.reader = reader; self.service = service; self.preferences = preferences
         self.sourceApp = sourceApp; self.matchesOwnWrite = matchesOwnWrite
         observedCount = reader.changeCount; processedCount = observedCount
-        observedSource = sourceApp(); enabled = preferences.isEnabled
-        state = enabled ? .recording : .stopped
+        observedSource = sourceApp()
         preferences.onChange = { [weak self] in self?.preferencesChanged() }
     }
 
     isolated deinit { pollingTask?.cancel(); captureTask?.cancel(); permit?.revoke() }
 
-    func start() { started = true; stopping = false; updatePolling() }
-
-    func stop() {
-        started = false; stopping = true
-        pollingTask?.cancel(); pollingTask = nil
-        permit?.revoke(); captureTask?.cancel()
-        state = captureTask == nil ? .stopped : .pausing
+    /// Watches the clipboard, sampling it four times a second.
+    func start() {
+        stopping = false
+        guard pollingTask == nil else { return }
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard self != nil else { return }
+                self?.sampleAndStart()
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            }
+        }
     }
 
+    /// Stops watching, and lets go of the copy being read: nothing of it is kept.
+    func stop() {
+        stopping = true
+        pollingTask?.cancel(); pollingTask = nil
+        permit?.revoke(); captureTask?.cancel()
+        state = .stopped
+    }
+
+    /// Stops, then waits for the copy being read to let go, so that the library can close after it.
     func stopAndDrain() async {
         stop()
         await captureTask?.value
-        state = .stopped
     }
 
     func suppressOwnWrite(_ token: OwnWriteToken) { ownWrite = token }
@@ -97,7 +99,7 @@ final class PasteboardMonitor {
     }
 
     private func sampleAndStart() {
-        guard !stopping, preferences.isEnabled else { return }
+        guard !stopping else { return }
         if case .failed = state { return }
         if let retryAfter, ContinuousClock.now < retryAfter { return }
         retryAfter = nil
@@ -108,26 +110,19 @@ final class PasteboardMonitor {
               observation.count != processedCount else { return }
         pending = nil
         processedCount = observation.count
+        // Keeptide's own copy, from the library or quick access, is not a new copy.
         if let token = ownWrite {
             ownWrite = nil
-            if token.changeCount == observation.count, matchesOwnWrite(token) {
-                state = .recording
-                return
-            }
+            if token.changeCount == observation.count, matchesOwnWrite(token) { return }
         }
-        guard sourceIsAllowed(observation.source) else {
-            state = .skipped("Recording · ignored or unknown source skipped")
-            return
-        }
+        // A copy from an ignored app, or from an unknown one while apps are ignored, is never read.
+        guard sourceIsAllowed(observation.source) else { return }
         let admission = CapturePermit()
-        permit = admission; active = observation; state = .reading
+        permit = admission; active = observation
         captureTask = Task { [weak self] in
             guard let self else { return }
             await self.process(observation, admission: admission)
             self.captureTask = nil; self.active = nil; self.permit = nil
-            if self.state == .pausing || self.state == .reading {
-                self.state = !self.stopping && self.preferences.isEnabled ? .recording : .stopped
-            }
         }
     }
 
@@ -137,6 +132,9 @@ final class PasteboardMonitor {
             excludedSourceApps: Set(preferences.excludedApplications)) == .capture
     }
 
+    /// Reads and keeps one new copy. A copy kept ends any interruption, and one that fails says why it was not kept. A
+    /// copy Keeptide skips without a word, such as a private one, and one that a newer copy replaced, leave the state as
+    /// it was.
     private func process(_ observation: CopyObservation, admission: CapturePermit) async {
         do {
             let snapshot = try await reader.readAsynchronously(sourceApp: observation.source, expectedChangeCount: observation.count)
@@ -144,40 +142,40 @@ final class PasteboardMonitor {
             _ = try await service.capture(snapshot, permit: admission, isCurrent: { [weak self] in
                 await MainActor.run {
                     guard let self else { return false }
-                    return !self.stopping && self.preferences.isEnabled && admission.isValid
+                    return !self.stopping && admission.isValid
                         && self.reader.changeCount == observation.count
                         && self.sourceIsAllowed(observation.source)
                 }
             })
-            if !stopping && preferences.isEnabled { state = .recording }
+            if !stopping, state != .watching { state = .watching }
             await onCapture?()
         } catch {
-            // Pause, shutdown and replacement own the final state, including when
-            // a provider reports a late error after its permission was revoked.
-            guard admission.isValid, !Task.isCancelled, !stopping, preferences.isEnabled else { return }
+            // A stop and a replacement own the final state, including when a provider reports a late error after its
+            // permission was revoked.
+            guard admission.isValid, !Task.isCancelled, !stopping else { return }
             if error is CancellationError || error as? CaptureError == .staleSnapshot {
-                state = .recording
+                // A newer copy replaced this one, and is read in its place.
             } else if error as? StoreError == .maintenanceInProgress {
-                // Retry only this observed copy. A newer clipboard count, Pause,
-                // or shutdown invalidates it through the existing admission path.
+                // Retry only this observed copy. A newer clipboard count, or a
+                // stop, invalidates it through the existing admission path.
                 pending = observation
                 processedCount = observation.count &- 1
                 retryAfter = ContinuousClock.now.advanced(by: .milliseconds(250))
-                state = .skipped("Recording · waiting for library maintenance")
             } else if error as? StoreError == .operationDenied {
                 pollingTask?.cancel(); pollingTask = nil
-                state = .failed("Recording requires a newer Keeptide version or library recovery. Existing content is preserved.")
+                state = .failed("Keeping new copies requires a newer Keeptide version or library recovery. Existing content is preserved.")
                 onUnavailable?()
             } else if DiskPressurePolicy.isOutOfSpace(error) {
-                preferences.isEnabled = false
-                state = .failed("Recording paused because storage is full. Free space, then resume and copy this item again.")
-                await onStorageFull?()
-            } else if let error = error as? SnapshotReaderError {
-                handle(error)
-            } else if let error = error as? CaptureError,
-                      [.emptySnapshot, .privacyRestricted, .oversized].contains(error) {
-                state = .skipped("Recording · unsupported or private copy skipped")
-            } else {
+                // The rebuildable search cache is cleared as the disk fills. Copies that find it still full only try
+                // to be kept.
+                let full = CaptureMonitorState.interrupted("Storage is full. Free some space to keep new copies.")
+                if state != full {
+                    state = full
+                    await onStorageFull?()
+                }
+            } else if let reason = Self.reasonNotKept(error) {
+                state = .interrupted(reason)
+            } else if !Self.isSkippedQuietly(error) {
                 pollingTask?.cancel(); pollingTask = nil
                 state = .failed("The local library is unavailable. Reopen Keeptide to retry.")
                 onUnavailable?()
@@ -185,48 +183,41 @@ final class PasteboardMonitor {
         }
     }
 
-    private func handle(_ error: SnapshotReaderError) {
+    /// Why a copy was not kept, when the system denied Keeptide the clipboard, when the copy could not be read whole,
+    /// or when it is too large; nil for any other error.
+    private static func reasonNotKept(_ error: any Error) -> String? {
+        let tooLarge = "The last copy was not kept because it is larger than 50 MiB."
+        if error as? CaptureError == .oversized { return tooLarge }
+        guard let error = error as? SnapshotReaderError else { return nil }
         switch error {
         case .permissionDenied:
-            preferences.isEnabled = false
-            state = .failed("Clipboard access denied. Allow Keeptide in System Settings, then resume recording.")
-        case .privacyRestricted: state = .skipped("Recording · private content skipped")
-        case .unsupportedType: state = .skipped("Skipped copy with an unsupported format identifier")
-        case .payloadTooLarge: state = .skipped("Skipped copy larger than 50 MiB")
-        case .emptyPasteboard: state = .skipped("Recording · no readable content")
-        case .changedDuringRead: state = .skipped("Recording · clipboard changed during reading")
-        case .incompleteRepresentation: state = .skipped("Skipped copy with an unavailable format")
-        case .readerUnavailable: state = .skipped("Clipboard reader stopped. Copy the content again to retry.")
-        case .readTimedOut: state = .skipped("Clipboard reader timed out. Copy the content again to retry.")
+            return "Clipboard access is denied. Allow Keeptide in System Settings to keep new copies."
+        case .readerUnavailable:
+            return "The last copy was not kept because Keeptide could not read the clipboard. Copy it again to retry."
+        case .readTimedOut:
+            return "The last copy was not kept because it took too long to read. Copy it again to retry."
+        case .payloadTooLarge:
+            return tooLarge
+        case .incompleteRepresentation:
+            return "The last copy was not kept because part of it could not be read. Copy it again to retry."
+        case .unsupportedType:
+            return "The last copy was not kept because its format is not supported."
+        case .privacyRestricted, .emptyPasteboard, .changedDuringRead:
+            return nil
         }
     }
 
+    /// A copy Keeptide skips without a word: a private or empty one, or one that changed while it was read. The next
+    /// copy is tried as ever.
+    private static func isSkippedQuietly(_ error: any Error) -> Bool {
+        if error is SnapshotReaderError { return true }
+        guard let error = error as? CaptureError else { return false }
+        return [.emptySnapshot, .privacyRestricted].contains(error)
+    }
+
+    /// A copy being read from an app that has just been ignored is let go.
     private func preferencesChanged() {
-        if enabled != preferences.isEnabled {
-            enabled = preferences.isEnabled
-            permit?.revoke(); captureTask?.cancel()
-            observedCount = reader.changeCount; processedCount = observedCount; pending = nil
-            observedSource = sourceApp()
-            state = !enabled && captureTask != nil ? .pausing : (enabled ? .recording : .stopped)
-        } else if let active, !sourceIsAllowed(active.source) {
-            permit?.revoke(); captureTask?.cancel()
-            state = .skipped("Recording · ignored app skipped")
-        }
-        updatePolling()
-    }
-
-    private func updatePolling() {
-        guard started, preferences.isEnabled, !stopping else {
-            pollingTask?.cancel(); pollingTask = nil
-            return
-        }
-        guard pollingTask == nil else { return }
-        pollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard self != nil else { return }
-                self?.sampleAndStart()
-                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-            }
-        }
+        guard let active, !sourceIsAllowed(active.source) else { return }
+        permit?.revoke(); captureTask?.cancel()
     }
 }

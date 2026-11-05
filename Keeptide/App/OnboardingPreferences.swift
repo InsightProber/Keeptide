@@ -10,11 +10,14 @@ final class OnboardingPreferences {
     static let currentVersion = 1
     static let completedVersionKey = "onboarding.completedVersion"
 
-    /// What a version from before the welcome stored only once it was used: the recording switch, stored as it was
-    /// turned on or off, and quick access's settings. Recording settles its default from them too
-    /// (`CapturePreferences.settleRecordingDefault(in:)`).
+    /// Where earlier versions stored their recording switch, as it was turned on or off. Keeptide has no such switch:
+    /// the launch removes it once the welcome has looked for it (`AppDelegate.launchPreferences(in:)`).
+    static let retiredRecordingSwitchKey = "captureEnabled"
+
+    /// What a version from before the welcome stored only once it was used: the recording switch, and quick access's
+    /// settings.
     static let existingPreferenceKeys = [
-        CapturePreferences.enabledKey,
+        retiredRecordingSwitchKey,
         "quickAccess.cardSize",
         "quickAccessClipsPerRow",
         "quickAccessTrackpadTicks",

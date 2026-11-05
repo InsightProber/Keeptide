@@ -48,7 +48,7 @@ final class OnboardingWindowTests: XCTestCase {
         XCTAssertEqual(dones, 0)
     }
 
-    func testTheWelcomeSaysKeeptideRecordsAndOffersOpenLibraryAndDone() throws {
+    func testTheWelcomeSaysWhatKeeptideSavesAndOffersOpenLibraryAndDone() throws {
         var dones = 0
         var libraries = 0
         let controller = makeController(done: { dones += 1 }, openLibrary: { libraries += 1 })
@@ -56,15 +56,22 @@ final class OnboardingWindowTests: XCTestCase {
         addTeardownBlock { window.close() }
         let content = try XCTUnwrap(window.contentView)
         content.layoutSubtreeIfNeeded()
-        let recording = "Keeptide saves what you copy. Pause or resume it anytime from the menu bar or Settings."
+        let saves = "Keeptide saves what you copy so you can find and reuse it."
+        let skips = "Keeptide skips apps you ignore and content that apps mark as private, such as passwords from a "
+            + "password manager."
         let elements = try swiftUIAccessibilityElements(in: content) { elements in
-            elements.contains { self.text(of: $0)?.contains(recording) == true }
+            elements.contains { self.text(of: $0)?.contains(saves) == true }
         }
         let described = elements.map { "\(self.role(of: $0) ?? "?") \(self.text(of: $0) ?? "")" }
 
-        // It says that Keeptide records already, and how to pause; nothing asks the user to start it.
-        XCTAssertTrue(elements.contains { self.text(of: $0)?.contains(recording) == true }, "\(described)")
-        XCTAssertFalse(elements.contains { self.text(of: $0)?.contains("Start Recording") == true }, "\(described)")
+        // It says what Keeptide saves and what it skips. There is nothing to start, pause or resume, and it never
+        // speaks of recording.
+        XCTAssertTrue(elements.contains { self.text(of: $0)?.contains(saves) == true }, "\(described)")
+        XCTAssertTrue(elements.contains { self.text(of: $0)?.contains(skips) == true }, "\(described)")
+        for word in ["record", "pause", "resume", "start"] {
+            XCTAssertFalse(elements.contains { self.text(of: $0)?.localizedCaseInsensitiveContains(word) == true },
+                           "\(word): \(described)")
+        }
         // Its two buttons, in order: Open Library, then Done.
         let buttons = elements.filter { self.role(of: $0) == NSAccessibility.Role.button.rawValue }
         XCTAssertEqual(buttons.compactMap { self.text(of: $0) }, ["Open Library", "Done"], "\(described)")

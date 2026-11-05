@@ -2,7 +2,7 @@
 
 Keeptide is designed as a local-first native macOS application. This document
 describes the overall architecture. The native shell, local storage foundation,
-local clipboard recording, a rebuildable local search index, and quick-access
+local clipboard capture, a rebuildable local search index, and quick-access
 browsing on a band of clip cards, search, text and image preview, copying, and
 direct paste into the app window quick access was opened from are implemented.
 The snippet service foundation, including recoverable drafts and conflict copies,
@@ -80,8 +80,9 @@ identities and references, and resumes after interruption. Active snapshots
 protect payloads they still need, and unknown recovery formats remain preserved.
 
 Storage warnings do not impose quotas. If a write fails for lack of disk space,
-recording pauses and only the rebuildable search index is eligible for automatic
-cache removal. Primary content and drafts remain intact.
+Keeptide says so and tries each new copy only as it arrives, and only the
+rebuildable search index is eligible for automatic cache removal. Primary
+content and drafts remain intact.
 
 ## Search and previews
 
@@ -111,14 +112,15 @@ been uploaded. Recovered references may require the user to locate a file again.
 
 ## Permissions and reuse
 
-Recording starts on first launch, and the user can pause and resume it at any
-time; while it is off, quick access says so. Direct paste uses the system's
-Accessibility (send keys) permission, which the user grants in System Settings.
-Without it, quick access copies. Quick access notes the app window it was opened
-from. It checks the front app and window before it sends a paste and again after
-the panel hides. If they changed, or anything is uncertain, it copies the clip
-instead and says so. Keeptide sends the paste and does not confirm that the app
-received it.
+Keeptide saves new copies whenever it is open, with no pause switch; ignored
+applications and privacy filters decide what is skipped. While new copies cannot
+be saved, quick access, the menu bar and the library say why. Direct paste uses
+the system's Accessibility (send keys) permission, which the user grants in
+System Settings. Without it, quick access copies. Quick access notes the app
+window it was opened from. It checks the front app and window before it sends a
+paste and again after the panel hides. If they changed, or anything is
+uncertain, it copies the clip instead and says so. Keeptide sends the paste and
+does not confirm that the app received it.
 
 When the target is a terminal, text is pasted as plain text only, and its
 trailing newline is removed. A multi-line command, or one with control or

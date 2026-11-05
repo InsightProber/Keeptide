@@ -35,7 +35,7 @@ final class SyntheticPasteboardHarness {
 
     func writeAlternateText() {
         pasteboard.clearContents()
-        pasteboard.setString("Synthetic paused text", forType: .string)
+        pasteboard.setString("Synthetic alternate text", forType: .string)
         status = "Synthetic alternate text written"
     }
 

@@ -52,9 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             return .standard
         }()
-        let (onboardingPreferences, capturePreferences) = Self.launchPreferences(
-            in: preferencesDefaults, manualPasteQA: launchConfiguration.shouldStartManualPasteQA
-        )
+        let (onboardingPreferences, capturePreferences) = Self.launchPreferences(in: preferencesDefaults)
         let captureSession = CaptureSession(preferences: capturePreferences, directPaste: .live)
         let shortcutCoordinator = GlobalShortcutCoordinator(
             preferences: GlobalShortcutPreferences(defaults: preferencesDefaults),
@@ -119,15 +117,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// The welcome's preferences and recording's, from the defaults this launch uses. The welcome looks for what an
-    /// earlier version stored before recording settles its switch, which stores it: a switch stored first would take a
-    /// new install for an earlier version's, and skip the welcome. The manual paste QA session never records, so its
-    /// switch is stored off, as Settings then shows it.
-    static func launchPreferences(in defaults: UserDefaults, manualPasteQA: Bool)
+    /// The welcome's preferences and capture's, from the defaults this launch uses. The welcome looks for what an
+    /// earlier version stored, its recording switch among it, before the launch removes the switch, which nothing reads
+    /// any more: Keeptide keeps new copies whenever it runs.
+    static func launchPreferences(in defaults: UserDefaults)
         -> (onboarding: OnboardingPreferences, capture: CapturePreferences) {
         let onboarding = OnboardingPreferences(defaults: defaults)
-        if manualPasteQA { defaults.set(false, forKey: CapturePreferences.enabledKey) }
-        CapturePreferences.settleRecordingDefault(in: defaults)
+        defaults.removeObject(forKey: OnboardingPreferences.retiredRecordingSwitchKey)
         return (onboarding, CapturePreferences(defaults: defaults))
     }
 
@@ -140,12 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             showLibrary: { environment.showLibrary() },
             showSettings: { environment.showSettings() },
             showWelcome: { environment.showOnboarding() },
-            captureIsReady: { environment.captureSession.canToggleRecording },
-            captureIsEnabled: { environment.captureSession.isRecording },
-            captureStatus: { environment.captureSession.status },
-            toggleCapture: {
-                environment.captureSession.preferences.isEnabled.toggle()
-            },
+            captureNotice: { environment.captureSession.captureNotice },
             canRequestQuit: canRequestQuit,
             shouldRegisterHotKey: launchConfiguration.shouldRegisterGlobalHotKey,
             shortcutCoordinator: environment.shortcutCoordinator

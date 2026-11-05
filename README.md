@@ -13,7 +13,7 @@ as a snippet, or write one directly.
 > **Status: early development.** The native foundation includes a menu-bar app,
 > a quick-access panel, a library window, and a separate system test host.
 > The storage foundation provides local persistence, content validation, and
-> consistent reads. Local recording now preserves complete clipboard formats,
+> consistent reads. Local capture now preserves complete clipboard formats,
 > deduplicates exact copies, and provides a recent-clips list with copy-back.
 > The quick-access panel is a wide translucent band that holds a row of large
 > cards: the clips you use most, then the newest and older ones. Each card
@@ -28,7 +28,7 @@ as a snippet, or write one directly.
 > left end until you type. The arrow keys step one card at a time, and a
 > trackpad swipe moves one card per detent with a haptic tick on a Force Touch
 > trackpad. Settings covers the quick-access appearance, global shortcut,
-> recording and privacy, local retention, and the truthful availability of
+> privacy, local retention, and the truthful availability of
 > features that are not enabled in the current build.
 > The panel browses recent clips, searches all content through a rebuildable local
 > full-text index (including one- and two-character Chinese queries), previews
@@ -146,19 +146,21 @@ benchmark logs, result bundles, and JSON reports stay under the ignored
 `.local/benchmarks/` directory. See [Contributing](CONTRIBUTING.md) for focused
 commands and validation boundaries.
 
-Recording starts on first launch, and the welcome explains how to pause it.
-**Pause Recording** in the menu-bar menu or the library stops collecting new
-copies, and **Resume Recording** there starts it again; Settings has the same
-switch. While recording is paused, the quick-access panel says so, and its
-**⋯** menu offers **Resume Recording**; when recording stops for another
-reason, the panel says why. Ignored applications can be configured in the
-library. Source attribution uses observed foreground-application changes and is
-best effort; it cannot authenticate which application wrote the clipboard.
+Keeptide saves new copies whenever it is open, from first launch; what the
+clipboard already held is not imported. Ignored applications, set in the
+library or Settings, and privacy filters decide what is skipped. There is no
+pause switch: quitting Keeptide stops it. When new copies cannot be saved,
+because the system denies Keeptide the clipboard, the disk is full, or the
+library is unavailable, the quick-access panel, the menu-bar menu and the
+library say why until that changes; otherwise they say nothing about it. Source
+attribution uses observed foreground-application changes and is best effort; it
+cannot authenticate which application wrote the clipboard.
 
-Recording preserves whole items and their available representations. Private or
+Capture preserves whole items and their available representations. Private or
 transient content is skipped when the source marks it accordingly. A copy above
-50 MiB, or one whose advertised formats cannot all be read, is skipped with a
-visible status. Clipboard bodies are read in an isolated helper process so a
+50 MiB, or one whose advertised formats cannot all be read, is not kept, and
+Keeptide says why until a later copy is kept. Clipboard bodies are read in an
+isolated helper process so a
 slow or faulty provider does not block the interface. Rapidly replaced clipboard
 contents may not be captured. Detail text previews show a bounded prefix.
 The library searches recent clips and saved snippets. History retention, Recently

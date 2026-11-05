@@ -27,7 +27,7 @@ final class CaptureUITests: XCTestCase {
 
         app.activate()
         XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 8))
-        let ignoredApps = app.buttons["IgnoredApplications"]
+        let ignoredApps = app.buttons["IgnoredApplicationsToolbar"]
         XCTAssertTrue(ignoredApps.waitForExistence(timeout: 8))
         ignoredApps.click()
 
@@ -45,7 +45,7 @@ final class CaptureUITests: XCTestCase {
         }
     }
 
-    func testRecordingLifecycleUsesOnlyTheIsolatedPasteboardAndPersistsRecentContent() {
+    func testNewCopiesAreKeptFromTheIsolatedPasteboardWithNothingToTurnOnAndPersist() {
         continueAfterFailure = false
         let sessionID = UUID()
         let app = launchKeeptide(sessionID: sessionID)
@@ -54,23 +54,14 @@ final class CaptureUITests: XCTestCase {
         app.activate()
         let library = app.windows["KeeptideLibraryWindow"]
         XCTAssertTrue(library.waitForExistence(timeout: 8), app.debugDescription)
-        let recordingButton = app.buttons["CaptureRecordingToggle"]
-        guard recordingButton.waitForExistence(timeout: 5) else {
-            let status = app.descendants(matching: .any)["CaptureStatus"]
-            XCTFail(
-                """
-                Capture recording control did not appear.
-                CaptureStatus exists: \(status.exists)
-                Application accessibility hierarchy:
-                \(app.debugDescription)
-                """
-            )
-            return
-        }
-        // Recording is on from launch, once the isolated library is ready.
-        let recording = NSPredicate(format: "enabled == true AND label == %@", "Pause Recording")
-        expectation(for: recording, evaluatedWith: recordingButton)
+        // Keeptide keeps new copies once the isolated library is open. There is no switch, and nothing is said while
+        // copies are kept.
+        let initialized = library.buttons["NewSnippet"]
+        XCTAssertTrue(initialized.waitForExistence(timeout: 8), app.debugDescription)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: initialized)
         waitForExpectations(timeout: 8)
+        XCTAssertFalse(app.buttons["CaptureRecordingToggle"].exists, app.debugDescription)
+        XCTAssertFalse(app.descendants(matching: .any)["CaptureStatus"].exists, app.debugDescription)
 
         host.activate()
         let writeText = host.buttons["Write Text"]
@@ -81,25 +72,23 @@ final class CaptureUITests: XCTestCase {
         let capturedRow = app.staticTexts["Synthetic Keeptide text"].firstMatch
         XCTAssertTrue(capturedRow.waitForExistence(timeout: 8), app.debugDescription)
         let recentRows = app.descendants(matching: .any).matching(identifier: "RecentClipRow")
-        let capturedCount = recentRows.count
-        XCTAssertGreaterThan(capturedCount, 0)
-        capturedRow.click()
-        let copyButton = app.buttons["CopyCapture"]
-        XCTAssertTrue(copyButton.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(recentRows.count, 0)
 
-        recordingButton.click()
-        XCTAssertEqual(recordingButton.label, "Resume Recording")
+        // The next copy is kept too.
         host.activate()
         host.buttons["Write Alternate Text"].click()
         let hostStatus = host.staticTexts["Synthetic host status"]
         let alternateWritten = NSPredicate(format: "value == %@", "Synthetic alternate text written")
         expectation(for: alternateWritten, evaluatedWith: hostStatus)
         waitForExpectations(timeout: 5)
-
         app.activate()
-        XCTAssertFalse(app.staticTexts["Synthetic paused text"].firstMatch.waitForExistence(timeout: 2))
-        XCTAssertEqual(recentRows.count, capturedCount)
+        XCTAssertTrue(app.staticTexts["Synthetic alternate text"].firstMatch.waitForExistence(timeout: 8),
+                      app.debugDescription)
 
+        // The first copy goes back to the session's clipboard as it was copied.
+        capturedRow.click()
+        let copyButton = app.buttons["CopyCapture"]
+        XCTAssertTrue(copyButton.waitForExistence(timeout: 5))
         copyButton.click()
         host.activate()
         host.buttons["Inspect Synthetic Pasteboard"].click()
@@ -110,11 +99,12 @@ final class CaptureUITests: XCTestCase {
         XCTAssertTrue(receivedText.waitForExistence(timeout: 5), host.debugDescription)
         XCTAssertEqual(receivedText.value as? String, "Synthetic Keeptide text")
 
+        // Both copies are there once Keeptide reopens.
         app.terminate()
         app.launch()
         XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 8))
         XCTAssertTrue(app.staticTexts["Synthetic Keeptide text"].firstMatch.waitForExistence(timeout: 8))
-        XCTAssertFalse(app.staticTexts["Synthetic paused text"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["Synthetic alternate text"].firstMatch.waitForExistence(timeout: 8))
     }
 
     private func launchKeeptide(sessionID: UUID) -> XCUIApplication {
@@ -171,9 +161,5 @@ final class CaptureUITests: XCTestCase {
         )
         expectation(for: removed, evaluatedWith: status)
         waitForExpectations(timeout: 8)
-
-        let recordingButton = app.buttons["CaptureRecordingToggle"]
-        XCTAssertTrue(recordingButton.waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertFalse(recordingButton.isEnabled)
     }
 }
