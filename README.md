@@ -1,192 +1,255 @@
-# Keeptide
+<p align="center">
+  <img src="Keeptide/Resources/InstallerIcon.png" width="128" height="128" alt="Keeptide app icon">
+</p>
 
-**Keep useful content close.**
+<h1 align="center">Keeptide</h1>
 
-Keeptide is a native macOS clipboard history and reusable snippet library being
-designed for the things you reach for every day: commands, code fragments,
-prompts, links, images, and short notes.
+<p align="center">
+  <strong>Keep useful content close.</strong><br>
+  A native clipboard history and snippet library for macOS.
+</p>
 
-Bring up a compact panel to find and reuse content without leaving your work.
-Open the library when you want to edit, organize, or read. Save a useful capture
-as a snippet, or write one directly.
+<p align="center">
+  <a href="https://github.com/InsightProber/Keeptide/actions/workflows/macos.yml"><img src="https://github.com/InsightProber/Keeptide/actions/workflows/macos.yml/badge.svg?branch=main" alt="macOS build status"></a>
+  <img src="https://img.shields.io/badge/macOS-26%2B-111111?logo=apple&logoColor=white" alt="macOS 26 or later">
+  <img src="https://img.shields.io/badge/Swift-6-F05138?logo=swift&logoColor=white" alt="Swift 6">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2F80ED" alt="Apache License 2.0"></a>
+</p>
 
-> **Status: early development.** The native foundation includes a menu-bar app,
-> a quick-access panel, a library window, and a separate system test host.
-> The storage foundation provides local persistence, content validation, and
-> consistent reads. Local capture now preserves complete clipboard formats,
-> deduplicates exact copies, and provides a recent-clips list with copy-back.
-> The quick-access panel is a wide translucent band that holds a row of large
-> cards: the clips you use most, then the newest and older ones. Each card
-> shows the clip itself under a band in its source app's color, with the clip's
-> details below. The selected card is drawn larger, with its neighbors moved
-> aside. It starts on the newest card, and the cards slide with it to keep it
-> in the middle except near either end of the row. Each end of the band fades
-> while more cards continue past it. Clips you've copied or pasted from
-> Keeptide more than once, and used in the last 90 days, appear to the left of
-> the newest card, set apart by a divider and marked by icons below the cards;
-> a search lists them all together. The search folds into an icon at the band's
-> left end until you type. The arrow keys step one card at a time, and a
-> trackpad swipe moves one card per detent with a haptic tick on a Force Touch
-> trackpad. Settings covers the quick-access appearance, global shortcut,
-> privacy, local retention, and the truthful availability of
-> features that are not enabled in the current build.
-> The panel browses recent clips, searches all content through a rebuildable local
-> full-text index (including one- and two-character Chinese queries), previews
-> text and images, and copies the selected item in its original formats or as
-> plain text. With the Accessibility (send keys) permission, it can paste the
-> selected clip directly into the app window it was opened from; without it,
-> Return copies. If that window changed, or anything is uncertain, it copies
-> instead and says so. Keeptide sends the paste and does not confirm that the app
-> received it. In a terminal, text is pasted as plain text without its trailing
-> newline, and a multi-line command, or one with control or invisible
-> characters, is confirmed first. Keeptide never runs commands. The native snippet
-> editor is implemented; iCloud saving is still planned. There is no end-user
-> release yet.
+<p align="center">
+  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a Chinese note, an email reply and rich text, with the newest card selected">
+</p>
 
-The snippet service foundation supports saving a capture without duplicating its
-payload, independent text and Markdown snippets, explicit copies, and edits that
-preserve the original capture. Local drafts support restart recovery and protect
-concurrent edits by saving conflicting content separately. These services are
-covered by native tests. The library adds recoverable editing, document find,
-search, explicit saving, collections, favorites, and quick-access save and open
-actions. Markdown has a native reading mode that preserves its editable source.
-Image previews offer fitted and actual-size views, with explicit loading for
-larger originals. URL previews use stored information and open links only when
-requested. File previews use local authorization and system Quick Look.
-History retention is configurable, including forever. Recently Deleted supports
-restoration and explicit permanent removal, while saved snippets retain their
-own content. Storage warnings are advisory, and disk-full recovery preserves
-primary content and drafts.
-The File menu exports the visible library or exact selected items into a new,
-verified local directory. Archives preserve portable source formats alongside
-readable text or Markdown; local file references require relocation. Export is
-a local snapshot, not an iCloud backup or an import-and-restore workflow.
+Keeptide remembers what you copy, such as commands, code, links, images and
+notes, and brings it back with one shortcut. Press ⇧⌘V, pick a card, and press
+Return to paste it where you were working. Keep the things you reuse as
+snippets in a native library.
 
-## Test packages
+> [!NOTE]
+> Keeptide is in early development. There is no notarized release yet, and test
+> builds are ad-hoc signed. [Status](#status) lists what works today and what is
+> still planned.
 
-The **Release DMG** workflow builds an Apple silicon disk image for macOS 26 and
-later when a GitHub Release is published. Use a tag such as `v0.1.0` or
-`v0.1.0-rc.1` pointing to a commit already merged into `main`. The workflow adds
-the DMG, its SHA-256 checksum, and build metadata to that existing release.
-Creating a tag alone does not publish a package.
+## Features
 
-The mounted installer volume carries a matching Keeptide icon. Its icon is embedded
-inside the DMG; no external Finder metadata is required after downloading it.
-The downloaded `.dmg` file itself may retain macOS's standard disk-image icon.
+- **Remembers what you copy.** From first launch, Keeptide saves new copies
+  whenever it is running: plain and rich text, images, links and file
+  references, in their original formats. Copying exactly the same content
+  again does not create a duplicate. There is no pause switch; quitting
+  Keeptide stops it.
+- **One shortcut away.** ⇧⌘V opens quick access, a band of large cards with the
+  newest first. Clips you reuse often sit to the left of the newest one.
+- **Fast local search.** Start typing to search your clipboard history,
+  including one- and two-character Chinese queries. Filter by text, links,
+  images or files.
+- **Paste where you were.** Return pastes the clip into the window you came
+  from, or copies it when direct paste is off. ⇧Return uses plain text. When
+  that window changed, or anything is uncertain, Keeptide copies instead and
+  says so.
+- **Careful with terminals.** Text pasted into a terminal is plain text without
+  its trailing newline. A multi-line command, or one with control or invisible
+  characters, is confirmed first. Keeptide never runs commands.
+- **Snippets you keep.** Save any clip as a snippet or write a new one, edit
+  text and Markdown natively, and organize snippets with collections and
+  favorites. Editing a snippet never changes the original copy.
+- **You decide what stays.** Ignore specific apps, keep history for a day or
+  forever, restore from Recently Deleted, and export your library to a folder.
+- **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
+  that apps mark as private or transient, such as passwords from a password
+  manager, is skipped.
 
-Pull requests also exercise DMG creation and read-only mount verification.
-**Run workflow** produces a downloadable Actions artifact without publishing a
-release. Artifacts are retained for 14 days. Local packaging uses full Xcode:
+## Install
+
+Keeptide needs **macOS 26 or later** on **Apple silicon**.
+
+1. Download `Keeptide-<version>-macOS-arm64.dmg` from
+   [Releases](https://github.com/InsightProber/Keeptide/releases) once a test
+   build is published, or [build it yourself](#build-from-source).
+2. Open the disk image and drag **Keeptide** to **Applications**.
+3. Open Keeptide from Applications. Test builds are not notarized, so macOS may
+   block a downloaded copy the first time. If it does, click **Open Anyway** in
+   **System Settings › Privacy & Security**.
+
+## Getting started
+
+1. **Launch Keeptide.** It runs from the menu bar. The welcome window explains
+   what Keeptide saves and what it skips. From then on, new copies are kept
+   while Keeptide is running; what the clipboard already held is not imported.
+2. **Copy as usual.** If macOS asks whether Keeptide may read what you copy in
+   other apps, allow it. While new copies cannot be saved, quick access and the
+   menu-bar menu say why.
+3. **Press ⇧⌘V** to open quick access, or choose **Open Quick Access** from the
+   menu-bar menu.
+4. **Pick a clip.** Press ← or →, swipe on the trackpad, or type to search.
+5. **Press Return** to paste the clip into the app you came from. Without
+   direct paste, Return copies the clip; press ⌘V to paste it yourself.
+6. **Optional: turn on direct paste.** Choose **Enable Direct Paste…** from the
+   actions menu (⌘K), then allow Keeptide in **System Settings › Privacy &
+   Security › Accessibility**. Keeptide sends the paste; it cannot confirm that
+   the app received it.
+
+### Quick access keys
+
+| Key | Action |
+| --- | --- |
+| ⇧⌘V | Open or close quick access (change it in **Settings › Shortcuts**) |
+| ← → | Move to the previous or next clip |
+| Typing | Search your clipboard history |
+| Return | Paste into the app you came from, or copy |
+| ⇧Return | Paste or copy as plain text |
+| Space or ⌘Y | Show or hide a larger preview |
+| ⌘K or right-click | Show every action for the selected clip |
+| ⌘S | Save the clip as a snippet |
+| ⌘E | Open the clip in the library |
+| ⌘N | Write a new snippet |
+| Esc | Step back: close the preview, clear the search, then close quick access |
+
+### Library
+
+Choose **Open Library** from the menu-bar menu, or press ⌘E in quick access to
+open the selected clip there.
+
+- **Recent Clips** lists everything Keeptide kept. The selected clip shows a
+  preview with **Copy** and **Save as Snippet**. Images open fitted or at
+  actual size, links open only when you ask, and files use Quick Look.
+- **Favorites**, **All Snippets** and your **collections** hold what you keep
+  on purpose. Snippets have native text editing, find, a Markdown reading
+  mode, and drafts that survive a restart.
+- **Recently Deleted** keeps deleted items for seven days before they are
+  removed for good, and you can restore them until then.
+- **File › Export Library…** and **Export Selected…** copy the visible list or
+  the selected items into a new folder. An export is a local snapshot, not a
+  backup you can import.
+
+<p align="center">
+  <img src="docs/images/library.jpg" width="900" alt="The Keeptide library: a sidebar with Recent Clips, Favorites, All Snippets, Uncategorized and Recently Deleted, a list of recent clips, and a preview of the selected landscape image with Copy and Save as Snippet buttons">
+</p>
+
+### Settings
+
+Choose **Settings…** from the menu-bar menu.
+
+| Tab | What you can change |
+| --- | --- |
+| General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, opening at login, the welcome window and library export |
+| Shortcuts | The quick access shortcut: ⇧⌘V, ⌥⌘V, ⌃⌘V or off |
+| Privacy | Ignored apps, how long to keep clipboard history (from one day to forever) and storage warnings |
+| iCloud | Shows that iCloud saving is not available in this build |
+
+## Privacy
+
+- Your history lives in a local library on this Mac. Keeptide's app sandbox
+  has no network access, and iCloud saving is not available yet.
+- Ignored apps, and content that apps mark as private or transient, are
+  skipped. A copy larger than 50 MiB, or one whose formats cannot all be read,
+  is not kept, and Keeptide says why until a later copy is kept.
+- Clipboard contents are read in a separate sandboxed helper process, so a slow
+  or faulty app cannot freeze Keeptide.
+- When the disk is full, Keeptide stops saving new copies and says so. It never
+  discards what you kept to make room.
+- Keeptide never runs commands, and it does not log clipboard contents.
+
+## Status
+
+Development builds include local capture, quick access, search, direct paste,
+the snippet library with collections and favorites, history retention, Recently
+Deleted and local export.
+
+Planned:
+
+- background iCloud saving and recovery after reinstalling;
+- Developer ID signing, notarization and a public release.
+
+Known limits:
+
+- Source app attribution is best effort; it cannot prove which app wrote the
+  clipboard. Clipboard contents replaced very quickly may be missed.
+- A file reference points to a file on this Mac; it is not a backup of the file.
+- The system's Allow / Ask / Deny clipboard permission flow still needs
+  dedicated acceptance testing. Automated tests use isolated named pasteboards
+  and temporary libraries.
+
+The first release focuses on one Mac; a dedicated multi-device experience is
+out of scope. See [Feature scope](docs/features.md) and the
+[Roadmap](docs/roadmap.md) for details.
+
+## Build from source
+
+You need full Xcode with the macOS 26 SDK or later. Command Line Tools alone
+cannot run the test suite.
+
+```sh
+git clone https://github.com/InsightProber/Keeptide.git
+cd Keeptide
+open Keeptide.xcodeproj
+```
+
+Select the shared **Keeptide** scheme and run. The project uses Swift 6 and
+Apple frameworks only.
+
+The main developer checks are:
+
+```sh
+./scripts/verify.sh all        # native tests, a Release build, warnings as errors
+./scripts/verify.sh analyze    # Xcode static analyzer
+./scripts/benchmark.sh         # 10,000-item search oracle, 100,000-item benchmark
+./scripts/benchmark.sh --million
+```
+
+The benchmarks measure the search service in a Release test build with
+synthetic items. They do not measure quick access rendering, input latency or
+first-frame time. Logs, result bundles and reports stay in the ignored
+`.local/` directory. [Contributing](CONTRIBUTING.md) covers focused runs and
+validation boundaries.
+
+### Test disk images
 
 ```sh
 python3 scripts/package_dmg.py --version 0.1.0-rc.1 --build-number 1 --output .local/packages/0.1.0-rc.1
 ```
 
-The output directory must not already exist. The disk image contains the app,
-an Applications shortcut, installation notes, and the project license and notices. **These are ad-hoc-signed test
-builds, not Developer ID-signed or notarized releases.** macOS may prevent a
-downloaded test build from opening. Packaging does not establish production
-release readiness or enable iCloud. Developer ID signing and notarization remain
-separate release work.
+The output folder must not exist yet. The disk image holds the app, an
+Applications shortcut, installation notes, and the project license and
+notices. **These are ad-hoc-signed test builds, not Developer ID-signed or
+notarized releases.** Packaging does not enable iCloud.
 
-Repeated uploads preserve matching assets and reject different files with the
-same name. Rebuilding a disk image can change its bytes; retrying only the
-publication job reuses the original verified artifact. A different build should
-use a new version instead of replacing existing release assets.
+- Publishing a GitHub Release, tagged like `v0.1.0` or `v0.1.0-rc.1` on a
+  commit already in `main`, makes the **Release DMG** workflow attach the disk
+  image, its SHA-256 checksum and build metadata. A tag alone publishes
+  nothing.
+- Pull requests also build the disk image and check it mounted read-only.
+  **Run workflow** makes a downloadable Actions artifact, kept for 14 days,
+  without publishing a release.
+- Uploading again keeps matching assets and rejects a different file with the
+  same name. Retrying only the publication job reuses the verified artifact; a
+  different build needs a new version.
+- The mounted volume shows the Keeptide icon. The downloaded `.dmg` file itself
+  may keep macOS's standard disk-image icon.
 
-## Designed for the Mac
+## Principles
 
-The following capabilities describe the planned first release; only the
-capabilities listed above are implemented today.
-
-- A focused quick-access panel and a native library window.
-- Keyboard-first navigation with predictable focus and text editing.
-- Restrained Liquid Glass, system typography, and accessible reading surfaces.
-- Fast text search, including short Chinese queries and mixed-language content.
-- Original-format clipboard reuse and editable snippets with light Markdown.
-- Simple collections, favorites, previews, and configurable history retention.
-- Local-first storage with background iCloud saving and reinstall recovery.
-
-The first release targets **macOS 26 and later**, initially on Apple silicon.
-It focuses on one Mac. A dedicated experience across multiple devices is outside
-the first-release scope.
+- Content stays available offline.
+- Keeping a snippet protects it from history cleanup, and editing it preserves
+  the original capture.
+- Storage warnings are visible, and keeping history forever means no automatic
+  eviction.
+- iCloud, once available, will mirror current content in the background and
+  help restore the library after reinstalling. It is not a version history:
+  deletions propagate, and unsent local changes cannot be recovered from the
+  cloud.
+- AI-assisted retrieval and contextual suggestions are a possible future
+  direction. The first release concentrates on a reliable, responsive native
+  foundation.
 
 ## Project documents
 
 | Document | Contents |
 | --- | --- |
 | [Feature scope](docs/features.md) | Planned first-release capabilities and boundaries |
-| [Architecture](docs/architecture.md) | Native interfaces, content storage, search, and cloud boundaries |
+| [Architecture](docs/architecture.md) | Native interfaces, content storage, search and cloud boundaries |
 | [Roadmap](docs/roadmap.md) | Capability milestones and future direction |
-| [Contributing](CONTRIBUTING.md) | Project status, contribution workflow, and documentation policy |
+| [Contributing](CONTRIBUTING.md) | Contribution workflow, verification and documentation policy |
 | [Agent instructions](AGENTS.md) | Shared project guidance for Codex and Claude Code |
-
-## Development
-
-Open `Keeptide.xcodeproj` in full Xcode with the macOS 26 SDK or later and select
-the shared `Keeptide` scheme. The project uses Swift 6 and Apple frameworks;
-Command Line Tools alone cannot run its XCTest suite.
-
-The main developer checks are:
-
-```sh
-./scripts/verify.sh all
-./scripts/verify.sh analyze
-./scripts/benchmark.sh
-./scripts/benchmark.sh --million
-```
-
-`verify.sh all` runs native tests, a Release build, and a Debug build with Swift
-warnings treated as errors. `analyze` runs Xcode's static analyzer. The default
-benchmark uses a fixed 10,000-item correctness oracle and measures SearchService
-with 100,000 synthetic items in a Release test build. The one-million-item run is
-an explicit stress-test opt-in. It is service-level evidence only: it does not
-measure quick-access rendering, input latency, or UI first-frame time. Detailed
-benchmark logs, result bundles, and JSON reports stay under the ignored
-`.local/benchmarks/` directory. See [Contributing](CONTRIBUTING.md) for focused
-commands and validation boundaries.
-
-Keeptide saves new copies whenever it is open, from first launch; what the
-clipboard already held is not imported. Ignored applications, set in the
-library or Settings, and privacy filters decide what is skipped. There is no
-pause switch: quitting Keeptide stops it. When new copies cannot be saved,
-because the system denies Keeptide the clipboard, the disk is full, or the
-library is unavailable, the quick-access panel, the menu-bar menu and the
-library say why until that changes; otherwise they say nothing about it. Source
-attribution uses observed foreground-application changes and is best effort; it
-cannot authenticate which application wrote the clipboard.
-
-Capture preserves whole items and their available representations. Private or
-transient content is skipped when the source marks it accordingly. A copy above
-50 MiB, or one whose advertised formats cannot all be read, is not kept, and
-Keeptide says why until a later copy is kept. Clipboard bodies are read in an
-isolated helper process so a
-slow or faulty provider does not block the interface. Rapidly replaced clipboard
-contents may not be captured. Detail text previews show a bounded prefix.
-The library searches recent clips and saved snippets. History retention, Recently
-Deleted, restoration, and explicit permanent removal are implemented locally.
-File references remain local and are not backups of
-the referenced files. File preview permissions stay on this Mac. When a local
-reference is missing, supported references can be explicitly reattached; older
-references that cannot be validated must be copied again.
-
-Automated capture tests use isolated named pasteboards and temporary libraries.
-They verify local format preservation, capture policy, and copying. The general
-clipboard's Allow / Ask / Deny permission flow still needs dedicated acceptance
-validation; named-pasteboard tests do not establish that behavior.
-
-## Principles
-
-Content should remain available offline. Keeping a snippet should protect it from
-history cleanup. Editing it should preserve the original capture. Storage warnings
-should be visible, and permanent retention should mean no automatic eviction.
-
-iCloud is intended to mirror current content in the background and help restore
-the library after reinstalling. It is not a historical backup service: deletions
-can propagate, and unsent local changes cannot be recovered from the cloud.
-
-AI-assisted retrieval and contextual suggestions are a future direction. The
-first release concentrates on a reliable, responsive native foundation.
 
 ## License
 
