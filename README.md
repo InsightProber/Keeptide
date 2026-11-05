@@ -62,6 +62,38 @@ verified local directory. Archives preserve portable source formats alongside
 readable text or Markdown; local file references require relocation. Export is
 a local snapshot, not an iCloud backup or an import-and-restore workflow.
 
+## Test packages
+
+The **Release DMG** workflow builds an Apple silicon disk image for macOS 26 and
+later when a GitHub Release is published. Use a tag such as `v0.1.0` or
+`v0.1.0-rc.1` pointing to a commit already merged into `main`. The workflow adds
+the DMG, its SHA-256 checksum, and build metadata to that existing release.
+Creating a tag alone does not publish a package.
+
+The mounted installer volume carries a matching Keeptide icon. Its icon is embedded
+inside the DMG; no external Finder metadata is required after downloading it.
+The downloaded `.dmg` file itself may retain macOS's standard disk-image icon.
+
+Pull requests also exercise DMG creation and read-only mount verification.
+**Run workflow** produces a downloadable Actions artifact without publishing a
+release. Artifacts are retained for 14 days. Local packaging uses full Xcode:
+
+```sh
+python3 scripts/package_dmg.py --version 0.1.0-rc.1 --build-number 1 --output .local/packages/0.1.0-rc.1
+```
+
+The output directory must not already exist. The disk image contains the app,
+an Applications shortcut, installation notes, and the project license and notices. **These are ad-hoc-signed test
+builds, not Developer ID-signed or notarized releases.** macOS may prevent a
+downloaded test build from opening. Packaging does not establish production
+release readiness or enable iCloud. Developer ID signing and notarization remain
+separate release work.
+
+Repeated uploads preserve matching assets and reject different files with the
+same name. Rebuilding a disk image can change its bytes; retrying only the
+publication job reuses the original verified artifact. A different build should
+use a new version instead of replacing existing release assets.
+
 ## Designed for the Mac
 
 The following capabilities describe the planned first release; only the

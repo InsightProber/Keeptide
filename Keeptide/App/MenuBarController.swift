@@ -92,11 +92,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         super.init()
 
-        statusItem.button?.image = NSImage(
-            systemSymbolName: "doc.on.clipboard",
-            accessibilityDescription: "Keeptide"
-        )
-        statusItem.button?.setAccessibilityLabel("Keeptide")
+        if let button = statusItem.button {
+            if let image = NSImage(named: "KeeptideStatusTemplate")?.copy() as? NSImage {
+                image.isTemplate = true
+                image.size = NSSize(width: 18, height: 18)
+                button.image = image
+            }
+            button.imagePosition = .imageOnly
+            button.toolTip = "Keeptide"
+            button.setAccessibilityLabel("Keeptide")
+        }
 
         if shouldRegisterHotKey {
             let coordinator: GlobalShortcutCoordinator
@@ -141,6 +146,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     var menu: NSMenu? { statusItem.menu }
+    var statusButton: NSStatusBarButton? { statusItem.button }
 
     private func rebuildMenu() {
         let menu = NSMenu()

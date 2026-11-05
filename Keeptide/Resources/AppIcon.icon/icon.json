@@ -1,0 +1,33 @@
+{
+  "fill": {
+    "automatic-gradient": "extended-srgb:0.04314,0.10588,0.14510,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "Tide.svg",
+          "name": "Tide"
+        },
+        {
+          "image-name": "Retained Page.svg",
+          "name": "Retained Page"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.3
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.3
+      },
+      "name": "Tidal Fold"
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
