@@ -23,6 +23,23 @@ final class CollectionWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.entries.map(\.ref), [ref])
     }
 
+    func testCollectionChangesAreToldOnce() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let workspace = try await workspace(harness)
+        let told = Told()
+        workspace.onCollectionsChanged = { told.count += 1 }
+
+        let created = await workspace.createCollection(CollectionDraft(name: "Prompts", color: "blue"))
+        XCTAssertTrue(created)
+        XCTAssertEqual(told.count, 1)
+
+        // A reload that finds the same collections says nothing.
+        await workspace.reload()
+        XCTAssertEqual(told.count, 1)
+        await workspace.refreshCollections()
+        XCTAssertEqual(told.count, 1)
+    }
+
     func testFavoritesAndCollectionFiltersPreserveGlobalQueryAcrossMoves() async throws {
         let harness = try SearchHarness.make(in: self)
         let service = CollectionService(controller: harness.controller)
@@ -199,4 +216,9 @@ private actor CollectionRefreshGate {
         waiting.forEach { $0.resume() }
         waiting.removeAll()
     }
+}
+
+@MainActor
+private final class Told {
+    var count = 0
 }

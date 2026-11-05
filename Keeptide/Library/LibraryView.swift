@@ -288,7 +288,7 @@ struct LibraryView: View {
     ) -> some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(collectionColor(collection.value.color))
+                .fill(Color.collection(collection.value.color))
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
             Text(collection.value.name)
@@ -321,20 +321,6 @@ struct LibraryView: View {
         return workspace.collections.filter { collection in
             collection.value.name.localizedCaseInsensitiveContains(query)
                 || selectedScope == .collection(collection.value.id)
-        }
-    }
-
-    private func collectionColor(_ value: String) -> Color {
-        switch value {
-        case "purple": .purple
-        case "pink": .pink
-        case "red": .red
-        case "orange": .orange
-        case "yellow": .yellow
-        case "green": .green
-        case "teal": .teal
-        case "gray": .gray
-        default: .blue
         }
     }
 

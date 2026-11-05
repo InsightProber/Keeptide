@@ -40,6 +40,8 @@ final class CaptureSession {
     @ObservationIgnored var onServicesChanged: (@MainActor () -> Void)?
     /// Called after recent clips are reloaded, for example after a new capture.
     @ObservationIgnored var onRecentClipsChanged: (@MainActor () -> Void)?
+    /// Called after the Library changed the collections.
+    @ObservationIgnored var onCollectionsChanged: (@MainActor () -> Void)?
     /// Search over the local index; nil until the store opens. No UI uses it yet.
     @ObservationIgnored private(set) var searchService: SearchService?
     @ObservationIgnored private var searchIndex: SQLiteSearchIndex?
@@ -75,6 +77,7 @@ final class CaptureSession {
 
     var contentRepository: ContentRepository? { controller.map { ContentRepository(controller: $0) } }
     var libraryService: LibraryService? { controller.map { LibraryService(controller: $0) } }
+    var collectionService: CollectionService? { controller.map { CollectionService(controller: $0) } }
 
     /// `directPaste` stays `.unavailable` everywhere but in the app delegate, and `clipboardReader` reads the real
     /// clipboard everywhere but in tests: tests use fakes.
@@ -242,6 +245,7 @@ final class CaptureSession {
                     searchService: searchService, pasteService: pasteService,
                     refreshSearch: { try await consumer?.synchronize() }
                 )
+                libraryWorkspace?.onCollectionsChanged = { [weak self] in self?.onCollectionsChanged?() }
                 libraryInitializationError = nil
             } catch {
                 libraryInitializationError = "The editor could not be opened. Your saved content is preserved."

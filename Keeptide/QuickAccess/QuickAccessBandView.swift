@@ -95,7 +95,8 @@ struct QuickAccessBandView: View {
     /// In place of the clips when there are none: the library is empty or closed, or a search found nothing yet.
     @ViewBuilder
     private var emptyState: some View {
-        let message = QuickAccessStatus.empty(phase: state.phase, notice: state.indexNotice)
+        let message = QuickAccessStatus.empty(phase: state.phase, notice: state.indexNotice, list: state.list,
+                                              favoritesOnly: state.favoritesOnly, collectionName: state.collectionName)
         if state.phase == .noContent || state.phase == .libraryUnavailable {
             VStack(spacing: 6) {
                 Text(message.text).font(.system(size: 15))

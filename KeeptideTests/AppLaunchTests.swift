@@ -3154,6 +3154,36 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil(timeout: .seconds(3)) { !controller.toast.isVisible }
     }
 
+    func testEscapeClearsAChosenListBeforeFoldingTheSearch() {
+        // A list other than All narrows the panel as a filter does: Escape takes it along with the query and filters,
+        // after the preview and before folding the search.
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasQuery: false, hasFilters: false,
+                                                      hasList: true, isSearchExpanded: true),
+                       .clearQuery)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasQuery: false, hasFilters: false,
+                                                      hasList: false, isSearchExpanded: true),
+                       .foldSearch)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, isPreviewExpanded: true, hasQuery: false,
+                                                      hasList: true),
+                       .collapsePreview)
+    }
+
+    func testEscapeFromTheCardsClearsAChosenListBeforeClosing() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        _ = try searchEditor(in: controller)
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { controller.state.phase != .loading }
+        XCTAssertEqual(controller.state.list, .snippets)
+
+        // From the cards, Escape peels the list as it peels a filter, and the panel stays open with the clips back.
+        controller.perform(.escape)
+        try await SearchTestSupport.waitUntil { controller.state.phase != .loading }
+
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["newer", "older"])
+    }
+
     func testEscapeCancelsTheReviewBeforeThePreview() {
         // The card lies in the preview's place, over it: Escape takes the card first, whatever else is open.
         XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: true, isPreviewExpanded: true,
@@ -4454,13 +4484,20 @@ final class AppLaunchTests: XCTestCase {
     /// the ones VoiceOver reads, are looked at; of a clip shown in both wings, the leftmost.
     private func frame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
         let frames = framesOnScreen(in: strip)
-        let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
+        let frame = try XCTUnwrap(frames.first { Self.labels($0, title) }, title)
         return strip.convert(frame.bounds, from: frame)
+    }
+
+    /// Whether a frame's VoiceOver label names the clip `title`: the title ends the label, or its marks follow it, as
+    /// "Saved as Snippet" does on a clip just saved.
+    private static func labels(_ frame: NSView, _ title: String) -> Bool {
+        guard let label = frame.accessibilityLabel() else { return false }
+        return label.hasSuffix(": \(title)") || label.contains(": \(title), ")
     }
 
     /// The resting drawn face, including the host layer's centered scale but no running film spring.
     private func drawnFrame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
-        let host = try XCTUnwrap(framesOnScreen(in: strip).first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true })
+        let host = try XCTUnwrap(framesOnScreen(in: strip).first { Self.labels($0, title) })
         let scale = host.layer?.transform.m11 ?? 1
         return StripLayout.scaled(try frame(of: title, in: strip), by: scale)
     }

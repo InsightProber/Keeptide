@@ -10,9 +10,13 @@ struct QuickAccessRow: Identifiable, Equatable, Sendable {
     /// Bundle identifier of the app the clip came from.
     let sourceApp: String?
     let date: Date
-    let savedAsMemo: Bool
+    var savedAsMemo: Bool
     let isPartiallyIndexed: Bool
     let isTextUnavailable: Bool
+    /// A memo's collection; nil for an unfiled memo and for every clip.
+    var collectionID: CollectionID? = nil
+    /// Whether a memo is a favorite; never true for a clip.
+    var isFavorite = false
     /// How many times the clip was used, for a row of the frequent wing; nil for recent clips and search results.
     var frequentUses: Int64? = nil
 
@@ -24,6 +28,8 @@ struct QuickAccessRow: Identifiable, Equatable, Sendable {
 
     var id: ID { ID(ref: ref, isFrequent: isFrequent) }
     var isFrequent: Bool { frequentUses != nil }
+    /// Whether the row is a clip or a memo.
+    var facet: ContentFacet { ref.facet }
 }
 
 enum SelectionMove: Equatable {
@@ -110,6 +116,11 @@ struct SelectionCoordinator: Equatable {
         // A page of recent clips keeps a clip the frequent wing lists as well: the two are different rows.
         let existing = Set(self.rows.map(\.id))
         self.rows += rows.filter { !existing.contains($0.id) }
+    }
+
+    /// Changes the rows of one clip in place, in both wings, without moving the selection.
+    mutating func updateRows(of ref: ContentRef, _ change: (inout QuickAccessRow) -> Void) {
+        for index in rows.indices where rows[index].ref == ref { change(&rows[index]) }
     }
 
     mutating func select(_ id: QuickAccessRow.ID) {
