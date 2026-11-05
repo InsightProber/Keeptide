@@ -13,6 +13,15 @@ final class SettingsTests: XCTestCase {
         ])
     }
 
+    func testManagingIgnoredAppsPresentsTheSheetOverSettings() {
+        let model = makeSettingsModel()
+        XCTAssertFalse(model.showsIgnoredApplications)
+
+        model.presentIgnoredApplications()
+
+        XCTAssertTrue(model.showsIgnoredApplications)
+    }
+
     func testThePrivacyPageManagesIgnoredAppsAndHasNoRecordingSwitch() throws {
         let model = makeSettingsModel()
         model.selectedTab = .privacy

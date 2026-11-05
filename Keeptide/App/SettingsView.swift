@@ -45,6 +45,9 @@ struct SettingsView: View {
                 Text(Self.confirmationMessage(historyCount: confirmation.historyCount))
             }
         }
+        .sheet(isPresented: $model.showsIgnoredApplications) {
+            IgnoredApplicationsView(preferences: model.capture)
+        }
     }
 
     private func page<Content: View>(
@@ -136,7 +139,7 @@ struct SettingsView: View {
                     Text(ignoredApplicationsDescription)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Manage Ignored Apps…", action: model.actions.manageIgnoredApplications)
+                    Button("Manage Ignored Apps…") { model.presentIgnoredApplications() }
                         .accessibilityIdentifier("ManageIgnoredApplicationsButton")
                 }
             }

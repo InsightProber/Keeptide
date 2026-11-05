@@ -92,7 +92,6 @@ final class AppEnvironment {
         launchAtLogin: launchAtLogin,
         actions: SettingsActions(
             showWelcome: { [weak self] in self?.showOnboarding() },
-            manageIgnoredApplications: { [weak self] in self?.showIgnoredApplications() },
             exportArchive: { [weak self] in self?.exportLibrary() }
         ),
         canExport: { [weak self] in self?.canExportLibrary ?? false }
@@ -197,12 +196,6 @@ final class AppEnvironment {
         guard canExportLibrary else { return }
         showLibrary()
         libraryWindowController.exportLibrary(nil)
-    }
-
-    func showIgnoredApplications() {
-        showLibrary()
-        guard showLibraryOverride == nil else { return }
-        libraryWindowController.showIgnoredApplications()
     }
 
     func showOnboarding() {

@@ -234,7 +234,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(service.registerCalls, 0)
     }
 
-    func testSettingsIgnoredApplicationsActionOpensTheExistingLibrarySheet() throws {
+    func testManagingIgnoredAppsFromSettingsDoesNotOpenTheLibrary() throws {
         let suiteName = "AppLaunchTests.ignoredApplications.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
@@ -252,12 +252,12 @@ final class AppLaunchTests: XCTestCase {
         )
         let library = environment.libraryWindowController
         addTeardownBlock { library.close() }
-        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 0)
+        XCTAssertFalse(environment.settingsModel.showsIgnoredApplications)
 
-        environment.settingsModel.actions.manageIgnoredApplications()
+        environment.settingsModel.presentIgnoredApplications()
 
-        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 1)
-        XCTAssertTrue(library.window?.isVisible == true)
+        XCTAssertTrue(environment.settingsModel.showsIgnoredApplications)
+        XCTAssertNotEqual(library.window?.isVisible, true)
     }
 
     func testQuickAccessDoesNotActivateTheApplicationOrHideAnUnfinishedSession() throws {

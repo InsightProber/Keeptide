@@ -43,11 +43,12 @@ final class SettingsUITests: XCTestCase {
         let manage = app.buttons["ManageIgnoredApplicationsButton"]
         XCTAssertTrue(manage.exists)
         manage.click()
-        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 3))
+        // The sheet opens over Settings itself; the Library stays closed.
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(
             format: "label BEGINSWITH %@ OR value BEGINSWITH %@", "Ignored Applications", "Ignored Applications"
         ))
             .firstMatch.waitForExistence(timeout: 3))
+        XCTAssertFalse(app.windows["KeeptideLibraryWindow"].exists, app.debugDescription)
     }
 
     private func launchSettings() -> (XCUIApplication, UUID) {
