@@ -1150,7 +1150,7 @@ final class AppLaunchTests: XCTestCase {
         }, [reason])
         // Recently Deleted, which new copies never reach, says nothing about them.
         try selectLibraryList("Recently Deleted", in: content)
-        XCTAssertEqual(try notices { $0.contains(where: identified("RefreshRecentlyDeleted")) }, [])
+        XCTAssertEqual(try notices { $0.contains(where: identified("RecentlyDeletedEmptyState")) }, [])
         // Back over the recent clips, the line is there again.
         try selectLibraryList("Recent Clips", in: content)
         XCTAssertEqual(try notices {
@@ -4411,9 +4411,11 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(panel.isSessionOpen)
         let alert = try XCTUnwrap(alerts.last)
         XCTAssertEqual(alert.messageText, "Turn On Direct Paste")
+        let settings = DirectPasteSettingsLocation.path()
         XCTAssertEqual(alert.informativeText, """
-            Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in System Settings › Privacy & \
-            Security › Accessibility, then quit and reopen Keeptide.
+            Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in \(settings), then quit and \
+            reopen Keeptide. If Keeptide is already on there, remove it from the list with − and add it again with + \
+            before reopening.
             """)
         XCTAssertEqual(alert.buttons.map(\.title), ["Open System Settings", "Cancel"])
         XCTAssertEqual(alert.buttons.first?.keyEquivalent, "\r", "Open System Settings is the default")

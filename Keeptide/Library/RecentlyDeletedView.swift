@@ -2,44 +2,26 @@ import SwiftUI
 
 struct RecentlyDeletedView: View {
     @Bindable var maintenance: LibraryMaintenance
-    @State private var titleFilter = ""
+    /// The library's search, which here matches deleted items' titles.
+    let query: String
     @State private var pendingPermanentDeletion: TrashFacetSnapshot?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                TextField("Filter deleted item titles", text: $titleFilter)
-                    .textFieldStyle(.roundedBorder)
-                    .accessibilityIdentifier("RecentlyDeletedTitleFilter")
-                Button {
-                    Task { await maintenance.refreshTrash() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .disabled(maintenance.isWorking)
-                .help("Refresh Recently Deleted")
-                .accessibilityLabel("Refresh Recently Deleted")
-                .accessibilityIdentifier("RefreshRecentlyDeleted")
-            }
-            .padding(12)
-
-            Divider()
-
             if maintenance.isWorking, maintenance.trash.isEmpty {
                 ProgressView("Loading Recently Deleted…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if filteredRows.isEmpty {
                 ContentUnavailableView {
                     Label(
-                        titleFilter.isEmpty ? "Recently Deleted is Empty" : "No Deleted Items Match",
+                        isSearching ? "No Deleted Items Match" : "Nothing Recently Deleted",
                         systemImage: "trash"
                     )
                 } description: {
                     Text(
-                        titleFilter.isEmpty
-                            ? "Items you remove remain here until their recovery window ends."
-                            : "This filter checks deleted item titles only."
+                        isSearching
+                            ? "Deleted items are searched by title only."
+                            : "Deleted clips and snippets are kept for \(Int(DeletionWindow.duration / 86_400)) days."
                     )
                 }
                 .accessibilityIdentifier("RecentlyDeletedEmptyState")
@@ -82,9 +64,11 @@ struct RecentlyDeletedView: View {
     }
 
     private var filteredRows: [TrashFacetSnapshot] {
-        let query = titleFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return maintenance.trash }
-        return maintenance.trash.filter { $0.title.localizedCaseInsensitiveContains(query) }
+        RecentlyDeletedPresentation.rows(maintenance.trash, matching: query)
+    }
+
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func deletedRow(_ row: TrashFacetSnapshot) -> some View {
@@ -149,6 +133,14 @@ struct RecentlyDeletedView: View {
 }
 
 enum RecentlyDeletedPresentation {
+    /// The deleted items whose titles contain `query`, ignoring case and surrounding spaces; all of them without one.
+    /// Deleted items are not in the search index, so their titles are matched here.
+    static func rows(_ trash: [TrashFacetSnapshot], matching query: String) -> [TrashFacetSnapshot] {
+        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return trash }
+        return trash.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
     static func facetName(_ facet: ContentFacet) -> String {
         switch facet {
         case .history: "Clipboard History"

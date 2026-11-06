@@ -232,7 +232,7 @@ struct SettingsView: View {
         } header: {
             Text("Direct Paste")
         } footer: {
-            Text("Return and a double click paste the selected clip into the app you were using. This needs Keeptide in System Settings › Privacy & Security › Accessibility, and takes effect once Keeptide reopens. If Keeptide is already in that list but direct paste stays off, remove it there and add it again.")
+            Text("Return and a double click paste the selected clip into the app you were using. This needs Keeptide turned on in \(DirectPasteSettingsLocation.path()), and takes effect once Keeptide reopens. If Keeptide is already on there but direct paste stays off, remove it from the list with −, add it again with +, and reopen Keeptide.")
         }
     }
 

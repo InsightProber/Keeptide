@@ -492,173 +492,36 @@ final class EditorBridgeTests: XCTestCase {
         XCTAssertEqual(focusLosses, 1)
     }
 
-    func testLibrarySearchFocusRequestWorksAcrossToolbarWindowAttachmentAndOnlyOnce() async {
-        let controller = LibrarySearchController()
-        controller.update(text: "", focusRequest: 1)
-        XCTAssertNil(controller.searchField.window)
-
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 120),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = controller.searchField
-        window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
-        await controller.settlePendingFocus()
-        XCTAssertTrue(window.firstResponder === controller.searchField.currentEditor())
-
-        XCTAssertTrue(window.makeFirstResponder(nil))
-        controller.update(text: "", focusRequest: 1)
-        await controller.settlePendingFocus()
-        XCTAssertFalse(window.firstResponder === controller.searchField.currentEditor())
-    }
-
-    func testConsumedLibrarySearchFocusDoesNotReplayAfterControllerRecreation() async {
-        let owner = SearchFocusStateBox()
-        let intent = owner.state.request(1, generation: 1)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 160),
-            styleMask: [.titled],
-            backing: .buffered,
-            defer: false
-        )
-        window.isReleasedWhenClosed = false
-        let container = NSView(frame: window.contentView?.bounds ?? .zero)
-        let title = NSTextField(frame: NSRect(x: 20, y: 105, width: 240, height: 24))
-        container.addSubview(title)
-        window.contentView = container
-        window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
-
-        let first = LibrarySearchController()
-        first.searchField.frame = NSRect(x: 20, y: 60, width: 240, height: 24)
-        first.update(
-            text: "",
-            focusRequest: intent.request,
-            shouldFocus: { owner.state.isCurrent(intent, generation: 1) },
-            onFocusAccepted: { request in
-                guard request == intent.request else { return }
-                owner.state.consume(intent, generation: 1)
-            }
-        )
-        container.addSubview(first.searchField)
-        await first.settlePendingFocus()
-
-        XCTAssertTrue(window.firstResponder === first.searchField.currentEditor())
-        XCTAssertNil(owner.state.pending)
-        XCTAssertTrue(window.makeFirstResponder(title))
-        let titleEditor = title.currentEditor()
-        XCTAssertNotNil(titleEditor)
-
-        first.searchField.removeFromSuperview()
-        let recreated = LibrarySearchController()
-        recreated.searchField.frame = NSRect(x: 20, y: 60, width: 240, height: 24)
-        recreated.update(
-            text: "",
-            focusRequest: owner.state.pending?.request ?? 0,
-            shouldFocus: { false },
-            onFocusAccepted: { _ in
-                XCTFail("A consumed search intent must not replay after controller recreation")
-            }
-        )
-        container.addSubview(recreated.searchField)
-        await recreated.settlePendingFocus()
-
-        XCTAssertTrue(window.firstResponder === titleEditor)
-        XCTAssertFalse(window.firstResponder === recreated.searchField.currentEditor())
-    }
-
-    func testNewerFocusIntentInvalidatesObsoleteSearchAndLateAckCannotConsumeNewSearch() {
-        var state = SearchFocusRequestState()
-        let obsoleteSearch = state.request(1, generation: 1)
-
-        state.invalidate() // The next focus generation belongs to Cmd-N.
-        XCTAssertFalse(state.isCurrent(obsoleteSearch, generation: 2))
-        XCTAssertFalse(state.consume(obsoleteSearch, generation: 2))
-        XCTAssertNil(state.pending)
-
-        let currentSearch = state.request(2, generation: 3)
-        XCTAssertFalse(state.consume(obsoleteSearch, generation: 3))
-        XCTAssertEqual(state.pending, currentSearch)
-        XCTAssertTrue(state.isCurrent(currentSearch, generation: 3))
-        XCTAssertFalse(state.consume(currentSearch, generation: 2))
-        XCTAssertEqual(state.pending, currentSearch)
-        XCTAssertTrue(state.consume(currentSearch, generation: 3))
-        XCTAssertNil(state.pending)
-    }
-
     #if !SWIFT_PACKAGE
-    func testLibraryWindowCommandsPublishAndFenceSearchFocusAcrossNewSnippetOrdering() async throws {
+    /// ⇧⌘F and ⌘N each take a newer focus generation, so whichever came last owns the keyboard: a new snippet's
+    /// body asks for focus only while its generation is current.
+    func testLibraryWindowCommandsFenceSearchAndNewSnippetFocusByGeneration() async throws {
         let commands = LibraryWindowCommands()
-        let published = expectation(description: "pending search focus changed")
+        let published = expectation(description: "search request changed")
         withObservationTracking {
-            _ = commands.pendingSearchFocus
+            _ = commands.searchRequest
         } onChange: {
             published.fulfill()
         }
 
         commands.requestSearch()
         await fulfillment(of: [published], timeout: 1)
-        let first = try XCTUnwrap(commands.pendingSearchFocus)
-        XCTAssertEqual(first.request, 1)
-        XCTAssertEqual(first.generation, 1)
         XCTAssertEqual(commands.searchRequest, 1)
         XCTAssertEqual(commands.focusGeneration, 1)
 
         commands.requestNewSnippet()
-        XCTAssertNil(commands.pendingSearchFocus)
         XCTAssertEqual(commands.focusGeneration, 2)
         XCTAssertEqual(commands.newSnippetFocusGeneration, 2)
         XCTAssertEqual(commands.newSnippetRequest, 1)
 
         commands.requestSearch()
-        let second = try XCTUnwrap(commands.pendingSearchFocus)
-        XCTAssertEqual(second.request, 2)
-        XCTAssertEqual(second.generation, 3)
         XCTAssertEqual(commands.searchRequest, 2)
         XCTAssertEqual(commands.focusGeneration, 3)
-
-        XCTAssertFalse(commands.consumeSearchFocus(first))
-        XCTAssertEqual(commands.pendingSearchFocus, second)
-        XCTAssertTrue(commands.consumeSearchFocus(second))
-        XCTAssertNil(commands.pendingSearchFocus)
+        XCTAssertNotEqual(commands.newSnippetFocusGeneration, commands.focusGeneration,
+                          "The new snippet's body must not take the keyboard back from a later search")
     }
     #endif
 
-    func testLibrarySearchReportsNativeTextChangesWithoutEchoingProgrammaticUpdates() {
-        var changes: [String] = []
-        let controller = LibrarySearchController(onChange: { changes.append($0) })
-        controller.update(text: "initial", focusRequest: 0)
-        XCTAssertEqual(controller.searchField.stringValue, "initial")
-        XCTAssertEqual(changes, [])
-
-        controller.searchField.stringValue = "合成 query"
-        controller.controlTextDidChange(
-            Notification(name: NSControl.textDidChangeNotification, object: controller.searchField)
-        )
-
-        XCTAssertEqual(changes, ["合成 query"])
-    }
-
-    func testLibrarySearchDoesNotReplaceMarkedTextDuringExternalQueryRefresh() throws {
-        let controller = LibrarySearchController()
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 120),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        window.contentView = controller.searchField
-        window.makeKeyAndOrderFront(nil)
-        defer { window.close() }
-        XCTAssertTrue(window.makeFirstResponder(controller.searchField))
-
-        let editor = try XCTUnwrap(controller.searchField.currentEditor() as? NSTextView)
-        editor.setMarkedText("候选", selectedRange: NSRange(location: 2, length: 0),
-                             replacementRange: NSRange(location: NSNotFound, length: 0))
-        let markedText = controller.searchField.stringValue
-
-        controller.update(text: "stale external query", focusRequest: 0)
-
-        XCTAssertTrue(editor.hasMarkedText())
-        XCTAssertEqual(controller.searchField.stringValue, markedText)
-    }
 
     private func hostedController() -> (EditorTextController, NSWindow) {
         let controller = EditorTextController()
@@ -764,9 +627,4 @@ private final class FocusIntentBox {
     init(isCurrent: Bool = false) {
         self.isCurrent = isCurrent
     }
-}
-
-@MainActor
-private final class SearchFocusStateBox {
-    var state = SearchFocusRequestState()
 }

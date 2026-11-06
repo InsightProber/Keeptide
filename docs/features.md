@@ -32,7 +32,8 @@ The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library
 provides text editing, document-local find, explicit capture saving and safe
-undo of a newly saved capture, flat collections and favorites. Markdown reading
+undo of a newly saved capture, flat collections and favorites, and library-wide
+search from the list. Markdown reading
 mode keeps source editing separate from rendering and never fetches embedded
 images. Typed previews show stored URLs, bounded image resolutions and locally
 authorized files. Full input-method and accessibility acceptance remains a

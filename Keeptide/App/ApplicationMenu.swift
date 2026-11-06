@@ -35,6 +35,7 @@ enum ApplicationMenuBuilder {
 
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(item(title: "New Snippet", action: #selector(LibraryWindowController.newDocument(_:)), keyEquivalent: "n"))
+        fileMenu.addItem(item(title: "New Collection…", action: #selector(LibraryWindowController.newCollection(_:)), keyEquivalent: "n", modifierMask: [.shift, .command]))
         fileMenu.addItem(item(title: "Save", action: #selector(LibraryWindowController.saveDocument(_:)), keyEquivalent: "s"))
         fileMenu.addItem(.separator())
         fileMenu.addItem(item(title: "Export Library…", action: #selector(AppDelegate.exportLibrary(_:))))
@@ -51,6 +52,8 @@ enum ApplicationMenuBuilder {
                 modifierMask: [.command, .shift]
             )
         )
+        // Collection and favorite changes are undone here, apart from Undo: ⌘Z belongs to the text being edited.
+        editMenu.addItem(item(title: "Undo Collection Change", action: #selector(LibraryWindowController.undoCollectionChange(_:))))
         editMenu.addItem(.separator())
         editMenu.addItem(item(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
         editMenu.addItem(item(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
@@ -63,6 +66,15 @@ enum ApplicationMenuBuilder {
         editMenu.addItem(item(title: "Search Library…", action: #selector(LibraryWindowController.searchLibrary(_:)), keyEquivalent: "f", modifierMask: [.command, .shift]))
         editMenu.addItem(item(title: "Copy Entire Item", action: #selector(LibraryWindowController.copyEntireItem(_:)), keyEquivalent: "c", modifierMask: [.command, .shift]))
         mainMenu.addItem(menuItem(title: "Edit", submenu: editMenu))
+
+        // The library's own sidebar and list commands; validation names Show or Hide Sidebar.
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(item(title: "Show Sidebar", action: #selector(LibraryWindowController.toggleLibrarySidebar(_:)), keyEquivalent: "s", modifierMask: [.control, .command]))
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(item(title: "Previous List", action: #selector(LibraryWindowController.selectPreviousList(_:)), keyEquivalent: "["))
+        viewMenu.addItem(item(title: "Next List", action: #selector(LibraryWindowController.selectNextList(_:)), keyEquivalent: "]"))
+        viewMenu.addItem(item(title: "Choose List…", action: #selector(LibraryWindowController.chooseList(_:)), keyEquivalent: "l"))
+        mainMenu.addItem(menuItem(title: "View", submenu: viewMenu))
 
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(

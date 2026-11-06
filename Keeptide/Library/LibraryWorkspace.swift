@@ -15,6 +15,102 @@ enum LibraryScope: Hashable, Sendable {
     }
 }
 
+/// What a search looks through: every clip and snippet (the default), or only the list on screen.
+enum LibrarySearchScope: Hashable, Sendable {
+    case allContent
+    case thisView
+}
+
+/// The library's lists in sidebar order, and the moves between them.
+enum LibrarySidebar {
+    /// A list as the scope menus name it.
+    struct ListEntry: Equatable {
+        let scope: LibraryScope
+        let title: String
+        let symbolName: String
+    }
+
+    /// The help on the toolbar's scope menu. ⌘L also finds the menu's place in the toolbar by it.
+    static let chooseListHelp = "Choose a List"
+
+    /// The sidebar's sections as the scope menus list them: Recent Clips; All Snippets and Favorites; the
+    /// collections and Unfiled, while there is a collection; Recently Deleted.
+    static func sections(collections: [(id: CollectionID, name: String)]) -> [[ListEntry]] {
+        var sections: [[ListEntry]] = [
+            [ListEntry(scope: .recentClips, title: "Recent Clips", symbolName: "clock")],
+            [ListEntry(scope: .allSnippets, title: "All Snippets", symbolName: "bookmark"),
+             ListEntry(scope: .favorites, title: "Favorites", symbolName: "star")],
+        ]
+        if !collections.isEmpty {
+            sections.append(
+                collections.map { ListEntry(scope: .collection($0.id), title: $0.name, symbolName: "circle.fill") }
+                    + [ListEntry(scope: .uncategorized, title: "Unfiled", symbolName: "tray")]
+            )
+        }
+        sections.append([ListEntry(scope: .recentlyDeleted, title: "Recently Deleted", symbolName: "trash")])
+        return sections
+    }
+
+    /// Recent Clips; All Snippets and Favorites; each collection, then Unfiled while there is a collection;
+    /// Recently Deleted. Without a collection, Unfiled would only repeat All Snippets.
+    static func scopes(collections: [CollectionID]) -> [LibraryScope] {
+        var scopes: [LibraryScope] = [.recentClips, .allSnippets, .favorites]
+        scopes += collections.map { .collection($0) }
+        if !collections.isEmpty { scopes.append(.uncategorized) }
+        scopes.append(.recentlyDeleted)
+        return scopes
+    }
+
+    /// The list `offset` places along the sidebar from `current` (⌘] is 1, ⌘[ is -1), or nil past either end: the
+    /// commands stop there rather than wrap around.
+    static func scope(_ offset: Int, from current: LibraryScope, collections: [CollectionID]) -> LibraryScope? {
+        let scopes = scopes(collections: collections)
+        guard let index = scopes.firstIndex(of: current), scopes.indices.contains(index + offset) else { return nil }
+        return scopes[index + offset]
+    }
+
+    /// The list to show instead of `current` once the collections are `collections`, or nil while it is still shown:
+    /// a collection that is gone gives way to Unfiled, or to All Snippets when no collection is left, and Unfiled
+    /// gives way to All Snippets when it hides with the last collection.
+    static func scope(replacing current: LibraryScope, collections: [CollectionID]) -> LibraryScope? {
+        switch current {
+        case .collection(let id) where !collections.contains(id):
+            return collections.isEmpty ? .allSnippets : .uncategorized
+        case .uncategorized where collections.isEmpty:
+            return .allSnippets
+        default:
+            return nil
+        }
+    }
+
+    /// The window's subtitle for a list called `name`: past `limit` characters, the middle gives way to an ellipsis
+    /// so the start and end of a long collection name both stay readable.
+    /// A list's menu item identifier. The items of the list menu share one action, and AppKit otherwise names each
+    /// after it, so assistive apps and UI tests could not tell them apart.
+    static func menuIdentifier(for scope: LibraryScope) -> String {
+        switch scope {
+        case .recentClips: "ChooseList-RecentClips"
+        case .allSnippets: "ChooseList-AllSnippets"
+        case .favorites: "ChooseList-Favorites"
+        case .uncategorized: "ChooseList-Unfiled"
+        case .recentlyDeleted: "ChooseList-RecentlyDeleted"
+        case .collection(let id): "ChooseList-Collection-\(id.rawValue.uuidString)"
+        }
+    }
+
+    /// The window's subtitle for a list: a collection's name, which anyone may make long, shortened in the middle;
+    /// Keeptide's own lists by their whole names.
+    static func listSubtitle(for scope: LibraryScope, named name: String) -> String {
+        scope.collectionID == nil ? name : subtitle(name)
+    }
+
+    static func subtitle(_ name: String, limit: Int = 15) -> String {
+        guard name.count > limit else { return name }
+        let head = (limit - 1) / 2
+        return String(name.prefix(head)) + "…" + String(name.suffix(limit - 1 - head))
+    }
+}
+
 struct LibraryEntry: Identifiable, Equatable, Sendable {
     let id: ItemID
     let ref: ContentRef
@@ -27,6 +123,22 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     var sourceApp: String? = nil
     /// The memo's collection; nil for an unfiled memo and for every clip.
     var collectionID: CollectionID? = nil
+
+    /// One row per item, each where the item first appears. An item whose clip and edited snippet both match
+    /// stands as its snippet: the rows are selected and opened by item.
+    static func oneRowPerItem(_ entries: [LibraryEntry]) -> [LibraryEntry] {
+        var rows: [LibraryEntry] = []
+        var rowOfItem: [ItemID: Int] = [:]
+        for entry in entries {
+            if let row = rowOfItem[entry.id] {
+                if entry.ref.facet == .memo, rows[row].ref.facet != .memo { rows[row] = entry }
+            } else {
+                rowOfItem[entry.id] = rows.count
+                rows.append(entry)
+            }
+        }
+        return rows
+    }
 }
 
 struct RecoveredDraftSummary: Identifiable, Equatable, Sendable {
@@ -66,6 +178,9 @@ struct HistorySaveFailure: Sendable {
 final class LibraryWorkspace {
     private(set) var scope: LibraryScope = .recentClips
     private(set) var query = ""
+    private(set) var searchScope: LibrarySearchScope = .allContent
+    /// How many results the loaded pages hold, which can be more than the rows: the next page starts after them.
+    @ObservationIgnored private var loadedResultCount = 0
     private(set) var entries: [LibraryEntry] = []
     private(set) var selectedEntryID: ItemID?
     private(set) var editor: MemoEditorSession?
@@ -179,8 +294,12 @@ final class LibraryWorkspace {
 
     func refreshCollections() async {
         guard !isClosing, !isClosed else { return }
-        do { setCollections(try await collectionService.list(expecting: storeIdentity)) }
-        catch { message = "Collections could not be loaded." }
+        do {
+            setCollections(try await collectionService.list(expecting: storeIdentity))
+            if leaveListIfGone() { scheduleQueryLoad() }
+        } catch {
+            message = "Collections could not be loaded."
+        }
     }
 
     func createCollection(_ draft: CollectionDraft) async -> Bool {
@@ -197,14 +316,11 @@ final class LibraryWorkspace {
         }
     }
 
+    /// Deleting the collection shown, or the last collection while Unfiled is shown, leaves for the list
+    /// `LibrarySidebar.scope(replacing:collections:)` names.
     func deleteCollection(_ snapshot: CollectionSnapshot) async -> Bool {
         await changeCollection {
-            let change = try await self.collectionService.delete(snapshot, expecting: self.storeIdentity)
-            if self.scope.collectionID == snapshot.value.id {
-                self.navigationGeneration &+= 1
-                self.scope = .uncategorized
-            }
-            return change
+            try await self.collectionService.delete(snapshot, expecting: self.storeIdentity)
         }
     }
 
@@ -249,6 +365,17 @@ final class LibraryWorkspace {
         onCollectionsChanged?()
     }
 
+    /// Moves off a list the sidebar no longer shows; true when it did. The caller loads the new list's entries.
+    @discardableResult
+    private func leaveListIfGone() -> Bool {
+        guard let next = LibrarySidebar.scope(replacing: scope, collections: collections.map(\.value.id)) else {
+            return false
+        }
+        navigationGeneration &+= 1
+        scope = next
+        return true
+    }
+
     private func changeCollection(_ operation: () async throws -> CollectionChange?) async -> Bool {
         guard !isClosing, !isClosed, !isChangingCollection else { return false }
         isChangingCollection = true
@@ -265,6 +392,7 @@ final class LibraryWorkspace {
             canUndoCollectionChange = !(collectionUndo?.records.isEmpty ?? true)
             guard !isClosing, !isClosed else { return true }
             setCollections(try await collectionService.list(expecting: storeIdentity))
+            leaveListIfGone()
             try await refreshSearch()
             if !isClosing, !isClosed { await reload(refreshIndex: false) }
             return true
@@ -297,7 +425,8 @@ final class LibraryWorkspace {
             guard generation == loadGeneration else { return }
             let loaded = try await loadEntries(generation: generation, offset: 0)
             guard generation == loadGeneration else { return }
-            entries = loaded.entries
+            entries = LibraryEntry.oneRowPerItem(loaded.entries)
+            loadedResultCount = loaded.entries.count
             hasMoreEntries = loaded.hasMore
             searchIsPartial = loaded.isPartial
             if let selectedEntryID, !loaded.entries.contains(where: { $0.id == selectedEntryID }) {
@@ -316,10 +445,11 @@ final class LibraryWorkspace {
         let generation = loadGeneration
         isLoading = true
         do {
-            let loaded = try await loadEntries(generation: generation, offset: entries.count)
+            let loaded = try await loadEntries(generation: generation, offset: loadedResultCount)
             guard generation == loadGeneration else { return }
             let known = Set(entries.map(\.ref))
-            entries.append(contentsOf: loaded.entries.filter { !known.contains($0.ref) })
+            entries = LibraryEntry.oneRowPerItem(entries + loaded.entries.filter { !known.contains($0.ref) })
+            loadedResultCount += loaded.entries.count
             hasMoreEntries = loaded.hasMore
             searchIsPartial = loaded.isPartial
         } catch is CancellationError {
@@ -337,10 +467,11 @@ final class LibraryWorkspace {
         navigationGeneration &+= 1
         scope = value
         if value == .recentlyDeleted {
+            // The query stays: nothing rewrites the search field while nobody types in it, so an input method's
+            // composition there survives, and Recently Deleted is searched by the same field.
             queryTask?.cancel()
             queryTask = nil
             loadGeneration &+= 1
-            query = ""
             entries = []
             selectedEntryID = nil
             hasMoreEntries = false
@@ -362,13 +493,25 @@ final class LibraryWorkspace {
         await queryTask?.value
     }
 
+    /// All Content or This View. Only a search reads it, so nothing reloads without a query.
+    func updateSearchScope(_ value: LibrarySearchScope) {
+        guard !isClosing, !isClosed, searchScope != value else { return }
+        searchScope = value
+        if !query.isEmpty { scheduleQueryLoad() }
+    }
+
+    func setSearchScope(_ value: LibrarySearchScope) async {
+        updateSearchScope(value)
+        await queryTask?.value
+    }
+
     /// Publish native input synchronously, before SwiftUI can render the old value.
     /// Only result loading is asynchronous; every edit invalidates older loads.
     func updateQuery(_ value: String) {
         guard !isClosing, !isClosed else { return }
-        guard scope != .recentlyDeleted else { return }
         guard query != value else { return }
         query = value
+        // In Recently Deleted the view filters the deleted items by title; the reload only clears the rows.
         scheduleQueryLoad()
     }
 
@@ -862,11 +1005,14 @@ final class LibraryWorkspace {
     ) async throws -> (entries: [LibraryEntry], hasMore: Bool, isPartial: Bool) {
         if scope == .recentlyDeleted { return ([], false, false) }
         if let searchService {
-            let searchScope: SearchScope = scope == .recentClips ? .history : .memo
+            // All Content looks through every clip and snippet, whatever list is shown; This View, and the list
+            // itself without a query, keep to the list.
+            let searchesEverything = !query.isEmpty && self.searchScope == .allContent
+            let searchScope: SearchScope = searchesEverything ? .all : scope == .recentClips ? .history : .memo
             let collection: CollectionFilter?
             switch scope {
-            case .uncategorized: collection = .uncategorized
-            case .collection(let id): collection = .collection(id)
+            case .uncategorized where !searchesEverything: collection = .uncategorized
+            case .collection(let id) where !searchesEverything: collection = .collection(id)
             default: collection = nil
             }
             var latest: [SearchResult] = []
@@ -874,7 +1020,7 @@ final class LibraryWorkspace {
             var isPartial = false
             for try await page in searchService.search(SearchRequest(
                 query: query, scope: searchScope, collection: collection,
-                favoritesOnly: scope == .favorites,
+                favoritesOnly: !searchesEverything && scope == .favorites,
                 // An owned memo's copy time is its creation time and never moves, so memos are listed by use.
                 order: searchScope == .memo ? .lastUsed : .lastCopied,
                 generation: generation, offset: offset, limit: 100

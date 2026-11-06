@@ -92,9 +92,9 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 6. **Optional: turn on direct paste.** Choose **Enable Direct Paste…** from the
    actions menu (⌘K), or **Turn On Direct Paste…** in **Settings › General**,
    then allow Keeptide in **System Settings › Privacy & Security ›
-   Accessibility** and reopen Keeptide. **Settings › General** shows whether
-   direct paste is on. Keeptide sends the paste; it cannot confirm that the app
-   received it.
+   Accessibility** (**Device Control and Data Access** on macOS 27) and reopen
+   Keeptide. **Settings › General** shows whether direct paste is on. Keeptide
+   sends the paste; it cannot confirm that the app received it.
 
 ### Quick access keys
 
@@ -123,8 +123,9 @@ open the selected clip there.
 - **Recent Clips** lists everything Keeptide kept. The selected clip shows a
   preview with **Copy** and **Save as Snippet**. Images open fitted or at
   actual size, links open only when you ask, and files use Quick Look.
-- **Favorites**, **All Snippets** and your **collections** hold what you keep
-  on purpose. Snippets have native text editing, find, a Markdown reading
+- **All Snippets** and **Favorites** hold what you keep on purpose; your
+  **collections** sort them, and **Unfiled** shows snippets that are in no
+  collection. Snippets have native text editing, find, a Markdown reading
   mode, and drafts that survive a restart.
 - **Recently Deleted** keeps deleted items for seven days before they are
   removed for good, and you can restore them until then.
@@ -225,8 +226,9 @@ notices. **These are ad-hoc-signed test builds, not Developer ID-signed or
 notarized releases.** Packaging does not enable iCloud. macOS treats each newly
 installed test build as a different app, so an earlier build's Accessibility
 access does not carry over: if **Settings › General** says direct paste is off
-although Keeptide is listed in Accessibility, remove it from the list, add it
-again and reopen Keeptide.
+although Keeptide is on in the Accessibility list (**Device Control and Data
+Access** on macOS 27), remove it from the list with −, add it again with + and
+reopen Keeptide.
 
 - Publishing a GitHub Release, tagged like `v0.1.0` or `v0.1.0-rc.1` on a
   commit already in `main`, makes the **Release DMG** workflow attach the disk
