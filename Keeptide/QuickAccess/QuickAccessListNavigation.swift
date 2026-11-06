@@ -758,6 +758,15 @@ final class QuickAccessFilterFace: NSButton {
         needsDisplay = true
     }
 
+    /// As a pop-up button's, the menu opens as the mouse goes down, and the release lands in the menu. The button's own
+    /// tracking would not do: with no title or image of its own, its cell takes no click at all.
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isHighlighted = true
+        sendAction(action, to: target)
+        isHighlighted = false
+    }
+
     override var intrinsicContentSize: NSSize {
         guard let label else { return NSSize(width: QuickAccessFilterButton.height, height: QuickAccessFilterButton.height) }
         return NSSize(width: Self.width(label: label, symbol: symbol), height: QuickAccessFilterButton.height)

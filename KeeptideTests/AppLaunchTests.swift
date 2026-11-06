@@ -2554,6 +2554,27 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(divider.isHidden)
     }
 
+    func testAClickOnTheFilterButtonOpensItsMenuAsTheMouseGoesDown() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        toolbar.layoutSubtreeIfNeeded()
+        var shown: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in shown.append(menu) }
+        // A click through the window lands on the button's face, and its mouse-down opens the menu, as a pop-up
+        // button's does. A borderless button with no title or image would not track the click at all.
+        let button = toolbar.filterButton
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(point) === button.face)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        window.sendEvent(down)
+        XCTAssertEqual(shown.map(\.title), ["Filter"])
+        XCTAssertFalse(button.face.isHighlighted)
+    }
+
     func testToolbarMenusOpenWithoutActivatingTheApp() async throws {
         // The panel opens while another app is active, and neither it nor its menus make Keeptide the active app. AppKit
         // counts an app with a key panel as active, so what is checked is the system's view: the running application,

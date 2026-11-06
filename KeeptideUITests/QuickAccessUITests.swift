@@ -170,7 +170,7 @@ final class QuickAccessUITests: XCTestCase {
         let frames = try openPanel(app)
         let panel = app.dialogs["KeeptideQuickAccessPanel"]
         let preview = app.descendants(matching: .any)["QuickAccessPreview"]
-        let search = app.buttons["Search Clips and Snippets"]
+        let snippets = app.radioButtons["Snippets"]
         let query = app.searchFields["Quick access query"]
         let selectedBeforePreview = selectedClip(in: frames)?.label
 
@@ -178,18 +178,18 @@ final class QuickAccessUITests: XCTestCase {
         app.typeKey(.space, modifierFlags: [])
         XCTAssertTrue(preview.waitForExistence(timeout: 5), app.debugDescription)
 
-        // The folded search button is exposed on the band. The first click belongs to the preview dismissal layer,
-        // so it must not also unfold the search control beneath it.
-        let exposedSearchMaxX = min(search.frame.maxX, preview.frame.minX)
-        XCTAssertGreaterThan(exposedSearchMaxX, search.frame.minX, app.debugDescription)
-        let exposedSearchX = (search.frame.minX + exposedSearchMaxX) / 2
-        search.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
-            .withOffset(CGVector(dx: exposedSearchX - search.frame.minX, dy: search.frame.height / 2))
+        // The list switch at the band's top left is exposed beside the preview. The first click belongs to the preview
+        // dismissal layer, so it must not also choose Snippets beneath it.
+        let exposedMaxX = min(snippets.frame.maxX, preview.frame.minX)
+        XCTAssertGreaterThan(exposedMaxX, snippets.frame.minX, app.debugDescription)
+        let exposedX = (snippets.frame.minX + exposedMaxX) / 2
+        snippets.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+            .withOffset(CGVector(dx: exposedX - snippets.frame.minX, dy: snippets.frame.height / 2))
             .click()
 
         XCTAssertTrue(preview.waitForNonExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(panel.exists, app.debugDescription)
-        XCTAssertTrue(search.exists, app.debugDescription)
+        XCTAssertEqual(snippets.value as? Int, 0, app.debugDescription)
         XCTAssertEqual(query.value as? String, "", app.debugDescription)
         if let selectedBeforePreview, let selectedAfterPreview = selectedClip(in: frames)?.label {
             XCTAssertEqual(selectedAfterPreview, selectedBeforePreview, app.debugDescription)
