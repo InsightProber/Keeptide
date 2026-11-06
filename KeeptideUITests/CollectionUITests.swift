@@ -53,21 +53,54 @@ final class CollectionUITests: XCTestCase {
         let library = requireLibrary(in: app)
         let names = (1...20).map { "Group \($0) — 很长的中文名称用于验证完整筛选" }
         for name in names { createCollection(named: name, in: app) }
-
-        let filter = app.textFields["CollectionFilterField"]
-        XCTAssertTrue(filter.waitForExistence(timeout: 5), app.debugDescription)
-        replaceText(in: filter, with: "Group 20")
         XCTAssertTrue(collectionRow(named: names.last!, in: library).waitForExistence(timeout: 5),
                       app.debugDescription)
-        XCTAssertFalse(collectionRow(named: names.first!, in: library).exists)
 
+        // While the sidebar shows, lists are chosen there and the toolbar has no scope menu.
         let scopeMenu = app.descendants(matching: .menuButton)["LibraryScopeMenu"]
+        XCTAssertFalse(scopeMenu.exists, app.debugDescription)
+
+        attachScreenshot(of: library, named: "Sidebar with twenty collections")
+
+        // With the sidebar hidden, the scope menu lists every collection, and its label names the one chosen in full.
+        app.typeKey("s", modifierFlags: [.control, .command])
         XCTAssertTrue(scopeMenu.waitForExistence(timeout: 5), app.debugDescription)
         scopeMenu.click()
         XCTAssertTrue(app.menuItems[names.last!].waitForExistence(timeout: 5), app.debugDescription)
+        attachScreenshot(of: app.windows.firstMatch, named: "Scope menu with the sidebar hidden")
         app.menuItems[names.last!].click()
-        XCTAssertTrue(collectionRow(named: names.last!, in: library).waitForExistence(timeout: 5),
-                      app.debugDescription)
+        expectation(for: NSPredicate(format: "label == %@", "Library Scope: \(names.last!)"), evaluatedWith: scopeMenu)
+        waitForExpectations(timeout: 8)
+    }
+
+    func testListsCanBeChosenFromTheKeyboard() {
+        let app = launchKeeptide()
+        let library = requireLibrary(in: app)
+
+        // ⌘] and ⌘[ step through the sidebar's lists.
+        app.typeKey("]", modifierFlags: .command)
+        waitForScope("All Snippets", in: app)
+        app.typeKey("[", modifierFlags: .command)
+        waitForScope("Recent Clips", in: app)
+
+        // ⌘L puts the keyboard on the sidebar, where the arrow keys choose.
+        app.typeKey("l", modifierFlags: .command)
+        let sidebar = library.descendants(matching: .outline)["LibrarySidebar"]
+        expectation(for: NSPredicate(format: "hasKeyboardFocus == true"), evaluatedWith: sidebar)
+        waitForExpectations(timeout: 5)
+        app.typeKey(.downArrow, modifierFlags: [])
+        waitForScope("All Snippets", in: app)
+
+        // With the sidebar hidden, ⌘L opens the scope menu instead.
+        app.typeKey("s", modifierFlags: [.control, .command])
+        let scopeMenu = app.descendants(matching: .menuButton)["LibraryScopeMenu"]
+        XCTAssertTrue(scopeMenu.waitForExistence(timeout: 5), app.debugDescription)
+        app.typeKey("l", modifierFlags: .command)
+        let recentlyDeleted = app.menuItems["Recently Deleted"]
+        XCTAssertTrue(recentlyDeleted.waitForExistence(timeout: 5), app.debugDescription)
+        attachScreenshot(of: library, named: "Choose List with the sidebar hidden")
+        recentlyDeleted.click()
+        waitForScope("Recently Deleted", in: app)
     }
 
     func testImmediateNewUsesTheCollectionSelectedFromTheSidebar() {
@@ -98,8 +131,8 @@ final class CollectionUITests: XCTestCase {
         XCTAssertTrue(snippetRow(containing: snippetTitle, in: app).waitForExistence(timeout: 8),
                       app.debugDescription)
 
-        scopeRow(named: "Uncategorized", in: library).click()
-        waitForScope("Uncategorized", in: app)
+        scopeRow(named: "Unfiled", in: library).click()
+        waitForScope("Unfiled", in: app)
         XCTAssertTrue(snippetRow(containing: snippetTitle, in: app).waitForNonExistence(timeout: 8),
                       app.debugDescription)
     }
@@ -133,15 +166,13 @@ final class CollectionUITests: XCTestCase {
         let prompts = app.menuItems["Move to Prompts"]
         XCTAssertTrue(prompts.waitForExistence(timeout: 5), app.debugDescription)
         prompts.click()
-        app.descendants(matching: .menuButton)["LibraryScopeMenu"].click()
-        app.menuItems["Prompts"].click()
+        collectionRow(named: "Prompts", in: library).click()
         waitForScope("Prompts", in: app)
         XCTAssertTrue(snippetRow(containing: "Selected Alpha", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Selected Beta", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Unselected Gamma", in: app).waitForNonExistence(timeout: 8))
 
-        app.descendants(matching: .menuButton)["LibraryScopeMenu"].click()
-        app.menuItems["Favorites"].click()
+        scopeRow(named: "Favorites", in: library).click()
         waitForScope("Favorites", in: app)
         XCTAssertTrue(snippetRow(containing: "Selected Alpha", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Selected Beta", in: app).waitForExistence(timeout: 8))
@@ -197,6 +228,14 @@ final class CollectionUITests: XCTestCase {
                       app.debugDescription)
     }
 
+    /// Keeps a picture of `element` with the test's results, whether or not it passes.
+    private func attachScreenshot(of element: XCUIElement, named name: String) {
+        let attachment = XCTAttachment(screenshot: element.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func replaceText(in element: XCUIElement, with value: String) {
         element.click()
         let focused = XCTNSPredicateExpectation(
@@ -233,12 +272,11 @@ final class CollectionUITests: XCTestCase {
             .firstMatch
     }
 
+    /// The window's subtitle names the list, and the window's title reads "Keeptide Library – <list>". Names
+    /// longer than 15 characters are shortened there, so a test waits on short names only.
     private func waitForScope(_ name: String, in app: XCUIApplication) {
-        let menu = app.descendants(matching: .menuButton)["LibraryScopeMenu"]
-        let selected = NSPredicate(
-            format: "label CONTAINS %@ OR value CONTAINS %@", name, name
-        )
-        expectation(for: selected, evaluatedWith: menu)
+        let library = app.windows["KeeptideLibraryWindow"]
+        expectation(for: NSPredicate(format: "title ENDSWITH %@", name), evaluatedWith: library)
         waitForExpectations(timeout: 8)
     }
 

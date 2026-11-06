@@ -79,7 +79,8 @@ final class CollectionWorkspaceTests: XCTestCase {
         await workspace.setScope(.collection(category.value.id))
         let deleted = await workspace.deleteCollection(category)
         XCTAssertTrue(deleted)
-        XCTAssertEqual(workspace.scope, .uncategorized)
+        // It was the only collection, so Unfiled hides with it and its snippets show in All Snippets.
+        XCTAssertEqual(workspace.scope, .allSnippets)
         XCTAssertEqual(workspace.entries.map(\.ref), [ref])
         XCTAssertTrue(workspace.canUndoCollectionChange)
         let undone = await workspace.undoCollectionChange()

@@ -140,10 +140,140 @@ final class LibraryLayoutTests: XCTestCase {
         )
     }
 
-    func testCurrentLibrarySectionsDoNotAdvertiseFutureCollectionsOrTrash() {
-        XCTAssertEqual(LibrarySection.allCases, [.recentClips, .allSnippets, .uncategorized])
-        XCTAssertEqual(LibrarySection.allSnippets.scope, .allSnippets)
-        XCTAssertEqual(LibrarySection.uncategorized.scope, .uncategorized)
+    func testTheSidebarListsTheScopesInItsSectionOrder() {
+        let prompts = CollectionID()
+        let drafts = CollectionID()
+
+        XCTAssertEqual(
+            LibrarySidebar.scopes(collections: [prompts, drafts]),
+            [.recentClips, .allSnippets, .favorites, .collection(prompts), .collection(drafts), .uncategorized,
+             .recentlyDeleted]
+        )
+        // Without a collection, Unfiled would only repeat All Snippets, so it is not listed.
+        XCTAssertEqual(LibrarySidebar.scopes(collections: []), [.recentClips, .allSnippets, .favorites, .recentlyDeleted])
+    }
+
+    func testListCommandsMoveAlongTheSidebarAndStopAtItsEnds() {
+        let prompts = CollectionID()
+
+        XCTAssertEqual(LibrarySidebar.scope(1, from: .favorites, collections: [prompts]), .collection(prompts))
+        XCTAssertEqual(LibrarySidebar.scope(1, from: .collection(prompts), collections: [prompts]), .uncategorized)
+        XCTAssertEqual(LibrarySidebar.scope(-1, from: .recentlyDeleted, collections: []), .favorites)
+        XCTAssertNil(LibrarySidebar.scope(-1, from: .recentClips, collections: [prompts]))
+        XCTAssertNil(LibrarySidebar.scope(1, from: .recentlyDeleted, collections: [prompts]))
+    }
+
+    func testAListThatGoesAwayLeavesForTheNearestListStillShown() {
+        let prompts = CollectionID()
+        let drafts = CollectionID()
+
+        // The collection shown is gone: Unfiled while another collection remains, All Snippets otherwise.
+        XCTAssertEqual(LibrarySidebar.scope(replacing: .collection(prompts), collections: [drafts]), .uncategorized)
+        XCTAssertEqual(LibrarySidebar.scope(replacing: .collection(prompts), collections: []), .allSnippets)
+        // Unfiled hides with the last collection.
+        XCTAssertEqual(LibrarySidebar.scope(replacing: .uncategorized, collections: []), .allSnippets)
+        // A list still shown stays.
+        XCTAssertNil(LibrarySidebar.scope(replacing: .collection(drafts), collections: [drafts]))
+        XCTAssertNil(LibrarySidebar.scope(replacing: .uncategorized, collections: [drafts]))
+        XCTAssertNil(LibrarySidebar.scope(replacing: .favorites, collections: []))
+    }
+
+    func testTheScopeMenusListTheSidebarsSections() {
+        let prompts = CollectionID()
+        let sections = LibrarySidebar.sections(collections: [(prompts, "Prompts")])
+
+        XCTAssertEqual(sections.map { $0.map(\.title) },
+                       [["Recent Clips"], ["All Snippets", "Favorites"], ["Prompts", "Unfiled"], ["Recently Deleted"]])
+        XCTAssertEqual(Array(sections.joined().map(\.scope)), LibrarySidebar.scopes(collections: [prompts]))
+        XCTAssertEqual(LibrarySidebar.sections(collections: []).map { $0.map(\.title) },
+                       [["Recent Clips"], ["All Snippets", "Favorites"], ["Recently Deleted"]])
+    }
+
+    func testTheWindowSubtitleElidesALongListNameInTheMiddle() {
+        XCTAssertEqual(LibrarySidebar.subtitle("Immediate Scope"), "Immediate Scope")
+        let long = LibrarySidebar.subtitle("Group 20 — 很长的中文名称用于验证完整筛选")
+        XCTAssertEqual(long, "Group 2…于验证完整筛选")
+        XCTAssertEqual(long.count, 15)
+    }
+
+    func testTheWindowSubtitleNamesTheChosenList() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+
+        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        controller.selectNextList(nil)
+        try await SearchTestSupport.waitUntil { window.subtitle == "All Snippets" }
+        XCTAssertEqual(window.title, "Keeptide Library")
+        controller.selectPreviousList(nil)
+        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+    }
+
+    func testChooseListPutsTheKeyboardOnTheSidebarWhileItShows() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(window.firstResponder is NSOutlineView)
+
+        controller.chooseList(nil)
+
+        try await SearchTestSupport.waitUntil { window.firstResponder is NSOutlineView }
+    }
+
+    func testChooseListOffersTheListsUnderTheScopeMenuWhileTheSidebarIsHidden() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        XCTAssertNil(controller.listMenuAnchor(), "The sidebar chooses lists while it shows")
+
+        controller.toggleLibrarySidebar(nil)
+
+        try await SearchTestSupport.waitUntil { controller.listMenuAnchor() != nil }
+        XCTAssertFalse(controller.commands.sidebarIsVisible)
+        let menu = controller.makeListMenu()
+        XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+                       ["Recent Clips", "All Snippets", "Favorites", "Recently Deleted", "New Collection…"])
+        XCTAssertEqual(menu.items.filter { $0.state == .on }.map(\.title), ["Recent Clips"])
+
+        // Choosing from it chooses the list, as the sidebar would.
+        let favorites = try XCTUnwrap(menu.items.first { $0.title == "Favorites" })
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex(of: favorites)))
+        try await SearchTestSupport.waitUntil { window.subtitle == "Favorites" }
+    }
+
+    func testTheSidebarCannotBeLeftWithoutAList() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        var sidebar: NSOutlineView?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            // Before the library opens, the sidebar is the window's only outline.
+            sidebar = self.views(NSOutlineView.self, in: window.contentView).first
+            return sidebar?.selectedRowIndexes.isEmpty == false && window.subtitle == "Recent Clips"
+        }
+        let outline = try XCTUnwrap(sidebar)
+        let selected = outline.selectedRowIndexes
+
+        outline.deselectAll(nil)
+
+        try await SearchTestSupport.waitUntil { outline.selectedRowIndexes == selected }
+        XCTAssertEqual(window.subtitle, "Recent Clips")
     }
 
     func testLibraryEnablesOnlyToolbarSceneBridging() throws {

@@ -27,6 +27,11 @@ enum LibraryLayoutPolicy {
             return current
         }
     }
+
+    /// The explicit preference View › Show Sidebar / Hide Sidebar sets: the other of what shows now.
+    static func preference(toggling visibility: LibrarySidebarVisibility) -> LibrarySidebarPreference {
+        visibility == .visible ? .hidden : .shown
+    }
 }
 
 struct LibraryView: View {
@@ -37,12 +42,12 @@ struct LibraryView: View {
     @State private var selectedEntryIDs: Set<ItemID> = []
     @State private var collectionEditorMode: CollectionEditorMode?
     @State private var collectionPendingDeletion: CollectionSnapshot?
-    @State private var collectionFilter = ""
     @State private var sidebarPreference: LibrarySidebarPreference = .automatic
     @State private var sidebarVisibility: LibrarySidebarVisibility = .visible
     @State private var splitVisibility: NavigationSplitViewVisibility = .all
     @State private var bodyFocus = BodyFocusRequestState()
     @State private var availableWidth: CGFloat = 1_120
+    @FocusState private var sidebarHasFocus: Bool
 
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
         _session = Bindable(wrappedValue: session)
@@ -59,6 +64,7 @@ struct LibraryView: View {
                     .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(Color(nsColor: .textBackgroundColor))
+                    .toolbar { scopeToolbar }
             } detail: {
                 detailColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -114,7 +120,7 @@ struct LibraryView: View {
             }
             Button("Cancel", role: .cancel) { collectionPendingDeletion = nil }
         } message: { _ in
-            Text("Items will move to Uncategorized. Their content and history will not be deleted.")
+            Text("Snippets in it will become unfiled. Nothing is deleted.")
         }
     }
 
@@ -127,11 +133,16 @@ struct LibraryView: View {
                 await session.libraryWorkspace?.select(selectedItemID)
             }
         }
-        .onChange(of: selectedScope) { _, scope in
+        .onChange(of: selectedScope) { previous, scope in
+            // A list cannot be deselected: the one chosen stays, and so do the subtitle and the library's list.
+            guard let scope else {
+                selectedScope = previous
+                return
+            }
+            guard previous != nil else { return }
             selectedItemID = nil
             selectedEntryIDs.removeAll()
             updateExportContext()
-            guard let scope else { return }
             session.libraryWorkspace?.updateScope(scope)
         }
         .onChange(of: selectedItemID) { _, _ in updateExportContext() }
@@ -141,8 +152,56 @@ struct LibraryView: View {
         }
     }
 
-    var body: some View {
+    /// The sidebar's commands, and what the window and its menus show of the list chosen.
+    private var listLibrary: some View {
         selectionLibrary
+        .onChange(of: currentScopeTitle, initial: true) { _, title in commands.showListTitle(title) }
+        .onChange(of: listContext, initial: true) { _, context in
+            commands.updateListContext(
+                scope: context.scope, sections: context.sections, sidebarIsVisible: context.sidebarIsVisible
+            )
+        }
+        .onChange(of: commands.previousListRequest) { _, _ in moveList(-1) }
+        .onChange(of: commands.nextListRequest) { _, _ in moveList(1) }
+        .onChange(of: commands.listRequest) { _, request in
+            if let request { selectedScope = request.scope }
+        }
+        .onChange(of: commands.sidebarFocusRequest) { _, _ in sidebarHasFocus = true }
+        .onChange(of: commands.sidebarToggleRequest) { _, _ in toggleSidebar() }
+        .onChange(of: commands.newCollectionRequest) { _, _ in
+            if session.libraryWorkspace != nil { collectionEditorMode = .create }
+        }
+        .onChange(of: session.libraryWorkspace.map(ObjectIdentifier.init)) { _, opened in
+            // A list chosen while the library was still opening is the one it opens on.
+            guard opened != nil, let selectedScope else { return }
+            session.libraryWorkspace?.updateScope(selectedScope)
+        }
+        .onChange(of: session.libraryWorkspace?.scope) { previous, scope in
+            // The library left a list that is gone: a deleted collection, or Unfiled with the last collection.
+            guard previous != nil, let scope, scope != selectedScope else { return }
+            selectedScope = scope
+        }
+    }
+
+    private struct ListContext: Equatable {
+        let scope: LibraryScope
+        let sections: [[LibrarySidebar.ListEntry]]
+        let sidebarIsVisible: Bool
+    }
+
+    private var listContext: ListContext {
+        ListContext(scope: selectedScope ?? .recentClips, sections: listSections,
+                    sidebarIsVisible: sidebarVisibility == .visible)
+    }
+
+    private var listSections: [[LibrarySidebar.ListEntry]] {
+        LibrarySidebar.sections(
+            collections: session.libraryWorkspace?.collections.map { ($0.value.id, $0.value.name) } ?? []
+        )
+    }
+
+    var body: some View {
+        listLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }
@@ -226,53 +285,65 @@ struct LibraryView: View {
         }
     }
 
+    /// Clipboard, Snippets and Collections sections, then Recently Deleted on its own. Unfiled follows the collections
+    /// while there is any: without one it would only repeat All Snippets.
     private var librarySidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: $selectedScope) {
-                Section {
-                    Label("Recent Clips", systemImage: "clock")
-                        .tag(LibraryScope.recentClips)
-                    Label("Favorites", systemImage: "star")
-                        .tag(LibraryScope.favorites)
-                    Label("All Snippets", systemImage: "doc.text")
-                        .tag(LibraryScope.allSnippets)
-                    Label("Uncategorized", systemImage: "tray")
-                        .tag(LibraryScope.uncategorized)
-                    Label("Recently Deleted", systemImage: "trash")
-                        .tag(LibraryScope.recentlyDeleted)
-                }
-
+        List(selection: $selectedScope) {
+            Section("Clipboard") {
+                Label("Recent Clips", systemImage: "clock")
+                    .tag(LibraryScope.recentClips)
+            }
+            Section("Snippets") {
+                Label("All Snippets", systemImage: "bookmark")
+                    .tag(LibraryScope.allSnippets)
+                Label("Favorites", systemImage: "star")
+                    .tag(LibraryScope.favorites)
+            }
+            Section {
                 if let workspace = session.libraryWorkspace {
-                    Section {
-                        TextField("Filter Collections", text: $collectionFilter)
-                            .textFieldStyle(.roundedBorder)
-                            .accessibilityIdentifier("CollectionFilterField")
-                        ForEach(filteredCollections(workspace), id: \.value.id) { collection in
-                            collectionSidebarRow(collection, workspace: workspace)
-                                .tag(LibraryScope.collection(collection.value.id))
-                        }
-                    } header: {
-                        Text("Collections")
+                    ForEach(workspace.collections, id: \.value.id) { collection in
+                        collectionSidebarRow(collection, workspace: workspace)
+                            .tag(LibraryScope.collection(collection.value.id))
+                    }
+                    if !workspace.collections.isEmpty {
+                        Label("Unfiled", systemImage: "tray")
+                            .tag(LibraryScope.uncategorized)
                     }
                 }
+            } header: {
+                collectionsHeader
             }
-            .listStyle(.sidebar)
-            .accessibilityIdentifier("LibrarySidebar")
+            Section {
+                Label("Recently Deleted", systemImage: "trash")
+                    .tag(LibraryScope.recentlyDeleted)
+            }
+        }
+        .listStyle(.sidebar)
+        .focused($sidebarHasFocus)
+        .accessibilityIdentifier("LibrarySidebar")
+        .task { await session.libraryWorkspace?.refreshCollections() }
+    }
 
-            Divider()
+    /// The Collections heading and its button for a new collection; right-clicking the heading offers the same.
+    private var collectionsHeader: some View {
+        HStack {
+            Text("Collections")
+            Spacer()
             Button {
                 collectionEditorMode = .create
             } label: {
-                Label("New Collection", systemImage: "plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "plus")
             }
             .buttonStyle(.borderless)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
             .help("New Collection")
+            .accessibilityLabel("New Collection")
             .accessibilityIdentifier("AddCollection")
+            .disabled(session.libraryWorkspace == nil)
         }
-        .task { await session.libraryWorkspace?.refreshCollections() }
+        .contextMenu {
+            Button("New Collection…") { collectionEditorMode = .create }
+                .disabled(session.libraryWorkspace == nil)
+        }
     }
 
     private func collectionSidebarRow(
@@ -308,23 +379,10 @@ struct LibraryView: View {
         }
     }
 
-    private func filteredCollections(_ workspace: LibraryWorkspace) -> [CollectionSnapshot] {
-        let query = collectionFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return workspace.collections }
-        return workspace.collections.filter { collection in
-            collection.value.name.localizedCaseInsensitiveContains(query)
-                || selectedScope == .collection(collection.value.id)
-        }
-    }
-
     private func deleteCollection(_ collection: CollectionSnapshot) {
         collectionPendingDeletion = nil
-        Task {
-            guard let workspace = session.libraryWorkspace else { return }
-            let deleted = await workspace.deleteCollection(collection)
-            guard deleted, selectedScope == .collection(collection.value.id) else { return }
-            selectedScope = .uncategorized
-        }
+        // The library leaves the list if it goes with the collection, and the sidebar follows (`listLibrary`).
+        Task { _ = await session.libraryWorkspace?.deleteCollection(collection) }
     }
 
     /// The list the sidebar chooses. Why new copies are not kept shows over it, unless it is Recently Deleted, which new
@@ -343,9 +401,9 @@ struct LibraryView: View {
                 RecentlyDeletedView(maintenance: maintenance)
             } else {
                 ContentUnavailableView {
-                    Label("Recently Deleted unavailable", systemImage: "exclamationmark.triangle")
+                    Label("Recently Deleted Unavailable", systemImage: "exclamationmark.triangle")
                 } description: {
-                    Text("The library maintenance service is not available.")
+                    Text("Keeptide couldn't check deleted items right now.")
                 }
                 .accessibilityIdentifier("RecentlyDeletedUnavailable")
             }
@@ -359,7 +417,7 @@ struct LibraryView: View {
                     snippetList(workspace, recentStyle: true)
                 } else if let error = session.libraryInitializationError {
                     ContentUnavailableView {
-                        Label("Library unavailable", systemImage: "exclamationmark.triangle")
+                        Label("Keeptide Couldn't Open the Library", systemImage: "exclamationmark.triangle")
                     } description: {
                         Text(error)
                     }
@@ -372,7 +430,7 @@ struct LibraryView: View {
             snippetList(workspace)
         } else if let error = session.libraryInitializationError {
             ContentUnavailableView {
-                Label("Library unavailable", systemImage: "exclamationmark.triangle")
+                Label("Keeptide Couldn't Open the Library", systemImage: "exclamationmark.triangle")
             } description: {
                 Text(error)
             }
@@ -399,12 +457,8 @@ struct LibraryView: View {
     @ViewBuilder
     private var detailColumn: some View {
         if selectedScope == .recentlyDeleted {
-            ContentUnavailableView {
-                Label("Recently Deleted", systemImage: "trash")
-            } description: {
-                Text("Restore an item or permanently delete it from the list.")
-            }
-            .accessibilityIdentifier("RecentlyDeletedDetail")
+            ContentUnavailableView { Text("No Item Selected") }
+                .accessibilityIdentifier("RecentlyDeletedDetail")
         } else if let workspace = session.libraryWorkspace, let editor = workspace.editor {
             let focusRequest = bodyFocus.request(for: editor.sessionID, documentID: editor.draftID)
             MemoEditorView(
@@ -502,19 +556,13 @@ struct LibraryView: View {
             }
             .accessibilityIdentifier("CaptureSelectionError")
         } else {
-            ContentUnavailableView {
-                Label("Select a recent clip", systemImage: "doc.text")
-            } description: {
-                Text("Content details and the explicit Copy action will appear here.")
-            }
+            ContentUnavailableView { Text(selectedScope == .recentClips ? "No Clip Selected" : "No Snippet Selected") }
         }
     }
 
     @ToolbarContentBuilder
     private var libraryToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            scopeMenu
-
             let searchFocus = commands.pendingSearchFocus
             LibrarySearchField(
                 text: searchBinding,
@@ -551,56 +599,40 @@ struct LibraryView: View {
         }
     }
 
+    /// While the sidebar is hidden, a menu at the toolbar's leading edge chooses the list instead.
+    @ToolbarContentBuilder
+    private var scopeToolbar: some ToolbarContent {
+        if sidebarVisibility == .hidden {
+            ToolbarItem(placement: .navigation) { scopeMenu }
+        }
+    }
+
+    /// The sidebar's lists in its order and sections, and New Collection… after them. ⌘L opens the same lists from
+    /// AppKit (`LibraryWindowController.makeListMenu`), finding this menu by its help.
     private var scopeMenu: some View {
         Menu {
-            Button {
-                selectedScope = .recentClips
-            } label: {
-                Label("Recent Clips", systemImage: "clock")
-            }
-            Button {
-                selectedScope = .favorites
-            } label: {
-                Label("Favorites", systemImage: "star")
-            }
-            Button {
-                selectedScope = .allSnippets
-            } label: {
-                Label("All Snippets", systemImage: "doc.text")
-            }
-            Button {
-                selectedScope = .uncategorized
-            } label: {
-                Label("Uncategorized", systemImage: "tray")
-            }
-            Button {
-                selectedScope = .recentlyDeleted
-            } label: {
-                Label("Recently Deleted", systemImage: "trash")
-            }
-
-            if let workspace = session.libraryWorkspace, !workspace.collections.isEmpty {
-                Divider()
-                ForEach(workspace.collections, id: \.value.id) { collection in
+            ForEach(Array(listSections.enumerated()), id: \.offset) { index, section in
+                if index > 0 { Divider() }
+                ForEach(section, id: \.scope) { list in
                     Button {
-                        selectedScope = .collection(collection.value.id)
+                        selectedScope = list.scope
                     } label: {
-                        Label(collection.value.name, systemImage: "circle.fill")
+                        Label(list.title, systemImage: list.symbolName)
                     }
                 }
             }
-
             Divider()
             Button {
                 collectionEditorMode = .create
             } label: {
-                Label("New Collection", systemImage: "plus")
+                Label("New Collection…", systemImage: "plus")
             }
+            .disabled(session.libraryWorkspace == nil)
         } label: {
             Label(currentScopeTitle, systemImage: "line.3.horizontal.decrease.circle")
                 .lineLimit(1)
         }
-        .help("Choose Library Scope")
+        .help(LibrarySidebar.chooseListHelp)
         .accessibilityLabel("Library Scope: \(currentScopeTitle)")
         .accessibilityIdentifier("LibraryScopeMenu")
     }
@@ -611,7 +643,7 @@ struct LibraryView: View {
         case .recentClips: return "Recent Clips"
         case .favorites: return "Favorites"
         case .allSnippets: return "All Snippets"
-        case .uncategorized: return "Uncategorized"
+        case .uncategorized: return "Unfiled"
         case .recentlyDeleted: return "Recently Deleted"
         case .collection(let id):
             return session.libraryWorkspace?.collections.first(where: { $0.value.id == id })?.value.name
@@ -624,6 +656,20 @@ struct LibraryView: View {
             get: { session.libraryWorkspace?.query ?? "" },
             set: { value in session.libraryWorkspace?.updateQuery(value) }
         )
+    }
+
+    /// ⌘[ and ⌘]: the previous or next list in the sidebar, stopping at either end.
+    private func moveList(_ offset: Int) {
+        let collections = session.libraryWorkspace?.collections.map(\.value.id) ?? []
+        guard let next = LibrarySidebar.scope(offset, from: selectedScope ?? .recentClips, collections: collections)
+        else { return }
+        selectedScope = next
+    }
+
+    /// View › Show Sidebar / Hide Sidebar: an explicit choice, kept whatever the window's width.
+    private func toggleSidebar() {
+        sidebarPreference = LibraryLayoutPolicy.preference(toggling: sidebarVisibility)
+        updateSidebar(for: availableWidth)
     }
 
     private func updateSidebar(for width: CGFloat) {
@@ -722,17 +768,7 @@ struct LibraryView: View {
                 Divider()
             }
             if workspace.entries.isEmpty, !workspace.isLoading {
-                ContentUnavailableView {
-                    Label(recentStyle ? "No recent clips" : "No snippets",
-                          systemImage: recentStyle ? "clipboard" : "doc.text")
-                } description: {
-                    Text(workspace.query.isEmpty
-                         ? (recentStyle
-                            ? "New copies appear here. Existing clipboard content is not imported."
-                            : "Create a snippet or save a recent clip to keep it here.")
-                         : "No items match your search.")
-                }
-                .accessibilityIdentifier(recentStyle ? "RecentClipsEmptyState" : "SnippetsEmptyState")
+                emptyList(workspace, recentStyle: recentStyle)
             } else {
                 List(workspace.entries, selection: entrySelection(workspace, recentStyle: recentStyle)) { entry in
                     LibraryEntryRow(entry: entry)
@@ -749,6 +785,29 @@ struct LibraryView: View {
                 .listStyle(.inset)
                 .accessibilityIdentifier("SnippetList")
             }
+        }
+    }
+
+    /// What an empty list holds and how things get there; a search that finds nothing says so in the system's words.
+    @ViewBuilder
+    private func emptyList(_ workspace: LibraryWorkspace, recentStyle: Bool) -> some View {
+        if !workspace.query.isEmpty {
+            ContentUnavailableView.search(text: workspace.query)
+                .accessibilityIdentifier("LibrarySearchEmptyState")
+        } else {
+            let empty = LibraryEmptyList.make(
+                for: recentStyle ? .recentClips : selectedScope ?? .allSnippets, named: currentScopeTitle
+            )
+            ContentUnavailableView {
+                Label(empty.title, systemImage: empty.symbol)
+            } description: {
+                Text(empty.message)
+            } actions: {
+                if empty.offersNewSnippet {
+                    Button("New Snippet") { commands.requestNewSnippet() }
+                }
+            }
+            .accessibilityIdentifier(empty.identifier)
         }
     }
 
@@ -812,7 +871,7 @@ struct LibraryView: View {
         .disabled(!canOrganize)
 
         Menu("Move To") {
-            Button("Move to Uncategorized") {
+            Button("Move to Unfiled") {
                 Task { _ = await workspace.moveItems(refs, to: nil) }
             }
             ForEach(workspace.collections, id: \.value.id) { collection in
@@ -1271,34 +1330,31 @@ private struct ComposingTextField: NSViewRepresentable {
     }
 }
 
-enum LibrarySection: String, CaseIterable, Identifiable {
-    case recentClips
-    case allSnippets
-    case uncategorized
+/// What an empty list says.
+private struct LibraryEmptyList {
+    let title: String
+    let message: String
+    let symbol: String
+    let identifier: String
+    let offersNewSnippet: Bool
 
-    var scope: LibraryScope {
-        switch self {
-        case .recentClips: .recentClips
-        case .allSnippets: .allSnippets
-        case .uncategorized: .uncategorized
-        }
-    }
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .recentClips: "Recent Clips"
-        case .allSnippets: "All Snippets"
-        case .uncategorized: "Uncategorized"
-        }
-    }
-
-    var symbolName: String {
-        switch self {
-        case .recentClips: "clock"
-        case .allSnippets: "doc.text"
-        case .uncategorized: "tray"
+    static func make(for scope: LibraryScope, named name: String) -> LibraryEmptyList {
+        switch scope {
+        case .recentClips:
+            LibraryEmptyList(title: "No Recent Clips", message: "New copies appear here while Keeptide is running.",
+                             symbol: "clock", identifier: "RecentClipsEmptyState", offersNewSnippet: false)
+        case .favorites:
+            LibraryEmptyList(title: "No Favorites", message: "Snippets you mark as favorites appear here.",
+                             symbol: "star", identifier: "FavoritesEmptyState", offersNewSnippet: false)
+        case .uncategorized:
+            LibraryEmptyList(title: "Nothing Unfiled", message: "Every snippet is in a collection.",
+                             symbol: "tray", identifier: "UnfiledEmptyState", offersNewSnippet: false)
+        case .collection:
+            LibraryEmptyList(title: "No Snippets in “\(name)”", message: "Move snippets here, or write a new one.",
+                             symbol: "folder", identifier: "CollectionEmptyState", offersNewSnippet: true)
+        case .allSnippets, .recentlyDeleted:
+            LibraryEmptyList(title: "No Snippets", message: "Save a clip with ⌘S, or write a new one.",
+                             symbol: "bookmark", identifier: "SnippetsEmptyState", offersNewSnippet: true)
         }
     }
 }

@@ -47,6 +47,8 @@ final class LibraryWindowController: NSWindowController {
         if let autosaveName { window.setFrameAutosaveName(autosaveName) }
         super.init(window: window)
         window.delegate = self
+        // The title stays the app's; the subtitle names the list, as a document window names its document.
+        commands.showListTitle = { [weak window] title in window?.subtitle = LibrarySidebar.subtitle(title) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -63,11 +65,59 @@ final class LibraryWindowController: NSWindowController {
     }
 
     @objc func newDocument(_ sender: Any?) { commands.requestNewSnippet() }
+    @objc func newCollection(_ sender: Any?) { commands.requestNewCollection() }
+    @objc func toggleLibrarySidebar(_ sender: Any?) { commands.requestSidebarToggle() }
+    @objc func selectPreviousList(_ sender: Any?) { commands.requestListMove(-1) }
+    @objc func selectNextList(_ sender: Any?) { commands.requestListMove(1) }
     @objc func saveDocument(_ sender: Any?) { commands.saveRequest += 1 }
     @objc func copyEntireItem(_ sender: Any?) { commands.copyRequest += 1 }
     @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
     @objc func exportLibrary(_ sender: Any?) { commands.exportLibraryRequest &+= 1 }
     @objc func exportSelected(_ sender: Any?) { commands.exportSelectedRequest &+= 1 }
+
+    /// Puts the keyboard on the lists: the sidebar while it shows; otherwise a menu of the lists opens under the
+    /// toolbar's scope menu, as clicking it would.
+    @objc func chooseList(_ sender: Any?) {
+        if commands.sidebarIsVisible {
+            commands.requestSidebarFocus()
+        } else if let anchor = listMenuAnchor() {
+            let below = anchor.isFlipped ? anchor.bounds.maxY + 4 : -4
+            makeListMenu().popUp(positioning: nil, at: NSPoint(x: 0, y: below), in: anchor)
+        }
+    }
+
+    /// The toolbar's scope menu, there only while the sidebar is hidden. SwiftUI's accessibility identifiers do
+    /// not reach the toolbar items AppKit holds, but its help does.
+    func listMenuAnchor() -> NSView? {
+        window?.toolbar?.items.first { $0.toolTip == LibrarySidebar.chooseListHelp }?.view
+    }
+
+    /// The lists the toolbar's scope menu shows, in its order and sections, the list shown checked.
+    func makeListMenu() -> NSMenu {
+        let menu = NSMenu(title: "Choose List")
+        for (index, section) in commands.listSections.enumerated() {
+            if index > 0 { menu.addItem(.separator()) }
+            for list in section {
+                let item = NSMenuItem(title: list.title, action: #selector(chooseListItem(_:)), keyEquivalent: "")
+                item.target = self
+                item.image = NSImage(systemSymbolName: list.symbolName, accessibilityDescription: nil)
+                item.representedObject = list.scope
+                item.state = list.scope == commands.listScope ? .on : .off
+                menu.addItem(item)
+            }
+        }
+        menu.addItem(.separator())
+        let create = NSMenuItem(title: "New Collection…", action: #selector(newCollection(_:)), keyEquivalent: "")
+        create.target = self
+        create.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
+        menu.addItem(create)
+        return menu
+    }
+
+    @objc private func chooseListItem(_ item: NSMenuItem) {
+        guard let scope = item.representedObject as? LibraryScope else { return }
+        commands.requestList(scope)
+    }
 
     func open(_ ref: ContentRef) {
         commands.openRequest = LibraryOpenRequest(
@@ -79,6 +129,23 @@ final class LibraryWindowController: NSWindowController {
 
 extension LibraryWindowController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(selectPreviousList(_:)), #selector(selectNextList(_:)), #selector(chooseList(_:)):
+            // ⌘[ and ⌘] indent in the body editor, and an input method owns the keys while it composes.
+            if let text = window?.firstResponder as? NSTextView, !text.isFieldEditor || text.hasMarkedText() {
+                return false
+            }
+            if menuItem.action == #selector(selectPreviousList(_:)) { return commands.canMoveList(-1) }
+            if menuItem.action == #selector(selectNextList(_:)) { return commands.canMoveList(1) }
+            return true
+        case #selector(toggleLibrarySidebar(_:)):
+            menuItem.title = commands.sidebarIsVisible ? "Hide Sidebar" : "Show Sidebar"
+            return true
+        case #selector(newCollection(_:)):
+            return session.libraryWorkspace != nil
+        default:
+            break
+        }
         if menuItem.action == #selector(exportSelected(_:)) {
             return session.exportCoordinator?.canStart == true
                 && !commands.isRecentlyDeleted
@@ -124,6 +191,12 @@ extension LibraryWindowController: NSWindowDelegate {
 @MainActor @Observable
 final class LibraryWindowCommands {
     private(set) var newSnippetRequest = 0
+    private(set) var newCollectionRequest = 0
+    private(set) var sidebarToggleRequest = 0
+    private(set) var previousListRequest = 0
+    private(set) var nextListRequest = 0
+    private(set) var sidebarFocusRequest = 0
+    private(set) var listRequest: LibraryListRequest?
     var saveRequest = 0
     var copyRequest = 0
     var exportLibraryRequest = 0
@@ -136,6 +209,13 @@ final class LibraryWindowCommands {
     var openRequest: LibraryOpenRequest?
     private(set) var selectedExportRefs: [ContentRef] = []
     private(set) var isRecentlyDeleted = false
+    /// The list shown, the collections listed and whether the sidebar shows, as the view last reported them; menu
+    /// validation reads them, so changes are not observed.
+    @ObservationIgnored private(set) var listScope: LibraryScope = .recentClips
+    @ObservationIgnored private(set) var listSections = LibrarySidebar.sections(collections: [])
+    @ObservationIgnored private(set) var sidebarIsVisible = true
+    /// Shows the name of the list chosen; the window controller sets it to write the window's subtitle.
+    @ObservationIgnored var showListTitle: @MainActor (String) -> Void = { _ in }
 
     func requestNewSnippet() {
         focusGeneration &+= 1
@@ -159,10 +239,48 @@ final class LibraryWindowCommands {
         searchFocus.consume(intent, generation: focusGeneration)
     }
 
+    func requestNewCollection() {
+        newCollectionRequest &+= 1
+    }
+
+    func requestSidebarToggle() {
+        sidebarToggleRequest &+= 1
+    }
+
+    /// ⌘[ (-1) or ⌘] (1).
+    func requestListMove(_ offset: Int) {
+        if offset < 0 { previousListRequest &+= 1 } else { nextListRequest &+= 1 }
+    }
+
+    func canMoveList(_ offset: Int) -> Bool {
+        let collections = listSections.joined().compactMap(\.scope.collectionID)
+        return LibrarySidebar.scope(offset, from: listScope, collections: collections) != nil
+    }
+
+    func requestSidebarFocus() {
+        sidebarFocusRequest &+= 1
+    }
+
+    /// A list chosen from the menu ⌘L opens.
+    func requestList(_ scope: LibraryScope) {
+        listRequest = LibraryListRequest(scope: scope, generation: (listRequest?.generation ?? 0) + 1)
+    }
+
+    func updateListContext(scope: LibraryScope, sections: [[LibrarySidebar.ListEntry]], sidebarIsVisible: Bool) {
+        listScope = scope
+        listSections = sections
+        self.sidebarIsVisible = sidebarIsVisible
+    }
+
     func updateExportContext(refs: [ContentRef], isRecentlyDeleted: Bool) {
         selectedExportRefs = refs
         self.isRecentlyDeleted = isRecentlyDeleted
     }
+}
+
+struct LibraryListRequest: Equatable {
+    let scope: LibraryScope
+    let generation: Int
 }
 
 struct LibraryOpenRequest: Equatable {
