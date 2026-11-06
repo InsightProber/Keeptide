@@ -29,10 +29,11 @@ The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library
 provides text editing, document-local find, explicit capture saving and safe
-undo of a newly saved capture, flat collections and favorites, and library-wide
-search from the list. Markdown reading
-mode keeps source editing separate from rendering and never fetches embedded
-images. Typed previews show stored URLs, bounded image resolutions and locally
+undo of a newly saved capture, saving a capture straight into a collection,
+flat collections and favorites, library-wide search from the list, and a
+details panel for a snippet's type, collection, favorite and note. Markdown
+reading mode keeps source editing separate from rendering and never fetches
+embedded images. Typed previews show stored URLs, bounded image resolutions and locally
 authorized files. Full input-method and accessibility acceptance remains a
 release gate. History now has configurable retention, a seven-day Recently
 Deleted window and explicit permanent removal. Settings report allocated storage

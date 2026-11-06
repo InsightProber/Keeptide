@@ -183,10 +183,15 @@ final class LibraryWorkspace {
     @ObservationIgnored private var loadedResultCount = 0
     private(set) var entries: [LibraryEntry] = []
     private(set) var selectedEntryID: ItemID?
+    /// The item the last open could not read, until another item or a new snippet opens. The editor keeps the item
+    /// it had, so the detail says this one is unavailable instead.
+    private(set) var unavailableItemID: ItemID?
     private(set) var editor: MemoEditorSession?
     private(set) var recoveredDrafts: [RecoveredDraftSummary] = []
     private(set) var isLoading = false
     private(set) var message: String?
+    /// What the last action on the selection did ("Copied", "Saved to “Prompts”"), until the selection changes.
+    private(set) var actionMessage: String?
     private(set) var canUndoNewSave = false
     private(set) var hasMoreEntries = false
     private(set) var searchIsPartial = false
@@ -242,7 +247,9 @@ final class LibraryWorkspace {
         self.searchService = searchService
         self.refreshSearch = refreshSearch
         self.pasteService = pasteService
-        pasteSession = pasteService?.beginSession()
+        // The library only copies. Its session has no target, so the app in front never changes what is copied:
+        // a terminal's session would make text a command, without its trailing newline.
+        pasteSession = pasteService?.beginSession(target: nil)
         self.storeIdentity = storeIdentity
         self.coordinator = coordinator
         recoveredByID = Dictionary(uniqueKeysWithValues: recovered.map { ($0.draftID, $0) })
@@ -390,11 +397,15 @@ final class LibraryWorkspace {
             committed = true
             collectionUndo = change?.undoToken
             canUndoCollectionChange = !(collectionUndo?.records.isEmpty ?? true)
+            // The item changed since a new save, so the save can no longer be undone as it was.
+            undoSave = nil
+            canUndoNewSave = false
             guard !isClosing, !isClosed else { return true }
             setCollections(try await collectionService.list(expecting: storeIdentity))
             leaveListIfGone()
             try await refreshSearch()
             if !isClosing, !isClosed { await reload(refreshIndex: false) }
+            await refreshEditorDetails()
             return true
         } catch {
             message = committed
@@ -466,6 +477,7 @@ final class LibraryWorkspace {
         guard !isClosing, !isClosed, scope != value else { return }
         navigationGeneration &+= 1
         scope = value
+        actionMessage = nil
         if value == .recentlyDeleted {
             // The query stays: nothing rewrites the search field while nobody types in it, so an input method's
             // composition there survives, and Recently Deleted is searched by the same field.
@@ -539,6 +551,7 @@ final class LibraryWorkspace {
     func open(_ ref: ContentRef) async {
         guard !isClosing, !isClosed else { return }
         if editor?.ref == ref { return }
+        actionMessage = nil
         navigationGeneration &+= 1
         let navigation = navigationGeneration
         do {
@@ -552,10 +565,12 @@ final class LibraryWorkspace {
             guard navigation == navigationGeneration else { return }
             install(session)
             selectedEntryID = ref.itemID
+            unavailableItemID = nil
             message = nil
         } catch {
             guard navigation == navigationGeneration else { return }
             selectedEntryID = nil
+            unavailableItemID = ref.itemID
             message = "This item is no longer available."
         }
     }
@@ -582,6 +597,7 @@ final class LibraryWorkspace {
         )
         install(session)
         selectedEntryID = nil
+        unavailableItemID = nil
         message = nil
     }
 
@@ -801,9 +817,128 @@ final class LibraryWorkspace {
             return nil
         }
         let generation = pasteSession.advanceQueryGeneration()
-        return await pasteService.execute(PasteRequest(
+        let outcome = await pasteService.execute(PasteRequest(
             ref: ref, queryGeneration: generation, mode: mode, session: pasteSession
         ))
+        report(outcome)
+        return outcome
+    }
+
+    /// Copies a row's item; the open item is saved first, so the copy is what the editor shows.
+    func copy(_ ref: ContentRef, mode: PasteMode = .original) async -> PasteOutcome? {
+        if ref.itemID == editor?.ref?.itemID { return await copyCurrent(mode: mode) }
+        guard !isClosing, !isClosed, let pasteService, let pasteSession else { return nil }
+        let generation = pasteSession.advanceQueryGeneration()
+        let outcome = await pasteService.execute(PasteRequest(
+            ref: ref, queryGeneration: generation, mode: mode, session: pasteSession
+        ))
+        report(outcome)
+        return outcome
+    }
+
+    private func report(_ outcome: PasteOutcome) {
+        switch outcome {
+        case .copied, .copiedInstead: actionMessage = "Copied"
+        case .refused(.stale): break // A newer copy or selection owns the message.
+        case .refused: actionMessage = "This clip could not be copied. Its original formats must all be available."
+        case .dispatched, .needsConfirmation: break // A copy without a target never pastes or asks.
+        }
+    }
+
+    // MARK: Saving, favorites and collections for the selection
+
+    /// Saves the selected clips as snippets. The open clip is saved through its editor, which keeps the save
+    /// undoable; several are saved one by one, and the first that fails stops the rest.
+    func saveAsSnippets(_ refs: [ContentRef]) async {
+        let clips = refs.filter { $0.facet == .history }
+        guard !clips.isEmpty else { return }
+        if clips.count == 1, editor?.ref == clips[0] {
+            guard let outcome = try? await saveSelectedHistory() else { return }
+            if case .created = outcome { actionMessage = "Saved to Snippets" } else { actionMessage = "Already in Snippets" }
+            return
+        }
+        let outcome = await saveHistory(clips)
+        if outcome.failure != nil {
+            actionMessage = "Saved \(outcome.saved.count) of \(clips.count) · Some clips could not be saved."
+        } else if outcome.saved.isEmpty {
+            actionMessage = "Already in Snippets"
+        } else {
+            actionMessage = "Saved to Snippets"
+        }
+    }
+
+    /// Marks the selection a favorite or not. A clip that is not a snippet yet is saved as one, a favorite; a clip
+    /// that already is one marks its snippet. Snippets change in one transaction.
+    func setFavorite(of refs: [ContentRef], to isFavorite: Bool) async {
+        let clips = refs.filter { $0.facet == .history }
+        var snippets = refs.filter { $0.facet == .memo }
+        var saved = 0
+        if !clips.isEmpty {
+            guard let resolved = await snippetRefs(for: clips, saving: isFavorite, collectionID: nil) else { return }
+            saved = resolved.saved
+            snippets += resolved.existing
+        }
+        if !snippets.isEmpty {
+            guard await setFavorite(snippets, isFavorite: isFavorite) else { return }
+        }
+        let change = isFavorite ? "Added to Favorites" : "Removed from Favorites"
+        actionMessage = saved > 0 ? "Saved as Snippet · \(change)" : clips.isEmpty ? change : "Already in Snippets · \(change)"
+        await refreshEditorDetails()
+    }
+
+    /// Puts the selection in `collection`, or in no collection. A clip that is not a snippet yet is saved into it.
+    func file(_ refs: [ContentRef], into collection: CollectionSnapshot?) async {
+        let place = collection.map { "“\($0.value.name)”" } ?? "Unfiled"
+        let clips = refs.filter { $0.facet == .history }
+        var snippets = refs.filter { $0.facet == .memo }
+        var saved = 0
+        if !clips.isEmpty {
+            guard let resolved = await snippetRefs(for: clips, saving: true, collectionID: collection?.value.id)
+            else { return }
+            saved = resolved.saved
+            snippets += resolved.existing
+        }
+        if !snippets.isEmpty {
+            guard await moveItems(snippets, to: collection) else { return }
+        }
+        actionMessage = saved > 0 && snippets.isEmpty ? "Saved to \(place)" : "Moved to \(place)"
+        await refreshEditorDetails()
+    }
+
+    /// ⌫ in a collection: the selected snippets leave it and become unfiled; nothing is deleted.
+    func removeFromCollection(_ refs: [ContentRef]) async {
+        guard let id = scope.collectionID, let collection = collections.first(where: { $0.value.id == id }) else {
+            return
+        }
+        let snippets = refs.filter { $0.facet == .memo }
+        guard !snippets.isEmpty, await moveItems(snippets, to: nil) else { return }
+        actionMessage = "Removed from “\(collection.value.name)”"
+        await refreshEditorDetails()
+    }
+
+    /// The snippets of `clips`: saved now when `saving`, into `collectionID` and as a favorite as asked, and the
+    /// snippets of those already saved. The open clip is saved through its editor, which keeps the save undoable.
+    private func snippetRefs(
+        for clips: [ContentRef], saving: Bool, collectionID: CollectionID?
+    ) async -> (saved: Int, existing: [ContentRef])? {
+        let favorite = saving && collectionID == nil
+        if clips.count == 1, let clip = clips.first, editor?.ref == clip {
+            if let snippet = editor?.details?.savedSnippet { return (0, [snippet.ref]) }
+            guard saving, let outcome = try? await saveSelectedHistory(collectionID: collectionID, isFavorite: favorite)
+            else { return nil }
+            if case .created = outcome { return (1, []) }
+            return (0, [outcome.ref])
+        }
+        if !saving {
+            let current = (try? await repository.summaries(for: clips.map(\.itemID))) ?? []
+            return (0, current.compactMap(\.memo))
+        }
+        let outcome = await saveHistory(clips, collectionID: collectionID, isFavorite: favorite)
+        if outcome.failure != nil, outcome.saved.isEmpty {
+            message = "These clips could not be saved as snippets."
+            return nil
+        }
+        return (outcome.saved.count, outcome.alreadySaved)
     }
 
     /// Safely ends any editor for the exact facet before the root maintenance facade performs a soft delete.
@@ -928,7 +1063,7 @@ final class LibraryWorkspace {
             editor?.markFailed("The draft could not be saved before closing.", revision: editor?.revision ?? 0)
             message = "The draft could not be saved before closing."
             isClosing = false
-            pasteSession = pasteService?.beginSession()
+            pasteSession = pasteService?.beginSession(target: nil)
             scheduleQueryLoad()
             return false
         }
@@ -940,7 +1075,7 @@ final class LibraryWorkspace {
         guard isClosing || isClosed else { return }
         isClosing = false
         isClosed = false
-        pasteSession = pasteService?.beginSession()
+        pasteSession = pasteService?.beginSession(target: nil)
         scheduleQueryLoad()
     }
 
@@ -974,21 +1109,71 @@ final class LibraryWorkspace {
     }
 
     private func makeSession(_ ref: ContentRef) async throws -> MemoEditorSession {
-        if ref.facet == .memo { return makeSession(try await libraryService.editingSnapshot(ref)) }
+        if ref.facet == .memo {
+            let session = makeSession(try await libraryService.editingSnapshot(ref))
+            session.updateDetails(try await details(of: ref, content: nil))
+            return session
+        }
+        // A clip whose formats cannot all be read still opens, read-only and without a body, so its details can say
+        // why it cannot be copied or saved.
         let content = try await repository.read(ref)
-        guard content.integrity == .complete else { throw StoreError.staleReference }
         let state = try await repository.recordState(.item(ref.itemID))
         guard case .item(let item) = state.value else { throw StoreError.staleReference }
-        let extracted = try MemoTextExtractor.editableText(from: content)
+        let extracted = content.integrity == .complete ? try MemoTextExtractor.editableText(from: content) : nil
         let kind: MemoKind = extracted.map {
             ContentKind.isMarkdown($0.sourceRepresentationType) ? .markdown : .plainText
         } ?? .plainText
-        return MemoEditorSession(
+        let session = MemoEditorSession(
             itemID: ref.itemID, ref: ref, isReadOnly: true, title: item.title,
             body: extracted?.text, note: "", kind: kind,
             richSourceWarning: extracted.map { $0.sourceRepresentationType != "public.utf8-plain-text" } ?? false,
             storeIdentity: storeIdentity
         )
+        session.updateDetails(try await details(of: ref, content: content))
+        return session
+    }
+
+    /// The details of the item `ref` opens: the clip's formats and its snippet, or the snippet's collection, favorite
+    /// mark and original clip.
+    private func details(of ref: ContentRef, content: ResolvedContent?) async throws -> LibraryItemDetails {
+        let state = try await repository.recordState(.item(ref.itemID))
+        guard case .item(let item) = state.value else { throw StoreError.staleReference }
+        let current = try await repository.summaries(for: [ref.itemID]).first
+        var details = LibraryItemDetails(
+            sourceApp: item.sourceApp, createdAt: item.createdAt, lastCopiedAt: item.lastCopiedAt,
+            copyCount: item.copyCount
+        )
+        if ref.facet == .history {
+            if let content {
+                details.integrity = content.integrity
+                details.formatCount = content.representations.count
+                details.byteCount = content.representations.reduce(0) { $0 + $1.byteCount }
+            }
+            if let memo = current?.memo {
+                details.savedSnippet = .init(ref: memo, collectionID: item.collectionID, isFavorite: item.isFavorite)
+            }
+        } else {
+            details.collectionID = item.collectionID
+            details.isFavorite = item.isFavorite
+            if item.captureID != nil {
+                if let history = current?.history {
+                    details.originalClip = .available(history)
+                } else if item.historyDeletedAt != nil, let purgeAfter = item.historyPurgeAfter, purgeAfter > Date() {
+                    details.originalClip = .recentlyDeleted(until: purgeAfter)
+                } else {
+                    details.originalClip = .gone
+                }
+            }
+        }
+        return details
+    }
+
+    /// Reads the open item's details again, after its favorite mark or collection changed.
+    private func refreshEditorDetails() async {
+        guard let editor, let ref = editor.ref else { return }
+        let content = ref.facet == .history ? try? await repository.read(ref) : nil
+        guard let details = try? await details(of: ref, content: content), self.editor === editor else { return }
+        editor.updateDetails(details)
     }
 
     private func makeSession(_ snapshot: MemoEditingSnapshot) -> MemoEditorSession {
