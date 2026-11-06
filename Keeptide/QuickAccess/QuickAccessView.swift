@@ -34,9 +34,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         focusRingType = .none
         font = .systemFont(ofSize: 15)
         textColor = ToolbarPalette.fieldText
-        placeholderAttributedString = NSAttributedString(string: "Search", attributes: [
-            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: ToolbarPalette.placeholder,
-        ])
+        setPrompt("Search")
         // The field's own magnifier and cancel button stay, for what they do, and are neither drawn nor read: the
         // search control has its own.
         if let cell = cell as? NSSearchFieldCell {
@@ -51,6 +49,14 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    /// The placeholder: what the search searches.
+    func setPrompt(_ prompt: String) {
+        guard placeholderAttributedString?.string != prompt else { return }
+        placeholderAttributedString = NSAttributedString(string: prompt, attributes: [
+            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: ToolbarPalette.placeholder,
+        ])
+    }
 
     // The text takes the whole field; the search control draws the magnifier and the clear button.
 

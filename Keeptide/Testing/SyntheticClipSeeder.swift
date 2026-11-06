@@ -38,6 +38,24 @@ enum SyntheticClipSeeder {
         }
     }
 
+    /// Two collections and three made-up snippets: one in each collection, the shell one a favorite, and one in none.
+    static func seedSnippets(into controller: PersistenceController) async throws {
+        let collections = CollectionService(controller: controller)
+        let library = LibraryService(controller: controller)
+        let prompts = try await collections.create(CollectionDraft(name: "Prompts", color: "yellow"))
+        let shell = try await collections.create(CollectionDraft(name: "Shell", color: "green"))
+        _ = try await library.create(MemoDraft(
+            title: "Summarize meeting notes",
+            body: "Summarize the notes below into decisions, owners and open questions.",
+            collectionID: prompts.value.id
+        ))
+        let ports = try await library.create(MemoDraft(
+            title: "List open ports", body: "lsof -nP -iTCP -sTCP:LISTEN", collectionID: shell.value.id
+        ))
+        _ = try await collections.setFavorite([ports], isFavorite: true)
+        _ = try await library.create(MemoDraft(title: "Release checklist", body: "Tag, notarize, ship."))
+    }
+
     private static func pixel() -> Data {
         let image = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1, bitsPerSample: 8,
                                      samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,

@@ -1,9 +1,10 @@
 import Foundation
 
-/// Where keys are aimed. Along the band's toolbar the panel holds the search field and the filters, and below
-/// them the strip of clips (`results`); `preview` is the expanded preview.
+/// Where keys are aimed. Along the band's toolbar the panel holds the lists (the All | Snippets switch and the
+/// collection chips), the filter button and the search field, and below them the strip of clips (`results`);
+/// `preview` is the expanded preview.
 enum QuickAccessFocus: Equatable {
-    case searchField, filters, results, preview
+    case searchField, lists, filterButton, results, preview
 }
 
 enum QuickAccessKey: Equatable {
@@ -35,7 +36,7 @@ struct QuickAccessKeyInput: Equatable {
 enum QuickAccessCommand: Equatable {
     case passThrough, focusResults, move(Int), primary, plainText, togglePreview, escape
     case focusSearchField, cycleFocus(forward: Bool)
-    case moveFilter(Int), toggleFilter, typeIntoSearch
+    case moveListCursor(Int), chooseListAtCursor, openFilterMenu, typeIntoSearch
 }
 
 /// Translates panel keys into commands. Keys with native meaning where focus is, and
@@ -56,16 +57,21 @@ enum QuickAccessKeyRouter {
             return input.isSingleLine ? .focusResults : .passThrough
         case (.space, .searchField):
             return input.queryIsEmpty ? .togglePreview : .passThrough
-        // Filters.
-        case (.left, .filters):
-            return .moveFilter(-1)
-        case (.right, .filters):
-            return .moveFilter(1)
-        case (.space, .filters):
-            return .toggleFilter
-        case (.up, .filters):
+        // The lists: ← and → move the cursor along the segments and the chips, and Space chooses the one under it.
+        case (.left, .lists):
+            return .moveListCursor(-1)
+        case (.right, .lists):
+            return .moveListCursor(1)
+        case (.space, .lists):
+            return .chooseListAtCursor
+        // The filter button: Space opens its menu.
+        case (.space, .filterButton):
+            return .openFilterMenu
+        // The lists and the filter button share the toolbar's row with the search: Up goes to the search field, and
+        // Down to the strip below.
+        case (.up, .lists), (.up, .filterButton):
             return .focusSearchField
-        case (.down, .filters):
+        case (.down, .lists), (.down, .filterButton):
             return .focusResults
         // Strip: the rows run left to right, the frequent clips from the least used to the most used, then the newest
         // clip and older ones, so → is the next row: a clip used more often, the newest after the most used, or one
@@ -83,7 +89,7 @@ enum QuickAccessKeyRouter {
             return .togglePreview
         // Typing below the search field belongs in the search field, and so does typing in the preview's text,
         // which cannot be edited.
-        case (.character, .filters), (.character, .results), (.character, .preview):
+        case (.character, .lists), (.character, .filterButton), (.character, .results), (.character, .preview):
             return .typeIntoSearch
         // Return copies and Tab cycles from any focus, the expanded preview included.
         case (.returnKey, _):
@@ -97,12 +103,13 @@ enum QuickAccessKeyRouter {
         }
     }
 
-    /// Where Tab (`forward`) or ⇧Tab takes the keys from `current`: round the search field, the filters and the
-    /// strip, in that order. The strip is left out while it has no clips. From the preview's text, or from nowhere
-    /// in the panel, Tab starts at the search field and ⇧Tab at the end of the round.
+    /// Where Tab (`forward`) or ⇧Tab takes the keys from `current`: round the search field, the strip, the lists and
+    /// the filter button, in that order. The strip is left out while it has no clips. From the preview's text, or from
+    /// nowhere in the panel, Tab starts at the search field and ⇧Tab at the end of the round.
     static func focus(after current: QuickAccessFocus?, forward: Bool, hasClips: Bool) -> QuickAccessFocus {
-        var order: [QuickAccessFocus] = [.searchField, .filters]
+        var order: [QuickAccessFocus] = [.searchField]
         if hasClips { order.append(.results) }
+        order += [.lists, .filterButton]
         guard let index = current.flatMap(order.firstIndex(of:)) else {
             return forward ? order[0] : order[order.count - 1]
         }

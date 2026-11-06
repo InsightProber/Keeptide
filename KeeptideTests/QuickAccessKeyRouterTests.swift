@@ -6,7 +6,7 @@ final class QuickAccessKeyRouterTests: XCTestCase {
         let keys: [QuickAccessKey] = [
             .up, .down, .left, .right, .tab, .backTab, .returnKey, .space, .character, .other,
         ]
-        for focus in [QuickAccessFocus.searchField, .filters, .results, .preview] {
+        for focus in QuickAccessFocus.all {
             for key in keys {
                 for shift in [false, true] {
                     let input = QuickAccessKeyInput(key: key, shift: shift, focus: focus,
@@ -43,66 +43,79 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     }
 
     func testDownGoesFromTheToolbarToTheStrip() {
-        // The filters sit beside the search field in the toolbar, so Down from either goes to the strip below.
+        // The lists, the filter button and the search share the toolbar's row, so Down from any of them goes to the strip
+        // below.
         XCTAssertEqual(command(.down, in: .searchField), .focusResults)
         XCTAssertEqual(command(.down, in: .searchField, queryIsEmpty: false), .focusResults)
-        XCTAssertEqual(command(.down, in: .filters), .focusResults)
+        XCTAssertEqual(command(.down, in: .lists), .focusResults)
+        XCTAssertEqual(command(.down, in: .filterButton), .focusResults)
         // A multi-line query keeps Down for the caret.
         XCTAssertEqual(command(.down, in: .searchField, isSingleLine: false), .passThrough)
         // Nothing lies below the strip.
         XCTAssertEqual(command(.down, in: .results), .passThrough)
     }
 
-    func testUpGoesFromTheStripOrTheFiltersToTheSearchField() {
+    func testUpGoesFromTheStripTheListsOrTheFilterButtonToTheSearchField() {
         for queryIsEmpty in [true, false] {
-            XCTAssertEqual(command(.up, in: .results, queryIsEmpty: queryIsEmpty), .focusSearchField)
-            XCTAssertEqual(command(.up, in: .filters, queryIsEmpty: queryIsEmpty), .focusSearchField)
+            for focus in [QuickAccessFocus.results, .lists, .filterButton] {
+                XCTAssertEqual(command(.up, in: focus, queryIsEmpty: queryIsEmpty), .focusSearchField, "\(focus)")
+            }
         }
         // Nothing lies above the search field.
         XCTAssertEqual(command(.up, in: .searchField), .passThrough)
     }
 
-    func testTheFiltersMoveAndToggle() {
+    func testTheListsMoveTheirCursorAndChoose() {
         let routes: [(key: QuickAccessKey, expected: QuickAccessCommand)] = [
-            (.left, .moveFilter(-1)), (.right, .moveFilter(1)), (.space, .toggleFilter),
+            (.left, .moveListCursor(-1)), (.right, .moveListCursor(1)), (.space, .chooseListAtCursor),
         ]
         for queryIsEmpty in [true, false] {
             for route in routes {
-                XCTAssertEqual(command(route.key, in: .filters, queryIsEmpty: queryIsEmpty), route.expected,
+                XCTAssertEqual(command(route.key, in: .lists, queryIsEmpty: queryIsEmpty), route.expected,
                                "\(route.key), queryIsEmpty \(queryIsEmpty)")
             }
         }
     }
 
+    func testSpaceOpensTheFilterMenuAndTheSideArrowsDoNothingThere() {
+        for queryIsEmpty in [true, false] {
+            XCTAssertEqual(command(.space, in: .filterButton, queryIsEmpty: queryIsEmpty), .openFilterMenu)
+            XCTAssertEqual(command(.left, in: .filterButton, queryIsEmpty: queryIsEmpty), .passThrough)
+            XCTAssertEqual(command(.right, in: .filterButton, queryIsEmpty: queryIsEmpty), .passThrough)
+        }
+    }
+
     func testTabCyclesFocusFromEveryPosition() {
-        for focus in [QuickAccessFocus.searchField, .filters, .results, .preview] {
+        for focus in QuickAccessFocus.all {
             XCTAssertEqual(command(.tab, in: focus), .cycleFocus(forward: true), "Tab in \(focus)")
             XCTAssertEqual(command(.backTab, in: focus), .cycleFocus(forward: false), "Shift-Tab in \(focus)")
         }
     }
 
-    func testTabGoesRoundTheSearchTheFiltersAndTheStrip() {
-        // Forward: search field, filters, strip, and round again.
-        XCTAssertEqual(next(after: .searchField), .filters)
-        XCTAssertEqual(next(after: .filters), .results)
-        XCTAssertEqual(next(after: .results), .searchField)
-        // Backward the other way round.
-        XCTAssertEqual(next(after: .searchField, forward: false), .results)
-        XCTAssertEqual(next(after: .results, forward: false), .filters)
-        XCTAssertEqual(next(after: .filters, forward: false), .searchField)
+    func testTabGoesRoundTheSearchTheStripTheListsAndTheFilterButton() {
+        // Forward from the search: the clips, the lists, the filter button, and round again.
+        XCTAssertEqual(next(after: .searchField), .results)
+        XCTAssertEqual(next(after: .results), .lists)
+        XCTAssertEqual(next(after: .lists), .filterButton)
+        XCTAssertEqual(next(after: .filterButton), .searchField)
+        // Backward the other way round: Shift-Tab from the search goes to the filter button.
+        XCTAssertEqual(next(after: .searchField, forward: false), .filterButton)
+        XCTAssertEqual(next(after: .filterButton, forward: false), .lists)
+        XCTAssertEqual(next(after: .lists, forward: false), .results)
+        XCTAssertEqual(next(after: .results, forward: false), .searchField)
         // Without clips the strip is left out.
-        XCTAssertEqual(next(after: .filters, hasClips: false), .searchField)
-        XCTAssertEqual(next(after: .searchField, forward: false, hasClips: false), .filters)
+        XCTAssertEqual(next(after: .searchField, hasClips: false), .lists)
+        XCTAssertEqual(next(after: .lists, forward: false, hasClips: false), .searchField)
         // From the preview's text, or with nothing focused, Tab starts at the search field and Shift-Tab at the end.
         XCTAssertEqual(next(after: .preview), .searchField)
-        XCTAssertEqual(next(after: .preview, forward: false), .results)
+        XCTAssertEqual(next(after: .preview, forward: false), .filterButton)
         XCTAssertEqual(next(after: nil), .searchField)
-        XCTAssertEqual(next(after: nil, forward: false, hasClips: false), .filters)
+        XCTAssertEqual(next(after: nil, forward: false, hasClips: false), .filterButton)
     }
 
-    func testTypingInTheStripFiltersOrPreviewReturnsToTheSearchField() {
+    func testTypingAnywhereButTheSearchReturnsToTheSearchField() {
         // The preview's text cannot be edited, so a key typed there would only beep.
-        for focus in [QuickAccessFocus.filters, .results, .preview] {
+        for focus in [QuickAccessFocus.lists, .filterButton, .results, .preview] {
             for queryIsEmpty in [true, false] {
                 for shift in [false, true] {
                     XCTAssertEqual(command(.character, shift: shift, in: focus, queryIsEmpty: queryIsEmpty),
@@ -123,12 +136,13 @@ final class QuickAccessKeyRouterTests: XCTestCase {
         }
         XCTAssertEqual(command(.space, in: .searchField), .togglePreview)
         XCTAssertEqual(command(.space, in: .searchField, queryIsEmpty: false), .passThrough, "Space is text in a query")
-        XCTAssertEqual(command(.space, in: .filters), .toggleFilter, "the filters toggle the one under the cursor")
+        XCTAssertEqual(command(.space, in: .lists), .chooseListAtCursor, "the lists choose the one under the cursor")
+        XCTAssertEqual(command(.space, in: .filterButton), .openFilterMenu, "the filter button opens its menu")
         XCTAssertEqual(command(.space, in: .preview), .togglePreview, "Space closes the preview, as Escape does")
     }
 
     func testReturnCopiesFromEveryPosition() {
-        for focus in [QuickAccessFocus.searchField, .filters, .results, .preview] {
+        for focus in QuickAccessFocus.all {
             for queryIsEmpty in [true, false] {
                 XCTAssertEqual(command(.returnKey, in: focus, queryIsEmpty: queryIsEmpty), .primary,
                                "Return in \(focus)")
@@ -146,7 +160,7 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     }
 
     func testEscapeIsAlwaysRouted() {
-        for focus in [QuickAccessFocus.searchField, .filters, .results, .preview] {
+        for focus in QuickAccessFocus.all {
             XCTAssertEqual(command(.escape, in: focus), .escape)
         }
     }
@@ -181,4 +195,8 @@ final class QuickAccessKeyRouterTests: XCTestCase {
     private func next(after focus: QuickAccessFocus?, forward: Bool = true, hasClips: Bool = true) -> QuickAccessFocus {
         QuickAccessKeyRouter.focus(after: focus, forward: forward, hasClips: hasClips)
     }
+}
+
+private extension QuickAccessFocus {
+    static let all: [QuickAccessFocus] = [.searchField, .lists, .filterButton, .results, .preview]
 }

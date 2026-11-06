@@ -84,7 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     await environment.captureSession.initialize(
                         testSessionID: launchConfiguration.captureTestSessionID,
                         cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
-                        seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips
+                        seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips,
+                        seedSyntheticSnippets: launchConfiguration.shouldSeedSyntheticSnippets
                     )
                 }
                 #else

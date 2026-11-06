@@ -362,7 +362,7 @@ final class AppLaunchTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
-        let filters = try XCTUnwrap(views(QuickAccessFilterRow.self, in: window.contentView).first)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
         let up = try key(kVK_UpArrow, "\u{F700}"), down = try key(kVK_DownArrow, "\u{F701}")
 
         // Down goes from the search field to the strip below it, and the newest clip stays selected.
@@ -373,16 +373,19 @@ final class AppLaunchTests: XCTestCase {
         strip.keyDown(with: up)
         XCTAssertTrue(isEditing(field, in: window))
 
-        // The filters sit beside the search field: Up from them goes back to it, and Down to the strip.
-        controller.perform(.cycleFocus(forward: true))
-        XCTAssertTrue(window.firstResponder === filters)
-        filters.keyDown(with: up)
-        XCTAssertTrue(isEditing(field, in: window))
-        controller.perform(.cycleFocus(forward: true))
-        filters.keyDown(with: down)
-        XCTAssertTrue(window.firstResponder === strip)
-        strip.keyDown(with: up)
-        XCTAssertTrue(isEditing(field, in: window))
+        // The lists and the filter button share the toolbar's row with the search: Up from either goes back to the
+        // search field, and Down to the strip. Tab reaches them after the strip.
+        for (station, steps) in [(toolbar.lists as NSView, 2), (toolbar.filterButton as NSView, 3)] {
+            for _ in 0..<steps { controller.perform(.cycleFocus(forward: true)) }
+            XCTAssertTrue(window.firstResponder === station, "\(type(of: station))")
+            station.keyDown(with: up)
+            XCTAssertTrue(isEditing(field, in: window), "\(type(of: station))")
+            for _ in 0..<steps { controller.perform(.cycleFocus(forward: true)) }
+            station.keyDown(with: down)
+            XCTAssertTrue(window.firstResponder === strip, "\(type(of: station))")
+            strip.keyDown(with: up)
+            XCTAssertTrue(isEditing(field, in: window), "\(type(of: station))")
+        }
         controller.state.close()
     }
 
@@ -568,7 +571,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(field.alphaValue, 0, "The folded field and its caret are not drawn")
         XCTAssertTrue(toolbar.search.convert(toolbar.search.bounds, to: nil).contains(field.convert(field.bounds, to: nil)))
         XCTAssertFalse(toolbar.search.foldButton.isHidden)
-        XCTAssertEqual(toolbar.search.foldButton.accessibilityLabel(), "Search clips")
+        XCTAssertEqual(toolbar.search.foldButton.accessibilityLabel(), "Search Clips and Snippets")
         XCTAssertTrue(toolbar.search.clearButton.isHidden)
 
         // Below the toolbar there are the clips and nothing else: no caption row and no key hints. The one key cap
@@ -679,26 +682,37 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(current.selectedRange(), NSRange(location: 1, length: 0))
     }
 
-    func testAClickBetweenTheFiltersLeavesTheKeysInTheSearch() async throws {
-        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+    func testAClickBetweenTheListsLeavesTheKeysInTheSearch() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older", "newer"], collections: ["Prompts", "Shell"])
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let lists = toolbar.lists
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { controller.state.phase == .results }
         toolbar.layoutSubtreeIfNeeded()
-        let filters = toolbar.filters
+        XCTAssertFalse(lists.chipsView.isHidden)
 
-        // In the 6 pt between two filters there is none: a click there leaves the keys in the search field, and All is
-        // neither ringed nor chosen again.
-        for (left, right) in zip(filters.chips, filters.chips.dropFirst()) {
-            let gap = NSPoint(x: (left.frame.maxX + right.frame.minX) / 2, y: left.frame.midY)
-            try click(at: filters.convert(gap, to: nil), in: window)
-            XCTAssertTrue(isEditing(field, in: window), "Between \(left.title) and \(right.title)")
-            XCTAssertFalse(window.firstResponder === filters, "Between \(left.title) and \(right.title)")
+        // Between the two segments, between the switch and the first chip and between two chips there is no choice: a
+        // click there leaves the keys in the search field and the list as it was.
+        let segments = lists.segments.buttons.map { lists.segments.convert($0.frame, to: nil) }
+        let chips = lists.chips.filter { !$0.isHidden }.map { lists.chipsView.convert($0.frame, to: nil) }
+        let switchFrame = lists.convert(lists.segments.frame, to: nil)
+        var gaps = [NSPoint(x: (segments[0].maxX + segments[1].minX) / 2, y: segments[0].midY),
+                    NSPoint(x: (switchFrame.maxX + chips[0].minX) / 2, y: chips[0].midY)]
+        for (left, right) in zip(chips, chips.dropFirst()) {
+            gaps.append(NSPoint(x: (left.maxX + right.minX) / 2, y: left.midY))
         }
-        XCTAssertEqual(controller.state.kinds, [])
-        // The filters still take the keys by Tab.
+        for gap in gaps {
+            try click(at: gap, in: window)
+            XCTAssertTrue(isEditing(field, in: window), "\(gap)")
+            XCTAssertFalse(window.firstResponder === lists, "\(gap)")
+        }
+        XCTAssertEqual(controller.state.list, .snippets)
+        // The lists still take the keys by Tab, after the strip.
         try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertTab(_:)))
-        XCTAssertTrue(window.firstResponder === filters)
+        try XCTUnwrap(window.firstResponder as? QuickAccessStripView).keyDown(with: try key(kVK_Tab, "\t"))
+        XCTAssertTrue(window.firstResponder === lists)
     }
 
     func testEscapeFoldsAnEmptySearchBeforeClosing() async throws {
@@ -724,9 +738,13 @@ final class AppLaunchTests: XCTestCase {
         let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
-        let filters = try XCTUnwrap(views(QuickAccessFilterRow.self, in: window.contentView).first)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in menus.append(menu) }
         editor.insertText("beta", replacementRange: NSRange(location: NSNotFound, length: 0))
-        filters.chips[1].performClick(nil)
+        toolbar.filterButton.face.performClick(nil)
+        let menu = try XCTUnwrap(menus.last)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Text" }))
         try await SearchTestSupport.waitUntil {
             controller.state.query == "beta" && controller.state.kinds == [.text] && controller.state.phase == .results
         }
@@ -746,53 +764,94 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(controller.isSessionOpen)
     }
 
-    func testTheFiltersLiveInTheToolbar() async throws {
-        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+    func testTheListsAndTheFilterButtonLiveInTheToolbar() async throws {
+        let (controller, _, made) = try await showPanelWithLists(clips: ["older", "newer"],
+                                                                 collections: ["Prompts", "Shell"])
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
-        let filters = toolbar.filters
+        let lists = toolbar.lists
         let strip = try await clipStrip(in: window)
         let height = window.frame.height
+        var menus: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in menus.append(menu) }
 
-        // All, Text, Links, Images and Files are on the toolbar from the start, right of the search and level with it.
-        XCTAssertEqual(filters.chips.map(\.title), ["All", "Text", "Links", "Images", "Files"])
-        XCTAssertFalse(filters.isHiddenOrHasHiddenAncestor)
-        XCTAssertTrue(filters.chips.allSatisfy { !$0.isHidden })
-        XCTAssertEqual(filters.frame.midY, toolbar.search.frame.midY, accuracy: 0.5)
-        XCTAssertGreaterThan(filters.frame.minX, toolbar.search.frame.maxX)
-        XCTAssertEqual(filters.chips.map(\.state), [.on, .off, .off, .off, .off], "All is chosen")
+        // From the start the switch is at the left and the filter button beside the search at the right; under All
+        // there are no chips.
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(lists.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(lists.chipsView.isHidden)
+        XCTAssertEqual(lists.segments.buttons.map(\.state), [.on, .off])
+        XCTAssertFalse(toolbar.filterButton.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(toolbar.search.frame.minX - toolbar.filterButton.frame.maxX, 12, accuracy: 0.5)
+        XCTAssertGreaterThan(toolbar.filterButton.frame.minX, lists.frame.maxX)
 
-        // A click chooses a filter and leaves the keys where they are; the band keeps its height.
-        filters.chips[1].performClick(nil)
-        XCTAssertEqual(controller.state.kinds, [.text])
-        XCTAssertEqual(filters.chips.map(\.state), [.off, .on, .off, .off, .off])
+        // A click on Snippets lists the snippets and shows the collections, and the keys stay where they were.
+        lists.segments.buttons[1].performClick(nil)
+        try await SearchTestSupport.waitUntil { controller.state.list == .snippets && controller.state.phase == .results }
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertFalse(lists.chipsView.isHidden)
+        XCTAssertEqual(lists.chips.map(\.title), ["Prompts", "Shell"])
+        XCTAssertEqual(lists.segments.buttons.map(\.state), [.off, .on])
         XCTAssertTrue(isEditing(field, in: window))
         XCTAssertEqual(window.frame.height, height)
+        // A chip lists its collection; clicked again, it goes back to all the snippets.
+        lists.chips[0].performClick(nil)
+        try await SearchTestSupport.waitUntil { controller.state.list == .collection(made[0].value.id) }
+        XCTAssertEqual(lists.chips.map(\.state), [.on, .off])
+        lists.chips[0].performClick(nil)
+        try await SearchTestSupport.waitUntil { controller.state.list == .snippets }
 
-        // Tab goes from the search to the filters, to the strip and round again; Shift-Tab goes back.
+        // The filter button's menu: Favorites Only, then All Types and each type. A type turns on or off, several may
+        // be on together, and All Types clears them.
+        toolbar.filterButton.face.performClick(nil)
+        var menu = try XCTUnwrap(menus.last)
+        XCTAssertEqual(menu.items.map { $0.isSeparatorItem ? "-" : $0.title },
+                       ["Favorites Only", "-", "All Types", "Text", "Links", "Images", "Files"])
+        XCTAssertEqual(menu.items.first { $0.title == "All Types" }?.state, .on)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Text" }))
+        XCTAssertEqual(controller.state.kinds, [.text])
+        toolbar.filterButton.face.performClick(nil)
+        menu = try XCTUnwrap(menus.last)
+        XCTAssertEqual(menu.items.first { $0.title == "Text" }?.state, .on)
+        XCTAssertEqual(menu.items.first { $0.title == "All Types" }?.state, .off)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Images" }))
+        XCTAssertEqual(controller.state.kinds, [.text, .image])
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(toolbar.filterButton.title, "2 Filters")
+        toolbar.filterButton.face.performClick(nil)
+        menu = try XCTUnwrap(menus.last)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "All Types" }))
+        XCTAssertEqual(controller.state.kinds, [])
+        XCTAssertTrue(isEditing(field, in: window))
+        try await SearchTestSupport.waitUntil { controller.state.phase == .results }
+
+        // Tab goes from the search to the strip, to the lists, to the filter button and round again; Shift-Tab goes
+        // back. Space on the filter button opens its menu.
         editor.doCommand(by: #selector(NSResponder.insertTab(_:)))
-        XCTAssertTrue(window.firstResponder === filters)
-        filters.keyDown(with: try key(kVK_Tab, "\t"))
         XCTAssertTrue(window.firstResponder === strip)
         strip.keyDown(with: try key(kVK_Tab, "\t"))
+        XCTAssertTrue(window.firstResponder === lists)
+        lists.keyDown(with: try key(kVK_Tab, "\t"))
+        XCTAssertTrue(window.firstResponder === toolbar.filterButton)
+        toolbar.filterButton.keyDown(with: try key(kVK_Tab, "\t"))
         XCTAssertTrue(isEditing(field, in: window))
         try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertBacktab(_:)))
-        XCTAssertTrue(window.firstResponder === strip)
-        strip.keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
-        XCTAssertTrue(window.firstResponder === filters)
+        XCTAssertTrue(window.firstResponder === toolbar.filterButton)
+        let shown = menus.count
+        toolbar.filterButton.keyDown(with: try key(kVK_Space, " "))
+        XCTAssertEqual(menus.count, shown + 1)
+        toolbar.filterButton.keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
+        XCTAssertTrue(window.firstResponder === lists)
 
-        // In the filters, the arrows move along them and Space chooses: All clears the filters.
-        filters.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
-        filters.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
-        XCTAssertEqual(filters.cursor, 0)
-        filters.keyDown(with: try key(kVK_Space, " "))
-        XCTAssertEqual(controller.state.kinds, [])
-        filters.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
-        filters.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
-        filters.keyDown(with: try key(kVK_Space, " "))
-        XCTAssertEqual(controller.state.kinds, [.url])
-        XCTAssertTrue(window.firstResponder === filters)
+        // Taking the keys, the lists put their cursor on the list shown. The arrows move it and Space chooses.
+        XCTAssertEqual(lists.stopUnderCursor, .snippets)
+        lists.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
+        lists.keyDown(with: try key(kVK_LeftArrow, "\u{F702}"))
+        XCTAssertEqual(lists.stopUnderCursor, .all)
+        lists.keyDown(with: try key(kVK_Space, " "))
+        try await SearchTestSupport.waitUntil { controller.state.list == .all }
+        XCTAssertTrue(window.firstResponder === lists)
     }
 
     func testStatusTakesThePlaceOfTheCopyHint() async throws {
@@ -836,7 +895,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(toolbar.statusLabel.stringValue, "Searching…")
         XCTAssertEqual(toolbar.statusLabel.accessibilityIdentifier(), "QuickAccessStatus")
         XCTAssertEqual(toolbar.statusLabel.frame.maxX, toolbar.moreButton.frame.minX - 12, accuracy: 0.5)
-        XCTAssertGreaterThan(toolbar.statusLabel.frame.minX, toolbar.filters.frame.maxX)
+        XCTAssertGreaterThan(toolbar.statusLabel.frame.minX, toolbar.search.frame.maxX)
 
         // Once the scan is done, Return's hint comes back, as soon as the toolbar has followed the state.
         gate.open()
@@ -867,7 +926,7 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
-    func testTheRebuildNoticeShowsAfterTheFiltersAndLeavesTheCopyHint() async throws {
+    func testTheRebuildNoticeShowsAfterTheListsAndLeavesTheCopyHint() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -906,8 +965,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(notice.stringValue, QuickAccessStatus.rebuilding)
         XCTAssertEqual(notice.accessibilityIdentifier(), "QuickAccessIndexNotice")
         XCTAssertEqual(notice.frame.midY, toolbar.rowFrame.midY, accuracy: 0.5, "In the toolbar's row")
-        XCTAssertGreaterThanOrEqual(notice.frame.minX, toolbar.filters.frame.maxX + 12 - 0.5)
-        XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.copyHint.frame.minX - 12 + 0.5)
+        XCTAssertGreaterThanOrEqual(notice.frame.minX, toolbar.lists.frame.maxX + 12 - 0.5)
+        XCTAssertLessThanOrEqual(notice.frame.maxX, toolbar.filterButton.frame.minX - 12 + 0.5)
         // The clips have nothing under them; the band draws them in full first.
         _ = try await clipStrip(in: window)
         window.contentView?.layoutSubtreeIfNeeded()
@@ -917,7 +976,7 @@ final class AppLaunchTests: XCTestCase {
 
         // With the index ready again, the same clips bring no notice.
         harness.status.update(.ready)
-        toolbar.filters.chips[1].performClick(nil)
+        controller.state.toggleKind(.text)
         try await SearchTestSupport.waitUntil {
             let state = controller.state
             return state.kinds == [.text] && state.phase == .results && state.selection.isComplete
@@ -1272,9 +1331,10 @@ final class AppLaunchTests: XCTestCase {
         let marked = editor.markedRange()
         let caret = editor.selectedRange()
         let query = controller.state.query
-        for (code, character) in [(kVK_ANSI_S, "s"), (kVK_ANSI_E, "e"), (kVK_ANSI_N, "n")] {
+        for (code, character) in [(kVK_ANSI_S, "s"), (kVK_ANSI_E, "e"), (kVK_ANSI_N, "n"),
+                                  (kVK_ANSI_LeftBracket, "["), (kVK_ANSI_RightBracket, "]"), (kVK_ANSI_L, "l")] {
             // Consumed without acting, so AppKit cannot offer it to New/Save in
-            // the main menu after this window returns.
+            // the main menu after this window returns. A list does not change under a composition either.
             XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)))
             XCTAssertTrue(editor.hasMarkedText())
             XCTAssertEqual(editor.markedRange(), marked)
@@ -1284,9 +1344,15 @@ final class AppLaunchTests: XCTestCase {
         }
         XCTAssertEqual(opens, 0)
         XCTAssertEqual(creates, 0)
+        XCTAssertEqual(controller.state.list, .all)
+        // From Snippets, where ⌘[ would go back to All, the composition keeps the list too.
+        controller.state.setList(.snippets)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_LeftBracket, "[", modifiers: .command)))
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertEqual(controller.state.list, .snippets)
     }
 
-    func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheLeft() async throws {
+    func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheRight() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -1304,6 +1370,8 @@ final class AppLaunchTests: XCTestCase {
         let (field, editor) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
         XCTAssertFalse(controller.state.isSearchExpanded)
+        toolbar.layoutSubtreeIfNeeded()
+        let folded = toolbar.search.convert(toolbar.search.bounds, to: nil)
         var moved: [NSTextView] = []
         controller.fieldCharactersMoved = { editor in
             moved.append(editor)
@@ -1314,14 +1382,13 @@ final class AppLaunchTests: XCTestCase {
         editor.setMarkedText("b", selectedRange: NSRange(location: 1, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
 
-        // The search opens to show it, and the composition goes on in the field.
+        // The search opens to the left of where its circle was, to show it, and the composition goes on in the field.
         XCTAssertTrue(controller.state.isSearchExpanded)
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.search.frame.width, 300)
-        let band = try bandRect(in: window)
         let pill = toolbar.search.convert(toolbar.search.bounds, to: nil)
         let pillOnScreen = window.convertToScreen(pill)
-        XCTAssertEqual(pill.minX - band.minX, 16, accuracy: 0.5)
+        XCTAssertEqual(pill.maxX, folded.maxX, accuracy: 0.5)
         XCTAssertEqual(moved.count, 1)
         XCTAssertTrue(moved.first === editor)
         let marked = editor.firstRect(forCharacterRange: editor.markedRange(), actualRange: nil)
@@ -1341,16 +1408,26 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(moved.count, 1)
         XCTAssertTrue(field.currentEditor() === editor)
         XCTAssertTrue(isEditing(field, in: window))
-        XCTAssertEqual(toolbar.search.convert(toolbar.search.bounds, to: nil).minX - band.minX, 16, accuracy: 0.5)
+        XCTAssertEqual(toolbar.search.convert(toolbar.search.bounds, to: nil), pill, "Searching… moves nothing")
     }
 
-    func testTheSearchsRingStaysInsideTheBandsCorner() async throws {
+    func testTheFocusRingsStayInsideTheBandsCorners() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
         let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let band = QuickAccessBandBackdrop.outline(in: try bandRect(in: window))
+        func assertInside(_ ring: NSRect, radius: CGFloat, _ name: String) {
+            let outline = RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: ring)
+            // Forty-eight points on the continuous outline, including its curved corners, not just its bounds.
+            for sample in 1...48 {
+                let point = outline.trimmedPath(from: 0, to: CGFloat(sample) / 48).cgPath.currentPoint
+                XCTAssertTrue(band.contains(point), "\(name), sample \(sample): \(point)")
+            }
+        }
+        // The search's ring, at the top right, folded and open.
         controller.perform(.focusResults)
-        try XCTUnwrap(window.firstResponder as? QuickAccessStripView).keyDown(with: try key(kVK_Tab, "\t"))
+        try XCTUnwrap(window.firstResponder as? QuickAccessStripView).keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
         for expanded in [false, true] {
             if expanded {
                 XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
@@ -1360,15 +1437,13 @@ final class AppLaunchTests: XCTestCase {
             XCTAssertEqual(controller.state.isSearchExpanded, expanded)
             let halo = toolbar.focusHalo
             XCTAssertFalse(halo.isHidden)
-            let haloFrame = halo.convert(halo.bounds, to: nil)
-            let band = QuickAccessBandBackdrop.outline(in: try bandRect(in: window))
-            let outline = RoundedRectangle(cornerRadius: 19, style: .continuous).path(in: haloFrame)
-            // Forty-eight points on the continuous outline, including its curved corners, not just its bounds.
-            for sample in 1...48 {
-                let point = outline.trimmedPath(from: 0, to: CGFloat(sample) / 48).cgPath.currentPoint
-                XCTAssertTrue(band.contains(point), "expanded \(expanded), sample \(sample): \(point)")
-            }
+            assertInside(halo.convert(halo.bounds, to: nil), radius: 19, "search, expanded \(expanded)")
         }
+        // The lists' ring, around the All segment at the top left, as far out as a focus ring is drawn.
+        XCTAssertTrue(window.makeFirstResponder(toolbar.lists))
+        XCTAssertEqual(toolbar.lists.stopUnderCursor, .all)
+        let segment = toolbar.lists.convert(toolbar.lists.focusRingMaskBounds, to: nil).insetBy(dx: -4, dy: -4)
+        assertInside(segment, radius: segment.height / 2, "the All segment")
     }
 
     func testTheClearButtonEmptiesTheQueryAndUndoBringsItBack() async throws {
@@ -1439,10 +1514,10 @@ final class AppLaunchTests: XCTestCase {
         // As the panel opens, the keys are in the folded field and the circle has no ring.
         XCTAssertTrue(toolbar.focusHalo.isHidden)
 
-        // Tab round from the strip to the search: the folded circle is ringed, and stays folded.
+        // Shift-Tab back from the strip to the search: the folded circle is ringed, and stays folded.
         controller.perform(.focusResults)
         let strip = try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
-        strip.keyDown(with: try key(kVK_Tab, "\t"))
+        strip.keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
         XCTAssertTrue(isEditing(field, in: window))
         XCTAssertFalse(controller.state.isSearchExpanded)
         toolbar.layoutSubtreeIfNeeded()
@@ -1450,11 +1525,11 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(toolbar.focusHalo.isHidden)
         XCTAssertEqual(toolbar.focusHalo.frame, toolbar.search.frame.insetBy(dx: -3, dy: -3))
 
-        // The ring goes with the keys, and comes back with Shift-Tab from the filters.
+        // The ring goes with the keys, and comes back with Shift-Tab from the strip.
         try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertTab(_:)))
-        let filters = try XCTUnwrap(window.firstResponder as? QuickAccessFilterRow)
+        XCTAssertTrue(window.firstResponder === strip)
         XCTAssertTrue(toolbar.focusHalo.isHidden)
-        filters.keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
+        strip.keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
         XCTAssertTrue(isEditing(field, in: window))
         XCTAssertFalse(toolbar.focusHalo.isHidden)
         XCTAssertFalse(controller.state.isSearchExpanded)
@@ -1467,9 +1542,10 @@ final class AppLaunchTests: XCTestCase {
 
         // Brought back by the keyboard, the circle is ringed again. Opened with ⌘F, the search is ringed as the open
         // search always is while its field has the keys; folded again by Escape, it is as the panel opened it, with
-        // no ring.
+        // no ring. Tab goes to the strip once its clips are back.
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
         try XCTUnwrap(field.currentEditor() as? NSTextView).doCommand(by: #selector(NSResponder.insertTab(_:)))
-        try XCTUnwrap(window.firstResponder as? QuickAccessFilterRow)
+        try XCTUnwrap(window.firstResponder as? QuickAccessStripView)
             .keyDown(with: try key(kVK_Tab, "\t", modifiers: .shift))
         XCTAssertFalse(toolbar.focusHalo.isHidden)
         XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_F, "f", modifiers: .command)))
@@ -2281,6 +2357,280 @@ final class AppLaunchTests: XCTestCase {
         let keycap = try XCTUnwrap(visibleKeycaps(in: window).first)
         XCTAssertTrue(try bandRect(in: window).contains(keycap.convert(keycap.bounds, to: nil)))
         controller.state.close()
+    }
+
+    // MARK: Lists
+
+    func testCommandBracketsStepTheListsAndCommandLTakesTheKeysToThem() async throws {
+        let (controller, _, made) = try await showPanelWithLists(clips: ["older", "newer"],
+                                                                 collections: ["Prompts", "Shell"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        func press(_ code: Int, _ character: String, held: Bool = false) throws -> Bool {
+            window.performKeyEquivalent(with: try key(code, character, modifiers: .command, isARepeat: held))
+        }
+
+        // ⌘] goes to the next list, from All to Snippets and then each collection, and stops at the last. The keys
+        // stay in the search.
+        let order: [QuickAccessList] = [.snippets, .collection(made[0].value.id), .collection(made[1].value.id)]
+        for expected in order {
+            XCTAssertTrue(try press(kVK_ANSI_RightBracket, "]"))
+            XCTAssertEqual(controller.state.list, expected)
+            XCTAssertTrue(isEditing(field, in: window))
+        }
+        XCTAssertTrue(try press(kVK_ANSI_RightBracket, "]"))
+        XCTAssertEqual(controller.state.list, order.last)
+
+        // Held, ⌘[ keeps stepping back, as an arrow does, and stops at All.
+        XCTAssertTrue(try press(kVK_ANSI_LeftBracket, "["))
+        XCTAssertTrue(try press(kVK_ANSI_LeftBracket, "[", held: true))
+        XCTAssertEqual(controller.state.list, .snippets)
+        XCTAssertTrue(try press(kVK_ANSI_LeftBracket, "[", held: true))
+        XCTAssertTrue(try press(kVK_ANSI_LeftBracket, "[", held: true))
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertTrue(isEditing(field, in: window))
+
+        // ⌘L takes the keys to the lists, the cursor on the list shown; held, it does that once. Down goes on to the
+        // clips.
+        XCTAssertTrue(try press(kVK_ANSI_RightBracket, "]"))
+        XCTAssertTrue(try press(kVK_ANSI_L, "l"))
+        XCTAssertTrue(window.firstResponder === toolbar.lists)
+        XCTAssertEqual(toolbar.lists.stopUnderCursor, .snippets)
+        toolbar.lists.moveCursor(by: -1)
+        XCTAssertTrue(try press(kVK_ANSI_L, "l", held: true))
+        XCTAssertEqual(toolbar.lists.stopUnderCursor, .all, "a held ⌘L does nothing more")
+        // With the keys on the lists, ⌘[ and ⌘] take the cursor along, so that Space does not undo the step.
+        XCTAssertTrue(try press(kVK_ANSI_RightBracket, "]"))
+        XCTAssertEqual(controller.state.list, .collection(made[0].value.id))
+        XCTAssertEqual(toolbar.lists.stopUnderCursor, .collection(made[0].value.id))
+        toolbar.lists.keyDown(with: try key(kVK_Space, " "))
+        XCTAssertEqual(controller.state.list, .snippets, "Space on the chosen chip goes back to Snippets")
+        XCTAssertTrue(try press(kVK_ANSI_LeftBracket, "["))
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertEqual(toolbar.lists.stopUnderCursor, .all)
+        try await SearchTestSupport.waitUntil { controller.state.phase == .results }
+        toolbar.lists.keyDown(with: try key(kVK_DownArrow, "\u{F701}"))
+        XCTAssertTrue(window.firstResponder is QuickAccessStripView)
+    }
+
+    func testFavoritesOnlyUnderAllSwitchesTheSegment() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"],
+                                                              unfiled: ["Loose"], favorites: ["Loose"])
+        let window = try XCTUnwrap(controller.window)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in menus.append(menu) }
+
+        // Favorites are snippets, so Favorites Only under All goes to Snippets first, and the switch shows it.
+        toolbar.filterButton.face.performClick(nil)
+        let menu = try XCTUnwrap(menus.last)
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Favorites Only" }))
+        try await SearchTestSupport.waitUntil {
+            controller.state.list == .snippets && controller.state.favoritesOnly && controller.state.phase == .results
+        }
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["Loose"])
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(toolbar.lists.segments.buttons.map(\.state), [.off, .on])
+        XCTAssertEqual(toolbar.filterButton.title, "Favorites")
+        toolbar.filterButton.face.performClick(nil)
+        XCTAssertEqual(try XCTUnwrap(menus.last).items.first { $0.title == "Favorites Only" }?.state, .on)
+
+        // Back to All, it is off again.
+        toolbar.lists.segments.buttons[0].performClick(nil)
+        try await SearchTestSupport.waitUntil { controller.state.list == .all && controller.state.phase == .results }
+        XCTAssertFalse(controller.state.favoritesOnly)
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertNil(toolbar.filterButton.title)
+    }
+
+    func testTheMoreChipOpensTheCollectionsThatDoNotFit() async throws {
+        let names = ["Prompts", "Drafts", "Release notes", "Code review", "Meeting templates", "Customer replies",
+                     "Shell", "Design", "Reading list", "Travel", "Interview questions", "Weekly report"]
+        let (controller, _, made) = try await showPanelWithLists(
+            clips: ["older"], collections: names, visibleFrame: NSRect(x: 0, y: 0, width: 1280, height: 800)
+        )
+        let window = try XCTUnwrap(controller.window)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in menus.append(menu) }
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { controller.state.phase == .results }
+        toolbar.layoutSubtreeIfNeeded()
+        let lists = toolbar.lists
+        let shown = lists.visibleChipCount
+        XCTAssertGreaterThan(shown, 0)
+        XCTAssertLessThan(shown, names.count)
+        XCTAssertFalse(lists.moreChip.isHidden)
+
+        // More lists the collections that did not fit, in order; choosing one lists it, and More shows its name.
+        lists.moreChip.performClick(nil)
+        let menu = try XCTUnwrap(menus.last)
+        XCTAssertEqual(menu.items.map(\.title), Array(names.dropFirst(shown)))
+        menu.performActionForItem(at: menu.items.count - 1)
+        try await SearchTestSupport.waitUntil { controller.state.list == .collection(made[names.count - 1].value.id) }
+        toolbar.layoutSubtreeIfNeeded()
+        XCTAssertEqual(lists.moreChip.title, names[names.count - 1])
+        XCTAssertEqual(lists.moreChip.state, .on)
+        lists.moreChip.performClick(nil)
+        XCTAssertEqual(try XCTUnwrap(menus.last).items.last?.state, .on)
+    }
+
+    func testTheSearchSaysWhichListItSearches() async throws {
+        let (controller, _, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        let cases: [(QuickAccessList, String)] = [
+            (.all, "Search Clips and Snippets"), (.snippets, "Search Snippets"),
+            (.collection(made[0].value.id), "Search “Prompts”"),
+        ]
+        for (list, placeholder) in cases {
+            controller.state.setList(list)
+            try await SearchTestSupport.waitUntil { controller.state.list == list && controller.state.phase != .loading }
+            try await SearchTestSupport.waitUntil { field.placeholderAttributedString?.string == placeholder }
+            XCTAssertEqual(toolbar.search.foldButton.accessibilityLabel(), placeholder)
+        }
+    }
+
+    func testSwitchingListsSaysWhichListAndHowManyItems() async throws {
+        let (controller, _, made) = try await showPanelWithLists(clips: ["older", "newer"],
+                                                                 collections: ["Prompts"], unfiled: ["Loose"])
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { announced.last == "Snippets, 2 items" }
+        controller.state.setList(.collection(made[0].value.id))
+        try await SearchTestSupport.waitUntil { announced.last == "Prompts, 1 item" }
+        controller.state.setList(.all)
+        try await SearchTestSupport.waitUntil { announced.last == "All, 2 items" }
+    }
+
+    func testTheCardsFadeWhenTheListChanges() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older", "newer"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        controller.reducesMotion = { false }
+        // The fade lasts 0.15 s and goes when it ends; with the strip's clock stopped it stays to be read.
+        let layer = try XCTUnwrap(strip.layer)
+        layer.speed = 0
+        defer { layer.speed = 1 }
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { layer.animation(forKey: kCATransition) != nil }
+        let fade = try XCTUnwrap(layer.animation(forKey: kCATransition) as? CATransition)
+        XCTAssertEqual(fade.type, .fade)
+        XCTAssertEqual(fade.duration, 0.15, accuracy: 0.001)
+
+        // With Reduce Motion the cards change at once.
+        layer.removeAllAnimations()
+        controller.reducesMotion = { true }
+        controller.state.setList(.all)
+        // Once the strip shows All's cards, any fade added with them would still be there, the strip's clock stopped.
+        try await SearchTestSupport.waitUntil {
+            controller.state.phase == .results && self.framesOnScreen(in: strip).contains { Self.labels($0, "newer") }
+        }
+        XCTAssertNil(layer.animation(forKey: kCATransition))
+    }
+
+    func testTheFrequentWingShowsOnlyUnderAll() async throws {
+        let (controller, _, _) = try await showPanelWithFrequentClips(Self.wingTitles, uses: Self.wingUses)
+        let state = controller.state
+        let window = try XCTUnwrap(controller.window)
+        let strip = try await clipStrip(in: window)
+        try await waitForWingFrames(in: strip)
+        let divider = try view(identifiedAs: "QuickAccessDivider", in: window)
+
+        state.setList(.snippets)
+        // The panel updates the strip a moment after the state, so the wait is for the divider itself.
+        try await SearchTestSupport.waitUntil { state.phase != .loading && divider.isHidden }
+        XCTAssertEqual(state.selection.frequentCount, 0)
+
+        state.setList(.all)
+        try await SearchTestSupport.waitUntil {
+            state.phase == .results && state.selection.rows.filter { !$0.isFrequent }.count == Self.wingTitles.count
+        }
+        XCTAssertGreaterThan(state.selection.frequentCount, 0)
+        try await waitForWingFrames(in: strip)
+        XCTAssertFalse(divider.isHidden)
+    }
+
+    func testAClickOnTheFilterButtonOpensItsMenuAsTheMouseGoesDown() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        toolbar.layoutSubtreeIfNeeded()
+        var shown: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in shown.append(menu) }
+        // A click through the window lands on the button's face, and its mouse-down opens the menu, as a pop-up
+        // button's does. A borderless button with no title or image would not track the click at all.
+        let button = toolbar.filterButton
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(point) === button.face)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        window.sendEvent(down)
+        XCTAssertEqual(shown.map(\.title), ["Filter"])
+        XCTAssertFalse(button.face.isHighlighted)
+    }
+
+    func testToolbarMenusOpenWithoutActivatingTheApp() async throws {
+        // The panel opens while another app is active, and neither it nor its menus make Keeptide the active app. AppKit
+        // counts an app with a key panel as active, so what is checked is the system's view: the running application,
+        // the frontmost application, and the notification activation posts. The test host often is the active app, so
+        // it steps back before the panel opens, until it has stayed inactive for a second, and comes forward afterwards.
+        let current = NSRunningApplication.current
+        if current.isActive { addTeardownBlock { @MainActor in NSApp.activate() } }
+        let deadline = ContinuousClock.now + .seconds(5)
+        var inactiveSince: ContinuousClock.Instant?
+        while ContinuousClock.now < deadline {
+            if current.isActive {
+                NSApp.deactivate()
+                inactiveSince = nil
+            } else if let since = inactiveSince {
+                if ContinuousClock.now - since >= .seconds(1) { break }
+            } else {
+                inactiveSince = .now
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        guard !current.isActive else { throw XCTSkip("The test host stayed the active app, so activation cannot be seen") }
+        let watch = MenuWatch()
+        let observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                              object: NSApp, queue: nil) { _ in watch.activations += 1 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        XCTAssertTrue(window.isKeyWindow, "The panel has the keys")
+        XCTAssertFalse(current.isActive, "The panel opened without activating the app")
+        XCTAssertNotEqual(NSWorkspace.shared.frontmostApplication?.processIdentifier, current.processIdentifier)
+
+        // The real menu, from the panel. A timer in the menu's own tracking mode reads whether the app became active
+        // while the menu was open, and closes it, as Escape would.
+        controller.presentToolbarMenu = { menu, point, view in
+            watch.menu = menu
+            let timer = Timer(timeInterval: 0.3, repeats: false) { _ in
+                MainActor.assumeIsolated {
+                    watch.wasActive = current.isActive
+                    watch.frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier
+                    watch.menu?.cancelTracking()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            RunLoop.main.add(timer, forMode: .eventTracking)
+            menu.popUp(positioning: nil, at: point, in: view)
+        }
+        toolbar.filterButton.face.performClick(nil)
+        XCTAssertNotNil(watch.menu)
+        XCTAssertEqual(watch.wasActive, false, "The menu opened without activating the app")
+        XCTAssertNotNil(watch.frontmost)
+        XCTAssertNotEqual(watch.frontmost, current.processIdentifier)
+        XCTAssertEqual(watch.activations, 0)
+        XCTAssertFalse(current.isActive)
+        XCTAssertTrue(controller.isSessionOpen, "The panel stays open with its menu gone")
     }
 
     // MARK: The frequent wing
@@ -4347,6 +4697,7 @@ final class AppLaunchTests: XCTestCase {
     private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard, search: SearchService? = nil,
                            visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
                            usage: (any QuickAccessUsage)? = nil, library: LibraryService? = nil,
+                           collections: (any QuickAccessCollections)? = nil,
                            preferences: QuickAccessPreferences? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
@@ -4354,9 +4705,46 @@ final class AppLaunchTests: XCTestCase {
         // A paste the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
-                                           usage: usage, library: library)
+                                           usage: usage, library: library, collections: collections)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
+    }
+
+    /// A shown panel over a real temporary store holding one text clip per title, the last the newest, and a collection
+    /// per name in `collections`, each with one snippet named "<collection> snippet", plus the snippets `unfiled` names
+    /// in no collection. The snippets `favorites` names are favorites. It returns once the clips are listed and the
+    /// collections read, with the collections in order.
+    private func showPanelWithLists(clips: [String], collections: [String], unfiled: [String] = [],
+                                    favorites: Set<String> = [], visibleFrame: NSRect? = nil)
+        async throws -> (controller: PanelController, harness: SearchHarness, collections: [CollectionSnapshot]) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(clips, into: harness)
+        let service = CollectionService(controller: harness.controller)
+        let library = LibraryService(controller: harness.controller)
+        var made: [CollectionSnapshot] = []
+        var snippets: [(title: String, collectionID: CollectionID?)] = unfiled.map { ($0, nil) }
+        for name in collections {
+            let collection = try await service.create(CollectionDraft(name: name, color: "blue"))
+            made.append(collection)
+            snippets.append(("\(name) snippet", collection.value.id))
+        }
+        for snippet in snippets {
+            let ref = try await library.create(MemoDraft(title: snippet.title, body: "\(snippet.title) body",
+                                                         collectionID: snippet.collectionID))
+            if favorites.contains(snippet.title) { _ = try await service.setFavorite([ref], isFavorite: true) }
+        }
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: visibleFrame, library: library,
+                                       collections: service)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == clips.count
+                && controller.state.collections.count == collections.count
+        }
+        return (controller, harness, made)
     }
 
     /// A screen whose visible area medium cards fill five whole cards wide.
@@ -4727,6 +5115,14 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(seeds(["--ui-testing", "--seed-synthetic-clips"]))
         XCTAssertFalse(seeds(["--capture-test-session", id, "--seed-synthetic-clips"]))
         XCTAssertFalse(seeds(["--ui-testing", "--capture-test-session", id]))
+        // Snippets come only with the clips, in the same kind of session.
+        func seedsSnippets(_ arguments: [String]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: [:]).shouldSeedSyntheticSnippets
+        }
+        XCTAssertTrue(seedsSnippets(["--ui-testing", "--capture-test-session", id, "--seed-synthetic-clips",
+                                     "--seed-synthetic-snippets"]))
+        XCTAssertFalse(seedsSnippets(["--ui-testing", "--capture-test-session", id, "--seed-synthetic-snippets"]))
+        XCTAssertFalse(seedsSnippets(["--ui-testing", "--seed-synthetic-clips", "--seed-synthetic-snippets"]))
     }
 
     func testManualPasteQAStartsOnlyFromItsFlagOutsideTests() {
@@ -5052,4 +5448,12 @@ private final class ScanGate: @unchecked Sendable {
 @MainActor
 private final class KeyWindow: NSWindow {
     override var isKeyWindow: Bool { true }
+}
+
+/// What a test sees of a menu it opened for real: the menu, and whether the app was active while it was open.
+private final class MenuWatch: @unchecked Sendable {
+    var menu: NSMenu?
+    var wasActive: Bool?
+    var frontmost: pid_t?
+    var activations = 0
 }

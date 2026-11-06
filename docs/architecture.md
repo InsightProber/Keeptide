@@ -14,7 +14,7 @@ remains planned.
 Two interfaces serve different tasks:
 
 - **Quick access** is a compact, temporary panel for searching, previewing, and
-  reusing content while working in another application.
+  reusing clips and saved snippets while working in another application.
 - **The library** is a persistent workspace for creating snippets, editing short
   notes, organizing collections, and managing retained content.
 

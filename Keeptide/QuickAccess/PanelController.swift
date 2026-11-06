@@ -12,7 +12,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private let preferences: QuickAccessPreferences
     private let searchField = QuickAccessSearchField()
     private lazy var toolbar = QuickAccessToolbar(field: searchField)
-    private var filterRow: QuickAccessFilterRow { toolbar.filters }
+    private var listNavigation: QuickAccessListNavigation { toolbar.lists }
+    private var filterButton: QuickAccessFilterButton { toolbar.filterButton }
     private let strip = QuickAccessStripView()
     private let applicationNames = ApplicationNames()
     private var hosting: NSHostingView<QuickAccessBandView>?
@@ -63,8 +64,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// Whether the keys came to the search field with Tab, ⇧Tab or ↑, so that its circle is ringed even while it is
     /// folded. Keys the field has from the start, as the panel opens, leave the circle as it is.
     private var searchReachedByKeyboard = false
+    /// The list the cards were last shown for, and whether the first page of a new one is still to come.
+    private var listShown = QuickAccessList.all
+    private var awaitsNewListPage = false
     /// Shows the actions menu. Tests replace it, since a real menu waits for a choice.
     var presentActionMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
+        menu.popUp(positioning: nil, at: point, in: view)
+    }
+    /// Whether changes of list come without the cards' fade, as Reduce Motion asks.
+    var reducesMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// Shows the filter button's menu, or More's with the collections that did not fit. Tests catch them here.
+    var presentToolbarMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
     }
     /// Shows the ⋯ menu. Tests replace it, as they do the actions menu.
@@ -171,7 +181,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             // A Return guessed down for the ended session's last choice is no guess for this one.
             forgetGuessedReturn()
             searchField.stringValue = ""
-            filterRow.cursor = 0
+            listNavigation.cursor = 0
             // Settle the screen before this panel takes keyboard focus, and take the settings as they are now. They
             // come before the session opens: the frequent wing leaves out the newest clips the band shows whole beside
             // it as it opens.
@@ -256,8 +266,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         state.announce = { [weak self] in self?.announce($0) }
         toolbar.search.onUnfold = { [weak self] in self?.unfoldSearch() }
         toolbar.search.onClear = { [weak self] in self?.clearSearchText() }
-        filterRow.onCommand = { [weak self] in self?.perform($0) }
-        filterRow.onChoose = { [weak self] in self?.chooseFilter(at: $0) }
+        listNavigation.onCommand = { [weak self] in self?.perform($0) }
+        listNavigation.onChoose = { [weak self] in self?.chooseList($0) }
+        filterButton.onCommand = { [weak self] in self?.perform($0) }
+        filterButton.onOpen = { [weak self] in self?.showFilterMenu() }
         toolbar.copyHint.target = self
         toolbar.copyHint.action = #selector(copyFromToolbar)
         toolbar.moreButton.target = self
@@ -315,14 +327,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // only shown: it would be read each time the panel opens.
         if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
         toolbar.captureNotice = notice
-        filterRow.queryIsEmpty = state.query.isEmpty
-        filterRow.show(kinds: state.kinds)
+        toolbar.reservedNotes = state.possibleActions.map {
+            .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
+        }
+        listNavigation.queryIsEmpty = state.query.isEmpty
+        listNavigation.show(list: state.list, collections: state.collections, unavailable: state.collectionsUnavailable)
+        filterButton.queryIsEmpty = state.query.isEmpty
+        filterButton.show(favoritesOnly: state.favoritesOnly, kinds: state.kinds)
+        toolbar.search.setPrompt(Self.searchPrompt(for: state.list, collectionName: state.collectionName))
+        let showsNewList = showsNewListPage()
         strip.queryIsEmpty = state.query.isEmpty
         strip.dimsSideFrames = hasCard
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
         strip.show(state.selection.rows, selection: state.selection.selectedID, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded,
-                   collections: cardCollections)
+                   collections: cardCollections, slides: !showsNewList)
     }
 
     /// The collections the cards may name: every one but the one whose list is shown, which every card there is in.
@@ -422,10 +441,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             guard state.moveSelection(by: offset) == .moved else { return }
             // In the same turn as the step, so the frames never lag behind the fingers.
             update()
-        case .moveFilter(let offset):
-            filterRow.moveCursor(by: offset)
-        case .toggleFilter:
-            chooseFilter(at: filterRow.cursor)
+        case .moveListCursor(let offset):
+            listNavigation.moveCursor(by: offset)
+        case .chooseListAtCursor:
+            chooseList(listNavigation.stopUnderCursor)
+        case .openFilterMenu:
+            showFilterMenu()
         case .typeIntoSearch:
             typeIntoSearch()
         case .primary:
@@ -474,21 +495,144 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .searchField:
             searchReachedByKeyboard = true
             focusSearchField()
-        case .filters:
-            window?.makeFirstResponder(filterRow)
+        case .lists:
+            window?.makeFirstResponder(listNavigation)
+        case .filterButton:
+            window?.makeFirstResponder(filterButton)
         case .results, .preview:
             window?.makeFirstResponder(strip)
         }
     }
 
-    /// All clears the filters; each kind turns on or off.
-    private func chooseFilter(at index: Int) {
-        if let kind = QuickAccessFilterRow.choices[index] {
-            state.toggleKind(kind)
-        } else {
-            for kind in state.kinds { state.toggleKind(kind) }
+    // MARK: Lists
+
+    /// A segment, a chip or More, by a click or by Space at the cursor. A chip chosen again goes back to all the
+    /// snippets; More opens the collections that did not fit.
+    private func chooseList(_ stop: QuickAccessListStop) {
+        switch stop {
+        case .all: switchList(to: .all)
+        case .snippets: switchList(to: .snippets)
+        case .collection(let id): switchList(to: state.list == .collection(id) ? .snippets : .collection(id))
+        case .more: showMoreCollectionsMenu()
         }
+    }
+
+    /// Lists `list` and leaves the keys where they are.
+    private func switchList(to list: QuickAccessList) {
+        guard list != state.list else { return }
+        let focus = currentFocus
+        state.setList(list)
         update()
+        keepFocus(focus)
+    }
+
+    /// ⌘[ and ⌘]: the list before or after this one, from All to Snippets and each collection in the sidebar's order.
+    /// At either end nothing happens.
+    private func stepList(by offset: Int) {
+        let order = [QuickAccessList.all, .snippets] + state.collections.map { .collection($0.id) }
+        // A collection that could not be read again is no longer in the order; stepping from it goes to Snippets.
+        let index = order.firstIndex(of: state.list)
+        let target = index.map { order[min(max($0 + offset, 0), order.count - 1)] } ?? .snippets
+        guard target != state.list else { return }
+        switchList(to: target)
+        // With the keys on the lists, the cursor goes with the list, so that Space does not undo the step.
+        listNavigation.moveCursor(to: state.list)
+    }
+
+    /// ⌘L: the keys go to the lists, the cursor on the list shown.
+    private func focusLists() {
+        window?.makeFirstResponder(listNavigation)
+        listNavigation.moveCursor(to: state.list)
+    }
+
+    /// Favorites Only, then All Types and each type, each on or off. Favorites Only needs the index, and is off while
+    /// it cannot answer.
+    private func showFilterMenu() {
+        let menu = NSMenu(title: "Filter")
+        menu.autoenablesItems = false
+        let favorites = ClosureMenuItem("Favorites Only") { [weak self] in self?.changeFilters { $0.toggleFavoritesOnly() } }
+        favorites.image = NSImage(systemSymbolName: "star", accessibilityDescription: nil)
+        favorites.state = state.favoritesOnly ? .on : .off
+        if state.indexNotice != nil, !state.favoritesOnly {
+            favorites.isEnabled = false
+            favorites.toolTip = "Needs the search index"
+        }
+        menu.addItem(favorites)
+        menu.addItem(.separator())
+        let all = ClosureMenuItem("All Types") { [weak self] in self?.changeFilters { $0.clearKinds() } }
+        all.state = state.kinds.isEmpty ? .on : .off
+        menu.addItem(all)
+        for kind in ContentKind.filters {
+            let item = ClosureMenuItem(kind.filterTitle) { [weak self] in self?.changeFilters { $0.toggleKind(kind) } }
+            item.image = NSImage(systemSymbolName: kind.symbolName, accessibilityDescription: nil)
+            item.state = state.kinds.contains(kind) ? .on : .off
+            menu.addItem(item)
+        }
+        let button = filterButton
+        presentToolbarMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
+    }
+
+    /// The collections whose chips did not fit, the one listed checked.
+    private func showMoreCollectionsMenu() {
+        let hidden = listNavigation.hiddenCollections
+        guard !hidden.isEmpty else { return }
+        let menu = NSMenu(title: "More Collections")
+        menu.autoenablesItems = false
+        for collection in hidden {
+            let item = ClosureMenuItem(collection.name) { [weak self] in
+                self?.switchList(to: .collection(collection.id))
+            }
+            item.image = Self.dot(collection.color)
+            item.state = state.list == .collection(collection.id) ? .on : .off
+            menu.addItem(item)
+        }
+        let chip = listNavigation.moreChip
+        presentToolbarMenu(menu, NSPoint(x: 0, y: chip.isFlipped ? chip.bounds.maxY + 4 : -4), chip)
+    }
+
+    /// A change of filter from the menu, which leaves the keys where they are.
+    private func changeFilters(_ change: (QuickAccessState) -> Void) {
+        let focus = currentFocus
+        change(state)
+        update()
+        keepFocus(focus)
+    }
+
+    /// The search's prompt for a list.
+    private static func searchPrompt(for list: QuickAccessList, collectionName: String?) -> String {
+        switch list {
+        case .all: "Search Clips and Snippets"
+        case .snippets: "Search Snippets"
+        case .collection: "Search “\(collectionName ?? "Collection")”"
+        }
+    }
+
+    /// A collection's dot, for a menu item.
+    private static func dot(_ color: String) -> NSImage {
+        NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
+            NSColor.collection(color).setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
+            return true
+        }
+    }
+
+    /// Whether this update shows the first page of a list just chosen. Its cards take the last list's place where they
+    /// stand, without sliding, fading in over them in 0.15 s; with Reduce Motion they change at once.
+    private func showsNewListPage() -> Bool {
+        if state.list != listShown {
+            listShown = state.list
+            awaitsNewListPage = window?.isVisible == true
+        }
+        guard awaitsNewListPage, state.phase != .loading else { return false }
+        awaitsNewListPage = false
+        if !reducesMotion() {
+            let fade = CATransition()
+            fade.type = .fade
+            fade.duration = 0.15
+            // Core Animation keeps a transition under this key whatever key it is given.
+            strip.layer?.add(fade, forKey: kCATransition)
+        }
+        return true
     }
 
     /// A click on the folded search or on the open one, or ⌘F: the search opens and its field takes the keys. A field
@@ -536,7 +680,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private var currentFocus: QuickAccessFocus? {
         guard let responder = window?.firstResponder else { return nil }
         if responder === strip { return .results }
-        if responder === filterRow { return .filters }
+        if responder === listNavigation { return .lists }
+        if responder === filterButton { return .filterButton }
         guard let editor = responder as? NSTextView else { return nil }
         if editor.isFieldEditor { return editor.delegate === searchField ? .searchField : nil }
         // Besides the field's editor, the preview's text is the panel's only text view.
@@ -563,8 +708,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard let window else { return }
         let rowsShown = !state.selection.rows.isEmpty
         switch focus {
-        case .filters?:
-            if window.firstResponder !== filterRow { window.makeFirstResponder(filterRow) }
+        case .lists?:
+            if window.firstResponder !== listNavigation { window.makeFirstResponder(listNavigation) }
+        case .filterButton?:
+            if window.firstResponder !== filterButton { window.makeFirstResponder(filterButton) }
         case .results? where rowsShown, .preview? where rowsShown, nil where rowsShown:
             if window.firstResponder !== strip { window.makeFirstResponder(strip) }
         default:
@@ -972,11 +1119,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // Library commands must not interrupt composition. Existing panel
         // commands keep their own composition behavior; in particular, Command-F
         // in the active search editor leaves its marked text and caret intact.
-        if ["s", "e", "n"].contains(key),
+        // A list does not change under a composition either.
+        if ["s", "e", "n", "[", "]", "l"].contains(key),
            (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
-        // Held down, ⌘S, ⌘E and ⌘N have acted already: their repeats are taken and do nothing, as ⌘Y's are. A save
-        // again would find the clip already in Snippets and let the first save's undo go.
-        if ["s", "e", "n"].contains(key), event.isARepeat { return true }
+        // Held down, ⌘S, ⌘E, ⌘N and ⌘L have acted already: their repeats are taken and do nothing, as ⌘Y's are. A save
+        // again would find the clip already in Snippets and let the first save's undo go. ⌘[ and ⌘] step on while held,
+        // as the arrows do.
+        if ["s", "e", "n", "l"].contains(key), event.isARepeat { return true }
         switch key {
         case "s":
             saveSelectedSnippet()
@@ -989,6 +1138,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return true
         case "f":
             unfoldSearch()
+            return true
+        case "[":
+            stepList(by: -1)
+            return true
+        case "]":
+            stepList(by: 1)
+            return true
+        case "l":
+            focusLists()
             return true
         case "k":
             openActions()
