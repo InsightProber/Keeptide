@@ -82,8 +82,8 @@ enum ApplicationMenuBuilder {
 
         // The selected items' commands; validation names them for the selection.
         let itemMenu = NSMenu(title: "Item")
-        itemMenu.addItem(item(title: "Add to Favorites", action: #selector(LibraryWindowController.toggleFavorite(_:)), keyEquivalent: "d"))
-        itemMenu.addItem(item(title: "Move to Collection…", action: #selector(LibraryWindowController.moveToCollection(_:)), keyEquivalent: "m", modifierMask: [.shift, .command]))
+        itemMenu.addItem(item(title: "Add to Favorites", action: #selector(LibraryWindowController.toggleFavorite(_:)), keyEquivalent: "d", identifier: "ItemMenu-Favorite"))
+        itemMenu.addItem(item(title: "Move to Collection…", action: #selector(LibraryWindowController.moveToCollection(_:)), keyEquivalent: "m", modifierMask: [.shift, .command], identifier: "ItemMenu-Collection"))
         let typeMenu = NSMenu(title: "Type")
         for (index, title) in ["Text", "Prompt", "Code", "Markdown"].enumerated() {
             let kind = item(title: title, action: #selector(LibraryWindowController.setSnippetKind(_:)))
@@ -93,9 +93,9 @@ enum ApplicationMenuBuilder {
         }
         itemMenu.addItem(menuItem(title: "Type", submenu: typeMenu))
         itemMenu.addItem(.separator())
-        itemMenu.addItem(item(title: "Show Snippet", action: #selector(LibraryWindowController.showLinkedItem(_:))))
+        itemMenu.addItem(item(title: "Show Snippet", action: #selector(LibraryWindowController.showLinkedItem(_:)), identifier: "ItemMenu-ShowLinked"))
         itemMenu.addItem(.separator())
-        itemMenu.addItem(item(title: "Move to Recently Deleted", action: #selector(LibraryWindowController.moveToRecentlyDeleted(_:)), keyEquivalent: "\u{8}"))
+        itemMenu.addItem(item(title: "Move to Recently Deleted", action: #selector(LibraryWindowController.moveToRecentlyDeleted(_:)), keyEquivalent: "\u{8}", identifier: "ItemMenu-MoveToRecentlyDeleted"))
         mainMenu.addItem(menuItem(title: "Item", submenu: itemMenu))
 
         let windowMenu = NSMenu(title: "Window")
@@ -117,16 +117,20 @@ enum ApplicationMenuBuilder {
         return menuItem
     }
 
+    /// `identifier` names an item whose title a context menu repeats, so assistive apps and UI tests can tell the
+    /// two apart.
     private static func item(
         title: String,
         action: Selector,
         keyEquivalent: String = "",
         modifierMask: NSEvent.ModifierFlags = .command,
-        target: AnyObject? = nil
+        target: AnyObject? = nil,
+        identifier: String? = nil
     ) -> NSMenuItem {
         let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         menuItem.keyEquivalentModifierMask = modifierMask
         menuItem.target = target
+        menuItem.identifier = identifier.map { NSUserInterfaceItemIdentifier($0) }
         return menuItem
     }
 }

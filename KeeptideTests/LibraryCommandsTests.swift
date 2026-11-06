@@ -183,6 +183,9 @@ final class LibraryCommandsTests: XCTestCase {
         let delete = try command(#selector(LibraryWindowController.moveToRecentlyDeleted(_:)))
         XCTAssertEqual(delete.keyEquivalent, "\u{8}")
         XCTAssertEqual(delete.keyEquivalentModifierMask, .command)
+        // A row's context menu repeats these titles; the Item menu's own identifiers tell them apart.
+        XCTAssertEqual([favorite, collection, delete].compactMap(\.identifier?.rawValue),
+                       ["ItemMenu-Favorite", "ItemMenu-Collection", "ItemMenu-MoveToRecentlyDeleted"])
 
         let view = try XCTUnwrap(menu.items.first { $0.title == "View" }?.submenu)
         let inspector = try XCTUnwrap(view.items.first {
