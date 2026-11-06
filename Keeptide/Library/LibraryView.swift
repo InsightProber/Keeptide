@@ -163,8 +163,8 @@ struct LibraryView: View {
         selectionLibrary
         // The window's subtitle names the list. SwiftUI's toolbar bridge writes the subtitle from this, when the view
         // joins the window and as its bars change, and the controller writes it as the list changes: both the same.
-        .navigationSubtitle(LibrarySidebar.subtitle(currentScopeTitle))
-        .onChange(of: currentScopeTitle, initial: true) { _, title in commands.showListTitle(title) }
+        .navigationSubtitle(listSubtitle)
+        .onChange(of: listSubtitle, initial: true) { _, subtitle in commands.showListTitle(subtitle) }
         .onChange(of: listContext, initial: true) { _, context in
             commands.updateListContext(
                 scope: context.scope, sections: context.sections, sidebarIsVisible: context.sidebarIsVisible
@@ -650,6 +650,10 @@ struct LibraryView: View {
         .help(LibrarySidebar.chooseListHelp)
         .accessibilityLabel("Library Scope: \(currentScopeTitle)")
         .accessibilityIdentifier("LibraryScopeMenu")
+    }
+
+    private var listSubtitle: String {
+        LibrarySidebar.listSubtitle(for: selectedScope ?? .recentClips, named: currentScopeTitle)
     }
 
     private var currentScopeTitle: String {

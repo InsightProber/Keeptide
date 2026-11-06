@@ -286,8 +286,8 @@ final class CollectionUITests: XCTestCase {
             .firstMatch
     }
 
-    /// The window's subtitle names the list, and the window's title reads "Keeptide Library – <list>". Names
-    /// longer than 15 characters are shortened there, so a test waits on short names only.
+    /// The window's subtitle names the list, and the window's title reads "Keeptide Library – <list>". A collection's
+    /// name longer than 15 characters is shortened there, so a test waits on short collection names only.
     private func waitForScope(_ name: String, in app: XCUIApplication) {
         let library = app.windows["KeeptideLibraryWindow"]
         expectation(for: NSPredicate(format: "title ENDSWITH %@", name), evaluatedWith: library)

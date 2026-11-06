@@ -37,7 +37,7 @@ final class LibraryWindowController: NSWindowController {
         window.toolbarStyle = .unified
         // The title stays the app's; the subtitle names the list, as a document window names its document. The view
         // reports the list as soon as it exists, which can be while its content is made, so this comes first.
-        commands.showListTitle = { [weak window] title in window?.subtitle = LibrarySidebar.subtitle(title) }
+        commands.showListTitle = { [weak window] subtitle in window?.subtitle = subtitle }
         window.contentViewController = WindowContentController(
             rootView: LibraryView(session: session, commands: commands),
             size: Self.defaultSize,
@@ -262,7 +262,8 @@ final class LibraryWindowCommands {
     @ObservationIgnored private(set) var listScope: LibraryScope = .recentClips
     @ObservationIgnored private(set) var listSections = LibrarySidebar.sections(collections: [])
     @ObservationIgnored private(set) var sidebarIsVisible = true
-    /// Shows the name of the list chosen; the window controller sets it to write the window's subtitle.
+    /// Shows the chosen list's subtitle as the view words it; the window controller sets it to write the window's
+    /// subtitle.
     @ObservationIgnored var showListTitle: @MainActor (String) -> Void = { _ in }
 
     /// ⌘N and ⇧⌘F each take a newer focus generation; a new snippet's body asks for the keyboard only while its
