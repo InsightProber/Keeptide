@@ -767,6 +767,59 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertNil(workspace.entries.first?.collectionID)
     }
 
+    func testDeletingTheLastCollectionLeavesUnfiled() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let filed = try await LibraryService(controller: harness.controller)
+            .create(MemoDraft(body: "filed", collectionID: prompts.value.id))
+        let unfiled = try await LibraryService(controller: harness.controller).create(MemoDraft(body: "unfiled"))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.refreshCollections()
+        await workspace.setScope(.uncategorized)
+        XCTAssertEqual(workspace.entries.map(\.ref), [unfiled])
+
+        let deleted = await workspace.deleteCollection(prompts)
+
+        // Unfiled hides with the last collection; its snippets are all unfiled now, so All Snippets shows them.
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(workspace.scope, .allSnippets)
+        XCTAssertEqual(Set(workspace.entries.map(\.ref.itemID)), [filed.itemID, unfiled.itemID])
+    }
+
+    func testDeletingTheCollectionShownGoesToUnfiledWhileAnotherRemains() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = CollectionService(controller: harness.controller)
+        let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
+        _ = try await service.create(CollectionDraft(name: "Drafts", color: "green"))
+        let filed = try await LibraryService(controller: harness.controller)
+            .create(MemoDraft(body: "filed", collectionID: prompts.value.id))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.refreshCollections()
+        await workspace.setScope(.collection(prompts.value.id))
+
+        let deleted = await workspace.deleteCollection(prompts)
+
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(workspace.scope, .uncategorized)
+        XCTAssertEqual(workspace.entries.map(\.ref.itemID), [filed.itemID])
+    }
+
+    func testDeletingAnotherCollectionKeepsTheListShown() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = CollectionService(controller: harness.controller)
+        let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
+        let drafts = try await service.create(CollectionDraft(name: "Drafts", color: "green"))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.refreshCollections()
+        await workspace.setScope(.collection(drafts.value.id))
+
+        let deleted = await workspace.deleteCollection(prompts)
+
+        XCTAssertTrue(deleted)
+        XCTAssertEqual(workspace.scope, .collection(drafts.value.id))
+    }
+
     private func storedItem(_ id: ItemID, in harness: SearchHarness) async throws -> ItemValue {
         let state = try await ContentRepository(controller: harness.controller).recordState(.item(id))
         guard case .item(let value) = state.value else { throw StoreError.corruptStore }

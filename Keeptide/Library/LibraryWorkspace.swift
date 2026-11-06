@@ -15,6 +15,96 @@ enum LibraryScope: Hashable, Sendable {
     }
 }
 
+/// The library's lists in sidebar order, and the moves between them.
+enum LibrarySidebar {
+    /// A list as the scope menus name it.
+    struct ListEntry: Equatable {
+        let scope: LibraryScope
+        let title: String
+        let symbolName: String
+    }
+
+    /// The help on the toolbar's scope menu. ⌘L also finds the menu's place in the toolbar by it.
+    static let chooseListHelp = "Choose a List"
+
+    /// The sidebar's sections as the scope menus list them: Recent Clips; All Snippets and Favorites; the
+    /// collections and Unfiled, while there is a collection; Recently Deleted.
+    static func sections(collections: [(id: CollectionID, name: String)]) -> [[ListEntry]] {
+        var sections: [[ListEntry]] = [
+            [ListEntry(scope: .recentClips, title: "Recent Clips", symbolName: "clock")],
+            [ListEntry(scope: .allSnippets, title: "All Snippets", symbolName: "bookmark"),
+             ListEntry(scope: .favorites, title: "Favorites", symbolName: "star")],
+        ]
+        if !collections.isEmpty {
+            sections.append(
+                collections.map { ListEntry(scope: .collection($0.id), title: $0.name, symbolName: "circle.fill") }
+                    + [ListEntry(scope: .uncategorized, title: "Unfiled", symbolName: "tray")]
+            )
+        }
+        sections.append([ListEntry(scope: .recentlyDeleted, title: "Recently Deleted", symbolName: "trash")])
+        return sections
+    }
+
+    /// Recent Clips; All Snippets and Favorites; each collection, then Unfiled while there is a collection;
+    /// Recently Deleted. Without a collection, Unfiled would only repeat All Snippets.
+    static func scopes(collections: [CollectionID]) -> [LibraryScope] {
+        var scopes: [LibraryScope] = [.recentClips, .allSnippets, .favorites]
+        scopes += collections.map { .collection($0) }
+        if !collections.isEmpty { scopes.append(.uncategorized) }
+        scopes.append(.recentlyDeleted)
+        return scopes
+    }
+
+    /// The list `offset` places along the sidebar from `current` (⌘] is 1, ⌘[ is -1), or nil past either end: the
+    /// commands stop there rather than wrap around.
+    static func scope(_ offset: Int, from current: LibraryScope, collections: [CollectionID]) -> LibraryScope? {
+        let scopes = scopes(collections: collections)
+        guard let index = scopes.firstIndex(of: current), scopes.indices.contains(index + offset) else { return nil }
+        return scopes[index + offset]
+    }
+
+    /// The list to show instead of `current` once the collections are `collections`, or nil while it is still shown:
+    /// a collection that is gone gives way to Unfiled, or to All Snippets when no collection is left, and Unfiled
+    /// gives way to All Snippets when it hides with the last collection.
+    static func scope(replacing current: LibraryScope, collections: [CollectionID]) -> LibraryScope? {
+        switch current {
+        case .collection(let id) where !collections.contains(id):
+            return collections.isEmpty ? .allSnippets : .uncategorized
+        case .uncategorized where collections.isEmpty:
+            return .allSnippets
+        default:
+            return nil
+        }
+    }
+
+    /// The window's subtitle for a list called `name`: past `limit` characters, the middle gives way to an ellipsis
+    /// so the start and end of a long collection name both stay readable.
+    /// A list's menu item identifier. The items of the list menu share one action, and AppKit otherwise names each
+    /// after it, so assistive apps and UI tests could not tell them apart.
+    static func menuIdentifier(for scope: LibraryScope) -> String {
+        switch scope {
+        case .recentClips: "ChooseList-RecentClips"
+        case .allSnippets: "ChooseList-AllSnippets"
+        case .favorites: "ChooseList-Favorites"
+        case .uncategorized: "ChooseList-Unfiled"
+        case .recentlyDeleted: "ChooseList-RecentlyDeleted"
+        case .collection(let id): "ChooseList-Collection-\(id.rawValue.uuidString)"
+        }
+    }
+
+    /// The window's subtitle for a list: a collection's name, which anyone may make long, shortened in the middle;
+    /// Keeptide's own lists by their whole names.
+    static func listSubtitle(for scope: LibraryScope, named name: String) -> String {
+        scope.collectionID == nil ? name : subtitle(name)
+    }
+
+    static func subtitle(_ name: String, limit: Int = 15) -> String {
+        guard name.count > limit else { return name }
+        let head = (limit - 1) / 2
+        return String(name.prefix(head)) + "…" + String(name.suffix(limit - 1 - head))
+    }
+}
+
 struct LibraryEntry: Identifiable, Equatable, Sendable {
     let id: ItemID
     let ref: ContentRef
@@ -179,8 +269,12 @@ final class LibraryWorkspace {
 
     func refreshCollections() async {
         guard !isClosing, !isClosed else { return }
-        do { setCollections(try await collectionService.list(expecting: storeIdentity)) }
-        catch { message = "Collections could not be loaded." }
+        do {
+            setCollections(try await collectionService.list(expecting: storeIdentity))
+            if leaveListIfGone() { scheduleQueryLoad() }
+        } catch {
+            message = "Collections could not be loaded."
+        }
     }
 
     func createCollection(_ draft: CollectionDraft) async -> Bool {
@@ -197,14 +291,11 @@ final class LibraryWorkspace {
         }
     }
 
+    /// Deleting the collection shown, or the last collection while Unfiled is shown, leaves for the list
+    /// `LibrarySidebar.scope(replacing:collections:)` names.
     func deleteCollection(_ snapshot: CollectionSnapshot) async -> Bool {
         await changeCollection {
-            let change = try await self.collectionService.delete(snapshot, expecting: self.storeIdentity)
-            if self.scope.collectionID == snapshot.value.id {
-                self.navigationGeneration &+= 1
-                self.scope = .uncategorized
-            }
-            return change
+            try await self.collectionService.delete(snapshot, expecting: self.storeIdentity)
         }
     }
 
@@ -249,6 +340,17 @@ final class LibraryWorkspace {
         onCollectionsChanged?()
     }
 
+    /// Moves off a list the sidebar no longer shows; true when it did. The caller loads the new list's entries.
+    @discardableResult
+    private func leaveListIfGone() -> Bool {
+        guard let next = LibrarySidebar.scope(replacing: scope, collections: collections.map(\.value.id)) else {
+            return false
+        }
+        navigationGeneration &+= 1
+        scope = next
+        return true
+    }
+
     private func changeCollection(_ operation: () async throws -> CollectionChange?) async -> Bool {
         guard !isClosing, !isClosed, !isChangingCollection else { return false }
         isChangingCollection = true
@@ -265,6 +367,7 @@ final class LibraryWorkspace {
             canUndoCollectionChange = !(collectionUndo?.records.isEmpty ?? true)
             guard !isClosing, !isClosed else { return true }
             setCollections(try await collectionService.list(expecting: storeIdentity))
+            leaveListIfGone()
             try await refreshSearch()
             if !isClosing, !isClosed { await reload(refreshIndex: false) }
             return true

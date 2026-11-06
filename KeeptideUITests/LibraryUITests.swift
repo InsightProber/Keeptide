@@ -110,7 +110,7 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
         remove.click()
 
-        let deletedScope = app.staticTexts["Recently Deleted"].firstMatch
+        let deletedScope = sidebarRow("Recently Deleted", in: app)
         XCTAssertTrue(deletedScope.waitForExistence(timeout: 8), app.debugDescription)
         deletedScope.click()
         let deleted = app.staticTexts[title].firstMatch
@@ -221,9 +221,16 @@ final class LibraryUITests: XCTestCase {
     }
 
     private func openAllSnippets(in app: XCUIApplication) {
-        let section = app.staticTexts["All Snippets"].firstMatch
+        let section = sidebarRow("All Snippets", in: app)
         XCTAssertTrue(section.waitForExistence(timeout: 5), app.debugDescription)
         section.click()
+    }
+
+    /// A list in the sidebar. The window's subtitle repeats the chosen list's name, so the sidebar is named.
+    private func sidebarRow(_ name: String, in app: XCUIApplication) -> XCUIElement {
+        app.windows["KeeptideLibraryWindow"].descendants(matching: .outline)["LibrarySidebar"].staticTexts
+            .matching(NSPredicate(format: "label == %@ OR value == %@", name, name))
+            .firstMatch
     }
 
     private func searchLibrary(for query: String, in app: XCUIApplication) {
