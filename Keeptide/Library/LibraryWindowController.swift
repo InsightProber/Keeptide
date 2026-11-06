@@ -37,7 +37,6 @@ final class LibraryWindowController: NSWindowController {
         window.toolbarStyle = .unified
         // The title stays the app's; the subtitle names the list, as a document window names its document. The view
         // reports the list as soon as it exists, which can be while its content is made, so this comes first.
-        window.subtitle = LibrarySidebar.subtitle("Recent Clips")
         commands.showListTitle = { [weak window] title in window?.subtitle = LibrarySidebar.subtitle(title) }
         window.contentViewController = WindowContentController(
             rootView: LibraryView(session: session, commands: commands),
