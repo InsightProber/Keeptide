@@ -147,6 +147,8 @@ final class PreviewUITests: XCTestCase {
 
     private func chooseKind(_ kind: String, in library: XCUIElement) {
         let picker = library.popUpButtons["SnippetKindPicker"]
+        // The type is chosen in the inspector, closed until View › Show Inspector opens it.
+        if !picker.exists { library.typeKey("i", modifierFlags: [.control, .command]) }
         XCTAssertTrue(picker.waitForExistence(timeout: 5), library.debugDescription)
         picker.click()
         let item = picker.menuItems[kind]

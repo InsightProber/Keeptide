@@ -631,19 +631,17 @@ final class QuickAccessFilterButton: NSView {
         face.target = self
         face.action = #selector(open)
         addSubview(face)
-        // The button itself is what Tab reaches and VoiceOver reads: a pop-up button named Filter.
-        setAccessibilityElement(true)
-        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
-        setAccessibilityEnabled(true)
-        setAccessibilityRole(.popUpButton)
-        setAccessibilityLabel("Filter")
-        setAccessibilityIdentifier("QuickAccessFilterButton")
+        // The face, a real button, is what VoiceOver reads and what is clicked: a pop-up button named Filter. This
+        // view only holds it and takes Tab, and VoiceOver's focus then goes to the face.
+        setAccessibilityElement(false)
         apply(favoritesOnly: false, kinds: [])
     }
 
-    override func accessibilityPerformPress() -> Bool {
-        onOpen?()
-        return true
+    /// With the keys here, what VoiceOver has in focus is the face. AppKit asks on the main thread, but this property
+    /// is not main-actor isolated in every SDK, so that is assumed here.
+    override var accessibilityFocusedUIElement: Any? {
+        let focused: NSView? = MainActor.assumeIsolated { window?.firstResponder === self ? face : nil }
+        return focused ?? super.accessibilityFocusedUIElement
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -683,8 +681,8 @@ final class QuickAccessFilterButton: NSView {
             (value, help) = (all, all)
             face.show(label: "\(names.count) Filters", symbol: nil, help: help)
         }
-        setAccessibilityValue(value)
-        setAccessibilityHelp(help == "Filter" ? nil : help)
+        face.setAccessibilityValue(value)
+        face.setAccessibilityHelp(help == "Filter" ? nil : help)
         invalidateIntrinsicContentSize()
         needsLayout = true
         // The toolbar sizes the button and moves the search's neighbours.
@@ -740,8 +738,20 @@ final class QuickAccessFilterFace: NSButton {
         isBordered = false
         focusRingType = .none
         refusesFirstResponder = true
-        // It only draws: the filter button around it is what VoiceOver reads.
-        setAccessibilityElement(false)
+        setAccessibilityRole(.popUpButton)
+        setAccessibilityLabel("Filter")
+        setAccessibilityIdentifier("QuickAccessFilterButton")
+    }
+
+    /// VoiceOver's press and its Show Menu open the menu, as a click does.
+    override func accessibilityPerformPress() -> Bool {
+        guard isEnabled else { return false }
+        sendAction(action, to: target)
+        return true
+    }
+
+    override func accessibilityPerformShowMenu() -> Bool {
+        accessibilityPerformPress()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -756,6 +766,15 @@ final class QuickAccessFilterFace: NSButton {
         toolTip = help
         invalidateIntrinsicContentSize()
         needsDisplay = true
+    }
+
+    /// As a pop-up button's, the menu opens as the mouse goes down, and the release lands in the menu. The button's own
+    /// tracking would not do: with no title or image of its own, its cell takes no click at all.
+    override func mouseDown(with event: NSEvent) {
+        guard isEnabled else { return }
+        isHighlighted = true
+        sendAction(action, to: target)
+        isHighlighted = false
     }
 
     override var intrinsicContentSize: NSSize {

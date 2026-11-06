@@ -72,7 +72,100 @@ final class LibraryWindowController: NSWindowController {
     @objc func selectNextList(_ sender: Any?) { commands.requestListMove(1) }
     @objc func saveDocument(_ sender: Any?) { commands.saveRequest += 1 }
     @objc func copyEntireItem(_ sender: Any?) { commands.copyRequest += 1 }
-    @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
+    /// ⇧⌘F, and ⌘F outside the editor. Presenting the search focuses its field once; when it is already open and
+    /// the keyboard went elsewhere, SwiftUI leaves the keyboard there, so the field is focused directly.
+    @objc func searchLibrary(_ sender: Any?) {
+        // While an input method composes, the key would commit the composition and move the keyboard mid-word.
+        if let text = window?.firstResponder as? NSTextView, text.hasMarkedText() { return }
+        commands.requestSearch()
+        if commands.searchIsPresented { focusSearchField() }
+    }
+
+    /// ⌘F (Find in Note…) reaches the window only when the editor is not in front, as with the list or the sidebar:
+    /// there it searches the library. The editor's text view answers it first, with its find bar.
+    @objc func performFindPanelAction(_ sender: Any?) {
+        let tag = (sender as? NSMenuItem)?.tag ?? (sender as? NSControl)?.tag
+        guard tag == Int(NSFindPanelAction.showFindPanel.rawValue) else { return }
+        searchLibrary(sender)
+    }
+
+    @objc func undoCollectionChange(_ sender: Any?) {
+        Task { _ = await session.libraryWorkspace?.undoCollectionChange() }
+    }
+
+    @objc func undoSaveAsSnippet(_ sender: Any?) {
+        Task { _ = try? await session.libraryWorkspace?.undoNewSave() }
+    }
+
+    // MARK: Item menu
+
+    /// The types Item › Type lists, in its order; a menu item's tag is its index.
+    static let snippetKinds: [MemoKind] = [.plainText, .prompt, .code, .markdown]
+
+    @objc func toggleFavorite(_ sender: Any?) { commands.requestFavorite() }
+    @objc func showLinkedItem(_ sender: Any?) { commands.requestShowLinked() }
+    @objc func moveToRecentlyDeleted(_ sender: Any?) { commands.requestDelete() }
+    @objc func toggleInspector(_ sender: Any?) { commands.requestInspectorToggle() }
+
+    @objc func setSnippetKind(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag, Self.snippetKinds.indices.contains(tag) else { return }
+        commands.requestKind(Self.snippetKinds[tag])
+    }
+
+    /// ⇧⌘M: the collection menu, under the open item's title; a keyboard has no toolbar button to open it from.
+    @objc func moveToCollection(_ sender: Any?) {
+        guard let content = window?.contentView else { return }
+        let menu = makeCollectionMenu()
+        let titles: Set<String?> = ["Untitled Snippet", "Clipboard Item"]
+        if let title = Self.views(NSTextField.self, in: content).first(where: { titles.contains($0.placeholderString) }) {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: title.isFlipped ? title.bounds.maxY + 4 : -4), in: title)
+        } else {
+            menu.popUp(positioning: nil, at: NSPoint(x: content.bounds.midX, y: content.bounds.midY), in: content)
+        }
+    }
+
+    /// The same rows as the toolbar's collection menu: Unfiled, the collections and New Collection….
+    func makeCollectionMenu() -> NSMenu {
+        let menu = NSMenu(title: commands.itemContext.selection.collectionTitle)
+        for entry in commands.itemContext.collectionEntries {
+            guard !entry.isSeparator else {
+                menu.addItem(.separator())
+                continue
+            }
+            let item = NSMenuItem(title: entry.title, action: #selector(chooseCollectionItem(_:)), keyEquivalent: "")
+            // The rows share one action; their own identifiers tell them apart for assistive apps.
+            item.identifier = NSUserInterfaceItemIdentifier("CollectionMenu-\(entry.id)")
+            item.target = self
+            item.representedObject = entry
+            item.state = entry.isChecked ? .on : .off
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func chooseCollectionItem(_ item: NSMenuItem) {
+        guard let entry = item.representedObject as? CollectionMenuEntry else { return }
+        commands.requestCollection(entry.collectionID, creating: entry.isNewCollection)
+    }
+
+    private static func views<View: NSView>(_ type: View.Type, in root: NSView) -> [View] {
+        ((root as? View).map { [$0] } ?? []) + root.subviews.flatMap { views(type, in: $0) }
+    }
+
+    /// The toolbar's search field: the one search field outside the window's content, where the editor's find bar
+    /// has its own.
+    private func focusSearchField() {
+        guard let window, let frame = window.contentView?.superview else { return }
+        var queue = frame.subviews.filter { $0 !== window.contentView }
+        while !queue.isEmpty {
+            let view = queue.removeFirst()
+            if let field = view as? NSSearchField {
+                if (window.firstResponder as? NSTextView)?.delegate !== field { window.makeFirstResponder(field) }
+                return
+            }
+            queue += view.subviews
+        }
+    }
     @objc func exportLibrary(_ sender: Any?) { commands.exportLibraryRequest &+= 1 }
     @objc func exportSelected(_ sender: Any?) { commands.exportSelectedRequest &+= 1 }
 
@@ -164,6 +257,37 @@ extension LibraryWindowController: NSMenuItemValidation {
             return true
         case #selector(newCollection(_:)):
             return session.libraryWorkspace != nil
+        case #selector(undoCollectionChange(_:)):
+            return session.libraryWorkspace?.canUndoCollectionChange == true
+        case #selector(undoSaveAsSnippet(_:)):
+            return session.libraryWorkspace?.canUndoNewSave == true
+        case #selector(saveDocument(_:)):
+            menuItem.title = session.libraryWorkspace?.editor?.isReadOnly == true ? "Save as Snippet" : "Save"
+            return session.libraryWorkspace != nil
+        case #selector(toggleInspector(_:)):
+            menuItem.title = commands.itemContext.inspectorIsPresented ? "Hide Inspector" : "Show Inspector"
+            return true
+        case #selector(toggleFavorite(_:)):
+            let selection = commands.itemContext.selection
+            menuItem.title = selection.favoriteTitle
+            return selection.canFavorite && !selection.refs.isEmpty
+        case #selector(moveToCollection(_:)):
+            let selection = commands.itemContext.selection
+            menuItem.title = selection.collectionTitle + "…"
+            return !selection.refs.isEmpty
+        case #selector(setSnippetKind(_:)):
+            let kind = commands.itemContext.selection.kind
+            menuItem.state = kind != nil && Self.snippetKinds.firstIndex(of: kind!) == menuItem.tag ? .on : .off
+            return kind != nil
+        case #selector(showLinkedItem(_:)):
+            let selection = commands.itemContext.selection
+            menuItem.title = selection.linkedTitle
+            return selection.linked != nil
+        case #selector(moveToRecentlyDeleted(_:)):
+            // In the editor ⌘⌫ deletes to the start of the line; items move only from the list or the sidebar.
+            guard window?.firstResponder is NSTableView else { return false }
+            let selection = commands.itemContext.selection
+            return selection.canDelete && !selection.refs.isEmpty
         default:
             break
         }
@@ -223,10 +347,16 @@ final class LibraryWindowCommands {
     var exportLibraryRequest = 0
     var exportSelectedRequest = 0
     private(set) var searchRequest = 0
+    private(set) var favoriteRequest = 0
+    private(set) var collectionRequest: LibraryCollectionRequest?
+    private(set) var kindRequest: LibraryKindRequest?
+    private(set) var showLinkedRequest = 0
+    private(set) var deleteRequest = 0
+    private(set) var inspectorToggleRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
-    private var searchFocus = SearchFocusRequestState()
-    var pendingSearchFocus: SearchFocusIntent? { searchFocus.pending }
+    /// Whether the search is open, as the view last reported it.
+    @ObservationIgnored private(set) var searchIsPresented = false
     var openRequest: LibraryOpenRequest?
     private(set) var selectedExportRefs: [ContentRef] = []
     private(set) var isRecentlyDeleted = false
@@ -235,6 +365,8 @@ final class LibraryWindowCommands {
     @ObservationIgnored private(set) var listScope: LibraryScope = .recentClips
     @ObservationIgnored private(set) var listSections = LibrarySidebar.sections(collections: [])
     @ObservationIgnored private(set) var sidebarIsVisible = true
+    /// What the selection allows and whether the inspector shows, as the view last reported them, for the menus.
+    @ObservationIgnored private(set) var itemContext = LibraryItemContext()
     /// Shows the chosen list's subtitle as the view words it; the window controller sets it to write the window's
     /// subtitle.
     @ObservationIgnored var showListTitle: @MainActor (String) -> Void = { _ in }
@@ -243,9 +375,10 @@ final class LibraryWindowCommands {
     /// list decides. It is read with the request it came with.
     @ObservationIgnored private(set) var newSnippetScope: LibraryScope?
 
+    /// ⌘N and ⇧⌘F each take a newer focus generation; a new snippet's body asks for the keyboard only while its
+    /// generation is current, so whichever came last keeps it.
     func requestNewSnippet(in scope: LibraryScope? = nil) {
         focusGeneration &+= 1
-        searchFocus.invalidate()
         newSnippetFocusGeneration = focusGeneration
         newSnippetScope = scope
         newSnippetRequest &+= 1
@@ -254,16 +387,10 @@ final class LibraryWindowCommands {
     func requestSearch() {
         focusGeneration &+= 1
         searchRequest &+= 1
-        searchFocus.request(searchRequest, generation: focusGeneration)
     }
 
-    func isCurrentSearchFocus(_ intent: SearchFocusIntent) -> Bool {
-        searchFocus.isCurrent(intent, generation: focusGeneration)
-    }
-
-    @discardableResult
-    func consumeSearchFocus(_ intent: SearchFocusIntent) -> Bool {
-        searchFocus.consume(intent, generation: focusGeneration)
+    func updateSearchPresented(_ presented: Bool) {
+        searchIsPresented = presented
     }
 
     func requestNewCollection() {
@@ -299,10 +426,51 @@ final class LibraryWindowCommands {
         self.sidebarIsVisible = sidebarIsVisible
     }
 
+    func requestFavorite() { favoriteRequest &+= 1 }
+    func requestShowLinked() { showLinkedRequest &+= 1 }
+    func requestDelete() { deleteRequest &+= 1 }
+    func requestInspectorToggle() { inspectorToggleRequest &+= 1 }
+
+    /// A place chosen from the collection menu ⇧⌘M opens: a collection, Unfiled (nil), or a new collection.
+    func requestCollection(_ collectionID: CollectionID?, creating: Bool = false) {
+        collectionRequest = LibraryCollectionRequest(
+            collectionID: collectionID, createsCollection: creating,
+            generation: (collectionRequest?.generation ?? 0) + 1
+        )
+    }
+
+    func requestKind(_ kind: MemoKind) {
+        kindRequest = LibraryKindRequest(kind: kind, generation: (kindRequest?.generation ?? 0) + 1)
+    }
+
+    func updateItemContext(_ context: LibraryItemContext) {
+        itemContext = context
+    }
+
     func updateExportContext(refs: [ContentRef], isRecentlyDeleted: Bool) {
         selectedExportRefs = refs
         self.isRecentlyDeleted = isRecentlyDeleted
     }
+}
+
+/// What the menus need of the library's selection.
+struct LibraryItemContext: Equatable {
+    var selection = LibrarySelectionState()
+    /// The collection menu's rows for the selection.
+    var collectionEntries: [CollectionMenuEntry] = []
+    var inspectorIsPresented = false
+    var isRecentlyDeleted = false
+}
+
+struct LibraryCollectionRequest: Equatable {
+    let collectionID: CollectionID?
+    let createsCollection: Bool
+    let generation: Int
+}
+
+struct LibraryKindRequest: Equatable {
+    let kind: MemoKind
+    let generation: Int
 }
 
 struct LibraryListRequest: Equatable {

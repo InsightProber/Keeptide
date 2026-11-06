@@ -65,9 +65,22 @@ final class LibraryLayoutTests: XCTestCase {
         let titleField = try XCTUnwrap(views(NSTextField.self, in: window.contentView).first {
             $0.stringValue == title
         })
-        let noteField = try XCTUnwrap(views(NSTextField.self, in: window.contentView).first {
-            $0.placeholderString == "Optional note"
-        })
+        // The note is in the inspector, closed until it is asked for; a clip has none.
+        func noteFields() -> [NSTextField] {
+            views(NSTextField.self, in: window.contentView).filter { $0.placeholderString == "Optional note" }
+        }
+        XCTAssertTrue(noteFields().isEmpty)
+        var noteField: NSTextField?
+        if !readOnly {
+            // The inspector slides in from the trailing edge.
+            controller.toggleInspector(nil)
+            try await SearchTestSupport.waitUntil {
+                window.contentView?.layoutSubtreeIfNeeded()
+                guard let field = noteFields().first, let content = window.contentView else { return false }
+                return field.convert(field.bounds, to: content).maxX <= content.bounds.width
+            }
+            noteField = noteFields().first
+        }
 
         for width: CGFloat in [1_120, 840, 1_400, 1_120] {
             window.appearance = NSAppearance(named: width == 840 ? .darkAqua : .aqua)
@@ -78,7 +91,7 @@ final class LibraryLayoutTests: XCTestCase {
                 return window.contentView?.bounds.width == width
                     && (editor.enclosingScrollView?.bounds.width ?? 0) > 0
             }
-            for view in [titleField, noteField, try XCTUnwrap(editor.enclosingScrollView)] {
+            for view in [titleField, noteField, try XCTUnwrap(editor.enclosingScrollView)].compactMap({ $0 }) {
                 let rect = view.convert(view.bounds, to: window.contentView)
                 XCTAssertGreaterThanOrEqual(rect.minX, 0, "\(width): \(rect)")
                 XCTAssertLessThanOrEqual(rect.maxX, width, "\(width): \(rect)")
@@ -87,7 +100,7 @@ final class LibraryLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(editor.visibleRect.width, editor.bounds.width - 1)
             XCTAssertEqual(editor.string, body)
             XCTAssertEqual(titleField.stringValue, title)
-            XCTAssertEqual(noteField.stringValue, note)
+            if let noteField { XCTAssertEqual(noteField.stringValue, note) }
             if readOnly, width == 840 || width == 1_400 {
                 let content = try XCTUnwrap(window.contentView)
                 let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
@@ -280,6 +293,29 @@ final class LibraryLayoutTests: XCTestCase {
         let favorites = try XCTUnwrap(menu.items.first { $0.title == "Favorites" })
         menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex(of: favorites)))
         try await waitUntilLaidOut(window) { window.subtitle == "Favorites" }
+    }
+
+    func testSearchingAgainFocusesTheSearchFieldItLeft() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        func searchIsFocused() -> Bool {
+            guard let editor = window.firstResponder as? NSTextView else { return false }
+            return editor.delegate is NSSearchField
+        }
+
+        controller.searchLibrary(nil)
+        try await waitUntilLaidOut(window) { searchIsFocused() }
+
+        // The keyboard leaves while the search stays open; asking again brings it back.
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(searchIsFocused())
+        controller.searchLibrary(nil)
+        try await waitUntilLaidOut(window) { searchIsFocused() }
     }
 
     func testTheSidebarCannotBeLeftWithoutAList() async throws {

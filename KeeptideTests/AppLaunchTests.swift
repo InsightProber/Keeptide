@@ -1150,7 +1150,7 @@ final class AppLaunchTests: XCTestCase {
         }, [reason])
         // Recently Deleted, which new copies never reach, says nothing about them.
         try selectLibraryList("Recently Deleted", in: content)
-        XCTAssertEqual(try notices { $0.contains(where: identified("RefreshRecentlyDeleted")) }, [])
+        XCTAssertEqual(try notices { $0.contains(where: identified("RecentlyDeletedEmptyState")) }, [])
         // Back over the recent clips, the line is there again.
         try selectLibraryList("Recent Clips", in: content)
         XCTAssertEqual(try notices {
@@ -2700,6 +2700,27 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertGreaterThan(state.selection.frequentCount, 0)
         try await waitForWingFrames(in: strip)
         XCTAssertFalse(divider.isHidden)
+    }
+
+    func testAClickOnTheFilterButtonOpensItsMenuAsTheMouseGoesDown() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        toolbar.layoutSubtreeIfNeeded()
+        var shown: [NSMenu] = []
+        controller.presentToolbarMenu = { menu, _, _ in shown.append(menu) }
+        // A click through the window lands on the button's face, and its mouse-down opens the menu, as a pop-up
+        // button's does. A borderless button with no title or image would not track the click at all.
+        let button = toolbar.filterButton
+        let point = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
+        XCTAssertTrue(window.contentView?.hitTest(point) === button.face)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1
+        ))
+        window.sendEvent(down)
+        XCTAssertEqual(shown.map(\.title), ["Filter"])
+        XCTAssertFalse(button.face.isHighlighted)
     }
 
     func testToolbarMenusOpenWithoutActivatingTheApp() async throws {
@@ -4562,9 +4583,11 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(panel.isSessionOpen)
         let alert = try XCTUnwrap(alerts.last)
         XCTAssertEqual(alert.messageText, "Turn On Direct Paste")
+        let settings = DirectPasteSettingsLocation.path()
         XCTAssertEqual(alert.informativeText, """
-            Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in System Settings › Privacy & \
-            Security › Accessibility, then quit and reopen Keeptide.
+            Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in \(settings), then quit and \
+            reopen Keeptide. If Keeptide is already on there, remove it from the list with − and add it again with + \
+            before reopening.
             """)
         XCTAssertEqual(alert.buttons.map(\.title), ["Open System Settings", "Cancel"])
         XCTAssertEqual(alert.buttons.first?.keyEquivalent, "\r", "Open System Settings is the default")

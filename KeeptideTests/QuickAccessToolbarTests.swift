@@ -495,17 +495,16 @@ final class QuickAccessToolbarTests: XCTestCase {
         button.show(favoritesOnly: false, kinds: [])
         XCTAssertNil(button.title)
         XCTAssertEqual(button.intrinsicContentSize, NSSize(width: 32, height: 32))
-        // The button is what Tab reaches and VoiceOver reads; its face only draws.
-        XCTAssertTrue(button.isAccessibilityElement())
-        XCTAssertFalse(button.face.isAccessibilityElement())
-        // Views are no controls: these say they are enabled, or VoiceOver would call them dimmed.
-        XCTAssertTrue(button.isAccessibilityEnabled())
+        // The face, a real button, is what VoiceOver reads and what is clicked; the view around it takes Tab.
+        XCTAssertFalse(button.isAccessibilityElement())
+        XCTAssertTrue(button.face.isAccessibilityEnabled())
+        // The groups are views, not controls: they say they are enabled, or VoiceOver would call them dimmed.
         XCTAssertTrue(toolbar.lists.segments.isAccessibilityEnabled())
         XCTAssertTrue(toolbar.lists.chipsView.isAccessibilityEnabled())
-        XCTAssertEqual(button.accessibilityRole(), .popUpButton)
-        XCTAssertEqual(button.accessibilityLabel(), "Filter")
-        XCTAssertEqual(button.accessibilityIdentifier(), "QuickAccessFilterButton")
-        XCTAssertEqual(button.accessibilityValue() as? String, "None")
+        XCTAssertEqual(button.face.accessibilityRole(), .popUpButton)
+        XCTAssertEqual(button.face.accessibilityLabel(), "Filter")
+        XCTAssertEqual(button.face.accessibilityIdentifier(), "QuickAccessFilterButton")
+        XCTAssertEqual(button.face.accessibilityValue() as? String, "None")
         XCTAssertEqual(button.face.toolTip, "Filter")
         // With filters on, a 32 pt high capsule that names them: one by its name, more by their number.
         let cases: [(favorites: Bool, kinds: Set<ContentKind>, title: String, value: String)] = [
@@ -520,18 +519,23 @@ final class QuickAccessToolbarTests: XCTestCase {
             XCTAssertEqual(button.intrinsicContentSize.height, 32, item.title)
             XCTAssertGreaterThan(button.intrinsicContentSize.width, 32, item.title)
             XCTAssertLessThanOrEqual(button.intrinsicContentSize.width, button.maximumWidth, item.title)
-            XCTAssertEqual(button.accessibilityValue() as? String, item.value)
-            XCTAssertEqual(button.accessibilityHelp(), item.value)
+            XCTAssertEqual(button.face.accessibilityValue() as? String, item.value)
+            XCTAssertEqual(button.face.accessibilityHelp(), item.value)
             XCTAssertEqual(button.face.toolTip, item.value)
         }
-        // A click opens the menu and leaves the keys where they are; so does VoiceOver's press.
+        // A click opens the menu and leaves the keys where they are; so do VoiceOver's press and Show Menu.
         XCTAssertTrue(button.face.refusesFirstResponder)
         var opened = 0
         button.onOpen = { opened += 1 }
         button.face.performClick(nil)
         XCTAssertEqual(opened, 1)
-        XCTAssertTrue(button.accessibilityPerformPress())
+        XCTAssertTrue(button.face.accessibilityPerformPress())
         XCTAssertEqual(opened, 2)
+        XCTAssertTrue(button.face.accessibilityPerformShowMenu())
+        XCTAssertEqual(opened, 3)
+        // With the keys on the button, as Tab leaves them, VoiceOver's focus is on the face.
+        XCTAssertTrue(try XCTUnwrap(button.window).makeFirstResponder(button))
+        XCTAssertTrue(button.accessibilityFocusedUIElement as AnyObject === button.face)
     }
 
     func testTheRowFollowsAChangeOfListOrFilterOnItsOwn() throws {

@@ -71,22 +71,26 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
         capture.click()
 
+        // The toolbar's items stay put; what the selection allows is enabled.
         let saveAsSnippet = library.buttons["SaveHistoryAsSnippet"]
         XCTAssertTrue(saveAsSnippet.waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertFalse(library.buttons["CopyLibraryItem"].exists)
+        XCTAssertTrue(library.buttons["CopyLibraryItem"].exists)
+        waitUntil(saveAsSnippet, isEnabled: true)
         saveAsSnippet.click()
 
-        let editableCopy = library.buttons["CopyLibraryItem"]
-        XCTAssertTrue(editableCopy.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(saveAsSnippet.waitForNonExistence(timeout: 5))
-        let undoSave = library.buttons["LibraryUndoNewSave"]
+        // Saved: the clip's item is a snippet now, and the save is undone from the Edit menu.
+        waitUntil(saveAsSnippet, isEnabled: false)
+        XCTAssertTrue(app.staticTexts["Saved to Snippets"].firstMatch.waitForExistence(timeout: 5),
+                      app.debugDescription)
+        app.menuBars.menuBarItems["Edit"].click()
+        let undoSave = app.menuItems["Undo Save as Snippet"]
         XCTAssertTrue(undoSave.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(undoSave.isEnabled, app.debugDescription)
         undoSave.click()
-        XCTAssertTrue(saveAsSnippet.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(editableCopy.waitForNonExistence(timeout: 5))
+        waitUntil(saveAsSnippet, isEnabled: true)
 
         saveAsSnippet.click()
-        XCTAssertTrue(editableCopy.waitForExistence(timeout: 8), app.debugDescription)
+        waitUntil(saveAsSnippet, isEnabled: false)
         let titleEditor = library.descendants(matching: .any)["SnippetTitleEditor"]
         let revisedTitle = "Saved synthetic alpha"
         replaceText(in: titleEditor, with: revisedTitle)
@@ -95,6 +99,41 @@ final class LibraryUITests: XCTestCase {
         openAllSnippets(in: app)
         searchLibrary(for: revisedTitle, in: app)
         XCTAssertTrue(app.staticTexts[revisedTitle].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+    }
+
+    func testFavoriteOnAClipSavesItFirst() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        _ = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+        capture.click()
+
+        // ⌘D on a clip saves it as a snippet that is a favorite, and says both.
+        app.typeKey("d", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Saved as Snippet · Added to Favorites"].firstMatch.waitForExistence(timeout: 8),
+                      app.debugDescription)
+        sidebarRow("Favorites", in: app).click()
+        waitForList("Favorites", in: app)
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+    }
+
+    func testCommandDeleteMovesTheSelectionToRecentlyDeleted() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        _ = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+        capture.click()
+
+        // The list has the keyboard, so ⌘⌫ moves the clip, not text.
+        app.typeKey(.delete, modifierFlags: .command)
+        XCTAssertTrue(capture.waitForNonExistence(timeout: 8), app.debugDescription)
+        sidebarRow("Recently Deleted", in: app).click()
+        waitForList("Recently Deleted", in: app)
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
     }
 
     func testRecentClipCanMoveToRecentlyDeletedAndBeRestored() {
@@ -106,7 +145,7 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
 
         capture.rightClick()
-        let remove = app.menuItems["Move to Recently Deleted"]
+        let remove = contextMenuItem("Move to Recently Deleted", in: app)
         XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
         remove.click()
 
@@ -141,13 +180,45 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(localFindField.waitForNonExistence(timeout: 5))
 
         app.typeKey("f", modifierFlags: [.command, .shift])
-        let librarySearch = library.descendants(matching: .any)["LibrarySearchField"]
+        let librarySearch = librarySearchField(in: library)
         XCTAssertTrue(librarySearch.waitForExistence(timeout: 5), app.debugDescription)
         let focused = NSPredicate(format: "hasKeyboardFocus == true")
         expectation(for: focused, evaluatedWith: librarySearch)
         waitForExpectations(timeout: 5)
         librarySearch.typeText("a distinct library query")
         XCTAssertEqual(librarySearch.value as? String, "a distinct library query")
+    }
+
+    func testSearchWorksInRecentlyDeleted() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        let library = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+        capture.rightClick()
+        let remove = contextMenuItem("Move to Recently Deleted", in: app)
+        XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
+        remove.click()
+        let deletedScope = sidebarRow("Recently Deleted", in: app)
+        XCTAssertTrue(deletedScope.waitForExistence(timeout: 8), app.debugDescription)
+        deletedScope.click()
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+
+        // The same search field looks through deleted titles, and says so.
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        let search = librarySearchField(in: library)
+        XCTAssertTrue(search.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(search.placeholderValue, "Search Recently Deleted by Title")
+        replaceText(in: search, with: "alpha")
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+
+        // All Content never includes deleted items: no scope bar, and an empty result offers no wider search.
+        XCTAssertFalse(app.descendants(matching: .any)["All Content"].exists, app.debugDescription)
+        replaceText(in: search, with: "no deleted title like this")
+        let empty = app.descendants(matching: .any)["RecentlyDeletedEmptyState"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.buttons["Search All Content"].exists, app.debugDescription)
     }
 
     func testClosingLibraryFlushesTheCurrentSnippetBeforeReopening() {
@@ -264,6 +335,25 @@ final class LibraryUITests: XCTestCase {
         section.click()
     }
 
+    /// A context menu's item. The Item menu in the menu bar repeats some of their titles; its items carry identifiers
+    /// starting with "ItemMenu-".
+    private func contextMenuItem(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        app.menuItems.matching(NSPredicate(format: "title == %@ AND NOT (identifier BEGINSWITH %@)",
+                                           title, "ItemMenu-")).firstMatch
+    }
+
+    /// The window's title ends with the list's name once the list shows.
+    private func waitForList(_ name: String, in app: XCUIApplication) {
+        expectation(for: NSPredicate(format: "title ENDSWITH %@", name),
+                    evaluatedWith: app.windows["KeeptideLibraryWindow"])
+        waitForExpectations(timeout: 8)
+    }
+
+    private func waitUntil(_ element: XCUIElement, isEnabled: Bool) {
+        expectation(for: NSPredicate(format: "enabled == %@", NSNumber(value: isEnabled)), evaluatedWith: element)
+        waitForExpectations(timeout: 8)
+    }
+
     /// A list in the sidebar. The window's subtitle repeats the chosen list's name, so the sidebar is named.
     private func sidebarRow(_ name: String, in app: XCUIApplication) -> XCUIElement {
         app.windows["KeeptideLibraryWindow"].descendants(matching: .outline)["LibrarySidebar"].staticTexts
@@ -273,9 +363,14 @@ final class LibraryUITests: XCTestCase {
 
     private func searchLibrary(for query: String, in app: XCUIApplication) {
         app.typeKey("f", modifierFlags: [.command, .shift])
-        let field = app.descendants(matching: .any)["LibrarySearchField"]
+        let field = librarySearchField(in: app.windows["KeeptideLibraryWindow"])
         XCTAssertTrue(field.waitForExistence(timeout: 5), app.debugDescription)
         replaceText(in: field, with: query)
+    }
+
+    /// The system search field in the toolbar. Its prompt names the list, unlike the editor's find bar ("Find").
+    private func librarySearchField(in library: XCUIElement) -> XCUIElement {
+        library.searchFields.matching(NSPredicate(format: "placeholderValue BEGINSWITH %@", "Search")).firstMatch
     }
 
     private func replaceText(in element: XCUIElement, with value: String) {
