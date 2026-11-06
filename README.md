@@ -138,7 +138,7 @@ show the selected clip, or its snippet, there.
   backup you can import.
 
 <p align="center">
-  <img src="docs/images/library.jpg" width="900" alt="The Keeptide library: a sidebar with Recent Clips, Favorites, All Snippets, Uncategorized and Recently Deleted, a list of recent clips, and a preview of the selected landscape image with Copy and Save as Snippet buttons">
+  <img src="docs/images/library.jpg" width="900" alt="The Keeptide library: a sidebar with Recent Clips, All Snippets, Favorites, Collections and Recently Deleted; a list of recent clips, each with the time it was copied and the app it came from; and the selected landscape image under its title and one line of details, with Copy, Save as Snippet, Favorite, Collection and Info in the toolbar">
 </p>
 
 ### Settings

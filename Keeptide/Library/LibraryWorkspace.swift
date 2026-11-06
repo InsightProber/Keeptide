@@ -142,6 +142,10 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     var sourceApp: String? = nil
     /// The memo's collection; nil for an unfiled memo and for every clip.
     var collectionID: CollectionID? = nil
+    /// A memo's note; empty for none and for every clip.
+    var note = ""
+    /// When the row's facet was last copied or pasted from Keeptide; nil if never.
+    var lastUsedAt: Date? = nil
 
     /// One row per item, each where the item first appears. An item whose clip and edited snippet both match
     /// stands as its snippet: the rows are selected and opened by item.
@@ -236,7 +240,9 @@ final class LibraryWorkspace {
     @ObservationIgnored private var navigationGeneration: UInt64 = 0
     @ObservationIgnored private var undoSave: UndoSave?
     @ObservationIgnored private var isClosed = false
-    @ObservationIgnored private var refreshedRevisionByDraft: [UUID: UInt64] = [:]
+    /// The refresh after each draft's last saved revision, under way or done. A second caller for the same revision
+    /// waits for it rather than starting another.
+    @ObservationIgnored private var refreshByDraft: [UUID: (revision: UInt64, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private var queryTask: Task<Void, Never>?
     @ObservationIgnored private var collectionUndo: CollectionUndoToken?
     @ObservationIgnored private var isChangingCollection = false
@@ -1349,18 +1355,27 @@ final class LibraryWorkspace {
         recoveredDrafts.removeAll { $0.id == draftID }
     }
 
+    /// Brings the list up to date with a saved revision, once per revision. The coordinator's saved event and `flush()`
+    /// both ask for it; whichever asks second waits for the refresh under way, so the list is current when either
+    /// returns, rather than right after the first has only started.
     private func refreshAfterCommit(draftID: UUID, revision: UInt64) async {
-        guard refreshedRevisionByDraft[draftID] != revision else { return }
-        refreshedRevisionByDraft[draftID] = revision
-        do {
-            try await refreshSearch()
-            await reload(refreshIndex: false)
-        } catch {
-            if refreshedRevisionByDraft[draftID] == revision {
-                refreshedRevisionByDraft.removeValue(forKey: draftID)
-            }
-            message = "Saved. Search results are still updating."
+        if let refresh = refreshByDraft[draftID], refresh.revision == revision {
+            await refresh.task.value
+            return
         }
+        let task = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await refreshSearch()
+                await reload(refreshIndex: false)
+            } catch {
+                // A failed refresh may be asked for again.
+                if refreshByDraft[draftID]?.revision == revision { refreshByDraft.removeValue(forKey: draftID) }
+                message = "Saved. Search results are still updating."
+            }
+        }
+        refreshByDraft[draftID] = (revision, task)
+        await task.value
     }
 
     private func isBlankNew(_ editor: MemoEditorSession) -> Bool {
@@ -1374,7 +1389,8 @@ final class LibraryWorkspace {
             id: result.ref.itemID, ref: result.ref, title: result.title,
             snippet: result.snippet?.text, lastCopiedAt: result.lastCopiedAt,
             kind: result.kind, isMemo: result.ref.facet == .memo || result.savedAsMemo,
-            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionID
+            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionID,
+            note: result.note, lastUsedAt: result.lastUsedAt
         )
     }
 

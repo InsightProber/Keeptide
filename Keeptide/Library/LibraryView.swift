@@ -45,6 +45,9 @@ struct LibraryView: View {
     /// A snippet or clip to select once its list shows: Show Snippet, Show in Recent Clips and quick access's Show in
     /// Library switch lists first.
     @State private var pendingReveal: ContentRef?
+    /// The deleted facet selected in Recently Deleted: one at a time, and exactly that facet.
+    @State private var selectedDeleted: DeletedFacetIdentity?
+    @State private var pendingPermanentDeletion: TrashFacetSnapshot?
     @State private var collectionEditorMode: CollectionEditorMode?
     @State private var collectionPendingDeletion: CollectionSnapshot?
     @State private var sidebarPreference: LibrarySidebarPreference = .automatic
@@ -69,7 +72,7 @@ struct LibraryView: View {
             } content: {
                 // The system draws the columns' backgrounds, the sidebar's glass and the scroll edges under the toolbar.
                 contentColumn
-                    .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
+                    .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 420)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .toolbar { contentToolbar }
             } detail: {
@@ -137,6 +140,23 @@ struct LibraryView: View {
         } message: { _ in
             Text("Snippets in it will become unfiled. Nothing is deleted.")
         }
+        .confirmationDialog(
+            pendingPermanentDeletion.map(RecentlyDeletedPresentation.permanentConfirmationTitle)
+                ?? "Permanently Delete Item?",
+            isPresented: Binding(
+                get: { pendingPermanentDeletion != nil },
+                set: { if !$0 { pendingPermanentDeletion = nil } }
+            ),
+            presenting: pendingPermanentDeletion
+        ) { row in
+            Button("Delete Permanently", role: .destructive) {
+                pendingPermanentDeletion = nil
+                Task { _ = await session.maintenance?.permanentlyDelete(row.identity) }
+            }
+            Button("Cancel", role: .cancel) { pendingPermanentDeletion = nil }
+        } message: { row in
+            Text(RecentlyDeletedPresentation.permanentConfirmationMessage(for: row))
+        }
     }
 
     private var selectionLibrary: some View {
@@ -149,6 +169,7 @@ struct LibraryView: View {
             }
             guard previous != nil else { return }
             selectedEntryIDs.removeAll()
+            selectedDeleted = nil
             updateExportContext()
             session.libraryWorkspace?.updateScope(scope)
             revealPending()
@@ -245,6 +266,12 @@ struct LibraryView: View {
             moveToRecentlyDeleted(selectedEntries(workspace), workspace: workspace)
         }
         .onChange(of: commands.inspectorToggleRequest) { _, _ in inspectorPresented.toggle() }
+        .onChange(of: commands.recoverRequest) { _, _ in
+            if let row = selectedDeletedRow { recover(row) }
+        }
+        .onChange(of: commands.permanentDeleteRequest) { _, _ in
+            if let row = selectedDeletedRow { pendingPermanentDeletion = row }
+        }
     }
 
     var body: some View {
@@ -435,6 +462,14 @@ struct LibraryView: View {
     private var contentColumn: some View {
         VStack(spacing: 0) {
             if selectedScope != .recentlyDeleted, let notice = session.captureNotice { captureNoticeLine(notice) }
+            if let message = session.maintenance?.message {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(.regularMaterial)
+                    .accessibilityIdentifier("RecentlyDeletedMessage")
+            }
             scopeColumn
         }
     }
@@ -443,7 +478,12 @@ struct LibraryView: View {
     private var scopeColumn: some View {
         if selectedScope == .recentlyDeleted {
             if let maintenance = session.maintenance {
-                RecentlyDeletedView(maintenance: maintenance, query: session.libraryWorkspace?.query ?? "")
+                RecentlyDeletedView(
+                    maintenance: maintenance, query: session.libraryWorkspace?.query ?? "",
+                    selection: $selectedDeleted,
+                    onRecover: { recover($0) },
+                    onDeletePermanently: { pendingPermanentDeletion = $0 }
+                )
             } else {
                 ContentUnavailableView {
                     Label("Recently Deleted Unavailable", systemImage: "exclamationmark.triangle")
@@ -485,8 +525,12 @@ struct LibraryView: View {
     @ViewBuilder
     private var detailColumn: some View {
         if selectedScope == .recentlyDeleted {
-            ContentUnavailableView { Text("No Item Selected") }
-                .accessibilityIdentifier("RecentlyDeletedDetail")
+            if let row = selectedDeletedRow {
+                deletedItemCard(row)
+            } else {
+                ContentUnavailableView { Text("No Item Selected") }
+                    .accessibilityIdentifier("RecentlyDeletedDetail")
+            }
         } else if let workspace = session.libraryWorkspace, selectedEntryIDs.count > 1 {
             ContentUnavailableView { Text(multipleSelectionTitle(workspace)) }
                 .accessibilityIdentifier("LibraryMultipleSelection")
@@ -540,6 +584,20 @@ struct LibraryView: View {
         if let workspace = session.libraryWorkspace, selectedScope != .recentlyDeleted {
             LibraryInspector(workspace: workspace, selectionCount: selectedEntryIDs.count,
                              applicationNames: applicationNames, onShow: { show($0) })
+        } else if let row = selectedDeletedRow {
+            Form {
+                Section("Deleted") {
+                    LabeledContent("Kind", value: RecentlyDeletedPresentation.facetName(row.identity.facet))
+                    LabeledContent("Deleted", value: row.deletedAt.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Removed On",
+                                   value: row.purgeAfter.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Recover", value: row.canRestore
+                        ? "Available"
+                        : "Unavailable — \(RecentlyDeletedPresentation.restoreUnavailableReason(for: row))")
+                }
+            }
+            .formStyle(.grouped)
+            .accessibilityIdentifier("LibraryInspector")
         } else {
             Form {
                 Text("No Item Selected").foregroundStyle(.secondary)
@@ -547,6 +605,41 @@ struct LibraryView: View {
             .formStyle(.grouped)
             .accessibilityIdentifier("LibraryInspector")
         }
+    }
+
+    /// The selected deleted facet, while it is still in Recently Deleted.
+    private var selectedDeletedRow: TrashFacetSnapshot? {
+        guard selectedScope == .recentlyDeleted, let selectedDeleted else { return nil }
+        return session.maintenance?.trash.first { $0.identity == selectedDeleted }
+    }
+
+    private func recover(_ row: TrashFacetSnapshot) {
+        guard row.canRestore, let maintenance = session.maintenance else { return }
+        Task { _ = await maintenance.restore(row.identity) }
+    }
+
+    /// A deleted item is not previewed: its title, what it was, and when it goes, with what can be done.
+    private func deletedItemCard(_ row: TrashFacetSnapshot) -> some View {
+        ContentUnavailableView {
+            Label(row.title.isEmpty ? "Untitled" : row.title,
+                  systemImage: RecentlyDeletedPresentation.symbolName(row.identity.facet))
+        } description: {
+            VStack(spacing: 4) {
+                Text(RecentlyDeletedPresentation.facetName(row.identity.facet))
+                Text("Deleted \(row.deletedAt.formatted(date: .abbreviated, time: .shortened))")
+                Text("Removed on \(row.purgeAfter.formatted(date: .abbreviated, time: .shortened))")
+                if !row.canRestore {
+                    Text("Recover: Unavailable — \(RecentlyDeletedPresentation.restoreUnavailableReason(for: row))")
+                        .accessibilityIdentifier("RestoreUnavailableReason")
+                }
+            }
+        } actions: {
+            Button("Recover") { recover(row) }
+                .disabled(!row.canRestore || session.maintenance?.isWorking == true)
+            Button("Delete Permanently…", role: .destructive) { pendingPermanentDeletion = row }
+                .disabled(session.maintenance?.isWorking == true)
+        }
+        .accessibilityIdentifier("RecentlyDeletedDetail")
     }
 
     /// "3 Clips Selected", "2 Snippets Selected", or "4 Items Selected" for clips and snippets found together.
@@ -582,6 +675,47 @@ struct LibraryView: View {
     private var detailToolbar: some ToolbarContent {
         let state = selectionState
         ToolbarSpacer(.flexible)
+        if selectedScope == .recentlyDeleted {
+            deletedToolbar
+        } else {
+            itemToolbar(state)
+        }
+        ToolbarSpacer(.fixed)
+        ToolbarItem {
+            Button { inspectorPresented.toggle() } label: {
+                Label("Info", systemImage: "info.circle")
+            }
+            .help(inspectorPresented ? "Hide Inspector" : "Show Inspector")
+            .accessibilityIdentifier("ToggleInspector")
+        }
+        DefaultToolbarItem(kind: .search)
+    }
+
+    /// Recently Deleted's group: the same place, its own two actions on the selected facet.
+    @ToolbarContentBuilder
+    private var deletedToolbar: some ToolbarContent {
+        let row = selectedDeletedRow
+        let isWorking = session.maintenance?.isWorking == true
+        ToolbarItemGroup {
+            Button { if let row { recover(row) } } label: {
+                Label("Recover", systemImage: "arrow.uturn.backward.circle")
+            }
+            .help(row.map { $0.canRestore ? "Recover" : RecentlyDeletedPresentation.restoreUnavailableReason(for: $0) }
+                ?? "Recover")
+            .accessibilityIdentifier("RestoreDeletedItem")
+            .disabled(row?.canRestore != true || isWorking)
+
+            Button { pendingPermanentDeletion = row } label: {
+                Label("Delete Permanently…", systemImage: "trash.slash")
+            }
+            .help("Delete Permanently…")
+            .accessibilityIdentifier("PermanentlyDeleteItem")
+            .disabled(row == nil || isWorking)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private func itemToolbar(_ state: LibrarySelectionState) -> some ToolbarContent {
         ToolbarItemGroup {
             Button { copySelection() } label: {
                 Label("Copy", systemImage: "doc.on.doc")
@@ -613,15 +747,6 @@ struct LibraryView: View {
             .accessibilityIdentifier("CollectionMenu")
             .disabled(!state.canFile)
         }
-        ToolbarSpacer(.fixed)
-        ToolbarItem {
-            Button { inspectorPresented.toggle() } label: {
-                Label("Info", systemImage: "info.circle")
-            }
-            .help(inspectorPresented ? "Hide Inspector" : "Show Inspector")
-            .accessibilityIdentifier("ToggleInspector")
-        }
-        DefaultToolbarItem(kind: .search)
     }
 
     /// Unfiled, the collections and New Collection…, the place of the selection checked. Choosing files it there;
@@ -813,7 +938,8 @@ struct LibraryView: View {
                 current: state.currentCollections
             ),
             inspectorIsPresented: inspectorPresented,
-            isRecentlyDeleted: selectedScope == .recentlyDeleted
+            isRecentlyDeleted: selectedScope == .recentlyDeleted,
+            deleted: selectedDeletedRow
         )
     }
 
@@ -926,7 +1052,12 @@ struct LibraryView: View {
                 emptyList(workspace, recentStyle: recentStyle)
             } else {
                 List(workspace.entries, selection: entrySelection(workspace)) { entry in
-                    LibraryEntryRow(entry: entry)
+                    LibraryEntryRow(
+                        entry: entry,
+                        sourceAppName: entry.sourceApp.flatMap { applicationNames.name(for: $0) },
+                        collection: showsCollections(workspace)
+                            ? workspace.collections.first { $0.value.id == entry.collectionID }?.value : nil
+                    )
                         .tag(entry.id)
                         .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
                         .contextMenu {
@@ -942,6 +1073,13 @@ struct LibraryView: View {
                 .accessibilityIdentifier("SnippetList")
             }
         }
+    }
+
+    /// All Snippets, Favorites and results from all content name each snippet's collection; a collection's own
+    /// list and Unfiled would only repeat it.
+    private func showsCollections(_ workspace: LibraryWorkspace) -> Bool {
+        if !workspace.query.isEmpty, searchScope == .allContent { return true }
+        return selectedScope == .allSnippets || selectedScope == .favorites
     }
 
     /// What an empty list holds and how things get there; a search that finds nothing says so in the system's words.
@@ -1095,42 +1233,67 @@ struct LibraryView: View {
     }
 }
 
+/// One row of a list: what the item is, its title, an excerpt, and a line with the time the list is ordered by,
+/// where it came from and its collection. A clip saved as a snippet carries a bookmark; a favorite snippet a star.
 private struct LibraryEntryRow: View {
     let entry: LibraryEntry
+    let sourceAppName: String?
+    /// The snippet's collection, where the list shows it.
+    let collection: CollectionValue?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: symbolName)
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
-            VStack(alignment: .leading, spacing: 4) {
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(entry.title.isEmpty ? "Untitled" : entry.title)
                     .font(.body.weight(.medium))
-                    .lineLimit(2)
-                if let snippet = entry.snippet, !snippet.isEmpty {
-                    Text(snippet)
+                    .lineLimit(1)
+                if let excerpt = LibraryRowText.excerpt(for: entry) {
+                    Text(excerpt)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
-                } else if entry.kind == .image {
-                    Text("Image content")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
                 }
-                Text(entry.lastCopiedAt, style: .relative)
-                    .font(.caption)
+                Text(metadata)
+                    .font(.callout)
                     .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .help(collection?.name ?? "")
             }
             Spacer(minLength: 4)
-            if entry.isFavorite {
-                Image(systemName: "star.fill")
-                    .foregroundStyle(.yellow)
-                    .help("Favorite")
-                    .accessibilityLabel("Favorite")
-            }
+            marker
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
         .accessibilityIdentifier("LibraryEntryRow")
+    }
+
+    private var metadata: AttributedString {
+        var line = AttributedString(LibraryRowText.time(for: entry))
+        if let sourceAppName { line += AttributedString(" · \(sourceAppName)") }
+        if let collection {
+            var dot = AttributedString(" · ● ")
+            dot.foregroundColor = Color.collection(collection.color)
+            line += dot + AttributedString(collection.name)
+        }
+        return line
+    }
+
+    @ViewBuilder
+    private var marker: some View {
+        if entry.ref.facet == .history, entry.isMemo {
+            Image(systemName: "bookmark.fill")
+                .foregroundStyle(.secondary)
+                .help("Saved as Snippet")
+                .accessibilityLabel("Saved as Snippet")
+        } else if entry.ref.facet == .memo, entry.isFavorite {
+            Image(systemName: "star.fill")
+                .foregroundStyle(.yellow)
+                .help("Favorite")
+                .accessibilityLabel("Favorite")
+        }
     }
 
     private var symbolName: String {
@@ -1141,6 +1304,35 @@ private struct LibraryEntryRow: View {
         case .file: "doc"
         case .other: "square.dashed"
         }
+    }
+}
+
+/// What a row says under its title, apart from the drawing so it can be tested.
+enum LibraryRowText {
+    /// The start of the text, or a snippet's note where the text only repeats the title.
+    static func excerpt(for entry: LibraryEntry) -> String? {
+        let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = entry.snippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !text.isEmpty, text != title { return text }
+        let note = entry.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !note.isEmpty { return note }
+        if text.isEmpty, entry.kind == .image { return "Image content" }
+        return nil
+    }
+
+    /// The time the list is ordered by. A clip: when it was last copied. A snippet: when it was last used from
+    /// Keeptide; one never used, when it was written, or for a saved clip, when the clip was last copied.
+    static func time(for entry: LibraryEntry, now: Date = Date(), locale: Locale = .current) -> String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .full
+        formatter.locale = locale
+        func ago(_ date: Date) -> String { formatter.localizedString(for: min(date, now), relativeTo: now) }
+        if entry.ref.facet == .memo {
+            if let used = entry.lastUsedAt { return "Used \(ago(used))" }
+            if entry.sourceApp == nil { return "Created \(ago(entry.lastCopiedAt))" }
+        }
+        return "Copied \(ago(entry.lastCopiedAt))"
     }
 }
 

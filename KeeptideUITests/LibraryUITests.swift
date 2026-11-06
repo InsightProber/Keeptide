@@ -154,13 +154,61 @@ final class LibraryUITests: XCTestCase {
         deletedScope.click()
         let deleted = app.staticTexts[title].firstMatch
         XCTAssertTrue(deleted.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(app.staticTexts["Clipboard History"].firstMatch.exists)
+        XCTAssertTrue(deletedLine(endingWith: "Clip", in: app).exists, app.debugDescription)
 
+        // Recover acts on the selected row, from the toolbar.
+        deleted.click()
         let restore = app.buttons["RestoreDeletedItem"].firstMatch
         XCTAssertTrue(restore.waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertTrue(restore.isEnabled)
+        waitUntil(restore, isEnabled: true)
         restore.click()
         XCTAssertTrue(deleted.waitForNonExistence(timeout: 8), app.debugDescription)
+    }
+
+    func testRecoverRestoresOnlyTheSelectedFacet() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        let library = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let clip = app.staticTexts[title].firstMatch
+        XCTAssertTrue(clip.waitForExistence(timeout: 8), app.debugDescription)
+        clip.click()
+
+        // One item, two deleted facets: its snippet and its clip.
+        let save = library.buttons["SaveHistoryAsSnippet"]
+        waitUntil(save, isEnabled: true)
+        save.click()
+        waitUntil(save, isEnabled: false)
+        sidebarRow("All Snippets", in: app).click()
+        waitForList("All Snippets", in: app)
+        let snippet = app.staticTexts[title].firstMatch
+        XCTAssertTrue(snippet.waitForExistence(timeout: 8), app.debugDescription)
+        snippet.click()
+        app.typeKey(.delete, modifierFlags: .command)
+        XCTAssertTrue(snippet.waitForNonExistence(timeout: 8), app.debugDescription)
+        sidebarRow("Recent Clips", in: app).click()
+        waitForList("Recent Clips", in: app)
+        XCTAssertTrue(clip.waitForExistence(timeout: 8), app.debugDescription)
+        clip.click()
+        app.typeKey(.delete, modifierFlags: .command)
+        XCTAssertTrue(clip.waitForNonExistence(timeout: 8), app.debugDescription)
+
+        // Each has its own row; Recover brings back only the one selected.
+        sidebarRow("Recently Deleted", in: app).click()
+        waitForList("Recently Deleted", in: app)
+        let snippetRow = deletedLine(endingWith: "Snippet", in: app)
+        let clipRow = deletedLine(endingWith: "Clip", in: app)
+        XCTAssertTrue(snippetRow.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(clipRow.waitForExistence(timeout: 8), app.debugDescription)
+        snippetRow.click()
+        let recover = library.buttons["RestoreDeletedItem"]
+        waitUntil(recover, isEnabled: true)
+        recover.click()
+        XCTAssertTrue(snippetRow.waitForNonExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(clipRow.exists, app.debugDescription)
+        sidebarRow("All Snippets", in: app).click()
+        waitForList("All Snippets", in: app)
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
     }
 
     func testFindInNoteAndLibrarySearchUseDistinctShortcuts() {
@@ -333,6 +381,12 @@ final class LibraryUITests: XCTestCase {
         let section = sidebarRow("All Snippets", in: app)
         XCTAssertTrue(section.waitForExistence(timeout: 5), app.debugDescription)
         section.click()
+    }
+
+    /// A Recently Deleted row's line under its title, "Deleted … · Clip" or "Deleted … · Snippet".
+    private func deletedLine(endingWith facet: String, in app: XCUIApplication) -> XCUIElement {
+        app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@ AND value CONTAINS %@",
+                                             "Deleted ", " · \(facet)")).firstMatch
     }
 
     /// A context menu's item. The Item menu in the menu bar repeats some of their titles; its items carry identifiers
