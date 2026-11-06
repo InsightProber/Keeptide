@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a Chinese note, an email reply and rich text, with the newest card selected">
+  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a meeting note, an email reply and rich text, with the newest card selected">
 </p>
 
 Keeptide remembers what you copy, such as commands, code, links, images and
