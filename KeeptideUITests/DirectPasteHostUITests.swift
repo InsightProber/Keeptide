@@ -17,8 +17,8 @@ import XCTest
 @MainActor
 final class DirectPasteHostUITests: XCTestCase {
     private static let hostBundleIdentifier = "io.github.insightprober.Keeptide.SystemTestHost"
-    private static let notAuthorized = "Direct paste is not authorized for this build. "
-        + "Grant Keeptide in System Settings › Privacy & Security › Accessibility, then run again."
+    private static let notAuthorized = "Direct paste is not authorized for this build. Grant Keeptide in System "
+        + "Settings › Privacy & Security › Accessibility (Device Control and Data Access on macOS 27), then run again."
     private static let authorized = "Direct paste is authorized on this Mac; this test covers builds without it."
     /// Whether this build may paste directly, as the first test to open the panel found it; nil until one has.
     private static var directPasteAuthorized: Bool?
