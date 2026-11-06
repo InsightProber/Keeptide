@@ -200,6 +200,20 @@ final class SearchServiceTests: XCTestCase {
 
         XCTAssertEqual(byUse.results.map(\.ref), [oldest.ref, newest.ref, middle.ref])
         XCTAssertEqual(byCopy.results.map(\.ref), [newest.ref, middle.ref, oldest.ref])
+        // Each result says when it was last used, so a list can show the time it is ordered by.
+        XCTAssertEqual(byUse.results.map(\.lastUsedAt), [
+            Date(timeIntervalSince1970: 5_000), nil, Date(timeIntervalSince1970: 1_500),
+        ])
+    }
+
+    func testResultsCarryTheirNote() async throws {
+        let noted = SearchTestSupport.document(facet: .memo, body: "noted body", note: "Run before deploys",
+                                               memoID: UUID())
+        let service = try makeService([noted])
+
+        let page = try await lastPage(service, request("", scope: .memo))
+
+        XCTAssertEqual(page.results.map(\.note), ["Run before deploys"])
     }
 
     func testResultsCarryTheirCollection() async throws {

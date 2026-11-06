@@ -202,6 +202,48 @@ final class LibraryLayoutTests: XCTestCase {
                        [["Recent Clips"], ["All Snippets", "Favorites"], ["Recently Deleted"]])
     }
 
+    func testRowsSayTheTimeTheirListIsOrderedBy() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let english = Locale(identifier: "en_US")
+        func entry(_ facet: ContentFacet, sourceApp: String?, used: Date?) -> LibraryEntry {
+            let itemID = ItemID()
+            return LibraryEntry(
+                id: itemID,
+                ref: ContentRef(itemID: itemID, facet: facet, version: ContentVersion(),
+                                digest: Data(repeating: 1, count: 32)),
+                title: "Synthetic", snippet: nil, lastCopiedAt: now.addingTimeInterval(-7_200), kind: .text,
+                isMemo: facet == .memo, sourceApp: sourceApp, lastUsedAt: used
+            )
+        }
+        func time(_ entry: LibraryEntry) -> String { LibraryRowText.time(for: entry, now: now, locale: english) }
+
+        // Clips are listed by their last copy; snippets by their last use, or else when they were made.
+        XCTAssertEqual(time(entry(.history, sourceApp: "test.source", used: nil)), "Copied 2 hours ago")
+        XCTAssertEqual(time(entry(.memo, sourceApp: nil, used: now.addingTimeInterval(-60))), "Used 1 minute ago")
+        XCTAssertEqual(time(entry(.memo, sourceApp: nil, used: nil)), "Created 2 hours ago")
+        // A snippet saved from a clip, never used, still sorts by the clip's last copy.
+        XCTAssertEqual(time(entry(.memo, sourceApp: "test.source", used: nil)), "Copied 2 hours ago")
+    }
+
+    func testRowExcerptsSkipARepeatedTitleAndFallBackToTheNote() {
+        func entry(title: String, snippet: String?, note: String = "", kind: ContentKind = .text) -> LibraryEntry {
+            let itemID = ItemID()
+            return LibraryEntry(
+                id: itemID,
+                ref: ContentRef(itemID: itemID, facet: .memo, version: ContentVersion(),
+                                digest: Data(repeating: 1, count: 32)),
+                title: title, snippet: snippet, lastCopiedAt: Date(), kind: kind, isMemo: true, note: note
+            )
+        }
+
+        XCTAssertEqual(LibraryRowText.excerpt(for: entry(title: "Deploy", snippet: "make deploy")), "make deploy")
+        XCTAssertNil(LibraryRowText.excerpt(for: entry(title: "make deploy", snippet: "make deploy ")))
+        XCTAssertEqual(LibraryRowText.excerpt(for: entry(title: "make deploy", snippet: "make deploy",
+                                                         note: "Run before release")), "Run before release")
+        XCTAssertEqual(LibraryRowText.excerpt(for: entry(title: "Copied content", snippet: nil, kind: .image)),
+                       "Image content")
+    }
+
     func testTheWindowSubtitleElidesALongListNameInTheMiddle() {
         XCTAssertEqual(LibrarySidebar.subtitle("Immediate Scope"), "Immediate Scope")
         let long = LibrarySidebar.subtitle("Group 20 — 很长的中文名称用于验证完整筛选")

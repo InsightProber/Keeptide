@@ -72,6 +72,10 @@ struct SearchResult: Equatable, Sendable {
     let collectionID: CollectionID?
     let isPartiallyIndexed: Bool
     let isTextUnavailable: Bool
+    /// A memo's note as written; empty for none and for every history row.
+    let note: String
+    /// When this facet was last copied or pasted from Keeptide; nil if never.
+    let lastUsedAt: Date?
 }
 
 struct SearchPage: Sendable {
@@ -416,13 +420,14 @@ struct SearchService: Sendable {
         let rows = try reader.rows("""
             SELECT d.id, d.item_id, d.facet, d.version, d.digest, d.saved_as_memo, d.kind, d.source_app,
                    d.last_copied_at, d.title, d.body_partial, d.is_favorite, \(hits.joined(separator: ", ")),
-                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable, d.collection_id
+                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable, d.collection_id,
+                   d.note, (SELECT u.last_used_at FROM usage u WHERE u.item_id = d.item_id AND u.facet = d.facet)
             FROM doc d WHERE d.id IN (\(ids))
             """, builder.bindings)
         var byID: [Int64: SearchResult] = [:]
         let tiers = Dictionary(keys.map { ($0.id, $0.tier) }, uniquingKeysWith: { first, _ in first })
         for row in rows {
-            guard row.count == 21, case .integer(let id) = row[0], let itemID = row[1].uuid,
+            guard row.count == 23, case .integer(let id) = row[0], let itemID = row[1].uuid,
                   case .text(let facetText) = row[2], let facet = ContentFacet(rawValue: facetText),
                   let version = row[3].uuid, case .blob(let digest) = row[4],
                   case .integer(let savedAsMemo) = row[5], case .text(let kindText) = row[6],
@@ -430,7 +435,8 @@ struct SearchService: Sendable {
                   case .text(let title) = row[9], case .integer(let partial) = row[10],
                   case .integer(let favorite) = row[11],
                   case .integer(let windowStart) = row[16], case .text(let window) = row[17],
-                  case .integer(let bodyLength) = row[18], case .integer(let unavailable) = row[19] else {
+                  case .integer(let bodyLength) = row[18], case .integer(let unavailable) = row[19],
+                  case .text(let note) = row[21] else {
                 throw SearchIndexError.corrupt
             }
             let fields: [SearchMatchField] = [.title, .body, .url, .note]
@@ -450,7 +456,9 @@ struct SearchService: Sendable {
                 savedAsMemo: savedAsMemo != 0, isFavorite: favorite != 0,
                 collectionID: row[20].uuid.map(CollectionID.init(rawValue:)),
                 isPartiallyIndexed: partial != 0,
-                isTextUnavailable: unavailable != 0
+                isTextUnavailable: unavailable != 0,
+                note: note,
+                lastUsedAt: row[22].number.map(Date.init(timeIntervalSinceReferenceDate:))
             )
         }
         return keys.compactMap { byID[$0.id] }

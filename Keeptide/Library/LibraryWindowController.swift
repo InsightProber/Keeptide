@@ -106,6 +106,8 @@ final class LibraryWindowController: NSWindowController {
     @objc func showLinkedItem(_ sender: Any?) { commands.requestShowLinked() }
     @objc func moveToRecentlyDeleted(_ sender: Any?) { commands.requestDelete() }
     @objc func toggleInspector(_ sender: Any?) { commands.requestInspectorToggle() }
+    @objc func recoverDeletedItem(_ sender: Any?) { commands.requestRecover() }
+    @objc func deleteDeletedItemPermanently(_ sender: Any?) { commands.requestPermanentDelete() }
 
     @objc func setSnippetKind(_ sender: Any?) {
         guard let tag = (sender as? NSMenuItem)?.tag, Self.snippetKinds.indices.contains(tag) else { return }
@@ -274,6 +276,10 @@ extension LibraryWindowController: NSMenuItemValidation {
             let selection = commands.itemContext.selection
             menuItem.title = selection.linkedTitle
             return selection.linked != nil
+        case #selector(recoverDeletedItem(_:)):
+            return commands.itemContext.deleted?.canRestore == true
+        case #selector(deleteDeletedItemPermanently(_:)):
+            return commands.itemContext.deleted != nil
         case #selector(moveToRecentlyDeleted(_:)):
             // In the editor ⌘⌫ deletes to the start of the line; items move only from the list or the sidebar.
             guard window?.firstResponder is NSTableView else { return false }
@@ -344,6 +350,8 @@ final class LibraryWindowCommands {
     private(set) var showLinkedRequest = 0
     private(set) var deleteRequest = 0
     private(set) var inspectorToggleRequest = 0
+    private(set) var recoverRequest = 0
+    private(set) var permanentDeleteRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
     /// Whether the search is open, as the view last reported it.
@@ -415,6 +423,9 @@ final class LibraryWindowCommands {
     func requestShowLinked() { showLinkedRequest &+= 1 }
     func requestDelete() { deleteRequest &+= 1 }
     func requestInspectorToggle() { inspectorToggleRequest &+= 1 }
+    func requestRecover() { recoverRequest &+= 1 }
+    /// Delete Permanently… asks first; the view holds the question.
+    func requestPermanentDelete() { permanentDeleteRequest &+= 1 }
 
     /// A place chosen from the collection menu ⇧⌘M opens: a collection, Unfiled (nil), or a new collection.
     func requestCollection(_ collectionID: CollectionID?, creating: Bool = false) {
@@ -445,6 +456,8 @@ struct LibraryItemContext: Equatable {
     var collectionEntries: [CollectionMenuEntry] = []
     var inspectorIsPresented = false
     var isRecentlyDeleted = false
+    /// The deleted facet selected in Recently Deleted.
+    var deleted: TrashFacetSnapshot?
 }
 
 struct LibraryCollectionRequest: Equatable {

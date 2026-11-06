@@ -117,6 +117,10 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     var sourceApp: String? = nil
     /// The memo's collection; nil for an unfiled memo and for every clip.
     var collectionID: CollectionID? = nil
+    /// A memo's note; empty for none and for every clip.
+    var note = ""
+    /// When the row's facet was last copied or pasted from Keeptide; nil if never.
+    var lastUsedAt: Date? = nil
 
     /// One row per item, each where the item first appears. An item whose clip and edited snippet both match
     /// stands as its snippet: the rows are selected and opened by item.
@@ -1280,7 +1284,8 @@ final class LibraryWorkspace {
             id: result.ref.itemID, ref: result.ref, title: result.title,
             snippet: result.snippet?.text, lastCopiedAt: result.lastCopiedAt,
             kind: result.kind, isMemo: result.ref.facet == .memo || result.savedAsMemo,
-            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionID
+            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionID,
+            note: result.note, lastUsedAt: result.lastUsedAt
         )
     }
 
