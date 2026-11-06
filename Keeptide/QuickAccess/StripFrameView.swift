@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 /// A small mark after a card's time.
 enum StripMarker: Equatable {
     case savedAsMemo, partiallyIndexed
+    /// A favorite memo.
+    case favorite
 }
 
 /// One piece of the line under a card's kind, in the colour band.
@@ -13,6 +15,8 @@ enum StripHeaderItem: Equatable {
     /// How often a frequent clip was used, in place of its time.
     case uses(String)
     case marker(StripMarker)
+    /// A memo's collection: its colour's name and its name.
+    case collection(name: String, color: String)
     /// How many more items than the shown one the clip holds.
     case extraItems(Int)
 }
@@ -34,6 +38,15 @@ struct StripFrameContent: Equatable {
 
     /// What the colour band names the clip.
     var kind: ContentKind
+    /// Whether the card is a clip's or a memo's.
+    var facet: ContentFacet = .history
+    /// A memo's collection, when the card should name it.
+    var collection: CollectionSummary? = nil
+    /// Whether a memo is a favorite.
+    var isFavorite = false
+
+    /// The colour band's first line: the kind of a clip, or "Snippet" for a memo.
+    var bandName: String { facet == .memo ? "Snippet" : kind.accessibilityName }
     /// How long ago the clip was copied, as the colour band says it.
     var time: String
     /// A frequent clip's "Used N times", shown in the colour band in place of its time; nil otherwise.
@@ -58,20 +71,27 @@ struct StripFrameContent: Equatable {
     /// shape from here and not from the thumbnail.
     var imageAspectRatio: CGFloat?
 
-    /// The colour band's second line, left to right: the time, or how often a frequent clip was used, then the marks,
-    /// and how many more items there are.
+    /// The colour band's second line, left to right: the time, or how often a frequent clip was used, then a memo's
+    /// collection, then the marks, and how many more items there are.
     var headerLine: [StripHeaderItem] {
-        [uses.map(StripHeaderItem.uses) ?? .time(time)] + markers.map(StripHeaderItem.marker)
+        [uses.map(StripHeaderItem.uses) ?? .time(time)]
+            + (collection.map { [.collection(name: $0.name, color: $0.color)] } ?? [])
+            + markers.map(StripHeaderItem.marker)
             + (extraItems > 0 ? [.extraItems(extraItems)] : [])
     }
 
     /// `detail` is nil until the details have arrived, and when they could not be read. A text search
     /// result already has its snippet, so it shows it without them and only its caption waits. `now` is the
-    /// moment the time is told from.
+    /// moment the time is told from. `collections` holds the collections a memo's card may name; a list of one
+    /// collection leaves it out, since every card there is in it.
     static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
-                     now: Date = Date()) -> StripFrameContent {
+                     now: Date = Date(), collections: [CollectionID: CollectionSummary] = [:]) -> StripFrameContent {
+        let isMemo = row.facet == .memo
         var content = StripFrameContent(
-            kind: row.kind, time: QuickAccessRowContent.time(of: row.date, relativeTo: now),
+            kind: row.kind, facet: row.facet,
+            collection: isMemo ? row.collectionID.flatMap { collections[$0] } : nil,
+            isFavorite: isMemo && row.isFavorite,
+            time: QuickAccessRowContent.time(of: row.date, relativeTo: now),
             uses: row.frequentUses.map { ClipInfoFormatter.uses($0) }, sourceApp: row.sourceApp,
             accessibilityTitle: row.displayTitle,
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
@@ -79,6 +99,7 @@ struct StripFrameContent: Equatable {
         )
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
+        if content.isFavorite { content.markers.append(.favorite) }
         if let detail {
             content.show(detail, of: row, cardSize: cardSize)
         } else {
@@ -300,7 +321,7 @@ struct StripFrameView: View {
         return ZStack {
             tint.background.color
             VStack(alignment: .leading, spacing: 1) {
-                Text(content.kind.accessibilityName)
+                Text(content.bandName)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(tint.text.color)
                     .frame(height: 19)
@@ -332,14 +353,26 @@ struct StripFrameView: View {
                 .foregroundStyle(color)
         case .marker(let marker):
             let (symbol, name): (String, String) = switch marker {
-            case .savedAsMemo: ("bookmark.fill", "Saved as Memo")
+            case .savedAsMemo: ("bookmark.fill", "Saved as Snippet")
             case .partiallyIndexed: ("circle.lefthalf.filled", "Partially indexed")
+            case .favorite: ("star.fill", "Favorite")
             }
             Image(systemName: symbol)
                 .font(.system(size: 12))
                 .foregroundStyle(color)
                 .help(name)
                 .accessibilityLabel(name)
+        case .collection(let name, let colorName):
+            HStack(spacing: 3) {
+                Circle()
+                    .fill(Color.collection(colorName))
+                    .frame(width: 8, height: 8)
+                Text(name)
+                    .font(.system(size: 12))
+                    .foregroundStyle(color)
+                    .truncationMode(.middle)
+            }
+            .help(name)
         case .extraItems(let count):
             Text("+\(count)")
                 .font(.system(size: 12, weight: .medium))

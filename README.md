@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a Chinese note, an email reply and rich text, with the newest card selected">
+  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a meeting note, an email reply and rich text, with the newest card selected">
 </p>
 
 Keeptide remembers what you copy, such as commands, code, links, images and
@@ -116,8 +116,9 @@ open the selected clip there.
 - **Recent Clips** lists everything Keeptide kept. The selected clip shows a
   preview with **Copy** and **Save as Snippet**. Images open fitted or at
   actual size, links open only when you ask, and files use Quick Look.
-- **Favorites**, **All Snippets** and your **collections** hold what you keep
-  on purpose. Snippets have native text editing, find, a Markdown reading
+- **All Snippets** and **Favorites** hold what you keep on purpose; your
+  **collections** sort them, and **Unfiled** shows snippets that are in no
+  collection. Snippets have native text editing, find, a Markdown reading
   mode, and drafts that survive a restart.
 - **Recently Deleted** keeps deleted items for seven days before they are
   removed for good, and you can restore them until then.

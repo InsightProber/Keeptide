@@ -1057,6 +1057,25 @@ final class QuickAccessStripViewTests: XCTestCase {
                                   .cycleFocus(forward: false)])
     }
 
+    func testVoiceOverNamesASnippetByWhereItIsFiled() throws {
+        let strip = makeStrip()
+        let prompts = CollectionSummary(id: CollectionID(), name: "Prompts", color: "blue", sortOrder: 0)
+        let rows = [
+            makeRow(facet: .memo, title: "Release checklist", collectionID: prompts.id, isFavorite: true),
+            makeRow(facet: .memo, title: "Loose note"),
+        ]
+        let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
+
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   collections: [prompts.id: prompts])
+
+        let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        guard children.count == 2 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        // A memo is a snippet, said with where it is filed and that it is a favorite, before the time and the title.
+        XCTAssertEqual(children[0].accessibilityLabel(), "Snippet in Prompts, favorite, \(time(rows[0])): Release checklist")
+        XCTAssertEqual(children[1].accessibilityLabel(), "Snippet, \(time(rows[1])): Loose note")
+    }
+
     func testAccessibilityLabelsAndInfoValues() throws {
         let strip = makeStrip()
         let names = ApplicationNames()
@@ -1095,7 +1114,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         // Without a known source app the label leaves out where it came from, and without details what the footer
         // would say; the marks follow the title.
         XCTAssertEqual(memo.accessibilityLabel(),
-                       "Text, \(time(rows[1])): Standup notes, Saved as Memo, Partially indexed, Text unavailable")
+                       "Text, \(time(rows[1])): Standup notes, Saved as Snippet, Partially indexed, Text unavailable")
         XCTAssertNil(memo.accessibilityValue())
         XCTAssertFalse(memo.isAccessibilitySelected())
         XCTAssertEqual(link.accessibilityLabel(), "Link, \(time(rows[2])): Clipboard Item")
@@ -2702,13 +2721,16 @@ final class QuickAccessStripViewTests: XCTestCase {
         return copy
     }
 
-    private func makeRow(kind: ContentKind = .text, title: String, sourceApp: String? = nil, savedAsMemo: Bool = false,
-                         isPartiallyIndexed: Bool = false, isTextUnavailable: Bool = false) -> QuickAccessRow {
+    private func makeRow(kind: ContentKind = .text, facet: ContentFacet = .history, title: String,
+                         sourceApp: String? = nil, savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false,
+                         isTextUnavailable: Bool = false, collectionID: CollectionID? = nil,
+                         isFavorite: Bool = false) -> QuickAccessRow {
         QuickAccessRow(
-            ref: ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(),
+            ref: ContentRef(itemID: ItemID(), facet: facet, version: ContentVersion(),
                             digest: Data(repeating: 7, count: 32)),
             title: title, snippet: nil, kind: kind, sourceApp: sourceApp, date: Date(timeIntervalSince1970: 1_000),
-            savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable
+            savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
+            collectionID: collectionID, isFavorite: isFavorite
         )
     }
 }

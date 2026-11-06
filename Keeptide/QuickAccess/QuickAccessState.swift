@@ -33,6 +33,8 @@ struct QuickAccessServices {
     /// Local-only file authorization. These never leave the active store generation.
     var fileAccess: FileAccessStore? = nil
     var fileAccessIdentity: StoreIdentity? = nil
+    /// The collections the memo lists can narrow to; without it there are none.
+    var collections: (any QuickAccessCollections)? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -94,6 +96,14 @@ final class QuickAccessState {
 
     private(set) var query = ""
     private(set) var kinds: Set<ContentKind> = []
+    /// Which rows are listed; every opening starts on `.all`.
+    private(set) var list: QuickAccessList = .all
+    /// Lists only favorite memos; never on under `.all`.
+    private(set) var favoritesOnly = false
+    /// The collections in the sidebar's order, as read for this opening.
+    private(set) var collections: [CollectionSummary] = []
+    /// The collections could not be read for this opening.
+    private(set) var collectionsUnavailable = false
     private(set) var selection = SelectionCoordinator()
     private(set) var phase = QuickAccessPhase.libraryUnavailable
     private(set) var indexNotice: IndexNotice?
@@ -133,6 +143,8 @@ final class QuickAccessState {
     @ObservationIgnored var returnIsDown: (@MainActor () -> Bool)?
     /// Called when the state collapses the preview itself, so the panel can restore its frame.
     @ObservationIgnored var onPreviewCollapsed: (@MainActor () -> Void)?
+    /// Says a short message aloud for VoiceOver, such as when the listed collection goes away.
+    @ObservationIgnored var announce: (@MainActor (String) -> Void)?
 
     @ObservationIgnored private let services: @MainActor () -> QuickAccessServices?
     @ObservationIgnored private var session: PasteSession?
@@ -153,6 +165,7 @@ final class QuickAccessState {
     @ObservationIgnored private var loadingOriginalPreview: Task<Void, Never>?
     @ObservationIgnored private var saving = false
     @ObservationIgnored private var savedUndo: (
+        ref: ContentRef,
         itemID: ItemID,
         memoID: UUID,
         fingerprint: Data,
@@ -173,15 +186,20 @@ final class QuickAccessState {
     /// The session's one read of the frequent wing's candidates, in rank order: each the row of its clip, or nil where
     /// the clip cannot show. nil without a wing to read.
     @ObservationIgnored private var frequentRead: Task<[QuickAccessRow?], Never>?
+    /// The opening's read of the collections, or one asked for since.
+    @ObservationIgnored private var collectionsRead: Task<Void, Never>?
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
     }
 
-    /// An empty or invisible query with no filters lists recent clips without the index.
-    var showsRecentClips: Bool { ParsedQuery(query).isEmpty && kinds.isEmpty }
+    /// An empty or invisible query with no filters, under `.all`, lists recent clips without the index.
+    var showsRecentClips: Bool { list == .all && !favoritesOnly && ParsedQuery(query).isEmpty && kinds.isEmpty }
 
-    var hasFiltersOrQuery: Bool { !query.isEmpty || !kinds.isEmpty }
+    var hasFiltersOrQuery: Bool { !query.isEmpty || !kinds.isEmpty || favoritesOnly }
+
+    /// A list other than `.all` is listed.
+    var hasList: Bool { list != .all }
 
     /// The search shows as its field rather than its icon while there is a query, and once it was unfolded until it
     /// is folded again.
@@ -220,6 +238,8 @@ final class QuickAccessState {
         frequentWingFirstScreen = firstScreen
         query = ""
         kinds = []
+        list = .all
+        favoritesOnly = false
         isSearchUnfolded = false
         isPreviewExpanded = false
         selection = SelectionCoordinator()
@@ -232,6 +252,8 @@ final class QuickAccessState {
         cancelLoads()
         frequentRead?.cancel()
         frequentRead = nil
+        collectionsRead?.cancel()
+        collectionsRead = nil
         detailLoads.values.forEach { $0.cancel() }
         detailLoads = [:]
         waitingDetails = []
@@ -277,6 +299,74 @@ final class QuickAccessState {
         reload()
     }
 
+    /// The name of the collection listed, for the toolbar and the empty states; nil for the other lists.
+    var collectionName: String? {
+        guard case .collection(let id) = list else { return nil }
+        return collections.first { $0.id == id }?.name
+    }
+
+    /// Lists another set of rows. The query and the type filter stay and run again over it; Favorites Only is
+    /// cleared on the way to `.all`. The preview folds, the save status goes, and the first row is selected.
+    func setList(_ list: QuickAccessList) {
+        guard isOpen, list != self.list else { return }
+        self.list = list
+        if list == .all { favoritesOnly = false }
+        collapsePreview()
+        reload()
+    }
+
+    /// Lists only favorite memos, or every memo again. Under `.all` the list changes to `.snippets` first, since
+    /// only memos can be favorites.
+    func toggleFavoritesOnly() {
+        guard isOpen else { return }
+        if !favoritesOnly, list == .all { list = .snippets }
+        favoritesOnly.toggle()
+        collapsePreview()
+        reload()
+    }
+
+    /// The Library changed the collections: they are read again, and a listed collection that is gone gives way
+    /// to `.snippets`.
+    func collectionsDidChange() {
+        guard isOpen else { return }
+        readCollections()
+    }
+
+    /// Changes what a listed clip's rows say, such as that it was saved, without reloading the list.
+    func updateRow(ref: ContentRef, _ change: (inout QuickAccessRow) -> Void) {
+        selection.updateRows(of: ref, change)
+    }
+
+    /// Folds the preview, as a change of list does, and tells the panel.
+    private func collapsePreview() {
+        guard isPreviewExpanded else { return }
+        isPreviewExpanded = false
+        onPreviewCollapsed?()
+    }
+
+    /// Reads the collections for this opening, or again after the Library changed them. A listed collection that is
+    /// gone gives way to `.snippets`, and VoiceOver hears why.
+    private func readCollections() {
+        collectionsRead?.cancel()
+        guard let reader = services()?.collections else {
+            collections = []
+            collectionsUnavailable = false
+            collectionsRead = nil
+            return
+        }
+        collectionsRead = Task {
+            let read = try? await reader.collections()
+            guard !Task.isCancelled, isOpen else { return }
+            collections = read ?? []
+            collectionsUnavailable = read == nil
+            // A read that fails says nothing about the listed collection; only one that succeeds without it does.
+            if let read, case .collection(let id) = list, !read.contains(where: { $0.id == id }) {
+                setList(.snippets)
+                announce?("Collection removed")
+            }
+        }
+    }
+
     func unfoldSearch() {
         isSearchUnfolded = true
     }
@@ -286,12 +376,14 @@ final class QuickAccessState {
         isSearchUnfolded = false
     }
 
-    /// Clears the query and the filters and folds the search, as Escape does.
+    /// Clears the query, the filters and the list, and folds the search, as Escape does.
     func clearQueryAndFilters() {
         isSearchUnfolded = false
-        guard hasFiltersOrQuery else { return }
+        guard hasFiltersOrQuery || hasList else { return }
         query = ""
         kinds = []
+        list = .all
+        favoritesOnly = false
         reload()
     }
 
@@ -514,9 +606,10 @@ final class QuickAccessState {
             case .created(let ref):
                 let snapshot = try await library.editingSnapshot(ref)
                 guard isOpen, session === currentSession, copyTarget == target else { return }
-                savedUndo = (target.ref.itemID, snapshot.memoID, snapshot.memoFingerprint, identity)
+                savedUndo = (target.ref, target.ref.itemID, snapshot.memoID, snapshot.memoFingerprint, identity)
                 canUndoSave = true
                 saveMessage = "Saved to Snippets"
+                updateRow(ref: target.ref) { $0.savedAsMemo = true }
             case .existing:
                 savedUndo = nil
                 canUndoSave = false
@@ -546,6 +639,7 @@ final class QuickAccessState {
             self.savedUndo = nil
             canUndoSave = false
             saveMessage = "Save undone"
+            updateRow(ref: savedUndo.ref) { $0.savedAsMemo = false }
         } catch {
             guard isOpen, session === currentSession else { return }
             saveMessage = "This snippet changed and cannot be undone safely."
@@ -556,8 +650,7 @@ final class QuickAccessState {
         guard hasMoreRows, loadingMore == nil, phase == .results, index >= selection.rows.count - 10,
               let search = services()?.search, let generation = currentGeneration else { return }
         // The search's own rows follow the frequent wing, which is no page of it.
-        let request = SearchRequest(query: query, kinds: kinds, generation: generation,
-                                    offset: selection.rows.count - selection.frequentCount, limit: Self.pageSize)
+        let request = searchRequest(generation: generation, offset: selection.rows.count - selection.frequentCount)
         loadingMore = Task {
             defer { if self.currentGeneration == generation { self.loadingMore = nil } }
             do {
@@ -604,6 +697,7 @@ final class QuickAccessState {
             directPasteAwaitsReopen = false
         }
         readFrequentWing()
+        readCollections()
         reload()
     }
 
@@ -652,9 +746,50 @@ final class QuickAccessState {
             indexNotice = nil
             loading = Task { await loadRecent(services.repository, generation: generation, isRefresh: false) }
         } else {
-            let request = SearchRequest(query: query, kinds: kinds, generation: generation, limit: Self.pageSize)
+            let request = searchRequest(generation: generation, offset: 0)
             loading = Task { await loadSearch(services.search, request) }
         }
+    }
+
+    /// The search for the list: `.all` searches every clip and memo; the memo lists search memos, within a collection
+    /// or among the favorites when asked, listed by their last use.
+    private func searchRequest(generation: UInt64, offset: Int) -> SearchRequest {
+        var request = SearchRequest(query: query, kinds: kinds, generation: generation, offset: offset,
+                                    limit: Self.pageSize)
+        switch list {
+        case .all:
+            break
+        case .snippets:
+            request.scope = .memo
+            request.order = .lastUsed
+        case .collection(let id):
+            request.scope = .memo
+            request.collection = .collection(id)
+            request.order = .lastUsed
+        }
+        request.favoritesOnly = favoritesOnly
+        return request
+    }
+
+    /// Whether only the index can tell the list: a collection, or the favorites. Clips, and memos browsed bare,
+    /// can be read from the store.
+    private var listNeedsTheIndex: Bool {
+        switch list {
+        case .all: false
+        case .snippets: favoritesOnly
+        case .collection: true
+        }
+    }
+
+    /// Whether the list can be read from the store while the index cannot serve it: memos browsed bare.
+    private var listReadsFromTheStore: Bool {
+        list == .snippets && !favoritesOnly && ParsedQuery(query).isEmpty && kinds.isEmpty
+    }
+
+    /// What an empty page means: under `.all`, or with a query or a type filter, nothing matched; a memo list
+    /// browsed bare is empty because there is nothing in it yet.
+    private var emptyPhase: QuickAccessPhase {
+        list != .all && ParsedQuery(query).isEmpty && kinds.isEmpty ? .noContent : .noResults
     }
 
     private func loadRecent(_ repository: ContentRepository, generation: UInt64, isRefresh: Bool) async {
@@ -674,23 +809,47 @@ final class QuickAccessState {
     private func loadSearch(_ search: (any QuickAccessSearch)?, _ request: SearchRequest) async {
         let generation = request.generation
         guard let search else {
-            if isCurrent(generation) { showSearchUnavailable(generation) }
+            if isCurrent(generation) { await showListWithoutTheIndex(generation, notice: .searchUnavailable) }
             return
         }
         let candidates = await frequentCandidates()
         do {
             for try await page in search.search(request) {
                 guard isCurrent(generation) else { return }
+                if let notice = Self.notice(for: page.indexState), listReadsFromTheStore || listNeedsTheIndex {
+                    await showListWithoutTheIndex(generation, notice: notice)
+                    return
+                }
                 let rows = ledByFrequentWing(page.results.map { Self.row(from: $0) }, candidates: candidates)
                 applyRows(rows, generation: generation, isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
-                phase = !rows.isEmpty ? .results : (page.isComplete ? .noResults : .loading)
+                phase = !rows.isEmpty ? .results : (page.isComplete ? emptyPhase : .loading)
             }
         } catch {
             guard isCurrent(generation) else { return }
-            showSearchUnavailable(generation)
+            await showListWithoutTheIndex(generation, notice: .searchUnavailable)
         }
+    }
+
+    /// Lists what can be listed without the index: memos from the store for Snippets browsed bare, and otherwise
+    /// nothing, with the notice saying why.
+    private func showListWithoutTheIndex(_ generation: UInt64, notice: IndexNotice) async {
+        if listReadsFromTheStore, let repository = services()?.repository {
+            let summaries = try? await repository.recent(limit: Self.recentLimit)
+            guard isCurrent(generation) else { return }
+            if let summaries {
+                let rows = summaries.compactMap(Self.memoRow(from:))
+                applyRows(rows, generation: generation, isComplete: true)
+                totalMatches = rows.count
+                indexNotice = notice
+                phase = rows.isEmpty ? .noContent : .results
+                return
+            }
+        }
+        applyRows([], generation: generation, isComplete: true)
+        indexNotice = notice
+        phase = .noResults
     }
 
     /// The session's frequent candidates, once its one read of them is done, for a list that has a frequent wing. A
@@ -698,7 +857,7 @@ final class QuickAccessState {
     /// waiting, when the list has no wing: a query with words lists its results alone, and a session without a first
     /// screen or without usage reads none.
     private func frequentCandidates() async -> [QuickAccessRow?]? {
-        guard let read = frequentRead, ParsedQuery(query).isEmpty else { return nil }
+        guard let read = frequentRead, list == .all, ParsedQuery(query).isEmpty else { return nil }
         return await read.value
     }
 
@@ -727,12 +886,6 @@ final class QuickAccessState {
             shown = max(0, shownWhole(wing.count))
         }
         return wing.reversed() + rows
-    }
-
-    private func showSearchUnavailable(_ generation: UInt64) {
-        applyRows([], generation: generation, isComplete: true)
-        indexNotice = .searchUnavailable
-        phase = .noResults
     }
 
     /// Lists a page of rows. Every page goes through here, so that what the panel shows for a row stays with the
@@ -910,7 +1063,17 @@ final class QuickAccessState {
     private static func row(from result: SearchResult) -> QuickAccessRow {
         QuickAccessRow(ref: result.ref, title: result.title, snippet: result.snippet, kind: result.kind,
                        sourceApp: result.sourceApp, date: result.lastCopiedAt, savedAsMemo: result.savedAsMemo,
-                       isPartiallyIndexed: result.isPartiallyIndexed, isTextUnavailable: result.isTextUnavailable)
+                       isPartiallyIndexed: result.isPartiallyIndexed, isTextUnavailable: result.isTextUnavailable,
+                       collectionID: result.collectionID, isFavorite: result.isFavorite)
+    }
+
+    /// A memo's row from the store, for when the index cannot serve Snippets; its collection and favorite are not
+    /// known there.
+    private static func memoRow(from summary: ItemSummary) -> QuickAccessRow? {
+        guard let memo = summary.memo else { return nil }
+        return QuickAccessRow(ref: memo, title: summary.title, snippet: nil, kind: summary.kind,
+                              sourceApp: summary.sourceApp, date: summary.lastCopiedAt,
+                              savedAsMemo: false, isPartiallyIndexed: false, isTextUnavailable: false)
     }
 }
 
@@ -924,15 +1087,41 @@ enum QuickAccessStatus {
     static let rebuilding = "Index is rebuilding — results may be incomplete"
 
     /// What an empty result area says.
-    static func empty(phase: QuickAccessPhase, notice: IndexNotice?) -> Message {
+    static func empty(phase: QuickAccessPhase, notice: IndexNotice?, list: QuickAccessList = .all,
+                      favoritesOnly: Bool = false, collectionName: String? = nil) -> Message {
+        let place = list == .snippets ? "Snippets" : (collectionName ?? "this collection")
         switch phase {
         case .noContent:
-            return Message(text: "No clips yet. Copy something and it shows up here.", detail: nil)
+            switch list {
+            case .all:
+                return Message(text: "No clips yet. Copy something and it shows up here.", detail: nil)
+            case .snippets:
+                return Message(text: favoritesOnly ? "No favorites yet. Mark a snippet with ⌘D."
+                                                   : "No snippets yet. Save a clip with ⌘S.", detail: nil)
+            case .collection:
+                return Message(text: favoritesOnly ? "No favorites in \(place) yet."
+                                                   : "Nothing in \(place) yet. Switch to All (⌘[), pick a clip and press ⇧⌘M.",
+                               detail: nil)
+            }
         case .libraryUnavailable:
             return Message(text: "Library unavailable", detail: "Recent clips appear here once the library opens.")
         case .noResults:
-            if notice == .searchUnavailable { return Message(text: "Search is unavailable — recent clips are still here", detail: nil) }
-            return Message(text: "No results", detail: notice == .rebuilding ? rebuilding : nil)
+            if list == .all {
+                if notice == .searchUnavailable { return Message(text: "Search is unavailable — recent clips are still here", detail: nil) }
+                return Message(text: "No results", detail: notice == .rebuilding ? rebuilding : nil)
+            }
+            // A collection or the favorites can be told only by the index; Snippets can be searched while it rebuilds.
+            let onlyTheIndexTells = favoritesOnly || list != .snippets
+            if onlyTheIndexTells, notice == .rebuilding {
+                return Message(text: favoritesOnly ? "Index is rebuilding — favorites are unavailable for a moment."
+                                                   : "Index is rebuilding — this list is unavailable for a moment.", detail: nil)
+            }
+            if notice == .searchUnavailable {
+                return Message(text: favoritesOnly ? "Search is unavailable — favorites need the index."
+                                                   : "Search is unavailable — this list needs the index.", detail: nil)
+            }
+            return Message(text: "No results in \(place)",
+                           detail: notice == .rebuilding ? rebuilding : "Switch to All to search everything.")
         default:
             return Message(text: "Searching…", detail: nil)
         }

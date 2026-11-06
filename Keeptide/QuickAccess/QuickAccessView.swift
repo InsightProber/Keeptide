@@ -7,6 +7,8 @@ struct QuickAccessEscapeContext {
     var hasCommandReview = false
     var isPreviewExpanded = false
     var hasFilters = false
+    /// A list other than All is listed.
+    var hasList = false
     var isSearchExpanded = false
 }
 
@@ -120,6 +122,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
                                                     hasCommandReview: context.hasCommandReview,
                                                     isPreviewExpanded: context.isPreviewExpanded,
                                                     hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters,
+                                                    hasList: context.hasList,
                                                     isSearchExpanded: context.isSearchExpanded)
         switch action {
         case .cancelComposition:
@@ -209,12 +212,12 @@ enum QuickAccessEscapeAction: Equatable {
 /// then the panel.
 enum QuickAccessEscapePolicy {
     static func action(hasMarkedText: Bool, hasCommandReview: Bool = false, isPreviewExpanded: Bool = false,
-                       hasQuery: Bool, hasFilters: Bool = false,
+                       hasQuery: Bool, hasFilters: Bool = false, hasList: Bool = false,
                        isSearchExpanded: Bool = false) -> QuickAccessEscapeAction {
         if hasMarkedText { return .cancelComposition }
         if hasCommandReview { return .cancelCommandReview }
         if isPreviewExpanded { return .collapsePreview }
-        if hasQuery || hasFilters { return .clearQuery }
+        if hasQuery || hasFilters || hasList { return .clearQuery }
         return isSearchExpanded ? .foldSearch : .closePanel
     }
 }

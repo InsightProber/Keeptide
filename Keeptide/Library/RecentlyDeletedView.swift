@@ -32,13 +32,13 @@ struct RecentlyDeletedView: View {
             } else if filteredRows.isEmpty {
                 ContentUnavailableView {
                     Label(
-                        titleFilter.isEmpty ? "Recently Deleted is Empty" : "No Deleted Items Match",
+                        titleFilter.isEmpty ? "Nothing Recently Deleted" : "No Deleted Items Match",
                         systemImage: "trash"
                     )
                 } description: {
                     Text(
                         titleFilter.isEmpty
-                            ? "Items you remove remain here until their recovery window ends."
+                            ? "Deleted clips and snippets are kept for \(Int(DeletionWindow.duration / 86_400)) days."
                             : "This filter checks deleted item titles only."
                     )
                 }
