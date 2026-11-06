@@ -119,6 +119,7 @@ final class AppEnvironment {
         let panel = makePanel()
         self.panel = panel
         captureSession.onRecentClipsChanged = { [weak panel] in panel?.state.recentClipsChanged() }
+        captureSession.onCollectionsChanged = { [weak panel] in panel?.state.collectionsDidChange() }
         // The panel's ⋯ menu does what the menu bar's Open Library and Settings… do.
         panel.onOpenLibrary = { [weak self] in self?.showLibrary() }
         panel.onOpenInLibrary = { [weak self] ref in
@@ -282,7 +283,8 @@ extension CaptureSession {
             usage: usageStore,
             library: libraryService,
             fileAccess: fileAccessStore,
-            fileAccessIdentity: fileAccessIdentity
+            fileAccessIdentity: fileAccessIdentity,
+            collections: collectionService
         )
     }
 }

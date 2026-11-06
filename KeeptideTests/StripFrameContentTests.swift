@@ -423,6 +423,34 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertNil(StripFrameContent.make(row: untitled, detail: ClipDetail(), cardSize: .medium).memoTitle)
     }
 
+    func testAMemoCardSaysSnippetWithItsCollectionAndStar() {
+        let prompts = CollectionSummary(id: CollectionID(), name: "Prompts", color: "blue", sortOrder: 0)
+        let filed = makeRow(facet: .memo, title: "Release checklist", collectionID: prompts.id, isFavorite: true)
+
+        let content = StripFrameContent.make(row: filed, detail: nil, cardSize: .medium, collections: [prompts.id: prompts])
+
+        // The band calls a memo a snippet, and after the time names where it is filed and that it is a favorite.
+        XCTAssertEqual(content.bandName, "Snippet")
+        XCTAssertEqual(content.headerLine,
+                       [.time(content.time), .collection(name: "Prompts", color: "blue"), .marker(.favorite)])
+        XCTAssertEqual(content.facet, .memo)
+        XCTAssertEqual(content.collection, prompts)
+        XCTAssertTrue(content.isFavorite)
+        // In that collection's own list the name is left off, so the caller passes no collections.
+        let listed = StripFrameContent.make(row: filed, detail: nil, cardSize: .medium)
+        XCTAssertEqual(listed.headerLine, [.time(listed.time), .marker(.favorite)])
+        // An unfiled memo has no collection to name.
+        let unfiled = StripFrameContent.make(row: makeRow(facet: .memo, title: "Loose"), detail: nil,
+                                             cardSize: .medium, collections: [prompts.id: prompts])
+        XCTAssertEqual(unfiled.bandName, "Snippet")
+        XCTAssertEqual(unfiled.headerLine, [.time(unfiled.time)])
+        // A clip's card keeps the kind's name and its saved mark, and says nothing of collections.
+        let clip = StripFrameContent.make(row: makeRow(title: "Plain", savedAsMemo: true), detail: nil,
+                                          cardSize: .medium, collections: [prompts.id: prompts])
+        XCTAssertEqual(clip.bandName, "Text")
+        XCTAssertEqual(clip.headerLine, [.time(clip.time), .marker(.savedAsMemo)])
+    }
+
     func testVoiceOverNamesAClipByTheTitleItsCardShows() {
         let address = "https://git-scm.com/docs/git-rebase"
         // A link is named by its page's title, or by its path, as its card shows it, and not by its address.
@@ -449,14 +477,16 @@ final class StripFrameContentTests: XCTestCase {
 }
 
 private func makeRow(
-    kind: ContentKind = .text, title: String = "Synthetic title", snippet: SearchSnippet? = nil,
-    sourceApp: String? = nil, date: Date = Date(timeIntervalSince1970: 1_000),
-    savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false, isTextUnavailable: Bool = false
+    kind: ContentKind = .text, facet: ContentFacet = .history, title: String = "Synthetic title",
+    snippet: SearchSnippet? = nil, sourceApp: String? = nil, date: Date = Date(timeIntervalSince1970: 1_000),
+    savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false, isTextUnavailable: Bool = false,
+    collectionID: CollectionID? = nil, isFavorite: Bool = false
 ) -> QuickAccessRow {
     QuickAccessRow(
-        ref: ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data(repeating: 3, count: 32)),
+        ref: ContentRef(itemID: ItemID(), facet: facet, version: ContentVersion(), digest: Data(repeating: 3, count: 32)),
         title: title, snippet: snippet, kind: kind, sourceApp: sourceApp, date: date,
-        savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable
+        savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
+        collectionID: collectionID, isFavorite: isFavorite
     )
 }
 

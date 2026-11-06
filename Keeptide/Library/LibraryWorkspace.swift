@@ -100,6 +100,8 @@ final class LibraryWorkspace {
     @ObservationIgnored private var collectionUndo: CollectionUndoToken?
     @ObservationIgnored private var isChangingCollection = false
     @ObservationIgnored private var collectionCompletionWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Called after the collections changed, so the quick-access panel can read them again.
+    @ObservationIgnored var onCollectionsChanged: (@MainActor () -> Void)?
 
     private struct UndoSave {
         let itemID: ItemID
@@ -177,7 +179,7 @@ final class LibraryWorkspace {
 
     func refreshCollections() async {
         guard !isClosing, !isClosed else { return }
-        do { collections = try await collectionService.list(expecting: storeIdentity) }
+        do { setCollections(try await collectionService.list(expecting: storeIdentity)) }
         catch { message = "Collections could not be loaded." }
     }
 
@@ -241,6 +243,12 @@ final class LibraryWorkspace {
 
     private var collectionService: CollectionService { CollectionService(controller: controller) }
 
+    private func setCollections(_ latest: [CollectionSnapshot]) {
+        guard latest != collections else { return }
+        collections = latest
+        onCollectionsChanged?()
+    }
+
     private func changeCollection(_ operation: () async throws -> CollectionChange?) async -> Bool {
         guard !isClosing, !isClosed, !isChangingCollection else { return false }
         isChangingCollection = true
@@ -256,7 +264,7 @@ final class LibraryWorkspace {
             collectionUndo = change?.undoToken
             canUndoCollectionChange = !(collectionUndo?.records.isEmpty ?? true)
             guard !isClosing, !isClosed else { return true }
-            collections = try await collectionService.list(expecting: storeIdentity)
+            setCollections(try await collectionService.list(expecting: storeIdentity))
             try await refreshSearch()
             if !isClosing, !isClosed { await reload(refreshIndex: false) }
             return true
@@ -284,7 +292,7 @@ final class LibraryWorkspace {
         do {
             if refreshIndex {
                 try await refreshSearch()
-                collections = try await collectionService.list(expecting: storeIdentity)
+                setCollections(try await collectionService.list(expecting: storeIdentity))
             }
             guard generation == loadGeneration else { return }
             let loaded = try await loadEntries(generation: generation, offset: 0)

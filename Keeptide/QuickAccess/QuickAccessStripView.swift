@@ -96,6 +96,8 @@ final class QuickAccessStripView: NSView {
     private var details: [ContentRef: ClipDetail] = [:]
     private var metrics: StripMetrics?
     private var applicationNames: ApplicationNames?
+    /// The collections a memo's card may name.
+    private var collections: [CollectionID: CollectionSummary] = [:]
     /// Holds the frames and moves them as one: it follows the fingers and carries each slide.
     private let film = NSView()
     private var frames: [QuickAccessRow.ID: StripFrameHost] = [:]
@@ -175,7 +177,8 @@ final class QuickAccessStripView: NSView {
 
     /// `oldestIsLoaded` is false while more rows may follow the last one, so the film does not stop there.
     func show(_ rows: [QuickAccessRow], selection: QuickAccessRow.ID?, details: [ContentRef: ClipDetail],
-              metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true) {
+              metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true,
+              collections: [CollectionID: CollectionSummary] = [:]) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
         // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
@@ -199,6 +202,7 @@ final class QuickAccessStripView: NSView {
         self.metrics = metrics
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
+        self.collections = collections
         let index = selection.flatMap { selected in rows.firstIndex { $0.id == selected } } ?? -1
         if index != previousIndex {
             // The fingers carried the clip selected before; their next event measures from this one.
@@ -415,7 +419,8 @@ final class QuickAccessStripView: NSView {
             let row = rows[index]
             let icon = applicationNames.icon(for: row.sourceApp)
             let view = StripFrameView(
-                content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize),
+                content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize,
+                                                collections: collections),
                 applicationIcon: icon, metrics: metrics,
                 // The band takes its colour from the very icon the frame shows, worked out with the app's first frame.
                 headerTint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
@@ -1100,15 +1105,18 @@ private final class StripFrameHost: NSView {
     /// order the card shows them, then the title it shows, such as a link's page title rather than its address.
     /// Without a known source app the "from" part is left out, and the footer, such as "25 characters" or "2880 by
     /// 1800", until the details have arrived. A frequent clip says how often it was used in place of the time, as its
-    /// card does: "Text, used 12 times: <title>".
+    /// card does: "Text, used 12 times: <title>". A memo is a snippet, said with where it is filed and whether it is a
+    /// favorite: "Snippet in Prompts, favorite, <time>: <title>".
     override func accessibilityLabel() -> String? {
         guard let row else { return nil }
         let content = drawing.rootView.content
         let when = row.frequentUses.map { ClipInfoFormatter.uses($0, spoken: true) }
             ?? QuickAccessRowContent.time(of: row.date, spoken: true)
-        let card = [row.kind.accessibilityName, when, applicationName.map { "from \($0)" },
-                    content.info.map(ClipInfoFormatter.spoken)]
-        let marks = [(row.savedAsMemo, "Saved as Memo"), (row.isPartiallyIndexed, "Partially indexed"),
+        let what = content.facet == .memo
+            ? "Snippet" + (content.collection.map { " in \($0.name)" } ?? "") + (content.isFavorite ? ", favorite" : "")
+            : row.kind.accessibilityName
+        let card = [what, when, applicationName.map { "from \($0)" }, content.info.map(ClipInfoFormatter.spoken)]
+        let marks = [(row.savedAsMemo, "Saved as Snippet"), (row.isPartiallyIndexed, "Partially indexed"),
                      (row.isTextUnavailable, "Text unavailable")].filter { $0.0 }.map { $0.1 }
         return ([card.compactMap { $0 }.joined(separator: ", ") + ": " + content.accessibilityTitle] + marks)
             .joined(separator: ", ")
