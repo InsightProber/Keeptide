@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a Chinese note, an email reply and rich text, with the newest card selected">
+  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large clip cards with Swift code, a landscape image, a Git command, a link, a meeting note, an email reply and rich text, with the newest card selected">
 </p>
 
 Keeptide remembers what you copy, such as commands, code, links, images and
@@ -87,9 +87,9 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 6. **Optional: turn on direct paste.** Choose **Enable Direct Paste…** from the
    actions menu (⌘K), or **Turn On Direct Paste…** in **Settings › General**,
    then allow Keeptide in **System Settings › Privacy & Security ›
-   Accessibility** and reopen Keeptide. **Settings › General** shows whether
-   direct paste is on. Keeptide sends the paste; it cannot confirm that the app
-   received it.
+   Accessibility** (**Device Control and Data Access** on macOS 27) and reopen
+   Keeptide. **Settings › General** shows whether direct paste is on. Keeptide
+   sends the paste; it cannot confirm that the app received it.
 
 ### Quick access keys
 
@@ -221,8 +221,9 @@ notices. **These are ad-hoc-signed test builds, not Developer ID-signed or
 notarized releases.** Packaging does not enable iCloud. macOS treats each newly
 installed test build as a different app, so an earlier build's Accessibility
 access does not carry over: if **Settings › General** says direct paste is off
-although Keeptide is listed in Accessibility, remove it from the list, add it
-again and reopen Keeptide.
+although Keeptide is on in the Accessibility list (**Device Control and Data
+Access** on macOS 27), remove it from the list with −, add it again with + and
+reopen Keeptide.
 
 - Publishing a GitHub Release, tagged like `v0.1.0` or `v0.1.0-rc.1` on a
   commit already in `main`, makes the **Release DMG** workflow attach the disk

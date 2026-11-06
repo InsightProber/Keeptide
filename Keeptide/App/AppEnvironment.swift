@@ -250,8 +250,9 @@ final class AppEnvironment {
     static func enableDirectPasteAlert() -> NSAlert {
         let alert = NSAlert()
         alert.messageText = "Turn On Direct Paste"
-        alert.informativeText = "Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in System "
-            + "Settings › Privacy & Security › Accessibility, then quit and reopen Keeptide."
+        alert.informativeText = "Keeptide pastes by sending ⌘V to the app you were using. Allow Keeptide in "
+            + "\(DirectPasteSettingsLocation.path()), then quit and reopen Keeptide. If Keeptide is already on there, "
+            + "remove it from the list with − and add it again with + before reopening."
         alert.addButton(withTitle: "Open System Settings")
         alert.addButton(withTitle: "Cancel")
         return alert

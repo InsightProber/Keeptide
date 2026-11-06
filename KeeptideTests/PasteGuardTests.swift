@@ -216,6 +216,16 @@ final class PasteGuardTests: XCTestCase {
         XCTAssertEqual(fake.sent, [], "Reading the state sends nothing")
     }
 
+    func testSettingsLocationNamesTheListThisMacOSShows() {
+        XCTAssertEqual(DirectPasteSettingsLocation.path(macOSMajorVersion: 26),
+                       "System Settings › Privacy & Security › Accessibility")
+        // From macOS 27 on, System Settings calls the same list Device Control and Data Access.
+        XCTAssertEqual(DirectPasteSettingsLocation.path(macOSMajorVersion: 27),
+                       "System Settings › Privacy & Security › Device Control and Data Access")
+        XCTAssertEqual(DirectPasteSettingsLocation.path(macOSMajorVersion: 28),
+                       "System Settings › Privacy & Security › Device Control and Data Access")
+    }
+
     func testUnresolvedKeyCopiesInstead() async throws {
         let (fixture, ref) = try await makeFixture()
         let fake = FakeDirectPasteSystem()
