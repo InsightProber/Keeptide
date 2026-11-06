@@ -35,6 +35,15 @@ enum DirectPasteAccessState: Equatable, Sendable {
     }
 }
 
+/// Where System Settings lists the apps that may send keystrokes, named as this Mac shows it. macOS 27 renamed the
+/// Accessibility list under Privacy & Security to Device Control and Data Access; the settings link still opens it.
+enum DirectPasteSettingsLocation {
+    static func path(macOSMajorVersion: Int = ProcessInfo.processInfo.operatingSystemVersion.majorVersion) -> String {
+        let list = macOSMajorVersion >= 27 ? "Device Control and Data Access" : "Accessibility"
+        return "System Settings › Privacy & Security › \(list)"
+    }
+}
+
 /// Everything direct paste asks of the system. Tests inject a fake or `unavailable`.
 @MainActor
 struct DirectPasteSystem {
