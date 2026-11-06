@@ -122,14 +122,14 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(panel.exists)
 
         // The search is folded to its icon; a click on it opens the search with the keys in its field.
-        app.buttons["Search clips"].click()
-        XCTAssertTrue(app.buttons["Search clips"].waitForNonExistence(timeout: 5), app.debugDescription)
+        app.buttons["Search Clips and Snippets"].click()
+        XCTAssertTrue(app.buttons["Search Clips and Snippets"].waitForNonExistence(timeout: 5), app.debugDescription)
         query.typeText("x")
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(query.value as? String, "")
         XCTAssertTrue(panel.exists)
         // Clearing the query folded the search again.
-        XCTAssertTrue(app.buttons["Search clips"].exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["Search Clips and Snippets"].exists, app.debugDescription)
 
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
@@ -170,7 +170,7 @@ final class QuickAccessUITests: XCTestCase {
         let frames = try openPanel(app)
         let panel = app.dialogs["KeeptideQuickAccessPanel"]
         let preview = app.descendants(matching: .any)["QuickAccessPreview"]
-        let search = app.buttons["Search clips"]
+        let search = app.buttons["Search Clips and Snippets"]
         let query = app.searchFields["Quick access query"]
         let selectedBeforePreview = selectedClip(in: frames)?.label
 
@@ -345,6 +345,37 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(clip("List open ports", in: frames).waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(clip("Release checklist", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(filter.value as? String, "Favorites", app.debugDescription)
+    }
+
+    func testSaveToCollectionFromTheActionsMenuPutsTheClipThere() throws {
+        let app = launchKeeptide(seedsSnippets: true)
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
+        // The newest clip is selected: ⌘K › Save to Collection › Prompts saves it there in one step.
+        app.searchFields["Quick access query"].typeKey("k", modifierFlags: .command)
+        let saveTo = app.menuItems["Save to Collection"]
+        XCTAssertTrue(saveTo.waitForExistence(timeout: 5), app.debugDescription)
+        saveTo.hover()
+        let prompts = app.menuItems["Prompts"]
+        XCTAssertTrue(prompts.waitForExistence(timeout: 5), app.debugDescription)
+        prompts.click()
+        // The toolbar says where it went.
+        XCTAssertTrue(app.staticTexts["QuickAccessStatus"].waitForExistence(timeout: 5), app.debugDescription)
+
+        // Prompts lists it, beside the snippet that was there. The list reads it from the search index, which follows
+        // the save a moment later, so Prompts is chosen again until it does.
+        app.radioButtons["Snippets"].click()
+        let chip = app.radioButtons["Prompts"]
+        XCTAssertTrue(chip.waitForExistence(timeout: 5), app.debugDescription)
+        var listed = false
+        for _ in 0..<4 where !listed {
+            chip.click()
+            listed = clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 3)
+            if !listed { app.radioButtons["Snippets"].click() }
+        }
+        XCTAssertTrue(listed, app.debugDescription)
+        XCTAssertTrue(clip("Summarize meeting notes", in: frames).exists, app.debugDescription)
     }
 
     // MARK: - Helpers

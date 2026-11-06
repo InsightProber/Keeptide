@@ -67,6 +67,8 @@ final class QuickAccessListNavigation: NSView {
         addSubview(segments)
         addSubview(chipsView)
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Lists")
         setAccessibilityIdentifier("QuickAccessListNavigation")
@@ -282,10 +284,11 @@ final class QuickAccessListNavigation: NSView {
         }
     }
 
-    /// With the keys here, what VoiceOver has in focus is the segment or chip under the cursor, not the row.
+    /// With the keys here, what VoiceOver has in focus is the segment or chip under the cursor, not the row. AppKit
+    /// asks on the main thread, but this property is not main-actor isolated in every SDK, so that is assumed here.
     override var accessibilityFocusedUIElement: Any? {
-        guard window?.firstResponder === self, let view = cursorView else { return super.accessibilityFocusedUIElement }
-        return view
+        let focused: NSView? = MainActor.assumeIsolated { window?.firstResponder === self ? cursorView : nil }
+        return focused ?? super.accessibilityFocusedUIElement
     }
 
     private func makeChips(for collections: [CollectionSummary]) {
@@ -364,6 +367,8 @@ final class QuickAccessListSegments: NSView {
         super.init(frame: frameRect)
         buttons.forEach(addSubview)
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.radioGroup)
         setAccessibilityLabel("List")
         setAccessibilityIdentifier("QuickAccessListSegments")
@@ -446,6 +451,8 @@ final class QuickAccessChipsView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.radioGroup)
         setAccessibilityLabel("Collections")
         setAccessibilityIdentifier("QuickAccessCollectionChips")
@@ -626,6 +633,8 @@ final class QuickAccessFilterButton: NSView {
         addSubview(face)
         // The button itself is what Tab reaches and VoiceOver reads: a pop-up button named Filter.
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.popUpButton)
         setAccessibilityLabel("Filter")
         setAccessibilityIdentifier("QuickAccessFilterButton")

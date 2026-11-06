@@ -84,9 +84,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The ⋯ menu's Open Library and Settings…, which the app points at its own commands.
     var onOpenLibrary: (() -> Void)?
     var onOpenSettings: (() -> Void)?
-    /// Actions for the selected clip that hand the exact content identity to the library.
-    var onOpenInLibrary: ((ContentRef) -> Void)?
-    var onNewSnippet: (() -> Void)?
+    /// Show in Library: the selected clip's exact content identity, and whether the library shows the snippet it was
+    /// saved as rather than the clip, as it does for a snippet's card and a clip saved as one.
+    var onOpenInLibrary: ((ContentRef, Bool) -> Void)?
+    /// New Snippet: the collection the panel lists, where the new snippet goes; nil for Unfiled.
+    var onNewSnippet: ((CollectionID?) -> Void)?
     /// The actions menu's Enable Direct Paste…, once the panel has closed. The app explains it and asks for access,
     /// which takes Keeptide to the front: the panel never does that itself.
     var onEnableDirectPaste: (() -> Void)?
@@ -582,7 +584,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             let item = ClosureMenuItem(collection.name) { [weak self] in
                 self?.switchList(to: .collection(collection.id))
             }
-            item.image = Self.dot(collection.color)
+            item.image = ActionMenu.dot(collection.color)
             item.state = state.list == .collection(collection.id) ? .on : .off
             menu.addItem(item)
         }
@@ -604,15 +606,6 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .all: "Search Clips and Snippets"
         case .snippets: "Search Snippets"
         case .collection: "Search “\(collectionName ?? "Collection")”"
-        }
-    }
-
-    /// A collection's dot, for a menu item.
-    private static func dot(_ color: String) -> NSImage {
-        NSImage(size: NSSize(width: 10, height: 10), flipped: false) { rect in
-            NSColor.collection(color).setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 0.5, dy: 0.5)).fill()
-            return true
         }
     }
 
@@ -922,7 +915,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded,
-                               canUndoSave: canUndoSave) { [weak self] command in
+                               canUndoSave: canUndoSave, collections: state.collections) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -936,8 +929,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
             case .saveSnippet: saveSelectedSnippet()
+            case .saveToCollection(let collection): saveSelected(into: collection)
             case .undoSave: undoSave()
-            case .openLibrary: openSelectedInLibraryFromMenu()
+            case .toggleFavorite: toggleFavoriteOfSelected()
+            case .showInLibrary: openSelectedInLibraryFromMenu()
             case .newSnippet: newSnippetFromMenu()
             case .enableDirectPaste: enableDirectPaste()
             }
@@ -951,6 +946,57 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             await state.saveSelection(target)
             announceSaveMessage()
         }
+    }
+
+    /// ⇧⌘M's menu and the actions menu's Save to Collection or Move to Collection: the collection chosen, or Unfiled
+    /// with nil. A collection that went while the menu was open is saved into by name no more: the state reads the
+    /// collections again and says so.
+    private func saveSelected(into id: CollectionID?) {
+        guard let target = state.copyTarget else { return }
+        let collection = id.flatMap { id in state.collections.first { $0.id == id } }
+        guard id == nil || collection != nil else {
+            state.explainCollectionGone()
+            return announceSaveMessage()
+        }
+        Task {
+            await state.saveSelection(target, into: collection)
+            announceSaveMessage()
+        }
+    }
+
+    /// ⌘D and the actions menu's Add to Favorites or Remove from Favorites.
+    private func toggleFavoriteOfSelected() {
+        guard let target = state.copyTarget else { return }
+        Task {
+            await state.toggleFavoriteSelection(target)
+            announceSaveMessage()
+        }
+    }
+
+    /// ⇧⌘M: the collections, beside the selected card, where the actions menu opens. With none to choose, the toolbar
+    /// says what it takes.
+    private func showCollectionMenu() {
+        guard let row = state.selection.selectedRow, state.selection.executableSelection != nil else { return }
+        guard !state.collections.isEmpty else { return state.explainNoCollections() }
+        let menu = NSMenu(title: row.facet == .memo ? "Move to Collection" : "Save to Collection")
+        menu.autoenablesItems = false
+        // The choice is for the card the menu opened beside, as the actions menu's are.
+        let id = row.id
+        let items = ActionMenu.collectionItems(collections: state.collections, row: row) { [weak self] collection in
+            guard let self else { return }
+            _ = followMenuChoice()
+            if id != state.selection.selectedID {
+                state.select(id)
+                update()
+                guard state.selection.selectedID == id else { return }
+            }
+            saveSelected(into: collection)
+        }
+        items.forEach(menu.addItem)
+        let size = metrics.frameSize
+        let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,
+                            width: size.width, height: size.height)
+        presentActionMenu(menu, ActionMenu.anchor(beside: strip.selectionAnchorFrame ?? centre, in: strip), strip)
     }
 
     /// The menu's Undo Save as Snippet, which it offers only while the selected clip's save can be undone.
@@ -970,7 +1016,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     private func openSelectedInLibrary() {
         guard let ref = state.copyTarget?.ref else { return }
-        onOpenInLibrary?(ref)
+        onOpenInLibrary?(ref, showsSnippet(of: ref))
+    }
+
+    /// Whether Show in Library shows the snippet: for a snippet's card, and for a clip saved as one.
+    private func showsSnippet(of ref: ContentRef) -> Bool {
+        ref.facet == .memo || state.selection.rows.contains { $0.ref == ref && $0.savedAsMemo }
+    }
+
+    /// The collection a new snippet goes into: the one the panel lists, while it is still there.
+    private var newSnippetCollection: CollectionID? {
+        guard case .collection(let id) = state.list, state.collections.contains(where: { $0.id == id }) else {
+            return nil
+        }
+        return id
     }
 
     /// A menu item chosen with Return must keep the keys until that Return is up, so its repeats cannot reach the
@@ -978,11 +1037,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// the action to a different clip.
     private func openSelectedInLibraryFromMenu() {
         guard let ref = state.copyTarget?.ref else { return }
-        handOverWhenChoosingReturnIsUp { [weak self] in self?.onOpenInLibrary?(ref) }
+        let showsSnippet = showsSnippet(of: ref)
+        handOverWhenChoosingReturnIsUp { [weak self] in self?.onOpenInLibrary?(ref, showsSnippet) }
     }
 
     private func newSnippetFromMenu() {
-        handOverWhenChoosingReturnIsUp { [weak self] in self?.onNewSnippet?() }
+        let collection = newSnippetCollection
+        handOverWhenChoosingReturnIsUp { [weak self] in self?.onNewSnippet?(collection) }
     }
 
     /// How the menu item was chosen, as far as Return goes; true when Return may still be down from choosing it.
@@ -1098,10 +1159,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
-        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for.
-        guard isSessionOpen, event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command else {
-            return false
-        }
+        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M is the one
+        // shortcut here with Shift.
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
+        guard isSessionOpen, modifiers == .command || isShiftCommandM else { return false }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
         // review card, and nothing else: a preview is not a review, and while an input method composes in the search
         // field the key is the composition's.
@@ -1120,12 +1182,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // commands keep their own composition behavior; in particular, Command-F
         // in the active search editor leaves its marked text and caret intact.
         // A list does not change under a composition either.
-        if ["s", "e", "n", "[", "]", "l"].contains(key),
+        if ["s", "e", "n", "[", "]", "l", "d"].contains(key) || isShiftCommandM,
            (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return true }
-        // Held down, ⌘S, ⌘E, ⌘N and ⌘L have acted already: their repeats are taken and do nothing, as ⌘Y's are. A save
+        // Held down, ⌘S, ⌘E, ⌘N, ⌘L, ⌘D and ⇧⌘M have acted already: their repeats are taken and do nothing, as ⌘Y's
+        // are; a held ⌘D would turn the favorite mark over and back. A save
         // again would find the clip already in Snippets and let the first save's undo go. ⌘[ and ⌘] step on while held,
         // as the arrows do.
-        if ["s", "e", "n", "l"].contains(key), event.isARepeat { return true }
+        if ["s", "e", "n", "l", "d"].contains(key) || isShiftCommandM, event.isARepeat { return true }
+        if isShiftCommandM {
+            showCollectionMenu()
+            return true
+        }
         switch key {
         case "s":
             saveSelectedSnippet()
@@ -1134,7 +1201,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             openSelectedInLibrary()
             return true
         case "n":
-            onNewSnippet?()
+            onNewSnippet?(newSnippetCollection)
+            return true
+        case "d":
+            toggleFavoriteOfSelected()
             return true
         case "f":
             unfoldSearch()

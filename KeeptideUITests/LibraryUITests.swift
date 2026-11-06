@@ -178,6 +178,44 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
     }
 
+    func testShowInLibraryHighlightsTheSnippet() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let sessionID = UUID()
+        app.launchArguments = ["--ui-testing", "--disable-global-hotkey", "--show-quick-access",
+                               "--capture-test-session", sessionID.uuidString, "--seed-synthetic-clips",
+                               "--seed-synthetic-snippets"]
+        self.sessionID = sessionID
+        application = app
+        app.launch()
+
+        // Quick access lists Prompts, whose one snippet is selected; ⌘E shows it in the library.
+        let snippets = app.radioButtons["Snippets"]
+        XCTAssertTrue(snippets.waitForExistence(timeout: 8), app.debugDescription)
+        snippets.click()
+        let prompts = app.radioButtons["Prompts"]
+        XCTAssertTrue(prompts.waitForExistence(timeout: 5), app.debugDescription)
+        prompts.click()
+        let title = "Summarize meeting notes"
+        let card = app.descendants(matching: .any).matching(NSPredicate(format: "label ENDSWITH %@", title)).firstMatch
+        XCTAssertTrue(card.waitForExistence(timeout: 8), app.debugDescription)
+        app.searchFields["Quick access query"].typeKey("e", modifierFlags: .command)
+
+        // The sidebar selects Prompts and the list selects the snippet, together, and the editor shows it.
+        let library = app.windows["KeeptideLibraryWindow"]
+        XCTAssertTrue(library.waitForExistence(timeout: 8), app.debugDescription)
+        let named = { (name: String) in NSPredicate(format: "label == %@ OR value == %@", name, name) }
+        let chosenList = library.descendants(matching: .outline)["LibrarySidebar"].outlineRows
+            .matching(NSPredicate(format: "selected == true")).containing(named("Prompts")).firstMatch
+        XCTAssertTrue(chosenList.waitForExistence(timeout: 8), app.debugDescription)
+        let chosenRow = app.descendants(matching: .any)["SnippetList"].descendants(matching: .any)
+            .matching(NSPredicate(format: "selected == true")).containing(named(title)).firstMatch
+        XCTAssertTrue(chosenRow.waitForExistence(timeout: 8), app.debugDescription)
+        let titleField = app.textFields["SnippetTitleEditor"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertEqual(titleField.value as? String, title, app.debugDescription)
+    }
+
     // MARK: - Isolated launch and interaction helpers
 
     private func launchKeeptide(sessionID: UUID, seedSyntheticClips: Bool = false) -> XCUIApplication {

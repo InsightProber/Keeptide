@@ -111,14 +111,16 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | Space or ⌘Y | Show or hide a larger preview |
 | ⌘K or right-click | Show every action for the selected clip |
 | ⌘S | Save the clip as a snippet |
-| ⌘E | Open the clip in the library |
-| ⌘N | Write a new snippet |
+| ⇧⌘M | Save the clip into a collection, or move a snippet |
+| ⌘D | Mark a snippet as a favorite, or unmark it; a clip is saved as a snippet first |
+| ⌘E | Show the clip, or its snippet, in the library |
+| ⌘N | Write a new snippet, in the collection you are browsing |
 | Esc | Step back: close the preview, clear the search and return to All, then close quick access |
 
 ### Library
 
 Choose **Open Library** from the menu-bar menu, or press ⌘E in quick access to
-open the selected clip there.
+show the selected clip, or its snippet, there.
 
 - **Recent Clips** lists everything Keeptide kept. The selected clip shows a
   preview with **Copy** and **Save as Snippet**. Images open fitted or at

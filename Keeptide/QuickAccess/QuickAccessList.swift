@@ -28,3 +28,31 @@ extension CollectionService: QuickAccessCollections {
         }
     }
 }
+
+/// How quick access places snippets: in a collection, or none, and marked as a favorite or not. Only snippets are
+/// placed; a clip is saved as one first.
+protocol QuickAccessCollectionChanges: Sendable {
+    /// Moves the snippets into `collection`, or out of any with nil. False when all were there already, and nothing
+    /// was written. A collection that is no longer there throws `CollectionServiceError.deletedCollection`.
+    func moveSnippets(_ refs: [ContentRef], into collection: CollectionID?, expecting identity: StoreIdentity?)
+        async throws -> Bool
+    func markSnippets(_ refs: [ContentRef], favorite: Bool, expecting identity: StoreIdentity?) async throws
+}
+
+extension CollectionService: QuickAccessCollectionChanges {
+    func moveSnippets(_ refs: [ContentRef], into collection: CollectionID?, expecting identity: StoreIdentity?)
+        async throws -> Bool {
+        var target: CollectionSnapshot?
+        if let collection {
+            guard let snapshot = try await list(expecting: identity).first(where: { $0.value.id == collection }) else {
+                throw CollectionServiceError.deletedCollection
+            }
+            target = snapshot
+        }
+        return try await move(refs, to: target, expecting: identity).affectedItems.isEmpty == false
+    }
+
+    func markSnippets(_ refs: [ContentRef], favorite: Bool, expecting identity: StoreIdentity?) async throws {
+        _ = try await setFavorite(refs, isFavorite: favorite, expecting: identity)
+    }
+}

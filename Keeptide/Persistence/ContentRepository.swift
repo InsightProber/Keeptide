@@ -48,6 +48,15 @@ struct ContentRepository: Sendable {
         }
     }
 
+    /// The item's current ref for `facet`; nil, or a throw, when it has none.
+    func currentRef(itemID: ItemID, facet: ContentFacet) async throws -> ContentRef? {
+        try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            return try StoredRecords.currentRef(itemID: itemID, facet: facet, in: context)
+        }
+    }
+
     func recordState(_ key: RecordKey) async throws -> RecordState {
         try await controller.perform { context in
             context.reset()

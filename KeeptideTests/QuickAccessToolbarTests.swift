@@ -498,6 +498,10 @@ final class QuickAccessToolbarTests: XCTestCase {
         // The button is what Tab reaches and VoiceOver reads; its face only draws.
         XCTAssertTrue(button.isAccessibilityElement())
         XCTAssertFalse(button.face.isAccessibilityElement())
+        // Views are no controls: these say they are enabled, or VoiceOver would call them dimmed.
+        XCTAssertTrue(button.isAccessibilityEnabled())
+        XCTAssertTrue(toolbar.lists.segments.isAccessibilityEnabled())
+        XCTAssertTrue(toolbar.lists.chipsView.isAccessibilityEnabled())
         XCTAssertEqual(button.accessibilityRole(), .popUpButton)
         XCTAssertEqual(button.accessibilityLabel(), "Filter")
         XCTAssertEqual(button.accessibilityIdentifier(), "QuickAccessFilterButton")
