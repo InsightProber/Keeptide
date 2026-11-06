@@ -140,10 +140,164 @@ final class LibraryLayoutTests: XCTestCase {
         )
     }
 
-    func testCurrentLibrarySectionsDoNotAdvertiseFutureCollectionsOrTrash() {
-        XCTAssertEqual(LibrarySection.allCases, [.recentClips, .allSnippets, .uncategorized])
-        XCTAssertEqual(LibrarySection.allSnippets.scope, .allSnippets)
-        XCTAssertEqual(LibrarySection.uncategorized.scope, .uncategorized)
+    func testTheSidebarListsTheScopesInItsSectionOrder() {
+        let prompts = CollectionID()
+        let drafts = CollectionID()
+
+        XCTAssertEqual(
+            LibrarySidebar.scopes(collections: [prompts, drafts]),
+            [.recentClips, .allSnippets, .favorites, .collection(prompts), .collection(drafts), .uncategorized,
+             .recentlyDeleted]
+        )
+        // Without a collection, Unfiled would only repeat All Snippets, so it is not listed.
+        XCTAssertEqual(LibrarySidebar.scopes(collections: []), [.recentClips, .allSnippets, .favorites, .recentlyDeleted])
+    }
+
+    func testListCommandsMoveAlongTheSidebarAndStopAtItsEnds() {
+        let prompts = CollectionID()
+
+        XCTAssertEqual(LibrarySidebar.scope(1, from: .favorites, collections: [prompts]), .collection(prompts))
+        XCTAssertEqual(LibrarySidebar.scope(1, from: .collection(prompts), collections: [prompts]), .uncategorized)
+        XCTAssertEqual(LibrarySidebar.scope(-1, from: .recentlyDeleted, collections: []), .favorites)
+        XCTAssertNil(LibrarySidebar.scope(-1, from: .recentClips, collections: [prompts]))
+        XCTAssertNil(LibrarySidebar.scope(1, from: .recentlyDeleted, collections: [prompts]))
+    }
+
+    func testAListThatGoesAwayLeavesForTheNearestListStillShown() {
+        let prompts = CollectionID()
+        let drafts = CollectionID()
+
+        // The collection shown is gone: Unfiled while another collection remains, All Snippets otherwise.
+        XCTAssertEqual(LibrarySidebar.scope(replacing: .collection(prompts), collections: [drafts]), .uncategorized)
+        XCTAssertEqual(LibrarySidebar.scope(replacing: .collection(prompts), collections: []), .allSnippets)
+        // Unfiled hides with the last collection.
+        XCTAssertEqual(LibrarySidebar.scope(replacing: .uncategorized, collections: []), .allSnippets)
+        // A list still shown stays.
+        XCTAssertNil(LibrarySidebar.scope(replacing: .collection(drafts), collections: [drafts]))
+        XCTAssertNil(LibrarySidebar.scope(replacing: .uncategorized, collections: [drafts]))
+        XCTAssertNil(LibrarySidebar.scope(replacing: .favorites, collections: []))
+    }
+
+    func testTheScopeMenusListTheSidebarsSections() {
+        let prompts = CollectionID()
+        let sections = LibrarySidebar.sections(collections: [(prompts, "Prompts")])
+
+        XCTAssertEqual(sections.map { $0.map(\.title) },
+                       [["Recent Clips"], ["All Snippets", "Favorites"], ["Prompts", "Unfiled"], ["Recently Deleted"]])
+        XCTAssertEqual(Array(sections.joined().map(\.scope)), LibrarySidebar.scopes(collections: [prompts]))
+        XCTAssertEqual(LibrarySidebar.sections(collections: []).map { $0.map(\.title) },
+                       [["Recent Clips"], ["All Snippets", "Favorites"], ["Recently Deleted"]])
+    }
+
+    func testTheWindowSubtitleElidesALongListNameInTheMiddle() {
+        XCTAssertEqual(LibrarySidebar.subtitle("Immediate Scope"), "Immediate Scope")
+        let long = LibrarySidebar.subtitle("Group 20 — 很长的中文名称用于验证完整筛选")
+        XCTAssertEqual(long, "Group 2…于验证完整筛选")
+        XCTAssertEqual(long.count, 15)
+    }
+
+    func testTheWindowSubtitleNamesTheChosenList() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        controller.selectNextList(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "All Snippets" }
+        XCTAssertEqual(window.title, "Keeptide Library")
+        controller.selectPreviousList(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+    }
+
+    func testSwiftUIsToolbarBridgeWritesTheListAsTheSubtitleToo() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        // SwiftUI's toolbar bridge also writes the window's subtitle, from the view's navigation subtitle, when the
+        // view joins the window and as its bars change; on macOS 26 that can come after the controller's write. So
+        // the bridge must write the same name: with the controller's write switched off, the subtitle still names the
+        // list. (If SwiftUI ever stops writing the subtitle here, this test and the view's subtitle can go.)
+        controller.commands.showListTitle = { _ in }
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        controller.selectNextList(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "All Snippets" }
+        XCTAssertEqual(window.title, "Keeptide Library")
+    }
+
+    func testChooseListPutsTheKeyboardOnTheSidebarWhileItShows() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(window.firstResponder is NSOutlineView)
+
+        controller.chooseList(nil)
+
+        try await waitUntilLaidOut(window) { window.firstResponder is NSOutlineView }
+    }
+
+    func testChooseListOffersTheListsUnderTheScopeMenuWhileTheSidebarIsHidden() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        XCTAssertNil(controller.listMenuAnchor(), "The sidebar chooses lists while it shows")
+
+        controller.toggleLibrarySidebar(nil)
+
+        try await waitUntilLaidOut(window) { controller.listMenuAnchor() != nil }
+        XCTAssertFalse(controller.commands.sidebarIsVisible)
+        // Where the help does not reach the toolbar item, the item after the sidebar button is the same menu.
+        XCTAssertTrue(controller.listMenuAnchor(byHelp: false) === controller.listMenuAnchor())
+        let menu = controller.makeListMenu()
+        XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
+                       ["Recent Clips", "All Snippets", "Favorites", "Recently Deleted", "New Collection…"])
+        XCTAssertEqual(menu.items.filter { $0.state == .on }.map(\.title), ["Recent Clips"])
+        // The lists share one action; each has its own identifier, or a click found by title lands on the first.
+        let lists = menu.items.filter { $0.representedObject is LibraryScope }
+        XCTAssertEqual(Set(lists.compactMap(\.identifier)).count, lists.count)
+
+        // Choosing from it chooses the list, as the sidebar would.
+        let favorites = try XCTUnwrap(menu.items.first { $0.title == "Favorites" })
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex(of: favorites)))
+        try await waitUntilLaidOut(window) { window.subtitle == "Favorites" }
+    }
+
+    func testTheSidebarCannotBeLeftWithoutAList() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        var sidebar: NSOutlineView?
+        try await waitUntilLaidOut(window) {
+            window.contentView?.layoutSubtreeIfNeeded()
+            // Before the library opens, the sidebar is the window's only outline.
+            sidebar = self.views(NSOutlineView.self, in: window.contentView).first
+            return sidebar?.selectedRowIndexes.isEmpty == false && window.subtitle == "Recent Clips"
+        }
+        let outline = try XCTUnwrap(sidebar)
+        let selected = outline.selectedRowIndexes
+
+        outline.deselectAll(nil)
+
+        try await waitUntilLaidOut(window) { outline.selectedRowIndexes == selected }
+        XCTAssertEqual(window.subtitle, "Recent Clips")
     }
 
     func testLibraryEnablesOnlyToolbarSceneBridging() throws {
@@ -186,6 +340,16 @@ final class LibraryLayoutTests: XCTestCase {
 
         XCTAssertEqual(controller.commands.openRequest?.ref, ref)
         XCTAssertEqual(controller.commands.openRequest?.generation, 1)
+    }
+
+    /// Waits for `condition`, laying the window out before each check: a test host without a display does not run
+    /// SwiftUI's updates on its own.
+    private func waitUntilLaidOut(_ window: NSWindow, _ condition: () -> Bool) async throws {
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            return condition()
+        }
     }
 
     private func views<View: NSView>(_ type: View.Type, in root: NSView?) -> [View] {
