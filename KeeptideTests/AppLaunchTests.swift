@@ -234,7 +234,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(service.registerCalls, 0)
     }
 
-    func testSettingsIgnoredApplicationsActionOpensTheExistingLibrarySheet() throws {
+    func testManagingIgnoredAppsFromSettingsDoesNotOpenTheLibrary() throws {
         let suiteName = "AppLaunchTests.ignoredApplications.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
@@ -252,12 +252,12 @@ final class AppLaunchTests: XCTestCase {
         )
         let library = environment.libraryWindowController
         addTeardownBlock { library.close() }
-        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 0)
+        XCTAssertFalse(environment.settingsModel.showsIgnoredApplications)
 
-        environment.settingsModel.actions.manageIgnoredApplications()
+        environment.settingsModel.presentIgnoredApplications()
 
-        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 1)
-        XCTAssertTrue(library.window?.isVisible == true)
+        XCTAssertTrue(environment.settingsModel.showsIgnoredApplications)
+        XCTAssertNotEqual(library.window?.isVisible, true)
     }
 
     func testQuickAccessDoesNotActivateTheApplicationOrHideAnUnfinishedSession() throws {
@@ -2162,6 +2162,36 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
+    func testDoubleClickingTheOlderClipPastesItLikeReturn() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true,
+                                                               system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        _ = try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil), in: controller)
+        let strip = try await clipStrip(in: window)
+        let older = try frame(of: "older", in: strip)
+        let point = strip.convert(NSPoint(x: older.midX, y: older.midY), to: nil)
+        let click = { (type: NSEvent.EventType, count: Int) in
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: count, pressure: type == .leftMouseUp ? 0 : 1))
+        }
+
+        // The first click selects the older clip; the second, once released, pastes it into TextEdit.
+        strip.mouseDown(with: try click(.leftMouseDown, 1))
+        strip.mouseUp(with: try click(.leftMouseUp, 1))
+        strip.mouseDown(with: try click(.leftMouseDown, 2))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(pasting.sent, [], "Nothing is sent while the button is down")
+        XCTAssertTrue(window.isVisible)
+        strip.mouseUp(with: try click(.leftMouseUp, 2))
+
+        try await SearchTestSupport.waitUntil { pasting.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "older")
+        XCTAssertFalse(window.isVisible)
+    }
+
     func testRightClickingTheOlderClipCopiesItOrNothing() async throws {
         let (controller, board) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
@@ -3976,6 +4006,41 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(opened, [selected, selected])
         XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_N, "n", modifiers: .command)))
         XCTAssertEqual(newSnippets, 2)
+    }
+
+    func testSettingsSaysWhetherDirectPasteIsOnAndReadsItAgainWhenKeeptideIsActive() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["copy me"], into: harness)
+        let fake = FakeDirectPasteSystem()
+        fake.permitted = false
+        let panel = try makePanel(over: harness, pasteboard: board, system: fake.system)
+        let environment = AppEnvironment(makePanel: { panel })
+        addTeardownBlock { panel.close() }
+        var alerts = 0
+        environment.runDirectPasteAlert = { _ in
+            alerts += 1
+            return .alertFirstButtonReturn
+        }
+        environment.activateApp = {}
+        XCTAssertTrue(environment.panelController === panel)
+        let directPaste = environment.settingsModel.directPaste
+
+        // Coming to Keeptide reads the state: off, as nothing allowed it yet.
+        environment.applicationDidBecomeActive()
+        XCTAssertEqual(directPaste.state, .off)
+
+        // Settings turns it on as the panel's Enable Direct Paste… does, and the grant waits for Keeptide to reopen.
+        directPaste.turnOn()
+        XCTAssertEqual(alerts, 1)
+        XCTAssertEqual(fake.accessRequests, 1)
+        XCTAssertEqual(directPaste.state, .awaitsReopen)
+
+        // Reopened with access, Keeptide reads it again when it becomes active.
+        fake.permitted = true
+        environment.applicationDidBecomeActive()
+        XCTAssertEqual(directPaste.state, .on)
     }
 
     func testEnableDirectPasteExplainsWhatItTakesBeforeAskingForAccess() async throws {

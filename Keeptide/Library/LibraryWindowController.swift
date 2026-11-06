@@ -68,7 +68,6 @@ final class LibraryWindowController: NSWindowController {
     @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
     @objc func exportLibrary(_ sender: Any?) { commands.exportLibraryRequest &+= 1 }
     @objc func exportSelected(_ sender: Any?) { commands.exportSelectedRequest &+= 1 }
-    func showIgnoredApplications() { commands.requestIgnoredApplications() }
 
     func open(_ ref: ContentRef) {
         commands.openRequest = LibraryOpenRequest(
@@ -130,7 +129,6 @@ final class LibraryWindowCommands {
     var exportLibraryRequest = 0
     var exportSelectedRequest = 0
     private(set) var searchRequest = 0
-    private(set) var ignoredApplicationsRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
     private var searchFocus = SearchFocusRequestState()
@@ -164,10 +162,6 @@ final class LibraryWindowCommands {
     func updateExportContext(refs: [ContentRef], isRecentlyDeleted: Bool) {
         selectedExportRefs = refs
         self.isRecentlyDeleted = isRecentlyDeleted
-    }
-
-    func requestIgnoredApplications() {
-        ignoredApplicationsRequest &+= 1
     }
 }
 

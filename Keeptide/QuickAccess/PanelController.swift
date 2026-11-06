@@ -267,6 +267,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             self?.update()
         }
         strip.onCommand = { [weak self] in self?.perform($0) }
+        strip.onActivate = { [weak self] in self?.activate($0, plainText: $1) }
         strip.onVisibleRefsChanged = { [weak self] in self?.loadFramedRows($0, lastOnScreen: $1) }
         strip.onContextMenu = { [weak self] in self?.actionMenu(for: $0) }
         state.onCompleted = { [weak self] in self?.finish($0) }
@@ -582,9 +583,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     // MARK: Acting
 
-    /// Return, ⇧Return and the toolbar's button: the clip selected when the key is pressed, delivered as the toolbar
-    /// says (decision 2). The action finishes later. While a command waits on the review card they do nothing: only
-    /// ⌘Return and the card's button confirm it.
+    /// Return, ⇧Return, a double click and the toolbar's button: the clip selected when the key is pressed, delivered as
+    /// the toolbar says (decision 2). The action finishes later. While a command waits on the review card they do
+    /// nothing: only ⌘Return and the card's button confirm it.
     ///
     /// A paste waits for Return and keypad Enter to come up, for up to `returnReleaseWait`, and then goes ahead: with
     /// one still down, the paste service copies instead (`.returnHeld`), and the panel stays until the key is up. A
@@ -603,6 +604,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             await state.act(on: target, mode: mode, delivery: delivery)
             if guessesReturn, isSessionOpen { forgetGuessedReturn() }
         }
+    }
+
+    /// A double click on a clip does what Return does, or ⇧Return with ⇧, once the clip it chose is the selected one:
+    /// the state may have refused to select it, and then nothing acts.
+    private func activate(_ row: QuickAccessRow.ID, plainText: Bool) {
+        guard state.selection.selectedID == row else { return }
+        act(plainText ? .plainText : .original)
     }
 
     /// The menu's copy that never pastes: "Copy", or "Copy As-Is" in a terminal's session.

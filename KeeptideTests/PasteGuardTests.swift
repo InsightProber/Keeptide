@@ -195,6 +195,27 @@ final class PasteGuardTests: XCTestCase {
         XCTAssertEqual(fake.accessRequests, 0)
     }
 
+    func testAccessStateSaysOnOffOrWaitingForAReopen() async throws {
+        let (fixture, _) = try await makeFixture()
+        let fake = FakeDirectPasteSystem()
+        let paste = fixture.service(system: fake.system)
+        XCTAssertEqual(paste.accessState(), .on)
+
+        // Not permitted, and not asked for in this run: off.
+        fake.permitted = false
+        XCTAssertEqual(paste.accessState(), .off)
+
+        // Asked for in this run, whatever the system answered: any grant waits for Keeptide to reopen.
+        paste.requestDirectPasteAccess()
+        XCTAssertEqual(fake.accessRequests, 1)
+        XCTAssertEqual(paste.accessState(), .awaitsReopen)
+
+        // Once this run may send keystrokes, it is on, however it got there.
+        fake.permitted = true
+        XCTAssertEqual(paste.accessState(), .on)
+        XCTAssertEqual(fake.sent, [], "Reading the state sends nothing")
+    }
+
     func testUnresolvedKeyCopiesInstead() async throws {
         let (fixture, ref) = try await makeFixture()
         let fake = FakeDirectPasteSystem()

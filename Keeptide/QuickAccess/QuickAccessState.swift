@@ -126,9 +126,9 @@ final class QuickAccessState {
     /// What the checks allowed for the session's target when the session started: a paste, or why not. nil without
     /// a library.
     private(set) var directPaste: DirectPasteAvailability?
-    /// Whether Enable Direct Paste… asked for access in this run of Keeptide. The system shows a grant to Keeptide
-    /// only once it reopens, so every later showing says so. Closing the panel keeps it.
-    private(set) var hasRequestedDirectPasteAccess = false
+    /// Whether the session started without permission after this run asked for access: the system lets Keeptide send
+    /// keystrokes only once it reopens, so the panel says so. Closing the panel keeps the request.
+    private(set) var directPasteAwaitsReopen = false
     /// The command the selected clip's last action is waiting on. Nothing has been written or sent for it.
     private(set) var commandReview: CommandReview?
     /// Called once an action has written the clipboard, whether it pasted, copied or copied instead.
@@ -218,7 +218,7 @@ final class QuickAccessState {
     func actions(for ref: ContentRef?) -> QuickAccessActions {
         QuickAccessActions.make(target: pasteTarget, availability: directPaste,
                                 kind: ref.flatMap { ref in selection.rows.first { $0.ref == ref } }?.kind,
-                                accessRequested: hasRequestedDirectPasteAccess)
+                                awaitsReopen: directPasteAwaitsReopen)
     }
 
     /// The delivery Return and ⇧Return ask for. It is a paste only when the session started able to paste, so a
@@ -262,6 +262,7 @@ final class QuickAccessState {
         session = nil
         pasteTarget = nil
         directPaste = nil
+        directPasteAwaitsReopen = false
         isPreviewExpanded = false
         preview = nil
         previewMessage = nil
@@ -558,11 +559,15 @@ final class QuickAccessState {
     }
 
     /// Enable Direct Paste…: asks for access, and opens Accessibility settings when the system no longer asks. The
-    /// request is remembered for the rest of this run. What the panel offers to do stays as it was when it opened.
+    /// paste service remembers the request for the rest of this run. What the panel offers to do stays as it was when
+    /// it opened.
     func requestDirectPasteAccess() {
-        guard let paste = services()?.paste else { return }
-        paste.requestDirectPasteAccess()
-        hasRequestedDirectPasteAccess = true
+        services()?.paste.requestDirectPasteAccess()
+    }
+
+    /// Whether Keeptide can paste directly now, for Settings to say; nil without a library.
+    func directPasteAccessState() -> DirectPasteAccessState? {
+        services()?.paste.accessState()
     }
 
     /// Copies what was selected when the key was pressed, never a row selected later.
@@ -684,10 +689,12 @@ final class QuickAccessState {
             self.session = session
             pasteTarget = session.target
             directPaste = paste.availability(for: session)
+            directPasteAwaitsReopen = directPaste == .copy(.notPermitted) && paste.accessState() == .awaitsReopen
         } else {
             session = nil
             pasteTarget = nil
             directPaste = nil
+            directPasteAwaitsReopen = false
         }
         readFrequentWing()
         readCollections()
