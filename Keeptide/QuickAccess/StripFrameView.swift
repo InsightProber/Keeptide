@@ -9,7 +9,7 @@ enum StripMarker: Equatable {
     case favorite
 }
 
-/// One piece of the line under a card's kind, in the colour band.
+/// One piece of the line under a card's kind, in its header.
 enum StripHeaderItem: Equatable {
     case time(String)
     /// How often a frequent clip was used, in place of its time.
@@ -36,7 +36,7 @@ struct StripFrameContent: Equatable {
         case placeholder(symbol: String, title: String)
     }
 
-    /// What the colour band names the clip.
+    /// What the header names the clip.
     var kind: ContentKind
     /// Whether the card is a clip's or a memo's.
     var facet: ContentFacet = .history
@@ -45,13 +45,14 @@ struct StripFrameContent: Equatable {
     /// Whether a memo is a favorite.
     var isFavorite = false
 
-    /// The colour band's first line: the kind of a clip, or "Snippet" for a memo.
+    /// The header's first line: the kind of a clip, or "Snippet" for a memo.
     var bandName: String { facet == .memo ? "Snippet" : kind.accessibilityName }
-    /// How long ago the clip was copied, as the colour band says it.
+    /// How long ago the clip was copied, as the header says it.
     var time: String
-    /// A frequent clip's "Used N times", shown in the colour band in place of its time; nil otherwise.
+    /// A frequent clip's "Used N times", shown in the header in place of its time; nil otherwise.
     var uses: String?
-    /// The app the clip came from. Its icon gives the colour band its colour.
+    /// The app the clip came from. Its icon shows in the header, and gives the card its accent when it is in no
+    /// collection.
     var sourceApp: String?
     /// What VoiceOver names the clip by, after the band and the footer: the title a link's card shows, and the clip's
     /// own title for everything else.
@@ -71,7 +72,7 @@ struct StripFrameContent: Equatable {
     /// shape from here and not from the thumbnail.
     var imageAspectRatio: CGFloat?
 
-    /// The colour band's second line, left to right: the time, or how often a frequent clip was used, then a memo's
+    /// The header's second line, left to right: the time, or how often a frequent clip was used, then a memo's
     /// collection, then the marks, and how many more items there are.
     var headerLine: [StripHeaderItem] {
         [uses.map(StripHeaderItem.uses) ?? .time(time)]
@@ -181,11 +182,11 @@ struct StripFrameContent: Equatable {
         return true
     }
 
-    /// Sets a text body at the style its length gives, with the memo title above it when it has one.
+    /// Sets a text body at the card size's style, with the memo title above it when it has one.
     private mutating func setText(_ text: AttributedString, plain: String, for row: QuickAccessRow,
                                   cardSize: CardSize) {
         memoTitle = Self.memoTitle(of: row, over: plain)
-        body = .text(text, style: StripTypography.bodyStyle(for: plain, cardSize: cardSize))
+        body = .text(text, style: StripTypography.bodyStyle(cardSize: cardSize))
     }
 
     /// A memo's title earns a line of its own only when the body does not begin with it.
@@ -234,8 +235,56 @@ struct StripFrameContent: Equatable {
     }
 }
 
+/// The one colour a card takes, which washes in from its top and lights the band behind it while it is selected: the
+/// colour of the collection a snippet is in, or else the colour its app's icon gives it. A card in no collection whose
+/// app's icon has no colour to speak of, or that has no app, takes none.
+enum CardAccent: Equatable, Sendable {
+    /// A collection's colour, by the name it is stored under.
+    case collection(String)
+    /// The colour the card's app gives it, taken from the app's icon.
+    case app(HeaderTint.RGB)
+
+    /// `row`'s accent: the colour of its collection when `collectionColors` holds it, otherwise `tint`, the colour its
+    /// app's icon gives, unless that is grey; nil for neither.
+    init?(row: QuickAccessRow, collectionColors: [CollectionID: String], tint: HeaderTint?) {
+        if let id = row.collectionID, let color = collectionColors[id] {
+            self = .collection(color)
+        } else if let tint, !tint.isNeutral {
+            self = .app(tint.background)
+        } else {
+            return nil
+        }
+    }
+
+    /// The colour as SwiftUI draws it. A collection's is the system's, which follows the appearance.
+    var color: Color {
+        switch self {
+        case .collection(let name): Color.collection(name)
+        case .app(let rgb): rgb.color
+        }
+    }
+
+    /// The colour in sRGB as `appearance` shows it.
+    @MainActor
+    func rgb(in appearance: NSAppearance) -> HeaderTint.RGB {
+        switch self {
+        case .app(let rgb):
+            return rgb
+        case .collection(let name):
+            var rgb = HeaderTint.RGB(red: 0, green: 0, blue: 0)
+            appearance.performAsCurrentDrawingAppearance {
+                if let srgb = NSColor.collection(name).usingColorSpace(.sRGB) {
+                    rgb = HeaderTint.RGB(red: Double(srgb.redComponent), green: Double(srgb.greenComponent),
+                                         blue: Double(srgb.blueComponent))
+                }
+            }
+            return rgb
+        }
+    }
+}
+
 extension ContentKind {
-    /// The word a card's colour band shows, and VoiceOver says first.
+    /// The word a card's header shows, and VoiceOver says first.
     var accessibilityName: String {
         switch self {
         case .text: "Text"
@@ -247,22 +296,20 @@ extension ContentKind {
     }
 }
 
-/// One card of the strip: a band in the colour of the source app's icon, naming the kind of clip and how long ago
-/// it was copied, with the app's icon at its right; the clip itself, as large as the card allows; and a footer with
-/// its length, size, host or type. It is drawn at the size `metrics` gives. Its shadow extends outside that size,
-/// so whatever hosts the card must not clip it.
+/// One card of the strip: a header naming the kind of clip and how long ago it was copied, with the source app's icon
+/// at its right, and the card's accent washing in from its top behind it; the clip itself, as large as the card
+/// allows; and a footer with its length, size, host or type. It is drawn at the size `metrics` gives. In light mode
+/// its shadow extends outside that size, so whatever hosts the card must not clip it.
 struct StripFrameView: View {
     let content: StripFrameContent
     let applicationIcon: NSImage
     let metrics: StripMetrics
-    /// The band's colour, worked out from the source app's icon when the app's first card is made. A clip without a
-    /// source app has none, and its band is neutral.
-    let headerTint: HeaderTint?
+    /// The card's colour, which washes in from its top; nil for a neutral header.
+    let accent: CardAccent?
     let isSelected: Bool
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     /// The system draws an app's icon, and a document's, with a clear margin around it: of every 64 points the
     /// icon itself fills 52 across, and a document's page 57 down. The icons are drawn that much larger, so that
@@ -272,16 +319,22 @@ struct StripFrameView: View {
 
     private var isDark: Bool { colorScheme == .dark }
     private var increasedContrast: Bool { contrast == .increased }
-    /// A medium card's measures are scaled by this on the other card sizes, as its text is.
+    /// A medium card's measures are scaled by this on the other card sizes.
     private var scale: CGFloat { StripTypography.scale(for: metrics.cardSize) }
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous) }
-
-    private var tint: HeaderTint { headerTint ?? .neutral(dark: isDark) }
 
     var body: some View {
         VStack(spacing: 0) {
             header
                 .frame(height: metrics.headerHeight)
+                // With Increase Contrast, where the wash is weaker, a line sets the header off from the clip.
+                .overlay(alignment: .bottom) {
+                    if increasedContrast {
+                        Rectangle()
+                            .fill(Palette.edge(isDark, increasedContrast: true))
+                            .frame(height: 1)
+                    }
+                }
             middle
                 .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
                 .clipped()
@@ -289,59 +342,88 @@ struct StripFrameView: View {
                 .frame(height: metrics.footerHeight)
         }
         .frame(width: metrics.frameSize.width, height: metrics.frameSize.height)
-        // The paper's hairline lies under the band, the picture and the text, as in the design.
+        // The hairline inside the card's edge, and the wash, lie under the picture and the text, as in the design.
         .background {
             shape.fill(Palette.paper(isDark))
-            shape.strokeBorder(Palette.hairline(isDark), lineWidth: 0.5)
+            shape.strokeBorder(Palette.edge(isDark, increasedContrast: increasedContrast), lineWidth: 1)
+            wash
         }
         .clipShape(shape)
-        .overlay {
-            if let width = Self.paperStroke(reduceTransparency: reduceTransparency) {
-                shape.strokeBorder(Color(nsColor: .separatorColor), lineWidth: width)
+        // A light card stands on the light tray by a soft shadow; a dark one by its lighter colour alone.
+        .background {
+            if !isDark {
+                shape.fill(Palette.paper(isDark))
+                    .shadow(color: Palette.shadow, radius: 9, x: 0, y: 6)
             }
         }
-        .background {
-            shape.fill(Palette.paper(isDark))
-                .shadow(color: Palette.shadow(isDark), radius: isDark ? 10 : 8, x: 0, y: isDark ? 8 : 6)
+    }
+
+    // MARK: Wash
+
+    /// The accent washing in from the card's top behind its header and fading out below it, 70 pt tall on a medium
+    /// card and as much taller or shorter as the card is. None without an accent: the header stays neutral.
+    @ViewBuilder
+    private var wash: some View {
+        if let accent {
+            let opacity = Self.washOpacity(dark: isDark, increasedContrast: increasedContrast)
+            LinearGradient(stops: [.init(color: accent.color.opacity(opacity.top), location: 0),
+                                   .init(color: accent.color.opacity(opacity.middle), location: 0.58),
+                                   .init(color: accent.color.opacity(0), location: 1)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: Self.washHeight(metrics))
+                .frame(maxHeight: .infinity, alignment: .top)
+                .allowsHitTesting(false)
         }
     }
 
-    /// The width of the line drawn along a card's edge, if it has one. With Reduce Transparency the band is
-    /// solid and can be close to the paper's colour, so each card draws a firm line of its own to show where it
-    /// ends; otherwise the hairline under its content and its shadow do that.
-    nonisolated static func paperStroke(reduceTransparency: Bool) -> CGFloat? {
-        reduceTransparency ? 1 : nil
+    /// The wash's strength at the card's top, and 58 percent of the way down it: 30 and 13 percent in dark mode, 22
+    /// and 9 in light mode, and a third less with Increase Contrast. It fades to nothing at its bottom.
+    nonisolated static func washOpacity(dark: Bool, increasedContrast: Bool) -> (top: Double, middle: Double) {
+        let (top, middle) = dark ? (0.30, 0.13) : (0.22, 0.09)
+        return increasedContrast ? (top * 2 / 3, middle * 2 / 3) : (top, middle)
     }
 
-    // MARK: Colour band
+    /// How far down the card the wash reaches: 70 pt on a medium card, scaled by the card's height.
+    nonisolated static func washHeight(_ metrics: StripMetrics) -> CGFloat {
+        (70 * metrics.frameSize.height / StripLayout.cardDimensions(for: .medium).frame.height).rounded()
+    }
 
+    // MARK: Header
+
+    /// The kind on the first line, and under it the time and the rest of the header's line, at the left; the app's
+    /// icon at the right, level with the kind.
     private var header: some View {
-        let tint = self.tint
-        let secondary = tint.secondaryText(increasedContrast: increasedContrast).color
-        return ZStack {
-            tint.background.color
-            VStack(alignment: .leading, spacing: 1) {
+        let insets = headerInsets
+        return HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(content.bandName)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(tint.text.color)
-                    .frame(height: 19)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Palette.text(isDark))
+                    .frame(height: 16)
                 HStack(spacing: 4) {
                     ForEach(Array(content.headerLine.enumerated()), id: \.offset) { _, item in
-                        headerItem(item, color: secondary)
+                        headerItem(item, color: metaText)
                     }
                 }
-                .frame(height: 16)
+                .frame(height: 14)
             }
             .lineLimit(1)
-            .padding(.leading, 14)
-            // Clear of the icon, which stands 10 pt in from the right.
-            .padding(.trailing, 10 + metrics.iconSize + 8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             appIcon
-                .padding(.trailing, 10)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
+        .padding(.top, insets.top)
+        .padding(.leading, insets.leading)
+        .padding(.trailing, insets.trailing)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
+
+    /// The header's room: 11 pt above, 13 at the left and 11 at the right on a medium card. The room above scales with
+    /// the header's height, the room beside with the card's width.
+    private var headerInsets: (top: CGFloat, leading: CGFloat, trailing: CGFloat) {
+        ((11 * metrics.headerHeight / 46).rounded(), (13 * scale).rounded(), (11 * scale).rounded())
+    }
+
+    private var metaText: Color { increasedContrast ? Palette.text(isDark) : Palette.meta(isDark) }
 
     @ViewBuilder
     private func headerItem(_ item: StripHeaderItem, color: Color) -> some View {
@@ -349,7 +431,7 @@ struct StripFrameView: View {
         // How often a frequent clip was used is drawn as the time it stands in for.
         case .time(let text), .uses(let text):
             Text(text)
-                .font(.system(size: 12))
+                .font(.system(size: 11))
                 .foregroundStyle(color)
         case .marker(let marker):
             let (symbol, name): (String, String) = switch marker {
@@ -358,38 +440,39 @@ struct StripFrameView: View {
             case .favorite: ("star.fill", "Favorite")
             }
             Image(systemName: symbol)
-                .font(.system(size: 12))
+                .font(.system(size: 10))
                 .foregroundStyle(color)
                 .help(name)
                 .accessibilityLabel(name)
         case .collection(let name, let colorName):
-            HStack(spacing: 3) {
+            HStack(spacing: 4) {
                 Circle()
                     .fill(Color.collection(colorName))
-                    .frame(width: 8, height: 8)
+                    .frame(width: 7, height: 7)
                 Text(name)
-                    .font(.system(size: 12))
+                    .font(.system(size: 11))
                     .foregroundStyle(color)
                     .truncationMode(.middle)
             }
             .help(name)
         case .extraItems(let count):
             Text("+\(count)")
-                .font(.system(size: 12, weight: .medium))
+                .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(color)
                 .accessibilityHidden(true)
         }
     }
 
-    /// The source app's own icon, its visible square `iconSize` a side, with a slight shadow.
+    /// The source app's own icon, its visible square `iconSize` a side, with its corners rounded as the design rounds
+    /// the tile it stands in: 7.5 pt on a medium card's 28 pt icon.
     private var appIcon: some View {
         let drawn = metrics.iconSize / Self.appIconFill
         return Image(nsImage: applicationIcon)
             .resizable()
             .interpolation(.high)
             .frame(width: drawn, height: drawn)
-            .shadow(color: .black.opacity(0.35), radius: 1.5, x: 0, y: 1)
             .frame(width: metrics.iconSize, height: metrics.iconSize)
+            .clipShape(RoundedRectangle(cornerRadius: 7.5 * metrics.iconSize / 28, style: .continuous))
             .accessibilityHidden(true)
     }
 
@@ -421,8 +504,12 @@ struct StripFrameView: View {
         }
     }
 
-    /// Room for text in the middle, inside its padding.
+    /// Room beside the text in the middle.
     private var textPadding: CGFloat { StripTypography.padding(for: metrics.cardSize) }
+    /// Room above the text in the middle, under the header, and below it, over the footer.
+    private var verticalPadding: (top: CGFloat, bottom: CGFloat) {
+        StripTypography.verticalPadding(for: metrics.cardSize)
+    }
 
     /// The text from the top left, as many lines as fill the middle, with the memo title in bold on the first.
     private func textBody(_ text: AttributedString, style: StripTextStyle) -> some View {
@@ -441,21 +528,28 @@ struct StripFrameView: View {
         }
         .foregroundStyle(Palette.text(isDark))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(textPadding)
+        .padding(.top, verticalPadding.top)
+        .padding(.bottom, verticalPadding.bottom)
+        .padding(.horizontal, textPadding)
     }
 
-    /// A light tile with a globe, and the link's title under it, centred.
+    /// How many lines of `style` fit in the middle below a symbol or a tile `height` tall and the `gap` under it.
+    private func lines(under height: CGFloat, gap: CGFloat, style: StripTextStyle) -> Int {
+        let room = metrics.contentSize.height - verticalPadding.top - verticalPadding.bottom - height - gap
+        return StripTypography.lines(in: room, style: style)
+    }
+
+    /// A light tile with a globe, and the link's title under it, centred in the middle.
     private func linkBody(_ title: AttributedString) -> some View {
         let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
-        let (top, gap, bottom, tile) = (22 * scale, 14 * scale, 14 * scale, 48 * scale)
-        let room = metrics.contentSize.height - top - tile - gap - bottom
+        let (gap, tile) = (10 * scale, 38 * scale)
         return VStack(spacing: gap) {
-            RoundedRectangle(cornerRadius: 14 * scale, style: .continuous)
-                .fill(Palette.globeTile)
+            RoundedRectangle(cornerRadius: 10 * scale, style: .continuous)
+                .fill(Palette.globeTile(isDark))
                 .frame(width: tile, height: tile)
                 .overlay {
                     Image(systemName: "globe")
-                        .font(.system(size: 21 * scale))
+                        .font(.system(size: 17 * scale))
                         .foregroundStyle(Palette.globe)
                 }
                 .accessibilityHidden(true)
@@ -463,12 +557,13 @@ struct StripFrameView: View {
                 .font(.system(size: style.size, weight: .semibold))
                 .lineHeight(.exact(points: style.lineHeight))
                 .multilineTextAlignment(.center)
-                .lineLimit(min(3, StripTypography.lines(in: room, style: style)))
+                .lineLimit(min(3, lines(under: tile, gap: gap, style: style)))
                 .foregroundStyle(Palette.text(isDark))
         }
-        .padding(.top, top)
-        .padding(.horizontal, 16 * scale)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, verticalPadding.top)
+        .padding(.bottom, verticalPadding.bottom)
+        .padding(.horizontal, textPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// A picture covering the middle, cut evenly at its edges. A picture is shown this way when its shape is within a
@@ -493,11 +588,10 @@ struct StripFrameView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// The icon of the file's type and its name under it, centred.
+    /// The icon of the file's type and its name under it, centred in the middle.
     private func fileBody(name: String, typeIdentifier: String?) -> some View {
         let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
-        let (top, gap, bottom, iconHeight) = (20 * scale, 12 * scale, 12 * scale, 60 * scale)
-        let room = metrics.contentSize.height - top - iconHeight - gap - bottom
+        let (gap, iconHeight) = (10 * scale, 52 * scale)
         let icon = NSWorkspace.shared.icon(for: typeIdentifier.flatMap { UTType($0) } ?? .data)
         return VStack(spacing: gap) {
             Image(nsImage: icon)
@@ -510,20 +604,20 @@ struct StripFrameView: View {
                 .font(.system(size: style.size, weight: .semibold))
                 .lineHeight(.exact(points: style.lineHeight))
                 .multilineTextAlignment(.center)
-                .lineLimit(min(2, StripTypography.lines(in: room, style: style)))
+                .lineLimit(min(2, lines(under: iconHeight, gap: gap, style: style)))
                 .truncationMode(.middle)
                 .foregroundStyle(Palette.text(isDark))
         }
-        .padding(.top, top)
-        .padding(.horizontal, 16 * scale)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, verticalPadding.top)
+        .padding(.bottom, verticalPadding.bottom)
+        .padding(.horizontal, textPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The kind's symbol and the clip's title, laid out as a file is, while there is nothing else to show.
     private func placeholderBody(symbol: String, title: String) -> some View {
         let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
-        let (top, gap, bottom, iconHeight) = (20 * scale, 12 * scale, 12 * scale, 60 * scale)
-        let room = metrics.contentSize.height - top - iconHeight - gap - bottom
+        let (gap, iconHeight) = (10 * scale, 52 * scale)
         return VStack(spacing: gap) {
             Image(systemName: symbol)
                 .font(.system(size: iconHeight * 0.6, weight: .light))
@@ -534,17 +628,18 @@ struct StripFrameView: View {
                 .font(.system(size: style.size, weight: .semibold))
                 .lineHeight(.exact(points: style.lineHeight))
                 .multilineTextAlignment(.center)
-                .lineLimit(min(2, StripTypography.lines(in: room, style: style)))
+                .lineLimit(min(2, lines(under: iconHeight, gap: gap, style: style)))
                 .foregroundStyle(Palette.text(isDark))
         }
-        .padding(.top, top)
-        .padding(.horizontal, 16 * scale)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.top, verticalPadding.top)
+        .padding(.bottom, verticalPadding.bottom)
+        .padding(.horizontal, textPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The memo title, if any, and a notice in place of the text that is gone.
     private var unavailableBody: some View {
-        let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
+        let style = StripTypography.bodyStyle(cardSize: metrics.cardSize)
         return VStack(alignment: .leading, spacing: 0) {
             if let title = content.memoTitle {
                 Text(title)
@@ -559,7 +654,9 @@ struct StripFrameView: View {
                 .foregroundStyle(footerText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(textPadding)
+        .padding(.top, verticalPadding.top)
+        .padding(.bottom, verticalPadding.bottom)
+        .padding(.horizontal, textPadding)
     }
 
     /// A search's hits in bold, on the highlighter's yellow.
@@ -578,7 +675,7 @@ struct StripFrameView: View {
     /// The length, size, host or type of the clip, centred under a hairline.
     private var footer: some View {
         Text(content.info ?? "")
-            .font(.system(size: 12))
+            .font(.system(size: 11))
             .monospacedDigit()
             .lineLimit(1)
             .truncationMode(.middle)
@@ -588,26 +685,31 @@ struct StripFrameView: View {
             .overlay(alignment: .top) {
                 Rectangle()
                     .fill(Palette.separator(isDark))
-                    .frame(height: 0.5)
+                    .frame(height: 1)
             }
     }
 }
 
 /// The card's own colours, the same in every app: the design sets them for dark and light.
 private enum Palette {
-    static func paper(_ dark: Bool) -> Color { dark ? rgb(0x2C2C2E) : rgb(0xFFFFFF) }
+    static func paper(_ dark: Bool) -> Color { dark ? rgb(0x1D1E22) : rgb(0xFFFFFF) }
     static func text(_ dark: Bool) -> Color { dark ? rgb(0xF2F2F7) : rgb(0x1D1D1F) }
-    static func footer(_ dark: Bool) -> Color { dark ? rgb(0x98989D) : rgb(0x6E6E73) }
-    static func hairline(_ dark: Bool) -> Color { dark ? .white.opacity(0.08) : .black.opacity(0.08) }
-    static func separator(_ dark: Bool) -> Color { dark ? .white.opacity(0.07) : .black.opacity(0.07) }
-    static func shadow(_ dark: Bool) -> Color {
-        dark ? .black.opacity(0.35) : Color(.sRGB, red: 30 / 255, green: 30 / 255, blue: 40 / 255, opacity: 0.12)
+    /// The time and the rest of the header's second line.
+    static func meta(_ dark: Bool) -> Color { dark ? rgb(0xA3A3AA) : rgb(0x6E6E73) }
+    static func footer(_ dark: Bool) -> Color { dark ? rgb(0x9C9CA3) : rgb(0x6E6E73) }
+    /// The 1 pt line inside the card's edge: white at 6 percent in dark mode and black at 5 in light mode, or with
+    /// Increase Contrast white at 20 and black at 18, as the band's own edge is then.
+    static func edge(_ dark: Bool, increasedContrast: Bool) -> Color {
+        dark ? .white.opacity(increasedContrast ? 0.2 : 0.06) : .black.opacity(increasedContrast ? 0.18 : 0.05)
     }
+    static func separator(_ dark: Bool) -> Color { dark ? .white.opacity(0.06) : .black.opacity(0.06) }
+    /// A light card's shadow: 6 pt down and 18 pt soft, a faint blue-grey.
+    static let shadow = Color(.sRGB, red: 20 / 255, green: 24 / 255, blue: 40 / 255, opacity: 0.07)
     static func hit(_ dark: Bool) -> Color {
         dark ? Color(.sRGB, red: 1, green: 214 / 255, blue: 10 / 255, opacity: 0.38)
             : Color(.sRGB, red: 1, green: 204 / 255, blue: 0, opacity: 0.45)
     }
-    static let globeTile = rgb(0xF2F2F7)
+    static func globeTile(_ dark: Bool) -> Color { dark ? rgb(0xF2F2F7) : rgb(0xF1F1F3) }
     static let globe = rgb(0x3A3A3C)
 
     private static func rgb(_ hex: UInt32) -> Color { HeaderTint.RGB(hex: hex).color }

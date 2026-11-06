@@ -11,7 +11,8 @@ enum QuickAccessListStop: Equatable {
 /// directly and leaves the keys where they are.
 @MainActor
 final class QuickAccessListNavigation: NSView {
-    static let height: CGFloat = 28
+    /// As high as the switch, the tallest of its parts.
+    static let height: CGFloat = 30
     /// Between the switch and the first chip.
     static let chipsInset: CGFloat = 12
     static let chipGap: CGFloat = 6
@@ -357,10 +358,10 @@ final class QuickAccessListNavigation: NSView {
     }
 }
 
-/// All and Snippets: two 24 pt segments in a 28 pt capsule, the chosen one filled.
+/// All and Snippets: two 24 pt segments in a 30 pt capsule, the chosen one filled.
 @MainActor
 final class QuickAccessListSegments: NSView {
-    static let padding: CGFloat = 2
+    static let padding: CGFloat = 3
     let buttons = [QuickAccessSegmentButton(title: "All"), QuickAccessSegmentButton(title: "Snippets")]
 
     override init(frame frameRect: NSRect) {
@@ -379,7 +380,7 @@ final class QuickAccessListSegments: NSView {
     override var intrinsicContentSize: NSSize {
         let widths = buttons.map(\.intrinsicContentSize.width)
         return NSSize(width: widths.reduce(0, +) + Self.padding * CGFloat(widths.count + 1),
-                      height: QuickAccessCollectionChip.height)
+                      height: QuickAccessSegmentButton.height + 2 * Self.padding)
     }
 
     override func layout() {
@@ -402,7 +403,7 @@ final class QuickAccessListSegments: NSView {
 @MainActor
 final class QuickAccessSegmentButton: NSButton {
     static let height: CGFloat = 24
-    private static let padding: CGFloat = 12
+    private static let padding: CGFloat = 11
 
     init(title: String) {
         super.init(frame: .zero)
@@ -461,14 +462,14 @@ final class QuickAccessChipsView: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }
 
-/// A collection's chip: a dot in its colour and its name, 28 pt high, with no fill until it is chosen. A name longer
+/// A collection's chip: a dot in its colour and its name, 24 pt high, with no fill until it is chosen. A name longer
 /// than 160 pt is cut in the middle, whole in the help tag. VoiceOver reads it as a radio button.
 @MainActor
 final class QuickAccessCollectionChip: NSButton {
-    static let height: CGFloat = 28
+    static let height: CGFloat = 24
     static let longestName: CGFloat = 160
-    private static let padding: CGFloat = 10
-    private static let dot: CGFloat = 9
+    private static let padding: CGFloat = 9
+    private static let dot: CGFloat = 7
     private static let dotGap: CGFloat = 6
     let colorName: String?
 
@@ -530,10 +531,10 @@ final class QuickAccessCollectionChip: NSButton {
 /// those collections is the list shown, its dot and name, chosen. VoiceOver reads it as a pop-up button.
 @MainActor
 final class QuickAccessMoreChip: NSButton {
-    private static let padding: CGFloat = 10
-    private static let dot: CGFloat = 9
+    private static let padding: CGFloat = 9
+    private static let dot: CGFloat = 7
     private static let gap: CGFloat = 6
-    private static let chevron: CGFloat = 9
+    private static let chevron: CGFloat = 8
     private(set) var shown: CollectionSummary?
 
     override init(frame frameRect: NSRect) {
@@ -602,7 +603,7 @@ final class QuickAccessMoreChip: NSButton {
         ToolbarText.draw(title, in: NSRect(x: x, y: 0, width: max(0, textEnd - x), height: bounds.height),
                          weight: isOn ? .semibold : .medium, color: color, cutsInTheMiddle: true)
         let glyph = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .semibold))
         if let glyph {
             let image = glyph.tinted(color)
             let size = image.size
@@ -612,12 +613,12 @@ final class QuickAccessMoreChip: NSButton {
     }
 }
 
-/// Favorites Only and the types, behind one button left of the search. With nothing on it is a 32 pt circle; with
-/// filters on, a 32 pt capsule that names them: one by its name, more by their number. It is one stop of the panel's
+/// Favorites Only and the types, behind one button left of the search. With nothing on it is a 28 pt circle; with
+/// filters on, a 28 pt capsule that names them: one by its name, more by their number. It is one stop of the panel's
 /// Tab round; Space opens its menu, and so does a click, which leaves the keys where they are.
 @MainActor
 final class QuickAccessFilterButton: NSView {
-    static let height: CGFloat = 32
+    static let height: CGFloat = 28
     let face = QuickAccessFilterFace()
     private(set) var favoritesOnly = false
     private(set) var kinds: Set<ContentKind> = []
@@ -725,10 +726,10 @@ final class QuickAccessFilterButton: NSView {
 /// The filter button's face: the circle or the capsule, and what VoiceOver reads as a pop-up button named Filter.
 @MainActor
 final class QuickAccessFilterFace: NSButton {
-    private static let leading: CGFloat = 11
-    private static let trailing: CGFloat = 13
-    private static let iconGap: CGFloat = 6
-    private static let icon: CGFloat = 14
+    private static let leading: CGFloat = 10
+    private static let trailing: CGFloat = 12
+    private static let iconGap: CGFloat = 5
+    private static let icon: CGFloat = 13
     private(set) var label: String?
     private var symbol: String?
 
@@ -805,7 +806,7 @@ final class QuickAccessFilterFace: NSButton {
 
     private func draw(symbol: String?, in rect: NSRect, color: NSColor) {
         guard let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium)) else { return }
+            .withSymbolConfiguration(.init(pointSize: 12, weight: .medium)) else { return }
         let tinted = image.tinted(color)
         let size = tinted.size
         tinted.draw(in: NSRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width,
@@ -813,15 +814,15 @@ final class QuickAccessFilterFace: NSButton {
     }
 }
 
-/// Text in the toolbar's 13 pt type.
+/// Text in the toolbar's 12 pt type.
 @MainActor
 enum ToolbarText {
     static func width(_ text: String, weight: NSFont.Weight) -> CGFloat {
-        (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: weight)]).width
+        (text as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: weight)]).width
     }
 
     static func draw(_ text: String, centredIn rect: NSRect, weight: NSFont.Weight, color: NSColor) {
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: weight),
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: weight),
                                                          .foregroundColor: color]
         let size = (text as NSString).size(withAttributes: attributes)
         (text as NSString).draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2),
@@ -832,7 +833,7 @@ enum ToolbarText {
                      cutsInTheMiddle: Bool = false) {
         let style = NSMutableParagraphStyle()
         style.lineBreakMode = cutsInTheMiddle ? .byTruncatingMiddle : .byTruncatingTail
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: weight),
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12, weight: weight),
                                                          .foregroundColor: color, .paragraphStyle: style]
         let height = (text as NSString).size(withAttributes: attributes).height
         (text as NSString).draw(in: NSRect(x: rect.minX, y: rect.midY - height / 2, width: rect.width, height: height),

@@ -37,7 +37,7 @@ snippets in a native library.
   references, in their original formats. Copying exactly the same content
   again does not create a duplicate. There is no pause switch; quitting
   Keeptide stops it.
-- **One shortcut away.** ⇧⌘V opens quick access, a band of large cards with the
+- **One shortcut away.** ⇧⌘V opens quick access, a band of cards with the
   newest first. Clips you reuse often sit to the left of the newest one. Click
   **Snippets** at the band's top left to use what you keep on purpose; your
   collections appear beside it.

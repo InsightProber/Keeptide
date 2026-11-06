@@ -17,7 +17,15 @@ final class QuickAccessStripViewTests: XCTestCase {
     /// The middle of the frame resting at the left dock.
     private var dock: CGFloat { metrics.dockInset + metrics.frameSize.width / 2 }
 
-    private var focused: StripMetrics { StripLayout.metrics(for: .medium, visibleWidth: 1440) }
+    /// Medium cards as an earlier design sized them, on a screen 1440 pt wide, with the selected card enlarged by 1.12:
+    /// a band 1376 wide, frames 228 by 250 and 242 apart, their neighbours 18 aside, and 15 pt of room above and below
+    /// for the enlarged card. The numbers below were worked out for it. The strip lays every size out the same way;
+    /// `StripLayoutTests` holds the sizes themselves.
+    private var focused: StripMetrics {
+        StripMetrics(cardSize: .medium, bandWidth: 1376, frameSize: CGSize(width: 228, height: 250), gap: 14,
+                     cornerRadius: 20, dockInset: 20, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 35,
+                     bottomPadding: 37, selectedScale: 1.12, neighbourPush: 18, fadesEnds: true)
+    }
 
     func testADockedEndIsHardWhileTheFarEndFades() {
         let strip = makeStrip(focused), rows = makeRows(20)
@@ -1244,25 +1252,33 @@ final class QuickAccessStripViewTests: XCTestCase {
             .elementsEqual([groups[0]], by: ===))
     }
 
-    func testTheFirstShowOfAnAppAlreadyCarriesItsBandColour() throws {
+    func testEachFrameCarriesItsCardsAccentFromTheFirstShow() throws {
         let strip = makeStrip()
         let names = ApplicationNames()
-        // An app that is not installed shows the system's generic app icon, which is grey, so its band is the dark
-        // neutral one. Nothing is known of the app before its first frame.
+        // An app that is not installed shows the system's generic app icon, which is grey, so it gives no accent.
+        // Nothing is known of the app before its first frame.
         let app = "test.keeptide.not-installed.\(UUID().uuidString)"
         XCTAssertNil(HeaderTint.cachedTint(forIconOf: app))
-        let rows = [makeRow(title: "From an unknown app", sourceApp: app), makeRow(title: "From no app")]
+        let prompts = CollectionID()
+        var filed = makeRow(title: "Filed snippet", sourceApp: app)
+        filed.collectionID = prompts
+        let rows = [makeRow(title: "From an unknown app", sourceApp: app), makeRow(title: "From no app"), filed]
 
-        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: names)
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: names,
+                   collectionColors: [prompts: "yellow"])
 
-        // The first frame already has the band's own colour, worked out from the icon it shows, with no neutral
-        // first pass to be replaced later.
+        // The first frame already has its accent, worked out from the icon it shows, with no first pass to replace.
         let unknown = try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "From an unknown app" })
         XCTAssertTrue(unknown.rootView.applicationIcon === names.icon(for: app))
-        XCTAssertEqual(unknown.rootView.headerTint, .neutral(dark: true))
         XCTAssertEqual(HeaderTint.cachedTint(forIconOf: app), .neutral(dark: true))
-        // A clip without a source app has no tint: its band is the neutral one of the appearance it is drawn in.
-        XCTAssertNil(try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "From no app" }).rootView.headerTint)
+        XCTAssertNil(unknown.rootView.accent)
+        // A clip without a source app has no icon of its own to take a colour from.
+        let none = try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "From no app" })
+        XCTAssertTrue(none.rootView.applicationIcon === names.icon(for: nil))
+        XCTAssertNil(none.rootView.accent)
+        // A snippet in a collection takes the collection's colour, whatever its app's icon gives.
+        let snippet = try XCTUnwrap(drawings(in: strip).first { title(of: $0) == "Filed snippet" })
+        XCTAssertEqual(snippet.rootView.accent, .collection("yellow"))
     }
 
     // MARK: Beyond the named cases
@@ -2365,7 +2381,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.haptics = RecordingHaptics()
         let frequentLabel = try sectionLabel("QuickAccessFrequentLabel", of: strip)
         let rows = makeWing(frequent: 3, recent: 20)
-        // Large cards with Row 2 in the middle: the divider rests at -40.5, off the left end, so "Frequent" is hidden.
+        // Large cards with Row 2 in the middle: the divider rests at -5.5, off the left end, so "Frequent" is hidden.
         strip.show(rows, selection: rows[5].id, details: [:], metrics: large, applicationNames: ApplicationNames())
         XCTAssertTrue(frequentLabel.isHidden)
         // The fingers carry the film just short of half a step toward newer clips, which brings the divider and the
@@ -2386,32 +2402,32 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testTheSectionIconsSitBelowTheCardsAndStayWhenTheBandResizesTheirView() throws {
-        // With the frequent wing and the standard enlargement there are 43 pt below the cards. The selected card
-        // enlarged reaches 15 pt into them, the ring around it 7 pt more with Increase Contrast, and each icon is
-        // centred in the 21 pt left between the ring and the band's bottom edge: a 15 pt icon starts 3 above that edge
-        // and ends 3 short of the ring. QuickAccessBandTests measures the ink the icons draw.
+        // With the frequent wing and the standard enlargement there are 33 pt below the cards. The selected card
+        // enlarged reaches 7 pt into them, the ring around it 7 pt more with Increase Contrast, and each icon is
+        // centred in the 19 pt left between the ring and the band's bottom edge: a 14 pt icon starts 2.5 above that
+        // edge and ends 2.5 short of the ring. QuickAccessBandTests measures the ink the icons draw.
         let wing = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
         let strip = makeStrip(wing)
         let rows = makeWing(frequent: 3, recent: 20)
         strip.show(rows, selection: rows[3].id, details: [:], metrics: wing, applicationNames: ApplicationNames())
         let cardBottom = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).minY
         let bandBottom = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil).minY
-        XCTAssertEqual(cardBottom - bandBottom, 43, accuracy: 0.01)
+        XCTAssertEqual(cardBottom - bandBottom, 33, accuracy: 0.01)
         var places: [String: CGFloat] = [:]
         for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
             let icon = try sectionLabel(identifier, of: strip)
             XCTAssertFalse(icon.isHidden, identifier)
             let frame = icon.convert(icon.bounds, to: nil)
             // Centred to the pixel: as far above the band's bottom edge as short of the ring.
-            XCTAssertEqual(frame.minY - bandBottom, (21 - frame.height) / 2, accuracy: 0.5, identifier)
-            XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 15 - 7, identifier)
+            XCTAssertEqual(frame.minY - bandBottom, (19 - frame.height) / 2, accuracy: 0.5, identifier)
+            XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 7 - 7, identifier)
             places[identifier] = frame.minY - bandBottom
         }
 
-        // The band gives the icons' view the room below the cards, 43 pt with the frequent wing turned on and 37
+        // The band gives the icons' view the room below the cards, 33 pt with the frequent wing turned on and 25
         // without, and may do so after the strip has placed them. Its bottom stays at the band's bottom edge, and so
         // do the icons' places.
-        for height in [37, 43] as [CGFloat] {
+        for height in [25, 33] as [CGFloat] {
             strip.sectionLabels.setFrameSize(NSSize(width: wing.bandWidth, height: height))
             for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
                 let icon = try sectionLabel(identifier, of: strip)
@@ -2543,10 +2559,12 @@ final class QuickAccessStripViewTests: XCTestCase {
 
     // MARK: Helpers
 
-    /// Medium cards on a screen 1440 pt wide with the selected card not enlarged: a band 1376 wide, frames 228 by 250
-    /// and 242 apart, a dock inset of 20. The cases that use it were worked out before the selected card was enlarged.
+    /// `focused` with the selected card not enlarged: a band 1376 wide, frames 228 by 250 and 242 apart, a dock inset
+    /// of 20. The cases that use it were worked out before the selected card was enlarged.
     private var medium: StripMetrics {
-        StripLayout.metrics(for: .medium, visibleWidth: 1440, style: StripStyle(selectedScale: 1))
+        StripMetrics(cardSize: .medium, bandWidth: 1376, frameSize: CGSize(width: 228, height: 250), gap: 14,
+                     cornerRadius: 20, dockInset: 20, headerHeight: 56, footerHeight: 30, iconSize: 40, toolbarGap: 20,
+                     bottomPadding: 22, fadesEnds: true)
     }
 
     /// A strip one band wide in a window that is never shown, so frames go straight to their places, with its section

@@ -32,7 +32,7 @@ final class QuickAccessPreferences {
         didSet { defaults.set(fadesStripEnds, forKey: Self.fadesStripEndsKey) }
     }
     /// How much larger the strip draws the selected card than the others, from 1.00, as large, to 1.25, as the
-    /// Settings slider moves it in steps of 0.01. It is stored kept to that range and to hundredths. Absent means 1.12.
+    /// Settings slider moves it in steps of 0.01. It is stored kept to that range and to hundredths. Absent means 1.06.
     var selectedCardScale: Double {
         didSet { defaults.set(Self.keptCardScale(selectedCardScale), forKey: Self.selectedCardScaleKey) }
     }

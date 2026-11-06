@@ -2,7 +2,8 @@ import AppKit
 import os
 import SwiftUI
 
-/// The colour band across the top of a card, taken from the icon of the app the clip came from.
+/// The colour a card takes from the icon of the app the clip came from: its accent, when it is in no collection. It was
+/// once the solid band across the card's top, and is worked out as that band's colour was.
 ///
 /// The band is the colour that most of the icon's clearly coloured pixels share, made solid: deep enough for white
 /// text to read on it at better than 4.5:1. Oranges are drawn toward red as they deepen, so that they become a burnt
@@ -23,6 +24,9 @@ struct HeaderTint: Equatable, Sendable {
 
     /// The colour of the band's title: white, or a dark shade of the band's own hue, such as #2E2300 on a yellow.
     var text: RGB { usesDarkText ? Self.darkShade(of: background) : Self.white }
+
+    /// Whether the band is grey: the neutral band of an icon with no colour to speak of.
+    var isNeutral: Bool { Self.hsl(background).saturation < 0.1 }
 
     /// The colour of the smaller line under the title, the time and the marks, as it shows on the band. As in the
     /// design it lets a little of the band through, but never so much that it reads at less than 4.5:1; with
@@ -196,7 +200,8 @@ struct HeaderTint: Equatable, Sendable {
         return (max(a, b) + 0.05) / (min(a, b) + 0.05)
     }
 
-    private static func luminance(_ colour: RGB) -> Double {
+    /// The colour's relative luminance as WCAG 2 defines it, from 0 for black to 1 for white.
+    static func luminance(_ colour: RGB) -> Double {
         func linear(_ value: Double) -> Double { value <= 0.04045 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4) }
         return 0.2126 * linear(colour.red) + 0.7152 * linear(colour.green) + 0.0722 * linear(colour.blue)
     }

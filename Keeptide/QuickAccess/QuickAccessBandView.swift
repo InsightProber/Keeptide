@@ -1,11 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// The quick access band, backed as the app switcher is: the system's material in a rounded rectangle with a hairline
-/// edge and a soft shadow. Along its top the toolbar, below it the strip of clips, which the band's rounded edge cuts
-/// off where it goes on beyond either end, with the strip's section icons below the cards. A browsing preview floats
-/// over the band; a command review stands above it. The panel owns the
-/// AppKit views placed in it, keeps them up to date and lays the band out; the band reads the rest from the state.
+/// The quick access band: an opaque tray in a rounded rectangle with a hairline edge and a soft shadow, and on it a soft
+/// light behind the selected card. Along its top the toolbar, below it the strip of clips, which the band's rounded edge
+/// cuts off where it goes on beyond either end, with the strip's section icons below the cards. A browsing preview
+/// floats over the band; a command review stands above it. The panel owns the AppKit views placed in it, keeps them up
+/// to date and lays the band out; the band reads the rest from the state.
 struct QuickAccessBandView: View {
     /// What the band is laid out by. The panel sets it together with its own frame, so the two always agree.
     struct Layout: Equatable {
@@ -30,10 +30,11 @@ struct QuickAccessBandView: View {
     let state: QuickAccessState
     let toolbar: QuickAccessToolbar
     let strip: QuickAccessStripView
+    /// The light behind the selected card, which the panel keeps where the card rests.
+    let glow: QuickAccessGlowView
     let applicationNames: ApplicationNames
     let actions: Actions
 
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
 
     private var metrics: StripMetrics { layout.metrics }
@@ -74,11 +75,16 @@ struct QuickAccessBandView: View {
                 .frame(width: metrics.bandWidth, height: metrics.bottomPadding)
                 .accessibilityHidden(true)
         }
+        // The light lies on the tray, under the toolbar and the cards, and the band's edge cuts it off as it does them.
+        .background {
+            HostedView(view: glow)
+                .frame(width: metrics.bandWidth, height: StripLayout.bandHeight(metrics))
+                .accessibilityHidden(true)
+        }
         // The band's edge is clear: cards that go on beyond it are cut off there.
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .background {
-            BandBackdrop(layout: layout, reducesTransparency: reduceTransparency,
-                         increasesContrast: contrast == .increased)
+            BandBackdrop(layout: layout, increasesContrast: contrast == .increased)
                 .padding(EdgeInsets(top: -StripLayout.shadowRoom.above, leading: -StripLayout.sideMargin,
                                     bottom: -StripLayout.shadowRoom.below, trailing: -StripLayout.sideMargin))
         }
@@ -195,38 +201,32 @@ private struct HostedView<Content: NSView>: NSViewRepresentable {
 /// Places the band's backdrop behind it, reaching into the room the panel leaves around the band for the shadow.
 private struct BandBackdrop: NSViewRepresentable {
     let layout: QuickAccessBandView.Layout
-    let reducesTransparency: Bool
     let increasesContrast: Bool
 
     func makeNSView(context: Context) -> QuickAccessBandBackdrop { QuickAccessBandBackdrop() }
 
     func updateNSView(_ backdrop: QuickAccessBandBackdrop, context: Context) {
         backdrop.panelLayout = layout
-        backdrop.reducesTransparency = reducesTransparency
         backdrop.increasesContrast = increasesContrast
     }
 }
 
-/// What the band stands on, as the app switcher does: the system's material, blurring what lies behind the window, in
-/// a rounded rectangle with a hairline edge, and a soft shadow around it, never under it. With Reduce Transparency the
-/// band is solid, and with Increase Contrast its edge is 1 pt and stronger. The view reaches beyond the band by the
-/// room the panel leaves around it, where the shadow falls; it takes no clicks.
+/// What the band stands on: an opaque tray in a rounded rectangle, with a hairline edge and a highlight along its top,
+/// and a soft shadow around it, never under it. Nothing behind the window shows through it, so Reduce Transparency
+/// changes nothing; with Increase Contrast the edge is stronger. The view reaches beyond the band by the room the panel
+/// leaves around it, where the shadow falls; it takes no clicks.
 @MainActor
 final class QuickAccessBandBackdrop: NSView {
     /// How far the view reaches beyond the band on each side.
     static let reach = NSEdgeInsets(top: StripLayout.shadowRoom.above, left: StripLayout.sideMargin,
                                     bottom: StripLayout.shadowRoom.below, right: StripLayout.sideMargin)
 
-    let material = NSVisualEffectView()
-    /// The solid fill under Reduce Transparency, and the edge.
+    /// The tray, its edge and its highlight.
     let surface = QuickAccessBandSurface()
-    var reducesTransparency = false {
-        didSet { if reducesTransparency != oldValue { restyle() } }
-    }
     var increasesContrast = false {
         didSet { if increasesContrast != oldValue { restyle() } }
     }
-    private var maskedSize = NSSize.zero
+    private var drawnSize = NSSize.zero
     /// The shadow fades out over this much inside the window's edges. Its soft edge reaches farther than the room the
     /// panel leaves it, 40 points above the band, 100 below and 32 beside it, and less on a low screen; cut short where
     /// the window ends, it would show as a faint band with a hard edge.
@@ -250,9 +250,6 @@ final class QuickAccessBandBackdrop: NSView {
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        material.blendingMode = .behindWindow
-        material.state = .active
-        addSubview(material)
         addSubview(surface)
         restyle()
     }
@@ -275,16 +272,9 @@ final class QuickAccessBandBackdrop: NSView {
     override func layout() {
         super.layout()
         let band = bandRect
-        material.frame = band
         surface.frame = band
-        if band.size != maskedSize {
-            maskedSize = band.size
-            // AppKit may draw the mask away from the main thread, so its handler touches nothing of the view's.
-            material.maskImage = NSImage(size: band.size, flipped: false) { @Sendable rect in
-                NSColor.black.setFill()
-                NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: rect)).fill()
-                return true
-            }
+        if band.size != drawnSize {
+            drawnSize = band.size
             needsDisplay = true
         }
         // The window's edges may lie elsewhere in the view at its new size, and the shadow ends with them.
@@ -322,18 +312,14 @@ final class QuickAccessBandBackdrop: NSView {
     private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
 
     private func restyle() {
-        // A dark HUD's material in dark mode, a popover's light one in light mode.
-        material.material = isDark ? .hudWindow : .popover
-        material.isHidden = reducesTransparency
-        surface.isSolid = reducesTransparency
         surface.increasesContrast = increasesContrast
         surface.needsDisplay = true
         needsDisplay = true
     }
 
     /// The shadow: 30 pt down and 90 pt soft, black at 55 percent in dark mode; 80 pt soft and a faint blue-grey at 22
-    /// percent in light mode. It is drawn only outside the band, so none of it shows through the material, and it fades
-    /// out over `shadowFade` inside the window's edges, so it never ends in a hard edge where the window does.
+    /// percent in light mode. It is drawn only outside the band, where the tray does not cover it, and it fades out over
+    /// `shadowFade` inside the window's edges, so it never ends in a hard edge where the window does.
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let band = Self.outline(in: bandRect)
@@ -385,35 +371,285 @@ final class QuickAccessBandBackdrop: NSView {
     }
 }
 
-/// The band's edge, a hairline inside it in white at 16 percent in dark mode and black at 10 percent in light mode, 1 pt
-/// and stronger with Increase Contrast; and, when the band is solid, its fill: #1E1E20 in dark mode, #F6F6F8 in light.
+/// The tray: #121316 in dark mode, #F3F3F1 in light mode. Along its top, inside it, a 1 pt highlight, white at 9
+/// percent in dark mode and white in light mode; and around it, inside its edge, a 1 pt hairline, white at 7 percent in
+/// dark mode and black at 6 percent in light mode, or with Increase Contrast white at 20 and black at 18.
 @MainActor
 final class QuickAccessBandSurface: NSView {
-    var isSolid = false {
-        didSet { if isSolid != oldValue { needsDisplay = true } }
-    }
     var increasesContrast = false {
         didSet { if increasesContrast != oldValue { needsDisplay = true } }
     }
 
     /// The edge's width.
-    var edgeWidth: CGFloat { increasesContrast ? 1 : 0.5 }
+    static let edgeWidth: CGFloat = 1
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    /// The tray's colour.
+    static func fill(dark: Bool) -> NSColor {
+        dark ? NSColor(srgbRed: 0x12 / 255, green: 0x13 / 255, blue: 0x16 / 255, alpha: 1)
+            : NSColor(srgbRed: 0xF3 / 255, green: 0xF3 / 255, blue: 0xF1 / 255, alpha: 1)
+    }
+
+    /// The hairline's colour.
+    static func edge(dark: Bool, increasedContrast: Bool) -> NSColor {
+        dark ? NSColor(white: 1, alpha: increasedContrast ? 0.2 : 0.07)
+            : NSColor(white: 0, alpha: increasedContrast ? 0.18 : 0.06)
+    }
+
+    /// The highlight's colour.
+    static func highlight(dark: Bool) -> NSColor {
+        NSColor(white: 1, alpha: dark ? 0.09 : 1)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        // A band with no room has no outline to draw: an empty one has no point to start from.
+        guard bounds.width > 0, bounds.height > 0 else { return }
         let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        if isSolid {
-            (isDark ? NSColor(srgbRed: 0x1E / 255, green: 0x1E / 255, blue: 0x20 / 255, alpha: 1)
-                : NSColor(srgbRed: 0xF6 / 255, green: 0xF6 / 255, blue: 0xF8 / 255, alpha: 1)).setFill()
-            NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: bounds)).fill()
-        }
-        let width = edgeWidth
+        let tray = NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: bounds))
+        Self.fill(dark: isDark).setFill()
+        tray.fill()
+        // The highlight is the part of the tray that the tray moved 1 pt down does not cover: a line along the top
+        // that thins out around the corners.
+        NSGraphicsContext.saveGraphicsState()
+        tray.addClip()
+        let highlight = NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: bounds))
+        let lowered = bounds.offsetBy(dx: 0, dy: isFlipped ? 1 : -1)
+        highlight.append(NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: lowered)))
+        highlight.windingRule = .evenOdd
+        Self.highlight(dark: isDark).setFill()
+        highlight.fill()
+        NSGraphicsContext.restoreGraphicsState()
+        let width = Self.edgeWidth
         let edge = NSBezierPath(cgPath: QuickAccessBandBackdrop.outline(in: bounds.insetBy(dx: width / 2, dy: width / 2)))
         edge.lineWidth = width
-        (isDark ? NSColor(white: 1, alpha: increasesContrast ? 0.4 : 0.16)
-            : NSColor(white: 0, alpha: increasesContrast ? 0.3 : 0.1)).setStroke()
+        Self.edge(dark: isDark, increasedContrast: increasesContrast).setStroke()
         edge.stroke()
+    }
+}
+
+/// The soft light behind the selected card, in the card's accent, the colour that washes in from its top: where it
+/// lies and how large it is.
+struct QuickAccessGlow: Equatable {
+    /// The row whose card the light is behind.
+    let row: QuickAccessRow.ID
+    let accent: CardAccent
+    /// The light's middle, from the band's top left corner: the middle of the card where it rests.
+    let center: CGPoint
+    let size: CGSize
+
+    /// The light behind a medium card. Behind a smaller or a larger card it is as much smaller or larger as the card.
+    static let mediumSize = CGSize(width: 460, height: 500)
+
+    /// The light behind `row`'s card, whose middle rests `cardMidX` from the band's left end, in its `accent`; nil for
+    /// a card without one.
+    static func make(row: QuickAccessRow, accent: CardAccent?, cardMidX: CGFloat,
+                     metrics: StripMetrics) -> QuickAccessGlow? {
+        guard let accent else { return nil }
+        let scale = metrics.frameSize.width / StripLayout.cardDimensions(for: .medium).frame.width
+        return QuickAccessGlow(
+            row: row.id, accent: accent,
+            center: CGPoint(x: cardMidX, y: StripLayout.cardTop(metrics) + metrics.frameSize.height / 2),
+            size: CGSize(width: (mediumSize.width * scale).rounded(), height: (mediumSize.height * scale).rounded())
+        )
+    }
+
+    /// How strong the light is at its middle: in dark mode 0.46 for a deep colour such as blue, down to 0.40 for one as
+    /// light as yellow; in light mode 0.24, up to 0.34 for a light colour, which would hardly show on the light tray
+    /// otherwise. Increase Contrast halves it.
+    static func peakOpacity(of color: HeaderTint.RGB, dark: Bool, increasedContrast: Bool) -> CGFloat {
+        let lightness = min(1, max(0, (HeaderTint.luminance(color) - 0.2) / 0.4))
+        let peak = dark ? 0.46 - 0.06 * lightness : 0.24 + 0.10 * lightness
+        return CGFloat(increasedContrast ? peak / 2 : peak)
+    }
+
+    /// The light's strength `t` of the way from its middle, 0, to its edge, 1, as a share of its peak: level at the
+    /// middle and fading to nothing at the edge, as a blurred radial gradient does.
+    static func falloff(_ t: CGFloat) -> CGFloat {
+        (1 + cos(.pi * min(1, max(0, t)))) / 2
+    }
+}
+
+/// Draws the soft light behind the selected card on the band, under the toolbar and the cards, cut off by the band's
+/// edge. When the selection moves to another card the light there fades in as the last one fades out, over a fifth of
+/// a second, or at once with Reduce Motion; when the card it is behind only moves, it moves with it. It takes no
+/// clicks, and VoiceOver does not read it.
+@MainActor
+final class QuickAccessGlowView: NSView {
+    static let fadeDuration: CFTimeInterval = 0.2
+
+    /// The light shown, or nil while there is none.
+    private(set) var glow: QuickAccessGlow?
+    /// With Reduce Motion one light gives way to the next at once. Asked each time, since the setting can change while
+    /// the app runs.
+    var reducesMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// With Increase Contrast the light is half as strong. Asked each time it is coloured, and again when the system's
+    /// display options change.
+    var increasesContrast: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast }
+
+    /// The two lights a crossfade passes between: the one shown, and the one going. One that has gone is hidden.
+    private let lights = [QuickAccessGlowLight(), QuickAccessGlowLight()]
+    private var shown = 0
+    private let outline = CAShapeLayer()
+
+    /// The light shown; nil while there is none.
+    var shownLight: QuickAccessGlowLight? { glow == nil ? nil : lights[shown] }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        clipsToBounds = true
+        layer?.mask = outline
+        for light in lights {
+            light.isHidden = true
+            addSubview(light)
+        }
+        setAccessibilityElement(false)
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(displayOptionsDidChange(_:)),
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil
+        )
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func accessibilityChildren() -> [Any]? { [] }
+
+    /// Shows `glow`, or no light for nil. The light behind another row, or in another colour, takes over from the last
+    /// one by a crossfade; the same light only moves.
+    func show(_ glow: QuickAccessGlow?) {
+        guard glow != self.glow else { return }
+        let previous = self.glow
+        self.glow = glow
+        if let glow, let previous, glow.row == previous.row, glow.accent == previous.accent {
+            place(lights[shown])
+            return
+        }
+        let fades = window?.isVisible == true && !reducesMotion()
+        fade(lights[shown], in: false, animated: fades)
+        guard glow != nil else { return }
+        shown = 1 - shown
+        place(lights[shown])
+        paint(lights[shown])
+        fade(lights[shown], in: true, animated: fades)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        outline.frame = bounds
+        outline.path = QuickAccessBandBackdrop.outline(in: bounds)
+        CATransaction.commit()
+        place(lights[shown])
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        paint(lights[shown])
+    }
+
+    @objc private func displayOptionsDidChange(_ notification: Notification) {
+        paint(lights[shown])
+    }
+
+    private var isDark: Bool { effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+
+    /// Puts `light` around the glow's middle, which is measured from the band's top.
+    private func place(_ light: QuickAccessGlowLight) {
+        guard let glow else { return }
+        light.frame = NSRect(x: glow.center.x - glow.size.width / 2,
+                             y: bounds.height - glow.center.y - glow.size.height / 2,
+                             width: glow.size.width, height: glow.size.height)
+    }
+
+    /// Colours `light` in the card's accent as this appearance shows it, at its peak in the middle.
+    private func paint(_ light: QuickAccessGlowLight) {
+        guard let glow else { return }
+        let color = glow.accent.rgb(in: effectiveAppearance)
+        light.paint(color, peak: QuickAccessGlow.peakOpacity(of: color, dark: isDark,
+                                                              increasedContrast: increasesContrast()))
+    }
+
+    /// Fades `light` in or out from wherever it is drawn now, or puts it there at once. One that has faded out is
+    /// hidden.
+    private func fade(_ light: QuickAccessGlowLight, in fadesIn: Bool, animated: Bool) {
+        guard let layer = light.layer else { return }
+        light.fades += 1
+        let fade = light.fades
+        let from = light.isHidden ? 0 : layer.presentation()?.opacity ?? layer.opacity
+        let to: Float = fadesIn ? 1 : 0
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        layer.removeAnimation(forKey: "glow.fade")
+        layer.opacity = to
+        light.isHidden = false
+        guard animated, from != to else {
+            light.isHidden = !fadesIn
+            return
+        }
+        CATransaction.setCompletionBlock { [weak light] in
+            MainActor.assumeIsolated {
+                guard let light, light.fades == fade, !fadesIn else { return }
+                light.isHidden = true
+            }
+        }
+        let animation = CABasicAnimation(keyPath: "opacity")
+        animation.fromValue = from
+        animation.toValue = to
+        animation.duration = Self.fadeDuration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        layer.add(animation, forKey: "glow.fade")
+    }
+}
+
+/// One light: an ellipse as large as the view, in one colour, strongest in the middle and fading to nothing at its edge.
+@MainActor
+final class QuickAccessGlowLight: NSView {
+    /// How many steps the light's colours take from its middle to its edge.
+    private static let steps = 12
+
+    /// The colours from the middle out to the edge.
+    private(set) var colors: [CGColor] = []
+    /// Counts the fades, so that one which has been overtaken does not hide the light when it ends.
+    fileprivate var fades = 0
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override var isOpaque: Bool { false }
+
+    func paint(_ color: HeaderTint.RGB, peak: CGFloat) {
+        let colors = (0...Self.steps).map { step in
+            CGColor(srgbRed: color.red, green: color.green, blue: color.blue,
+                    alpha: peak * QuickAccessGlow.falloff(CGFloat(step) / CGFloat(Self.steps)))
+        }
+        guard colors != self.colors else { return }
+        self.colors = colors
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext, colors.count > 1,
+              let gradient = CGGradient(colorsSpace: CGColorSpace(name: CGColorSpace.sRGB), colors: colors as CFArray,
+                                        locations: (0...Self.steps).map { CGFloat($0) / CGFloat(Self.steps) })
+        else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        // A circle of radius 1 stretched to fill the view.
+        context.translateBy(x: bounds.midX, y: bounds.midY)
+        context.scaleBy(x: bounds.width / 2, y: bounds.height / 2)
+        context.drawRadialGradient(gradient, startCenter: .zero, startRadius: 0, endCenter: .zero, endRadius: 1,
+                                   options: [])
     }
 }
 
