@@ -96,6 +96,9 @@ enum ApplicationMenuBuilder {
         itemMenu.addItem(item(title: "Show Snippet", action: #selector(LibraryWindowController.showLinkedItem(_:)), identifier: "ItemMenu-ShowLinked"))
         itemMenu.addItem(.separator())
         itemMenu.addItem(item(title: "Move to Recently Deleted", action: #selector(LibraryWindowController.moveToRecentlyDeleted(_:)), keyEquivalent: "\u{8}", identifier: "ItemMenu-MoveToRecentlyDeleted"))
+        // Recently Deleted's own commands, for the deleted facet selected there.
+        itemMenu.addItem(item(title: "Recover", action: #selector(LibraryWindowController.recoverDeletedItem(_:)), identifier: "ItemMenu-Recover"))
+        itemMenu.addItem(item(title: "Delete Permanently…", action: #selector(LibraryWindowController.deleteDeletedItemPermanently(_:)), identifier: "ItemMenu-DeletePermanently"))
         mainMenu.addItem(menuItem(title: "Item", submenu: itemMenu))
 
         let windowMenu = NSMenu(title: "Window")
