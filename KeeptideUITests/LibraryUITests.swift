@@ -141,13 +141,45 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(localFindField.waitForNonExistence(timeout: 5))
 
         app.typeKey("f", modifierFlags: [.command, .shift])
-        let librarySearch = library.descendants(matching: .any)["LibrarySearchField"]
+        let librarySearch = librarySearchField(in: library)
         XCTAssertTrue(librarySearch.waitForExistence(timeout: 5), app.debugDescription)
         let focused = NSPredicate(format: "hasKeyboardFocus == true")
         expectation(for: focused, evaluatedWith: librarySearch)
         waitForExpectations(timeout: 5)
         librarySearch.typeText("a distinct library query")
         XCTAssertEqual(librarySearch.value as? String, "a distinct library query")
+    }
+
+    func testSearchWorksInRecentlyDeleted() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        let library = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+        capture.rightClick()
+        let remove = app.menuItems["Move to Recently Deleted"]
+        XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
+        remove.click()
+        let deletedScope = sidebarRow("Recently Deleted", in: app)
+        XCTAssertTrue(deletedScope.waitForExistence(timeout: 8), app.debugDescription)
+        deletedScope.click()
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+
+        // The same search field looks through deleted titles, and says so.
+        app.typeKey("f", modifierFlags: [.command, .shift])
+        let search = librarySearchField(in: library)
+        XCTAssertTrue(search.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(search.placeholderValue, "Search Recently Deleted by Title")
+        replaceText(in: search, with: "alpha")
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 5), app.debugDescription)
+
+        // All Content never includes deleted items: no scope bar, and an empty result offers no wider search.
+        XCTAssertFalse(app.descendants(matching: .any)["All Content"].exists, app.debugDescription)
+        replaceText(in: search, with: "no deleted title like this")
+        let empty = app.descendants(matching: .any)["RecentlyDeletedEmptyState"]
+        XCTAssertTrue(empty.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.buttons["Search All Content"].exists, app.debugDescription)
     }
 
     func testClosingLibraryFlushesTheCurrentSnippetBeforeReopening() {
@@ -235,9 +267,14 @@ final class LibraryUITests: XCTestCase {
 
     private func searchLibrary(for query: String, in app: XCUIApplication) {
         app.typeKey("f", modifierFlags: [.command, .shift])
-        let field = app.descendants(matching: .any)["LibrarySearchField"]
+        let field = librarySearchField(in: app.windows["KeeptideLibraryWindow"])
         XCTAssertTrue(field.waitForExistence(timeout: 5), app.debugDescription)
         replaceText(in: field, with: query)
+    }
+
+    /// The system search field in the toolbar. Its prompt names the list, unlike the editor's find bar ("Find").
+    private func librarySearchField(in library: XCUIElement) -> XCUIElement {
+        library.searchFields.matching(NSPredicate(format: "placeholderValue BEGINSWITH %@", "Search")).firstMatch
     }
 
     private func replaceText(in element: XCUIElement, with value: String) {

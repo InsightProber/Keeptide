@@ -41,8 +41,11 @@ final class CollectionUITests: XCTestCase {
         confirm.click()
         XCTAssertTrue(renamed.waitForNonExistence(timeout: 5), app.debugDescription)
 
-        let undo = app.buttons["UndoCollectionChange"]
+        // Undone from the Edit menu, apart from ⌘Z, which belongs to the text being edited.
+        app.menuBars.menuBarItems["Edit"].click()
+        let undo = app.menuItems["Undo Collection Change"]
         XCTAssertTrue(undo.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(undo.isEnabled, app.debugDescription)
         undo.click()
         XCTAssertTrue(collectionRow(named: "常用开发资料", in: library).waitForExistence(timeout: 5),
                       app.debugDescription)

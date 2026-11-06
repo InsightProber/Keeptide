@@ -72,7 +72,41 @@ final class LibraryWindowController: NSWindowController {
     @objc func selectNextList(_ sender: Any?) { commands.requestListMove(1) }
     @objc func saveDocument(_ sender: Any?) { commands.saveRequest += 1 }
     @objc func copyEntireItem(_ sender: Any?) { commands.copyRequest += 1 }
-    @objc func searchLibrary(_ sender: Any?) { commands.requestSearch() }
+    /// ⇧⌘F, and ⌘F outside the editor. Presenting the search focuses its field once; when it is already open and
+    /// the keyboard went elsewhere, SwiftUI leaves the keyboard there, so the field is focused directly.
+    @objc func searchLibrary(_ sender: Any?) {
+        // While an input method composes, the key would commit the composition and move the keyboard mid-word.
+        if let text = window?.firstResponder as? NSTextView, text.hasMarkedText() { return }
+        commands.requestSearch()
+        if commands.searchIsPresented { focusSearchField() }
+    }
+
+    /// ⌘F (Find in Note…) reaches the window only when the editor is not in front, as with the list or the sidebar:
+    /// there it searches the library. The editor's text view answers it first, with its find bar.
+    @objc func performFindPanelAction(_ sender: Any?) {
+        let tag = (sender as? NSMenuItem)?.tag ?? (sender as? NSControl)?.tag
+        guard tag == Int(NSFindPanelAction.showFindPanel.rawValue) else { return }
+        searchLibrary(sender)
+    }
+
+    @objc func undoCollectionChange(_ sender: Any?) {
+        Task { _ = await session.libraryWorkspace?.undoCollectionChange() }
+    }
+
+    /// The toolbar's search field: the one search field outside the window's content, where the editor's find bar
+    /// has its own.
+    private func focusSearchField() {
+        guard let window, let frame = window.contentView?.superview else { return }
+        var queue = frame.subviews.filter { $0 !== window.contentView }
+        while !queue.isEmpty {
+            let view = queue.removeFirst()
+            if let field = view as? NSSearchField {
+                if (window.firstResponder as? NSTextView)?.delegate !== field { window.makeFirstResponder(field) }
+                return
+            }
+            queue += view.subviews
+        }
+    }
     @objc func exportLibrary(_ sender: Any?) { commands.exportLibraryRequest &+= 1 }
     @objc func exportSelected(_ sender: Any?) { commands.exportSelectedRequest &+= 1 }
 
@@ -155,6 +189,8 @@ extension LibraryWindowController: NSMenuItemValidation {
             return true
         case #selector(newCollection(_:)):
             return session.libraryWorkspace != nil
+        case #selector(undoCollectionChange(_:)):
+            return session.libraryWorkspace?.canUndoCollectionChange == true
         default:
             break
         }
@@ -216,8 +252,8 @@ final class LibraryWindowCommands {
     private(set) var searchRequest = 0
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
-    private var searchFocus = SearchFocusRequestState()
-    var pendingSearchFocus: SearchFocusIntent? { searchFocus.pending }
+    /// Whether the search is open, as the view last reported it.
+    @ObservationIgnored private(set) var searchIsPresented = false
     var openRequest: LibraryOpenRequest?
     private(set) var selectedExportRefs: [ContentRef] = []
     private(set) var isRecentlyDeleted = false
@@ -230,9 +266,10 @@ final class LibraryWindowCommands {
     /// subtitle.
     @ObservationIgnored var showListTitle: @MainActor (String) -> Void = { _ in }
 
+    /// ⌘N and ⇧⌘F each take a newer focus generation; a new snippet's body asks for the keyboard only while its
+    /// generation is current, so whichever came last keeps it.
     func requestNewSnippet() {
         focusGeneration &+= 1
-        searchFocus.invalidate()
         newSnippetFocusGeneration = focusGeneration
         newSnippetRequest &+= 1
     }
@@ -240,16 +277,10 @@ final class LibraryWindowCommands {
     func requestSearch() {
         focusGeneration &+= 1
         searchRequest &+= 1
-        searchFocus.request(searchRequest, generation: focusGeneration)
     }
 
-    func isCurrentSearchFocus(_ intent: SearchFocusIntent) -> Bool {
-        searchFocus.isCurrent(intent, generation: focusGeneration)
-    }
-
-    @discardableResult
-    func consumeSearchFocus(_ intent: SearchFocusIntent) -> Bool {
-        searchFocus.consume(intent, generation: focusGeneration)
+    func updateSearchPresented(_ presented: Bool) {
+        searchIsPresented = presented
     }
 
     func requestNewCollection() {

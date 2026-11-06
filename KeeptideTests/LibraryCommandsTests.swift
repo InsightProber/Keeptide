@@ -32,6 +32,57 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(copy.keyEquivalentModifierMask, [.command, .shift])
     }
 
+    func testEditMenuUndoesACollectionChangeWithoutTakingCommandZ() throws {
+        let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
+        let edit = try XCTUnwrap(menu.items.first { $0.title == "Edit" }?.submenu)
+        let undo = try XCTUnwrap(edit.items.first {
+            $0.action == #selector(LibraryWindowController.undoCollectionChange(_:))
+        })
+        XCTAssertEqual(undo.title, "Undo Collection Change")
+        XCTAssertEqual(undo.keyEquivalent, "")
+
+        // Nothing to undo yet.
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        XCTAssertFalse(controller.validateMenuItem(undo))
+    }
+
+    func testCommandFOutsideTheEditorSearchesTheLibrary() {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let find = NSMenuItem(title: "Find in Note…", action: #selector(NSTextView.performFindPanelAction(_:)),
+                              keyEquivalent: "f")
+        find.tag = Int(NSFindPanelAction.showFindPanel.rawValue)
+
+        // The editor answers ⌘F itself; with the list or the sidebar in front, the window controller does.
+        controller.performFindPanelAction(find)
+
+        XCTAssertEqual(controller.commands.searchRequest, 1)
+    }
+
+    func testLibrarySearchWaitsWhileAFieldIsComposing() throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { window.close() }
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 22))
+        try XCTUnwrap(window.contentView).addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let fieldEditor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        fieldEditor.setMarkedText(
+            "ni", selectedRange: NSRange(location: 2, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+
+        // ⇧⌘F would commit the composition and move the keyboard away; it waits instead.
+        controller.searchLibrary(nil)
+        XCTAssertEqual(controller.commands.searchRequest, 0)
+        XCTAssertTrue(fieldEditor.hasMarkedText())
+
+        fieldEditor.unmarkText()
+        controller.searchLibrary(nil)
+        XCTAssertEqual(controller.commands.searchRequest, 1)
+    }
+
     func testViewMenuShowsTheSidebarAndMovesBetweenLists() throws {
         let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
         let view = try XCTUnwrap(menu.items.first { $0.title == "View" }?.submenu)
