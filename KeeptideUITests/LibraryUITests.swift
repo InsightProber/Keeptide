@@ -145,7 +145,7 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
 
         capture.rightClick()
-        let remove = app.menuItems["Move to Recently Deleted"]
+        let remove = contextMenuItem("Move to Recently Deleted", in: app)
         XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
         remove.click()
 
@@ -245,7 +245,7 @@ final class LibraryUITests: XCTestCase {
         let capture = app.staticTexts[title].firstMatch
         XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
         capture.rightClick()
-        let remove = app.menuItems["Move to Recently Deleted"]
+        let remove = contextMenuItem("Move to Recently Deleted", in: app)
         XCTAssertTrue(remove.waitForExistence(timeout: 5), app.debugDescription)
         remove.click()
         let deletedScope = sidebarRow("Recently Deleted", in: app)
@@ -349,6 +349,13 @@ final class LibraryUITests: XCTestCase {
     private func deletedLine(endingWith facet: String, in app: XCUIApplication) -> XCUIElement {
         app.staticTexts.matching(NSPredicate(format: "value BEGINSWITH %@ AND value CONTAINS %@",
                                              "Deleted ", " · \(facet)")).firstMatch
+    }
+
+    /// A context menu's item. The Item menu in the menu bar repeats some of their titles; its items carry identifiers
+    /// starting with "ItemMenu-".
+    private func contextMenuItem(_ title: String, in app: XCUIApplication) -> XCUIElement {
+        app.menuItems.matching(NSPredicate(format: "title == %@ AND NOT (identifier BEGINSWITH %@)",
+                                           title, "ItemMenu-")).firstMatch
     }
 
     /// The window's title ends with the list's name once the list shows.

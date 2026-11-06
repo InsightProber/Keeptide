@@ -183,9 +183,14 @@ final class LibraryCommandsTests: XCTestCase {
         let delete = try command(#selector(LibraryWindowController.moveToRecentlyDeleted(_:)))
         XCTAssertEqual(delete.keyEquivalent, "\u{8}")
         XCTAssertEqual(delete.keyEquivalentModifierMask, .command)
-        XCTAssertEqual(try command(#selector(LibraryWindowController.recoverDeletedItem(_:))).title, "Recover")
-        XCTAssertEqual(try command(#selector(LibraryWindowController.deleteDeletedItemPermanently(_:))).title,
-                       "Delete Permanently…")
+        let recover = try command(#selector(LibraryWindowController.recoverDeletedItem(_:)))
+        XCTAssertEqual(recover.title, "Recover")
+        let deletePermanently = try command(#selector(LibraryWindowController.deleteDeletedItemPermanently(_:)))
+        XCTAssertEqual(deletePermanently.title, "Delete Permanently…")
+        // A row's context menu repeats these titles; the Item menu's own identifiers tell them apart.
+        XCTAssertEqual([favorite, collection, delete, recover, deletePermanently].compactMap(\.identifier?.rawValue),
+                       ["ItemMenu-Favorite", "ItemMenu-Collection", "ItemMenu-MoveToRecentlyDeleted",
+                        "ItemMenu-Recover", "ItemMenu-DeletePermanently"])
 
         let view = try XCTUnwrap(menu.items.first { $0.title == "View" }?.submenu)
         let inspector = try XCTUnwrap(view.items.first {
