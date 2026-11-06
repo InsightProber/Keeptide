@@ -1013,14 +1013,15 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(announced, [reason])
         XCTAssertEqual(try moreMenu(), ["Open Library", "Settings…"])
 
-        // Allowed meanwhile, the next copy is kept, and the notice goes with nothing more to read.
+        // Allowed meanwhile, the next copy is kept, and the notice goes with nothing more to read. The notice can go
+        // before the kept copy reaches the recent clips, which a store read after the save fills, so the wait is for
+        // both.
         clipboard.deniesAccess = false
         clipboard.changeCount += 1
         try await SearchTestSupport.waitUntil {
             toolbar.layoutSubtreeIfNeeded()
-            return notice.isHidden
+            return notice.isHidden && environment.captureSession.recent.count == 1
         }
-        XCTAssertEqual(environment.captureSession.recent.count, 1)
         XCTAssertEqual(announced, [reason])
         XCTAssertEqual(try moreMenu(), ["Open Library", "Settings…"])
     }
