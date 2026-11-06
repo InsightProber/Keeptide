@@ -212,6 +212,25 @@ final class LibraryLayoutTests: XCTestCase {
         try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
     }
 
+    func testSwiftUIsToolbarBridgeWritesTheListAsTheSubtitleToo() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        // SwiftUI's toolbar bridge also writes the window's subtitle, from the view's navigation subtitle, when the
+        // view joins the window and as its bars change; on macOS 26 that can come after the controller's write. So
+        // the bridge must write the same name: with the controller's write switched off, the subtitle still names the
+        // list. (If SwiftUI ever stops writing the subtitle here, this test and the view's subtitle can go.)
+        controller.commands.showListTitle = { _ in }
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        controller.selectNextList(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "All Snippets" }
+        XCTAssertEqual(window.title, "Keeptide Library")
+    }
+
     func testChooseListPutsTheKeyboardOnTheSidebarWhileItShows() async throws {
         let controller = LibraryWindowController(
             session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
