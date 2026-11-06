@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large snippet cards, including a review prompt, Swift code, a landscape image, a Git command and an email reply, with the newest selected. Along the top are the All | Snippets switch with Snippets chosen, chips for six collections, and the filter button and the folded search at the right">
+  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: an opaque dark band of snippet cards, including a review prompt, Swift code, a landscape image, a Git command, a link and an email reply, each washed in its collection's colour from the top, with the newest selected and a soft yellow light behind it. Along the top are the All | Snippets switch with Snippets chosen, chips for six collections, and the filter button and the folded search at the right">
 </p>
 
 Keeptide remembers what you copy, such as commands, code, links, images and
