@@ -207,6 +207,11 @@ final class LibraryLayoutTests: XCTestCase {
         let long = LibrarySidebar.subtitle("Group 20 — 很长的中文名称用于验证完整筛选")
         XCTAssertEqual(long, "Group 2…于验证完整筛选")
         XCTAssertEqual(long.count, 15)
+
+        // Only a collection's name, which anyone may make long, is shortened; Keeptide's own lists keep theirs.
+        XCTAssertEqual(LibrarySidebar.listSubtitle(for: .recentlyDeleted, named: "Recently Deleted"), "Recently Deleted")
+        XCTAssertEqual(LibrarySidebar.listSubtitle(for: .collection(CollectionID()), named: "Group 20 — 很长的中文名称用于验证完整筛选"),
+                       long)
     }
 
     func testTheWindowSubtitleNamesTheChosenList() async throws {
