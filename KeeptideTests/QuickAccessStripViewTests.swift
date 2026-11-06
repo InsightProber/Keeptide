@@ -1015,17 +1015,28 @@ final class QuickAccessStripViewTests: XCTestCase {
         strip.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
         XCTAssertEqual(commands, [.move(1), .move(1), .move(1)])
 
-        // The toolbar's filters drop them the same way, and their cursor keeps moving while an arrow is held.
-        let filters = QuickAccessFilterRow()
-        var filterCommands: [QuickAccessCommand] = []
-        filters.onCommand = { filterCommands.append($0) }
+        // The toolbar's lists drop them the same way, and their cursor keeps moving while an arrow is held.
+        let lists = QuickAccessListNavigation()
+        var listCommands: [QuickAccessCommand] = []
+        lists.onCommand = { listCommands.append($0) }
         for (code, characters) in held {
-            filters.keyDown(with: try key(code, characters))
-            filters.keyDown(with: try key(code, characters, isARepeat: true))
+            lists.keyDown(with: try key(code, characters))
+            lists.keyDown(with: try key(code, characters, isARepeat: true))
         }
-        filters.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
-        filters.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
-        XCTAssertEqual(filterCommands, [.toggleFilter, .primary, .primary, .escape, .moveFilter(1), .moveFilter(1)])
+        lists.keyDown(with: try key(kVK_RightArrow, "\u{F703}"))
+        lists.keyDown(with: try key(kVK_RightArrow, "\u{F703}", isARepeat: true))
+        XCTAssertEqual(listCommands, [.chooseListAtCursor, .primary, .primary, .escape, .moveListCursor(1),
+                                      .moveListCursor(1)])
+
+        // So does the filter button: held, Space opens its menu once.
+        let filter = QuickAccessFilterButton()
+        var filterCommands: [QuickAccessCommand] = []
+        filter.onCommand = { filterCommands.append($0) }
+        for (code, characters) in held {
+            filter.keyDown(with: try key(code, characters))
+            filter.keyDown(with: try key(code, characters, isARepeat: true))
+        }
+        XCTAssertEqual(filterCommands, [.openFilterMenu, .primary, .primary, .escape])
     }
 
     func testTypingInTheStripRoutesToTheSearchField() throws {
@@ -1703,6 +1714,28 @@ final class QuickAccessStripViewTests: XCTestCase {
         // nothing itself, while the springs before it still draw the film where it was at the sixth clip.
         let sixth = centre - metrics.frameSize.width / 2 - 5 * metrics.step
         XCTAssertEqual(try select(5, then: [4, 3, 2]), sixth - metrics.dockInset, accuracy: 0.5)
+    }
+
+    func testAnotherListsRowsTakeThePlaceWithoutSliding() throws {
+        let strip = makeStrip()
+        strip.haptics = RecordingHaptics()
+        // On screen, where the frames would otherwise slide.
+        strip.window?.orderFront(nil)
+        let film = try XCTUnwrap(strip.subviews.first?.layer)
+        let rows = makeRows(20)
+        strip.show(rows, selection: rows[2].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        XCTAssertEqual(film.animationKeys() ?? [], [])
+        // Another list holds the selected clip at another place: its rows replace these where they stand, as the
+        // panel fades them in.
+        let other = [makeRow(title: "Row new")] + rows
+        strip.show(other, selection: rows[2].id, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   slides: false)
+        XCTAssertEqual(film.animationKeys() ?? [], [])
+        XCTAssertEqual(try midX(of: "Row 2", in: strip), dock + 3 * metrics.step, accuracy: 0.5)
+        // The same change within one list slides.
+        strip.show([makeRow(title: "Row newer")] + other, selection: rows[2].id, details: [:], metrics: metrics,
+                   applicationNames: ApplicationNames())
+        XCTAssertFalse((film.animationKeys() ?? []).isEmpty)
     }
 
     func testReduceMotionStopsEverySlide() throws {

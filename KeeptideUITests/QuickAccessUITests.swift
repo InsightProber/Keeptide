@@ -31,15 +31,20 @@ final class QuickAccessUITests: XCTestCase {
 
         XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertTrue(older.waitForExistence(timeout: 5), app.debugDescription)
-        // The search opens folded to its icon, with the filters beside it, all above the clips.
-        let search = app.buttons["Search clips"]
+        // The lists open on All at the left, with no collections shown; at the right the filter button and the search,
+        // folded to its icon, all above the clips.
+        let lists = app.descendants(matching: .any)["QuickAccessListNavigation"]
+        XCTAssertTrue(lists.exists, app.debugDescription)
+        XCTAssertTrue(app.radioButtons["All"].exists, app.debugDescription)
+        XCTAssertTrue(app.radioButtons["Snippets"].exists, app.debugDescription)
+        XCTAssertFalse(app.descendants(matching: .any)["QuickAccessCollectionChips"].exists, app.debugDescription)
+        let filter = app.descendants(matching: .any)["QuickAccessFilterButton"]
+        XCTAssertTrue(filter.exists, app.debugDescription)
+        let search = app.buttons["QuickAccessSearchButton"]
         XCTAssertTrue(search.exists, app.debugDescription)
         XCTAssertFalse(app.buttons["Clear search"].exists)
-        let filters = app.descendants(matching: .any)["QuickAccessFilters"]
-        XCTAssertTrue(filters.exists, app.debugDescription)
-        for title in ["All", "Text", "Links", "Images", "Files"] {
-            XCTAssertTrue(filters.descendants(matching: .any)[title].exists, "\(title)\n\(app.debugDescription)")
-        }
+        XCTAssertLessThan(lists.frame.maxX, filter.frame.minX, app.debugDescription)
+        XCTAssertLessThan(filter.frame.maxX, search.frame.minX, app.debugDescription)
         XCTAssertLessThan(search.frame.maxY, newest.frame.minY, app.debugDescription)
         // The newest clip is the leftmost frame and the next older clip the frame on its right. That the newest is
         // the one selected shows in what Return copies.
@@ -98,7 +103,7 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(unrelated.waitForNonExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(clip("echo synthetic-beta", in: frames).exists, app.debugDescription)
         XCTAssertTrue(app.buttons["Clear search"].exists, app.debugDescription)
-        XCTAssertFalse(app.buttons["Search clips"].exists, app.debugDescription)
+        XCTAssertFalse(app.buttons["QuickAccessSearchButton"].exists, app.debugDescription)
     }
 
     func testSpaceOpensPreviewAndEscapeClosesOneLayerAtATime() throws {
@@ -286,6 +291,62 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertEqual(text(of: host.staticTexts["Synthetic host status"]), "No synthetic payload received")
     }
 
+    // MARK: - Lists
+
+    func testClickingSnippetsShowsSnippetsAndCollections() throws {
+        let app = launchKeeptide(seedsSnippets: true)
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertFalse(app.radioButtons["Prompts"].exists, "No collections under All\n\(app.debugDescription)")
+
+        // Snippets lists the snippets, and the collections appear beside the switch.
+        app.radioButtons["Snippets"].click()
+        let meeting = clip("Summarize meeting notes", in: frames)
+        XCTAssertTrue(meeting.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(clip("Release checklist", in: frames).exists, app.debugDescription)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.radioButtons["Prompts"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.radioButtons["Shell"].exists, app.debugDescription)
+
+        // A collection narrows them to its own.
+        app.radioButtons["Prompts"].click()
+        XCTAssertTrue(clip("Release checklist", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(meeting.exists, app.debugDescription)
+    }
+
+    func testCommandBracketSwitchesLists() throws {
+        let app = launchKeeptide(seedsSnippets: true)
+        let frames = try openPanel(app)
+        let query = app.searchFields["Quick access query"]
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
+        // ⌘] steps to Snippets and then to the first collection; ⌘[ steps back to All.
+        query.typeKey("]", modifierFlags: .command)
+        XCTAssertTrue(clip("Release checklist", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        query.typeKey("]", modifierFlags: .command)
+        XCTAssertTrue(clip("Release checklist", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(clip("Summarize meeting notes", in: frames).exists, app.debugDescription)
+        query.typeKey("[", modifierFlags: .command)
+        query.typeKey("[", modifierFlags: .command)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+    }
+
+    func testFavoritesOnlyLivesInTheFilterMenu() throws {
+        let app = launchKeeptide(seedsSnippets: true)
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+
+        // Favorites Only, from the filter button's menu, lists the favorite snippets, and the switch moves to Snippets.
+        let filter = app.descendants(matching: .any)["QuickAccessFilterButton"]
+        filter.click()
+        let favorites = app.menuItems["Favorites Only"]
+        XCTAssertTrue(favorites.waitForExistence(timeout: 5), app.debugDescription)
+        favorites.click()
+        XCTAssertTrue(clip("List open ports", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(clip("Release checklist", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertEqual(filter.value as? String, "Favorites", app.debugDescription)
+    }
+
     // MARK: - Helpers
 
     /// Launches the test host first, so the panel opens last and keeps keyboard focus.
@@ -295,11 +356,12 @@ final class QuickAccessUITests: XCTestCase {
         return (launchKeeptide(sessionID: sessionID), host)
     }
 
-    private func launchKeeptide(sessionID: UUID = UUID()) -> XCUIApplication {
+    private func launchKeeptide(sessionID: UUID = UUID(), seedsSnippets: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-global-hotkey", "--show-quick-access",
                                "--capture-test-session", sessionID.uuidString, "--seed-synthetic-clips"]
+            + (seedsSnippets ? ["--seed-synthetic-snippets"] : [])
         self.sessionID = sessionID
         application = app
         app.launch()

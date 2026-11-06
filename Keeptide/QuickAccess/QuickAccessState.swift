@@ -188,6 +188,8 @@ final class QuickAccessState {
     @ObservationIgnored private var frequentRead: Task<[QuickAccessRow?], Never>?
     /// The opening's read of the collections, or one asked for since.
     @ObservationIgnored private var collectionsRead: Task<Void, Never>?
+    /// The list was changed, and VoiceOver is to hear which once its first page is in.
+    @ObservationIgnored private var announcesList = false
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -213,6 +215,14 @@ final class QuickAccessState {
 
     /// What the panel offers for the selected row.
     var actions: QuickAccessActions { actions(for: selection.selection) }
+
+    /// What Return can do in this session, whatever clip is selected: the toolbar keeps room for the widest.
+    var possibleActions: [QuickAccessActions] {
+        ([nil] + [ContentKind.text, .url, .image, .file, .other]).map { kind in
+            QuickAccessActions.make(target: pasteTarget, availability: directPaste, kind: kind,
+                                    awaitsReopen: directPasteAwaitsReopen)
+        }
+    }
 
     /// What the panel offers for a listed row, such as the one a right-click is on, which need not be the selected one.
     func actions(for ref: ContentRef?) -> QuickAccessActions {
@@ -240,6 +250,7 @@ final class QuickAccessState {
         kinds = []
         list = .all
         favoritesOnly = false
+        announcesList = false
         isSearchUnfolded = false
         isPreviewExpanded = false
         selection = SelectionCoordinator()
@@ -249,6 +260,8 @@ final class QuickAccessState {
 
     func close() {
         isOpen = false
+        // A list changed just before closing is not announced later.
+        announcesList = false
         cancelLoads()
         frequentRead?.cancel()
         frequentRead = nil
@@ -299,6 +312,13 @@ final class QuickAccessState {
         reload()
     }
 
+    /// Clears the type filter, as All Types does.
+    func clearKinds() {
+        guard !kinds.isEmpty else { return }
+        kinds = []
+        reload()
+    }
+
     /// The name of the collection listed, for the toolbar and the empty states; nil for the other lists.
     var collectionName: String? {
         guard case .collection(let id) = list else { return nil }
@@ -313,13 +333,19 @@ final class QuickAccessState {
         if list == .all { favoritesOnly = false }
         collapsePreview()
         reload()
+        // VoiceOver hears the list and how many it holds once its first page is in.
+        announcesList = true
     }
 
     /// Lists only favorite memos, or every memo again. Under `.all` the list changes to `.snippets` first, since
     /// only memos can be favorites.
     func toggleFavoritesOnly() {
         guard isOpen else { return }
-        if !favoritesOnly, list == .all { list = .snippets }
+        if !favoritesOnly, list == .all {
+            list = .snippets
+            // The list changed, so VoiceOver hears which and how many it holds, as after any change of list.
+            announcesList = true
+        }
         favoritesOnly.toggle()
         collapsePreview()
         reload()
@@ -362,6 +388,8 @@ final class QuickAccessState {
             // A read that fails says nothing about the listed collection; only one that succeeds without it does.
             if let read, case .collection(let id) = list, !read.contains(where: { $0.id == id }) {
                 setList(.snippets)
+                // Why the list changed is what VoiceOver says, without the new list's count after it.
+                announcesList = false
                 announce?("Collection removed")
             }
         }
@@ -804,6 +832,7 @@ final class QuickAccessState {
         let rows = ledByFrequentWing((summaries ?? []).compactMap { Self.row(from: $0) }, candidates: candidates)
         applyRows(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
+        announceListIfNeeded()
     }
 
     private func loadSearch(_ search: (any QuickAccessSearch)?, _ request: SearchRequest) async {
@@ -825,6 +854,7 @@ final class QuickAccessState {
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
                 phase = !rows.isEmpty ? .results : (page.isComplete ? emptyPhase : .loading)
+                if page.isComplete { announceListIfNeeded() }
             }
         } catch {
             guard isCurrent(generation) else { return }
@@ -844,12 +874,34 @@ final class QuickAccessState {
                 totalMatches = rows.count
                 indexNotice = notice
                 phase = rows.isEmpty ? .noContent : .results
+                announceListIfNeeded()
                 return
             }
         }
         applyRows([], generation: generation, isComplete: true)
         indexNotice = notice
         phase = .noResults
+        announceListIfNeeded()
+    }
+
+    /// "Snippets, 4 items": the list a change of list shows, and how many it holds, once its first page is in. The
+    /// recent clips count without the frequent wing, which repeats some of them.
+    private func announceListIfNeeded() {
+        guard announcesList, isOpen, phase != .loading else { return }
+        announcesList = false
+        let name: String
+        switch list {
+        case .all: name = "All"
+        case .snippets: name = "Snippets"
+        case .collection: name = collectionName ?? "Collection"
+        }
+        let count = showsRecentClips ? selection.rows.count - selection.frequentCount : totalMatches
+        let items = switch count {
+        case 0: "no items"
+        case 1: "1 item"
+        default: "\(count) items"
+        }
+        announce?("\(name), \(items)")
     }
 
     /// The session's frequent candidates, once its one read of them is done, for a list that has a frequent wing. A

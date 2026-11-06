@@ -994,6 +994,42 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.selection.rows.first?.isFavorite, true)
     }
 
+    func testFavoritesOnlyUnderAllSaysWhichListItShows() async throws {
+        let fixture = try makeFixture()
+        let starred = try await insert("starred snippet", at: 1, into: fixture)
+        _ = try await LibraryService(controller: fixture.harness.controller).saveAsMemo(starred.id, isFavorite: true)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        let announced = Announcements()
+        state.announce = { announced.messages.append($0) }
+        state.open()
+        try await settled(state)
+
+        // The list changes from All to Snippets, so VoiceOver hears it, as after any change of list.
+        state.toggleFavoritesOnly()
+        try await settled(state)
+        XCTAssertEqual(announced.messages, ["Snippets, 1 item"])
+    }
+
+    func testAListChangedJustBeforeClosingIsNotAnnouncedLater() async throws {
+        let fixture = try makeFixture()
+        try await insert("clip", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let announced = Announcements()
+        state.announce = { announced.messages.append($0) }
+        state.open()
+        try await settled(state)
+
+        // Closed before the new list's first page is in, and opened again on All: nothing is said about either.
+        state.setList(.snippets)
+        state.close()
+        state.open()
+        try await settled(state)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(state.list, .all)
+        XCTAssertEqual(announced.messages, [])
+    }
+
     func testGoingToAllClearsFavoritesOnly() async throws {
         let fixture = try makeFixture()
         let clip = try await insert("clip", at: 1, into: fixture)
@@ -1152,6 +1188,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.collectionsUnavailable }
         state.setList(.collection(prompts))
         try await settled(state)
+        announced.messages.removeAll()
 
         state.collectionsDidChange()
         try await SearchTestSupport.waitUntil { await failing.calls == 2 }
@@ -1226,8 +1263,9 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.collections.isEmpty }
         try await settled(state)
 
+        // Choosing the collection says which list and how many it holds; its removal says only that it went.
         XCTAssertEqual(state.list, .snippets)
-        XCTAssertEqual(announced.messages, ["Collection removed"])
+        XCTAssertEqual(announced.messages, ["Prompts, no items", "Collection removed"])
     }
 
     // MARK: The frequent wing

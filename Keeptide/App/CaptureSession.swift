@@ -107,7 +107,8 @@ final class CaptureSession {
 
     /// Opens the library that the launch chooses (`CaptureLibrary.choose`).
     func initialize(testSessionID: UUID? = nil, cleanupTestSession: Bool = false,
-                    seedSyntheticClips: Bool = false, manualPasteQA: Bool = false) async {
+                    seedSyntheticClips: Bool = false, seedSyntheticSnippets: Bool = false,
+                    manualPasteQA: Bool = false) async {
         guard !isReady, !initializing else { return }
         let library: CaptureLibrary?
         do {
@@ -120,7 +121,8 @@ final class CaptureSession {
         // A Release build asked for the manual paste QA session chooses nothing, and nothing opens; nor does a test
         // process without a test session.
         guard let library else { return }
-        await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips)
+        await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips,
+                   seedSyntheticSnippets: seedSyntheticSnippets)
     }
 
     #if DEBUG
@@ -135,7 +137,7 @@ final class CaptureSession {
     /// Opens `library`: its store, search index and paste service, and the recording of the clipboard where the
     /// library records.
     private func open(_ library: CaptureLibrary, cleanupTestSession: Bool = false,
-                      seedSyntheticClips: Bool = false) async {
+                      seedSyntheticClips: Bool = false, seedSyntheticSnippets: Bool = false) async {
         guard !isReady, !initializing else { return }
         initializing = true
         defer { initializing = false }
@@ -188,7 +190,9 @@ final class CaptureSession {
             }
             #if DEBUG
             switch library {
-            case .test where seedSyntheticClips: try await SyntheticClipSeeder.seed(into: store)
+            case .test where seedSyntheticClips:
+                try await SyntheticClipSeeder.seed(into: store)
+                if seedSyntheticSnippets { try await SyntheticClipSeeder.seedSnippets(into: store) }
             case .manualPasteQA: try await SyntheticClipSeeder.seed(ManualPasteQASession.clips(), into: store)
             default: break
             }

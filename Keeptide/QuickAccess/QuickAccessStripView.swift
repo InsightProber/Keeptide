@@ -178,12 +178,13 @@ final class QuickAccessStripView: NSView {
     /// `oldestIsLoaded` is false while more rows may follow the last one, so the film does not stop there.
     func show(_ rows: [QuickAccessRow], selection: QuickAccessRow.ID?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true,
-              collections: [CollectionID: CollectionSummary] = [:]) {
+              collections: [CollectionID: CollectionSummary] = [:], slides: Bool = true) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
         // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
-        // moves. The springs still running are read before another joins them.
-        let start = metrics == self.metrics
+        // moves. The springs still running are read before another joins them. Rows of another list take the place
+        // of the last list's where they stand, without sliding.
+        let start = slides && metrics == self.metrics
             ? selection.flatMap { frames[$0] }.map { $0.frame.midX - $0.placedPush + pushed } : nil
         let running = drawnOffset
         let previousIndex = selectedIndex

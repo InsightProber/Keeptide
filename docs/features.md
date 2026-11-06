@@ -5,20 +5,23 @@ currently save new copies whenever Keeptide is open, with no pause switch, while
 ignored applications and privacy filters decide what is skipped. They include
 exact capture deduplication, a recent-clips list, original-format and plain-text
 copying, and a quick-access panel that says why when new copies cannot be saved.
-The panel shows clips as a
-row of large cards in a wide band, in small, medium or large sizes as set in a
-minimal Settings window, which also sets how much larger the selected card is
-drawn and whether the band's ends fade where more cards continue. The panel
-steps through them with the arrow keys or a trackpad swipe, one clip per detent
-with a haptic tick on a Force Touch trackpad. Clips copied or pasted from
-Keeptide more than once, and used in the last 90 days, appear to the left of
-the newest one, apart from the recent clips; Settings can turn this off. The
-panel searches all content with a local full-text index from a search that
-folds into an icon at the band's left end until you type, filters by type,
-previews text and images, and can paste the selected clip, with Return or a
-double click, directly into the app window it was opened from; Settings shows
-whether direct paste is on. The native library supports editable snippets;
-iCloud saving remains planned. There is no application release yet.
+The panel shows clips as a row of large cards in a wide band, in small, medium
+or large sizes as set in a minimal Settings window, which also sets how much
+larger the selected card is drawn and whether the band's ends fade where more
+cards continue. The panel steps through them with the arrow keys or a trackpad
+swipe, one clip per detent with a haptic tick on a Force Touch trackpad. Clips
+copied or pasted from Keeptide more than once, and used in the last 90 days,
+appear to the left of the newest one, apart from the recent clips; Settings can
+turn this off. The panel switches between all content, snippets and each
+collection with the All | Snippets switch and the collection chips at its top
+left, or with ⌘[ and ⌘]. It searches all content in the All list, and within the
+chosen list otherwise, with a local full-text index, from a search that folds
+into an icon at the band's right end until you type; a filter button beside it
+narrows the list to favorites or to types. It previews text and images, and can
+paste the selected clip, with Return or a double click, directly into the app
+window it was opened from; Settings shows whether direct paste is on. The native
+library supports editable snippets; iCloud saving remains planned. There is no
+application release yet.
 
 Space opens a preview over the stationary quick-access band, with a brief zoom
 that respects Reduce Motion. Its close button, a click on the exposed band, or
@@ -51,7 +54,7 @@ planned.
 | Clipboard history | Capture supported text, rich content, images, URLs and file references, preserving original representations |
 | Reusable snippets | Save a capture or create a short note, command, prompt or code fragment directly |
 | Editing | Native text editing, recoverable drafts, light Markdown and preservation of the original capture |
-| Quick access | A global shortcut, a band of clip cards, keyboard navigation and explicit actions |
+| Quick access | A global shortcut, a band of clip cards, lists of snippets and collections, filters for favorites and types, keyboard navigation and explicit actions |
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections with one collection per saved snippet, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |

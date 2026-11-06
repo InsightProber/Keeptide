@@ -1,9 +1,9 @@
 import AppKit
 
-/// The band's top row. At the left end, the search, folded to a round icon until it is wanted, and the filters; at the
-/// right end what Return does, with why it only copies when the user can do something about it, or in its place what
-/// the panel has to say, and the ⋯ menu; between them, why new copies are not kept, or while the index rebuilds, that
-/// results may be incomplete.
+/// The band's top row. At the left end, the All | Snippets switch and, under Snippets, the collection chips; at the right
+/// end the filter button, the search, folded to a round icon until it is wanted, what Return does, with why it only
+/// copies when the user can do something about it, or in its place what the panel has to say, and the ⋯ menu; between
+/// them, why new copies are not kept, or while the index rebuilds, that results may be incomplete.
 /// The search field is in the row all the time and keeps the keys while it is folded, its caret hidden with it, so
 /// the first key typed goes straight into it, an input method's composition included.
 @MainActor
@@ -39,7 +39,10 @@ final class QuickAccessToolbar: NSView {
     /// The ring around the open search while its field has the keys. It lies beside the search control rather than
     /// in it, so that nothing between them can cut it off.
     let focusHalo = QuickAccessFocusHalo()
-    let filters = QuickAccessFilterRow()
+    /// The All | Snippets switch and, under Snippets, the collection chips.
+    let lists = QuickAccessListNavigation()
+    /// Favorites Only and the types, behind one button.
+    let filterButton = QuickAccessFilterButton()
     /// "⏎ <title>", the button for what Return does. Its identifier stays the one it had when it only copied.
     let copyHint = QuickAccessCopyHint()
     /// Why Return only copies, left of it, in a status's type.
@@ -53,6 +56,19 @@ final class QuickAccessToolbar: NSView {
     var note = Note.none {
         didSet { if note != oldValue { showNote() } }
     }
+    /// What Return can do in this session, whatever clip is selected. The right end keeps room for the widest of them
+    /// and for the common statuses, so that typing, a status or another clip never moves the search.
+    var reservedNotes: [Note] = [] {
+        didSet {
+            guard reservedNotes != oldValue else { return }
+            updateNoteReserve()
+            needsLayout = true
+        }
+    }
+    /// The room the right end keeps for what Return does.
+    private(set) var noteReserve: CGFloat = 0
+    /// What the panel says often in Return's place, as while a search runs or after a save.
+    static let commonStatuses = ["Searching…", "Saved to Snippets", "Already in Snippets", "Save undone"]
     /// Whether there are clips, and what the index says about itself. While there are clips and the index rebuilds,
     /// the gap after the filters says so; with no clips the empty state says it instead.
     var hasClips = false {
@@ -106,8 +122,9 @@ final class QuickAccessToolbar: NSView {
         directPasteHint.setAccessibilityIdentifier("QuickAccessDirectPasteHint")
         copyHint.isHidden = true
         focusHalo.isHidden = true
-        for view in [focusHalo, indexNoticeLabel, captureNoticeLabel, search, filters, directPasteHint, copyHint,
-                     statusLabel, moreButton] as [NSView] {
+        updateNoteReserve()
+        for view in [focusHalo, indexNoticeLabel, captureNoticeLabel, search, lists, filterButton, directPasteHint,
+                     copyHint, statusLabel, moreButton] as [NSView] {
             addSubview(view)
         }
     }
@@ -115,11 +132,11 @@ final class QuickAccessToolbar: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     /// Folds or unfolds the search. The views take their new places at once, and on screen the pill grows out of the
-    /// circle while the filters and the notice after them move over to make room, in a fifth of a second. Off screen,
+    /// circle to the left while the filter button and the notice before it make room, in a fifth of a second. Off screen,
     /// as when the panel opens again, and with Reduce Motion it all switches at once.
     func setSearchExpanded(_ expanded: Bool) {
         guard expanded != search.isExpanded else { return }
-        let moving = [search, focusHalo, filters, indexNoticeLabel, captureNoticeLabel] + search.subviews
+        let moving = [search, focusHalo, filterButton, indexNoticeLabel, captureNoticeLabel] + search.subviews
         let before = moving.map { ($0.layer, $0.layer?.position, $0.layer?.bounds, $0.layer?.opacity) }
         search.isExpanded = expanded
         updateHalo()
@@ -142,35 +159,58 @@ final class QuickAccessToolbar: NSView {
         layer.add(animation, forKey: "fold \(keyPath)")
     }
 
-    /// The search and filters start at the left inset. The right end is laid out from the edge in, and the notice
-    /// after the filters takes the room between them.
+    /// From the left: the switch at the left inset and, under Snippets, the chips, fitted as if the right end were at
+    /// its widest, so that nothing there ever moves them. From the right: the ⋯ button, the room kept for what Return
+    /// does, the search and the filter button, 12 apart. A notice takes what is left between them.
     override func layout() {
         super.layout()
         let row = rowFrame
-        let searchWidth = search.isExpanded ? QuickAccessSearchControl.openWidth : QuickAccessSearchControl.foldedWidth
-        let filtersSize = filters.intrinsicContentSize
+        let gap = Self.trailingGap
         let side = QuickAccessMoreButton.side
         let moreFrame = NSRect(x: bounds.width - Self.trailingInset - side, y: row.midY - side / 2, width: side,
                                height: side)
-        let end = moreFrame.minX - Self.trailingGap
-        let searchFrame = NSRect(x: Self.leadingInset, y: row.minY, width: searchWidth, height: row.height)
-        let filtersFrame = NSRect(x: searchFrame.maxX + Self.searchGap, y: row.midY - filtersSize.height / 2,
-                                  width: filtersSize.width, height: filtersSize.height)
+        moreButton.frame = moreFrame
+        let noteRight = moreFrame.minX - gap
+        let chipsStart = Self.leadingInset + lists.segmentsWidth + QuickAccessListNavigation.chipsInset
+        // The filter button at its widest and the open search.
+        let widest = filterButton.maximumWidth + gap + QuickAccessSearchControl.openWidth
+        func chipsRoom(noteSlot: CGFloat) -> CGFloat {
+            noteRight - (noteSlot > 0 ? noteSlot + gap : 0) - widest - gap - chipsStart
+        }
+        // A narrow row puts collections behind More first; only then does the room for the note shrink.
+        var noteSlot = noteReserve
+        let shortfall = lists.minimumChipsRoom - chipsRoom(noteSlot: noteSlot)
+        if shortfall > 0 { noteSlot = max(0, noteSlot - shortfall) }
+        lists.fitChips(in: chipsRoom(noteSlot: noteSlot))
+        let height = QuickAccessListNavigation.height
+        lists.frame = NSRect(x: Self.leadingInset, y: row.midY - height / 2, width: lists.contentWidth, height: height)
+        let leftBound = lists.frame.maxX + gap
+        let searchWidth = search.isExpanded ? QuickAccessSearchControl.openWidth : QuickAccessSearchControl.foldedWidth
+        let filterSize = filterButton.intrinsicContentSize
+        // What Return does keeps to its room. A status or a failure may borrow more while the search is folded, never
+        // from the lists: the search and the filter button make way, and come back when it goes.
+        let borrows: Bool
+        switch note {
+        case .status, .failure: borrows = !search.isExpanded
+        case .action, .none: borrows = false
+        }
+        let free = noteRight - leftBound - (filterSize.width + gap + searchWidth + gap)
+        let noteWidth = layoutNote(endingAt: noteRight, room: borrows ? max(noteSlot, free) : noteSlot)
+        let span = max(noteSlot, noteWidth)
+        let searchRight = span > 0 ? noteRight - span - gap : noteRight
+        let searchFrame = NSRect(x: searchRight - searchWidth, y: row.minY, width: searchWidth, height: row.height)
         search.frame = searchFrame
         focusHalo.frame = searchFrame.insetBy(dx: -QuickAccessFocusHalo.width, dy: -QuickAccessFocusHalo.width)
-        filters.frame = filtersFrame
-        moreButton.frame = moreFrame
-        layoutNote(endingAt: end, room: end - (filtersFrame.maxX + Self.trailingGap))
-        let firstRight = [directPasteHint, copyHint, statusLabel].filter { !$0.isHidden }.map { $0.frame.minX }.min()
-        layoutNotice(endingBefore: firstRight.map { $0 - Self.trailingGap } ?? end)
+        filterButton.frame = NSRect(x: searchFrame.minX - gap - filterSize.width, y: row.midY - filterSize.height / 2,
+                                    width: filterSize.width, height: filterSize.height)
+        layoutNotice(from: leftBound, to: filterButton.frame.minX - gap)
     }
 
-    /// The notice after the filters: why new copies are not kept, or else, over clips, that the index rebuilds. It
-    /// starts `trailingGap` after the filters and ends by `end`, before the first visible part of the right end: it
-    /// takes only the room left once the right end has what it needs.
-    /// Short of that room it is cut short with an ellipsis, its whole text in its help tag; below `shortestStatus` it is
-    /// left out. VoiceOver reads its whole text either way.
-    private func layoutNotice(endingBefore end: CGFloat) {
+    /// The notice between the lists and the filter button: why new copies are not kept, or else, over clips, that the
+    /// index rebuilds. It takes only the room the rest of the row leaves. Short of that room it is cut short with an
+    /// ellipsis, its whole text in its help tag; below `shortestStatus` it is left out. VoiceOver reads its whole text
+    /// either way.
+    private func layoutNotice(from start: CGFloat, to end: CGFloat) {
         for notice in [captureNoticeLabel, indexNoticeLabel] {
             notice.isHidden = true
             notice.toolTip = nil
@@ -183,7 +223,6 @@ final class QuickAccessToolbar: NSView {
         } else {
             return
         }
-        let start = filters.frame.maxX + Self.trailingGap
         let full = Self.fullWidth(of: label)
         let width = min(full, end - start)
         if width < full { label.toolTip = label.stringValue }
@@ -193,6 +232,31 @@ final class QuickAccessToolbar: NSView {
         label.isHidden = false
     }
 
+    /// How wide `note` is with nothing cut.
+    func fullWidth(of note: Note) -> CGFloat {
+        switch note {
+        case .action(let title, _, let hint):
+            let action = copyHint.compactWidth + QuickAccessCopyHint.spacing + QuickAccessCopyHint.titleWidth(title)
+            return hint.map { action + Self.trailingGap + Self.labelWidth($0) } ?? action
+        case .status(let text), .failure(let text):
+            return Self.labelWidth(text)
+        case .none:
+            return 0
+        }
+    }
+
+    private func updateNoteReserve() {
+        let widths = Self.commonStatuses.map(Self.labelWidth) + reservedNotes.map(fullWidth(of:))
+        noteReserve = ceil(widths.max() ?? 0)
+    }
+
+    /// How wide a status label must be to show `text` whole.
+    private static func labelWidth(_ text: String) -> CGFloat {
+        let probe = NSTextField(labelWithString: text)
+        probe.font = .systemFont(ofSize: 13)
+        return fullWidth(of: probe)
+    }
+
     /// How wide a label must be to show its whole text: the text's own width, which is the label's intrinsic one, and
     /// the room the label leaves at either side of it.
     private static func fullWidth(of label: NSTextField) -> CGFloat {
@@ -200,11 +264,12 @@ final class QuickAccessToolbar: NSView {
         return ceil(label.intrinsicContentSize.width + insets.left + insets.right)
     }
 
-    /// The note ends `trailingGap` before the ⋯ button and takes at most `room`. A status is cut short with an
-    /// ellipsis, its whole text in its help tag. What Return does gives way in steps, each with the whole text in its
-    /// help tag: first its reason is cut and then left out, then its word is cut, then only the key cap is left, and
-    /// last it goes.
-    private func layoutNote(endingAt end: CGFloat, room: CGFloat) {
+    /// The note ends `trailingGap` before the ⋯ button and takes at most `room`; it returns the width it took. A status is
+    /// cut short with an ellipsis, its whole text in its help tag. What Return does gives way in steps, each with the
+    /// whole text in its help tag: first its reason is cut and then left out, then its word is cut, then only the key cap
+    /// is left, and last it goes.
+    @discardableResult
+    private func layoutNote(endingAt end: CGFloat, room: CGFloat) -> CGFloat {
         copyHint.isHidden = true
         copyHint.toolTip = nil
         directPasteHint.isHidden = true
@@ -224,33 +289,36 @@ final class QuickAccessToolbar: NSView {
                 width = copyHint.compactWidth
                 copyHint.showsTitle = false
             } else {
-                return
+                return 0
             }
             if width < copyHint.fullWidth { copyHint.toolTip = title }
             let height = QuickAccessKeycap.minimumSize.height
             copyHint.frame = NSRect(x: end - width, y: rowFrame.midY - height / 2, width: width, height: height)
             copyHint.isHidden = false
-            if hint != nil {
-                place(directPasteHint, endingAt: copyHint.frame.minX - Self.trailingGap,
-                      room: room - width - Self.trailingGap)
-            }
+            guard hint != nil else { return width }
+            let reason = place(directPasteHint, endingAt: copyHint.frame.minX - Self.trailingGap,
+                               room: room - width - Self.trailingGap)
+            return reason > 0 ? width + Self.trailingGap + reason : width
         case .status, .failure:
-            place(statusLabel, endingAt: end, room: room)
+            return place(statusLabel, endingAt: end, room: room)
         case .none:
-            break
+            return 0
         }
     }
 
     /// Puts `label` in the row, ending at `end` and taking at most `room`: cut short with an ellipsis where that is
-    /// less than it needs, its whole text in its help tag, and left out below `shortestStatus`.
-    private func place(_ label: NSTextField, endingAt end: CGFloat, room: CGFloat) {
+    /// less than it needs, its whole text in its help tag, and left out below `shortestStatus`. It returns the width it
+    /// took.
+    @discardableResult
+    private func place(_ label: NSTextField, endingAt end: CGFloat, room: CGFloat) -> CGFloat {
         let full = Self.fullWidth(of: label)
         let width = min(full, room)
         if width < full { label.toolTip = label.stringValue }
-        guard width >= Self.shortestStatus else { return }
+        guard width >= Self.shortestStatus else { return 0 }
         let height = label.intrinsicContentSize.height
         label.frame = NSRect(x: end - width, y: rowFrame.midY - height / 2, width: width, height: height)
         label.isHidden = false
+        return width
     }
 
     private func updateHalo() {
@@ -328,9 +396,8 @@ final class QuickAccessSearchControl: NSView {
         magnifier.setAccessibilityElement(false)
         foldButton.target = self
         foldButton.action = #selector(unfold)
-        foldButton.setAccessibilityLabel("Search clips")
         foldButton.setAccessibilityIdentifier("QuickAccessSearchButton")
-        foldButton.toolTip = "Search clips (⌘F)"
+        setPrompt("Search Clips and Snippets")
         clearButton.target = self
         clearButton.action = #selector(clear)
         for view in [magnifier, field, clearButton, foldButton] as [NSView] { addSubview(view) }
@@ -383,6 +450,14 @@ final class QuickAccessSearchControl: NSView {
     override func mouseDown(with event: NSEvent) {
         guard isExpanded else { return super.mouseDown(with: event) }
         onUnfold?()
+    }
+
+    /// What the search searches, as its field's placeholder and the folded circle's name say it.
+    func setPrompt(_ prompt: String) {
+        guard foldButton.accessibilityLabel() != prompt else { return }
+        field.setPrompt(prompt)
+        foldButton.setAccessibilityLabel(prompt)
+        foldButton.toolTip = "\(prompt) (⌘F)"
     }
 
     @objc private func unfold() { onUnfold?() }
@@ -472,165 +547,6 @@ final class QuickAccessClearButton: NSButton {
     }
 }
 
-/// All, Text, Links, Images and Files, where All clears the filters. A click chooses directly and leaves the keys
-/// where they are. With the keys, the row itself takes them: ← and → move a cursor along the choices, ringed as
-/// focus, and Space chooses the one under it.
-@MainActor
-final class QuickAccessFilterRow: NSView {
-    /// The choices in order; nil is All.
-    static let choices: [ContentKind?] = [nil] + ContentKind.filters
-    static let spacing: CGFloat = 6
-
-    var onCommand: ((QuickAccessCommand) -> Void)?
-    /// A choice was clicked; its index in `choices`.
-    var onChoose: ((Int) -> Void)?
-    /// What a key means here depends on the rest of the panel, which keeps this current.
-    var queryIsEmpty = true
-    /// The choice ← and → move and Space chooses.
-    var cursor = 0 {
-        didSet { noteFocusRingMaskChanged() }
-    }
-    let chips: [QuickAccessFilterChip]
-
-    override init(frame frameRect: NSRect) {
-        chips = Self.choices.map { QuickAccessFilterChip(title: $0?.filterTitle ?? "All") }
-        super.init(frame: frameRect)
-        for (index, chip) in chips.enumerated() {
-            chip.tag = index
-            chip.target = self
-            chip.action = #selector(choose(_:))
-            addSubview(chip)
-        }
-        setAccessibilityElement(true)
-        setAccessibilityRole(.group)
-        setAccessibilityLabel("Filter by type")
-        setAccessibilityIdentifier("QuickAccessFilters")
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    override var intrinsicContentSize: NSSize {
-        let widths = chips.map(\.intrinsicContentSize.width)
-        return NSSize(width: widths.reduce(0, +) + Self.spacing * CGFloat(max(0, chips.count - 1)),
-                      height: QuickAccessFilterChip.height)
-    }
-
-    override func layout() {
-        super.layout()
-        var x: CGFloat = 0
-        for chip in chips {
-            let width = chip.intrinsicContentSize.width
-            chip.frame = NSRect(x: x, y: (bounds.height - QuickAccessFilterChip.height) / 2, width: width,
-                                height: QuickAccessFilterChip.height)
-            x += width + Self.spacing
-        }
-    }
-
-    /// Marks the filters that are on, or All when none is.
-    func show(kinds: Set<ContentKind>) {
-        for (chip, kind) in zip(chips, Self.choices) {
-            let state: NSControl.StateValue = (kind.map(kinds.contains) ?? kinds.isEmpty) ? .on : .off
-            if chip.state != state { chip.state = state }
-        }
-    }
-
-    /// The cursor stops at either end.
-    func moveCursor(by offset: Int) {
-        cursor = min(max(cursor + offset, 0), chips.count - 1)
-    }
-
-    @objc private func choose(_ sender: NSButton) {
-        cursor = sender.tag
-        onChoose?(sender.tag)
-    }
-
-    /// Only the choices take clicks. A click in the gap between two is no choice's, and leaves the keys where they
-    /// are rather than bring them here.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        let view = super.hitTest(point)
-        return view === self ? nil : view
-    }
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func keyDown(with event: NSEvent) {
-        let key = QuickAccessStripView.key(for: event)
-        // A held Space, Return or Escape has acted already.
-        guard !(event.isARepeat && key.actsOnceWhenHeld) else { return }
-        let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
-            key: key, shift: event.modifierFlags.contains(.shift), focus: .filters, queryIsEmpty: queryIsEmpty
-        ))
-        // A key with no meaning here is dropped, not passed on to end in the alert sound.
-        guard command != .passThrough else { return }
-        onCommand?(command)
-    }
-
-    // The focus ring goes around the choice under the cursor, not around the whole row.
-
-    override var focusRingMaskBounds: NSRect { cursorFrame }
-
-    override func drawFocusRingMask() {
-        let frame = cursorFrame
-        NSBezierPath(roundedRect: frame, xRadius: frame.height / 2, yRadius: frame.height / 2).fill()
-    }
-
-    private var cursorFrame: NSRect {
-        convert(chips[cursor].bounds, from: chips[cursor])
-    }
-}
-
-/// One filter: its name in a 28 pt capsule, filled and in the semibold weight while it is on.
-@MainActor
-final class QuickAccessFilterChip: NSButton {
-    static let height: CGFloat = 28
-    private static let padding: CGFloat = 12
-
-    init(title: String) {
-        super.init(frame: .zero)
-        self.title = title
-        setButtonType(.pushOnPushOff)
-        isBordered = false
-        focusRingType = .none
-        // Clicking a choice leaves the keys where they are.
-        refusesFirstResponder = true
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    /// As wide in either weight, so that choosing a filter moves no other.
-    override var intrinsicContentSize: NSSize {
-        let text = (title as NSString).size(withAttributes: [.font: Self.font(isOn: true)])
-        return NSSize(width: ceil(text.width) + 2 * Self.padding, height: Self.height)
-    }
-
-    override var state: NSControl.StateValue {
-        didSet { needsDisplay = true }
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        let isOn = state == .on
-        let capsule = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
-        if isOn {
-            ToolbarPalette.chosenFilterFill.setFill()
-            capsule.fill()
-        } else if isHighlighted {
-            ToolbarPalette.pressedFill.setFill()
-            capsule.fill()
-        }
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: Self.font(isOn: isOn),
-            .foregroundColor: isOn ? ToolbarPalette.chosenFilterText : ToolbarPalette.secondary,
-        ]
-        let size = (title as NSString).size(withAttributes: attributes)
-        (title as NSString).draw(at: NSPoint(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2),
-                                 withAttributes: attributes)
-    }
-
-    private static func font(isOn: Bool) -> NSFont {
-        .systemFont(ofSize: 13, weight: isOn ? .semibold : .medium)
-    }
-}
-
 /// A key drawn as a small cap: Return's, before "Copy".
 @MainActor
 final class QuickAccessKeycap: NSView {
@@ -707,6 +623,11 @@ final class QuickAccessCopyHint: NSButton {
         [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: ToolbarPalette.secondary]
     }
 
+    /// How wide `title` is in the hint's type.
+    static func titleWidth(_ title: String) -> CGFloat {
+        ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width)
+    }
+
     /// With its word, and with its key cap alone.
     var fullWidth: CGFloat {
         compactWidth + Self.spacing + ceil((title as NSString).size(withAttributes: titleAttributes).width)
@@ -775,6 +696,9 @@ enum ToolbarPalette {
     /// Filters that are off, the hint's word, the status and the ⋯.
     static let secondary = colour(dark: (235, 235, 245, 0.72), light: (60, 60, 67, 0.78))
     static let chosenFilterFill = colour(dark: (255, 255, 255, 0.16), light: (0, 0, 0, 0.08))
+    /// The All | Snippets capsule, and its chosen segment.
+    static let segmentsFill = colour(dark: (255, 255, 255, 0.08), light: (0, 0, 0, 0.05))
+    static let chosenSegmentFill = colour(dark: (255, 255, 255, 0.18), light: (255, 255, 255, 0.95))
     static let chosenFilterText = colour(dark: (255, 255, 255, 1), light: (0x1D, 0x1D, 0x1F, 1))
     static let pressedFill = colour(dark: (255, 255, 255, 0.10), light: (0, 0, 0, 0.06))
     static let keycapEdge = colour(dark: (255, 255, 255, 0.28), light: (0, 0, 0, 0.22))

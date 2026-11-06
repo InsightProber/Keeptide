@@ -38,10 +38,13 @@ snippets in a native library.
   again does not create a duplicate. There is no pause switch; quitting
   Keeptide stops it.
 - **One shortcut away.** ⇧⌘V opens quick access, a band of large cards with the
-  newest first. Clips you reuse often sit to the left of the newest one.
-- **Fast local search.** Start typing to search your clipboard history,
-  including one- and two-character Chinese queries. Filter by text, links,
-  images or files.
+  newest first. Clips you reuse often sit to the left of the newest one. Click
+  **Snippets** at the band's top left to use what you keep on purpose; your
+  collections appear beside it.
+- **Fast local search.** Start typing to search your clips and snippets,
+  including one- and two-character Chinese queries. The filter button beside
+  the search, at the band's right end, narrows the list to your favorites or to
+  text, links, images or files.
 - **Paste where you were.** Return, or a double click, pastes the clip into
   the window you came from, or copies it when direct paste is off. ⇧Return uses
   plain text. When that window changed, or anything is uncertain, Keeptide
@@ -81,6 +84,8 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 3. **Press ⇧⌘V** to open quick access, or choose **Open Quick Access** from the
    menu-bar menu.
 4. **Pick a clip.** Press ← or →, swipe on the trackpad, or type to search.
+   To use a snippet, click **Snippets** at the top left, then a collection if
+   you like, or press ⌘].
 5. **Press Return**, or double-click the clip, to paste it into the app you
    came from. Without direct paste, Return copies the clip; press ⌘V to paste
    it yourself.
@@ -97,7 +102,9 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | --- | --- |
 | ⇧⌘V | Open or close quick access (change it in **Settings › Shortcuts**) |
 | ← → | Move to the previous or next clip |
-| Typing | Search your clipboard history |
+| ⌘[ ⌘] | Previous or next list: All, Snippets and your collections |
+| ⌘L | Go to the list switch |
+| Typing | Search the current list; All searches clips and snippets |
 | Return | Paste into the app you came from, or copy |
 | Double-click | Do what Return does with the clip you double-click |
 | ⇧Return | Paste or copy as plain text |
@@ -106,7 +113,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ⌘S | Save the clip as a snippet |
 | ⌘E | Open the clip in the library |
 | ⌘N | Write a new snippet |
-| Esc | Step back: close the preview, clear the search, then close quick access |
+| Esc | Step back: close the preview, clear the search and return to All, then close quick access |
 
 ### Library
 
