@@ -183,9 +183,14 @@ final class LibraryCommandsTests: XCTestCase {
         let delete = try command(#selector(LibraryWindowController.moveToRecentlyDeleted(_:)))
         XCTAssertEqual(delete.keyEquivalent, "\u{8}")
         XCTAssertEqual(delete.keyEquivalentModifierMask, .command)
+        let recover = try command(#selector(LibraryWindowController.recoverDeletedItem(_:)))
+        XCTAssertEqual(recover.title, "Recover")
+        let deletePermanently = try command(#selector(LibraryWindowController.deleteDeletedItemPermanently(_:)))
+        XCTAssertEqual(deletePermanently.title, "Delete Permanently…")
         // A row's context menu repeats these titles; the Item menu's own identifiers tell them apart.
-        XCTAssertEqual([favorite, collection, delete].compactMap(\.identifier?.rawValue),
-                       ["ItemMenu-Favorite", "ItemMenu-Collection", "ItemMenu-MoveToRecentlyDeleted"])
+        XCTAssertEqual([favorite, collection, delete, recover, deletePermanently].compactMap(\.identifier?.rawValue),
+                       ["ItemMenu-Favorite", "ItemMenu-Collection", "ItemMenu-MoveToRecentlyDeleted",
+                        "ItemMenu-Recover", "ItemMenu-DeletePermanently"])
 
         let view = try XCTUnwrap(menu.items.first { $0.title == "View" }?.submenu)
         let inspector = try XCTUnwrap(view.items.first {
@@ -252,6 +257,29 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(linked.title, "Show in Recent Clips")
         XCTAssertTrue(controller.validateMenuItem(inspector))
         XCTAssertEqual(inspector.title, "Hide Inspector")
+    }
+
+    func testRecentlyDeletedCommandsActOnTheSelectedFacet() {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let recover = NSMenuItem(title: "Recover", action: #selector(LibraryWindowController.recoverDeletedItem(_:)),
+                                 keyEquivalent: "")
+        let delete = NSMenuItem(title: "Delete Permanently…",
+                                action: #selector(LibraryWindowController.deleteDeletedItemPermanently(_:)),
+                                keyEquivalent: "")
+        XCTAssertFalse(controller.validateMenuItem(recover))
+        XCTAssertFalse(controller.validateMenuItem(delete))
+
+        // A snippet past its recovery window can only be deleted for good.
+        let expired = TrashFacetSnapshot(identity: .memo(itemID: ItemID(), memoID: UUID()), title: "Synthetic",
+                                         deletedAt: Date(), purgeAfter: Date(), canRestore: false)
+        controller.commands.updateItemContext(LibraryItemContext(isRecentlyDeleted: true, deleted: expired))
+        XCTAssertFalse(controller.validateMenuItem(recover))
+        XCTAssertTrue(controller.validateMenuItem(delete))
+
+        controller.recoverDeletedItem(recover)
+        controller.deleteDeletedItemPermanently(delete)
+        XCTAssertEqual(controller.commands.recoverRequest, 1)
+        XCTAssertEqual(controller.commands.permanentDeleteRequest, 1)
     }
 
     func testCommandDeleteMovesItemsOnlyFromAList() throws {
