@@ -9,10 +9,13 @@ on:
 permissions:
   contents: read
 
+# Unit tests and UI tests run on separate runners at the same time; each job builds what it tests. UI tests drive the
+# one screen a runner has, so they cannot run side by side on one machine.
 jobs:
-  native-foundation:
+  unit-tests:
+    name: Unit tests and builds
     runs-on: macos-26
-    timeout-minutes: 60
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
@@ -34,10 +37,6 @@ jobs:
       - name: Run unit tests
         run: ./scripts/verify.sh unit
 
-      - name: Run native shell UI tests
-        if: ${{ success() || failure() }}
-        run: ./scripts/verify.sh ui
-
       - name: Build Release configuration
         if: ${{ success() || failure() }}
         run: ./scripts/verify.sh release-build
@@ -45,3 +44,43 @@ jobs:
       - name: Build with Swift warnings as errors
         if: ${{ success() || failure() }}
         run: ./scripts/verify.sh warnings-build
+
+  ui-tests:
+    name: UI tests
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Report build environment
+        run: |
+          printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          uname -m
+          sw_vers
+          xcodebuild -version
+
+      - name: Run native shell UI tests
+        run: ./scripts/verify.sh ui
+
+  # The check that protects main. It passes only when both jobs above passed: it always runs, so a failed or cancelled
+  # job makes it fail rather than be skipped, and a skipped required check would count as passed.
+  native-foundation:
+    if: ${{ always() }}
+    needs: [unit-tests, ui-tests]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Require the unit and UI test jobs
+        env:
+          UNIT_TESTS: ${{ needs.unit-tests.result }}
+          UI_TESTS: ${{ needs.ui-tests.result }}
+        run: |
+          echo "Unit tests and builds: $UNIT_TESTS"
+          echo "UI tests: $UI_TESTS"
+          test "$UNIT_TESTS" = success
+          test "$UI_TESTS" = success

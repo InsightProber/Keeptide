@@ -79,9 +79,10 @@ final class NativeShellUITests: XCTestCase {
 
     func testGlobalHotKeySessionsReturnFocusAndDoNotResurrect() throws {
         // Each key is typed through the host, which stays active while Keeptide's panel takes the keys. XCUITest then
-        // waits about ten seconds per key for the host to handle an event it never gets, so this test runs for some
-        // fourteen minutes on CI: more than the five minutes `verify.sh` allows each test.
-        executionTimeAllowance = 1200
+        // waits about ten seconds per key for the host to handle an event it never gets, so each session types two keys:
+        // enough to show that the panel keeps the keys and the host's text stays as it was. With whole phrases this
+        // test ran for some fourteen minutes on CI; now it takes about two, within ten minutes allowed here.
+        executionTimeAllowance = 600
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--synthetic-hotkey"]
@@ -123,7 +124,7 @@ final class NativeShellUITests: XCTestCase {
         }
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
-        typeInPanel("first session", originalText: "before")
+        typeInPanel("fi", originalText: "before")
         XCTAssertEqual(NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
                        "io.github.insightprober.Keeptide.SystemTestHost")
         host.typeKey("w", modifierFlags: .command)
@@ -136,13 +137,13 @@ final class NativeShellUITests: XCTestCase {
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
-        typeInPanel("toggle session")
+        typeInPanel("to")
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
         XCTAssertEqual(query.value as? String, "")
-        typeInPanel("click away session")
+        typeInPanel("cl")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         // One key press must open a fresh session after click-away.
@@ -157,7 +158,7 @@ final class NativeShellUITests: XCTestCase {
 
         pressSyntheticHotKey()
         XCTAssertTrue(panel.waitForExistence(timeout: 5), app.debugDescription)
-        typeInPanel("must not return with library")
+        typeInPanel("li")
         input.click()
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
         let statusItem = app.menuBars.statusItems["Keeptide"]
