@@ -340,6 +340,8 @@ struct LibraryView: View {
             .accessibilityIdentifier("AddCollection")
             .disabled(session.libraryWorkspace == nil)
         }
+        // A sidebar heading otherwise reads as one text, and its button cannot be reached on its own.
+        .accessibilityElement(children: .contain)
         .contextMenu {
             Button("New Collection…") { collectionEditorMode = .create }
                 .disabled(session.libraryWorkspace == nil)

@@ -21,7 +21,7 @@ final class CollectionUITests: XCTestCase {
         let library = requireLibrary(in: app)
         let name = "开发命令与超长中文提示词资料库"
 
-        createCollection(named: name, in: app)
+        createCollection(named: name, in: app, withPlusButton: true)
         let row = collectionRow(named: name, in: library)
         XCTAssertTrue(row.waitForExistence(timeout: 5), app.debugDescription)
 
@@ -204,10 +204,15 @@ final class CollectionUITests: XCTestCase {
         return library
     }
 
-    private func createCollection(named name: String, in app: XCUIApplication) {
-        let add = app.buttons["AddCollection"]
-        XCTAssertTrue(add.waitForExistence(timeout: 5), app.debugDescription)
-        add.click()
+    /// File › New Collection… (⇧⌘N), or the plus on the Collections heading.
+    private func createCollection(named name: String, in app: XCUIApplication, withPlusButton: Bool = false) {
+        if withPlusButton {
+            let add = app.buttons["AddCollection"]
+            XCTAssertTrue(add.waitForExistence(timeout: 5), app.debugDescription)
+            add.click()
+        } else {
+            app.typeKey("n", modifierFlags: [.shift, .command])
+        }
         let field = app.textFields["CollectionNameField"]
         XCTAssertTrue(field.waitForExistence(timeout: 5), app.debugDescription)
         replaceText(in: field, with: name)

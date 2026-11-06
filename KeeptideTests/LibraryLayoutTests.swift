@@ -204,12 +204,12 @@ final class LibraryLayoutTests: XCTestCase {
         addTeardownBlock { @MainActor in window.close() }
         window.makeKeyAndOrderFront(nil)
 
-        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
         controller.selectNextList(nil)
-        try await SearchTestSupport.waitUntil { window.subtitle == "All Snippets" }
+        try await waitUntilLaidOut(window) { window.subtitle == "All Snippets" }
         XCTAssertEqual(window.title, "Keeptide Library")
         controller.selectPreviousList(nil)
-        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
     }
 
     func testChooseListPutsTheKeyboardOnTheSidebarWhileItShows() async throws {
@@ -219,13 +219,13 @@ final class LibraryLayoutTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         addTeardownBlock { @MainActor in window.close() }
         window.makeKeyAndOrderFront(nil)
-        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
         window.makeFirstResponder(nil)
         XCTAssertFalse(window.firstResponder is NSOutlineView)
 
         controller.chooseList(nil)
 
-        try await SearchTestSupport.waitUntil { window.firstResponder is NSOutlineView }
+        try await waitUntilLaidOut(window) { window.firstResponder is NSOutlineView }
     }
 
     func testChooseListOffersTheListsUnderTheScopeMenuWhileTheSidebarIsHidden() async throws {
@@ -235,13 +235,15 @@ final class LibraryLayoutTests: XCTestCase {
         let window = try XCTUnwrap(controller.window)
         addTeardownBlock { @MainActor in window.close() }
         window.makeKeyAndOrderFront(nil)
-        try await SearchTestSupport.waitUntil { window.subtitle == "Recent Clips" }
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
         XCTAssertNil(controller.listMenuAnchor(), "The sidebar chooses lists while it shows")
 
         controller.toggleLibrarySidebar(nil)
 
-        try await SearchTestSupport.waitUntil { controller.listMenuAnchor() != nil }
+        try await waitUntilLaidOut(window) { controller.listMenuAnchor() != nil }
         XCTAssertFalse(controller.commands.sidebarIsVisible)
+        // Where the help does not reach the toolbar item, the item after the sidebar button is the same menu.
+        XCTAssertTrue(controller.listMenuAnchor(byHelp: false) === controller.listMenuAnchor())
         let menu = controller.makeListMenu()
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Recent Clips", "All Snippets", "Favorites", "Recently Deleted", "New Collection…"])
@@ -250,7 +252,7 @@ final class LibraryLayoutTests: XCTestCase {
         // Choosing from it chooses the list, as the sidebar would.
         let favorites = try XCTUnwrap(menu.items.first { $0.title == "Favorites" })
         menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex(of: favorites)))
-        try await SearchTestSupport.waitUntil { window.subtitle == "Favorites" }
+        try await waitUntilLaidOut(window) { window.subtitle == "Favorites" }
     }
 
     func testTheSidebarCannotBeLeftWithoutAList() async throws {
@@ -261,7 +263,7 @@ final class LibraryLayoutTests: XCTestCase {
         addTeardownBlock { @MainActor in window.close() }
         window.makeKeyAndOrderFront(nil)
         var sidebar: NSOutlineView?
-        try await SearchTestSupport.waitUntil {
+        try await waitUntilLaidOut(window) {
             window.contentView?.layoutSubtreeIfNeeded()
             // Before the library opens, the sidebar is the window's only outline.
             sidebar = self.views(NSOutlineView.self, in: window.contentView).first
@@ -272,7 +274,7 @@ final class LibraryLayoutTests: XCTestCase {
 
         outline.deselectAll(nil)
 
-        try await SearchTestSupport.waitUntil { outline.selectedRowIndexes == selected }
+        try await waitUntilLaidOut(window) { outline.selectedRowIndexes == selected }
         XCTAssertEqual(window.subtitle, "Recent Clips")
     }
 
@@ -316,6 +318,16 @@ final class LibraryLayoutTests: XCTestCase {
 
         XCTAssertEqual(controller.commands.openRequest?.ref, ref)
         XCTAssertEqual(controller.commands.openRequest?.generation, 1)
+    }
+
+    /// Waits for `condition`, laying the window out before each check: a test host without a display does not run
+    /// SwiftUI's updates on its own.
+    private func waitUntilLaidOut(_ window: NSWindow, _ condition: () -> Bool) async throws {
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            return condition()
+        }
     }
 
     private func views<View: NSView>(_ type: View.Type, in root: NSView?) -> [View] {

@@ -35,6 +35,10 @@ final class LibraryWindowController: NSWindowController {
         window.setAccessibilityIdentifier("KeeptideLibraryWindow")
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
+        // The title stays the app's; the subtitle names the list, as a document window names its document. The view
+        // reports the list as soon as it exists, which can be while its content is made, so this comes first.
+        window.subtitle = LibrarySidebar.subtitle("Recent Clips")
+        commands.showListTitle = { [weak window] title in window?.subtitle = LibrarySidebar.subtitle(title) }
         window.contentViewController = WindowContentController(
             rootView: LibraryView(session: session, commands: commands),
             size: Self.defaultSize,
@@ -47,8 +51,6 @@ final class LibraryWindowController: NSWindowController {
         if let autosaveName { window.setFrameAutosaveName(autosaveName) }
         super.init(window: window)
         window.delegate = self
-        // The title stays the app's; the subtitle names the list, as a document window names its document.
-        commands.showListTitle = { [weak window] title in window?.subtitle = LibrarySidebar.subtitle(title) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -87,9 +89,19 @@ final class LibraryWindowController: NSWindowController {
     }
 
     /// The toolbar's scope menu, there only while the sidebar is hidden. SwiftUI's accessibility identifiers do
-    /// not reach the toolbar items AppKit holds, but its help does.
-    func listMenuAnchor() -> NSView? {
-        window?.toolbar?.items.first { $0.toolTip == LibrarySidebar.chooseListHelp }?.view
+    /// not reach the toolbar items AppKit holds. Its help does on some systems; otherwise the scope menu is the
+    /// item right after the system's sidebar button, which keeps its identifier.
+    func listMenuAnchor(byHelp: Bool = true) -> NSView? {
+        guard !commands.sidebarIsVisible, let items = window?.toolbar?.items else { return nil }
+        if byHelp, let helped = items.first(where: { $0.toolTip == LibrarySidebar.chooseListHelp })?.view {
+            return helped
+        }
+        guard let toggle = items.first(where: { $0.itemIdentifier.rawValue.hasSuffix("toggleSidebar") })?.view,
+              toggle.window != nil else { return nil }
+        let toggleEnd = toggle.convert(toggle.bounds, to: nil).maxX
+        return items.compactMap(\.view)
+            .filter { $0 !== toggle && $0.window != nil && $0.convert($0.bounds, to: nil).minX >= toggleEnd - 1 }
+            .min { $0.convert($0.bounds, to: nil).minX < $1.convert($1.bounds, to: nil).minX }
     }
 
     /// The lists the toolbar's scope menu shows, in its order and sections, the list shown checked.
