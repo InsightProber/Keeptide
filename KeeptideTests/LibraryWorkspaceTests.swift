@@ -587,6 +587,209 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.entries.map(\.ref), [ContentStoreFixtures.ref(item, capture)])
     }
 
+    func testSavingHistoryRefreshesTheRowMarker() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, _) = try await insertHistory("mark me", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.select(item.id)
+        XCTAssertEqual(workspace.entries.first { $0.id == item.id }?.isMemo, false)
+
+        _ = try await workspace.saveSelectedHistory()
+
+        XCTAssertEqual(workspace.entries.first { $0.id == item.id }?.isMemo, true)
+        XCTAssertEqual(workspace.selectedEntryID, item.id)
+        XCTAssertEqual(workspace.editor?.ref?.facet, .memo)
+    }
+
+    func testSnippetScopesOrderByLastUse() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let older = try await insertOwnedMemo("older", copiedAt: Date(timeIntervalSince1970: 1_000), into: harness)
+        let newer = try await insertOwnedMemo("newer", copiedAt: Date(timeIntervalSince1970: 2_000), into: harness)
+        try await LocalUsageStore(controller: harness.controller).record(
+            UseReceipt(ref: older.memo, occurredAt: Date(timeIntervalSince1970: 3_000), outcome: .success),
+            now: Date(timeIntervalSince1970: 3_000)
+        )
+        let workspace = try await makeWorkspace(harness)
+
+        await workspace.setScope(.allSnippets)
+        XCTAssertEqual(workspace.entries.map(\.ref), [older.memo, newer.memo])
+
+        await workspace.setScope(.recentClips)
+        XCTAssertEqual(workspace.entries.map(\.ref), [newer.history, older.history])
+    }
+
+    func testSavingSelectedHistoryIntoACollectionAsFavorite() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let collection = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let (item, _) = try await insertHistory("file me", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.select(item.id)
+
+        let outcome = try await workspace.saveSelectedHistory(collectionID: collection.value.id, isFavorite: true)
+
+        guard case .created = outcome else { return XCTFail("Expected a new snippet") }
+        XCTAssertEqual(workspace.editor?.isReadOnly, false)
+        XCTAssertTrue(workspace.canUndoNewSave)
+        let saved = try await storedItem(item.id, in: harness)
+        XCTAssertEqual(saved.collectionID, collection.value.id)
+        XCTAssertTrue(saved.isFavorite)
+
+        let undone = try await workspace.undoNewSave()
+
+        XCTAssertTrue(undone)
+        let restored = try await storedItem(item.id, in: harness)
+        XCTAssertNil(restored.memoID)
+        XCTAssertNil(restored.collectionID)
+        XCTAssertFalse(restored.isFavorite)
+    }
+
+    func testBatchSaveStopsAtFirstFailureAndReportsSaved() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (first, firstCapture) = try await insertHistory("first", into: harness)
+        let (already, alreadyCapture) = try await insertHistory("already a snippet", into: harness)
+        let (trashed, trashedCapture) = try await insertHistory("its snippet is in recently deleted", into: harness)
+        let (last, lastCapture) = try await insertHistory("last", into: harness)
+        let library = LibraryService(controller: harness.controller)
+        let alreadyRef = try await library.saveAsMemo(already.id).ref
+        let trashedMemo = try await library.saveAsMemo(trashed.id).ref
+        let identity = try await harness.controller.identity()
+        _ = try await LifecycleService(controller: harness.controller).remove(
+            ref: trashedMemo, at: Date(), expecting: identity,
+            permit: StoreSafetyGate(controller: harness.controller).permit(.maintenance)
+        )
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        let refs = [
+            ContentStoreFixtures.ref(first, firstCapture), ContentStoreFixtures.ref(already, alreadyCapture),
+            ContentStoreFixtures.ref(trashed, trashedCapture), ContentStoreFixtures.ref(last, lastCapture),
+        ]
+
+        let outcome = await workspace.saveCheckedHistory(refs)
+
+        XCTAssertEqual(outcome.saved.map(\.itemID), [first.id])
+        XCTAssertEqual(outcome.saved.map(\.facet), [.memo])
+        XCTAssertEqual(outcome.alreadySaved, [alreadyRef])
+        XCTAssertEqual(outcome.failure?.ref, refs[2])
+        XCTAssertEqual(outcome.failure?.error as? StoreError, .staleReference)
+        let savedFirst = try await storedItem(first.id, in: harness)
+        XCTAssertNotNil(savedFirst.memoID)
+        let untouchedLast = try await storedItem(last.id, in: harness)
+        XCTAssertNil(untouchedLast.memoID)
+        XCTAssertFalse(workspace.canUndoNewSave)
+        XCTAssertNil(workspace.editor)
+        XCTAssertEqual(workspace.entries.first { $0.id == first.id }?.isMemo, true)
+    }
+
+    func testBatchSaveRefusesAClipWhoseSnippetIsInRecentlyDeleted() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (fine, fineCapture) = try await insertHistory("fine", into: harness)
+        let (trashed, trashedCapture) = try await insertHistory("its snippet is in recently deleted", into: harness)
+        let trashedMemo = try await LibraryService(controller: harness.controller).saveAsMemo(trashed.id).ref
+        let identity = try await harness.controller.identity()
+        _ = try await LifecycleService(controller: harness.controller).remove(
+            ref: trashedMemo, at: Date(), expecting: identity,
+            permit: StoreSafetyGate(controller: harness.controller).permit(.maintenance)
+        )
+        let workspace = try await makeWorkspace(harness)
+        let refs = [ContentStoreFixtures.ref(fine, fineCapture), ContentStoreFixtures.ref(trashed, trashedCapture)]
+
+        let outcome = await workspace.saveHistory(refs)
+
+        XCTAssertTrue(outcome.saved.isEmpty)
+        XCTAssertEqual(outcome.failure?.ref, refs[1])
+        XCTAssertEqual(outcome.failure?.error as? LibraryWorkspaceError, .snippetInRecentlyDeleted)
+        let untouched = try await storedItem(fine.id, in: harness)
+        XCTAssertNil(untouched.memoID)
+    }
+
+    func testSavingHistoryKeepsTheLoadedPagesAndTheSelection() async throws {
+        let harness = try SearchHarness.make(in: self)
+        try await harness.insertTextItems(count: 105, prefix: "clip")
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.loadMore()
+        XCTAssertEqual(workspace.entries.count, 105)
+        let beyondTheFirstPage = try XCTUnwrap(workspace.entries.last)
+        await workspace.select(beyondTheFirstPage.id)
+        XCTAssertEqual(workspace.selectedEntryID, beyondTheFirstPage.id)
+
+        _ = try await workspace.saveSelectedHistory()
+
+        XCTAssertEqual(workspace.entries.count, 105)
+        XCTAssertEqual(workspace.selectedEntryID, beyondTheFirstPage.id)
+        XCTAssertEqual(workspace.entries.last?.id, beyondTheFirstPage.id)
+        XCTAssertEqual(workspace.entries.last?.isMemo, true)
+        XCTAssertEqual(workspace.editor?.ref?.facet, .memo)
+    }
+
+    func testBatchSaveRefusesAnUnavailableClipBeforeSavingAnything() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (fine, fineCapture) = try await insertHistory("fine", into: harness)
+        let capture = try ContentStoreFixtures.localReferenceCapture()
+        let reference = ContentStoreFixtures.item(capture)
+        try await ContentStoreFixtures.insertLocalReference(reference, capture, into: harness.controller)
+        // Without its local file access the reference has to be relocated before its content can be used.
+        try await FileAccessStore(controller: harness.controller).remove(
+            representationID: try XCTUnwrap(capture.representations.first).id,
+            permit: StoreSafetyGate(controller: harness.controller).permit(.maintenance)
+        )
+        let workspace = try await makeWorkspace(harness)
+        let refs = [ContentStoreFixtures.ref(fine, fineCapture), ContentStoreFixtures.ref(reference, capture)]
+
+        let outcome = await workspace.saveHistory(refs)
+
+        XCTAssertTrue(outcome.saved.isEmpty)
+        XCTAssertEqual(outcome.failure?.ref, refs[1])
+        XCTAssertEqual(outcome.failure?.error as? LibraryWorkspaceError, .contentUnavailable)
+        let untouched = try await storedItem(fine.id, in: harness)
+        XCTAssertNil(untouched.memoID)
+    }
+
+    func testEntriesCarrySourceAppAndCollection() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let collection = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let filed = try await insertOwnedMemo("filed", copiedAt: Date(timeIntervalSince1970: 1_000),
+                                              collectionID: collection.value.id, into: harness)
+        let workspace = try await makeWorkspace(harness)
+
+        await workspace.setScope(.collection(collection.value.id))
+        XCTAssertEqual(workspace.entries.map(\.ref), [filed.memo])
+        XCTAssertEqual(workspace.entries.first?.collectionID, collection.value.id)
+        XCTAssertEqual(workspace.entries.first?.sourceApp, "test.source")
+
+        await workspace.setScope(.recentClips)
+        XCTAssertEqual(workspace.entries.map(\.ref), [filed.history])
+        XCTAssertEqual(workspace.entries.first?.sourceApp, "test.source")
+        XCTAssertNil(workspace.entries.first?.collectionID)
+    }
+
+    private func storedItem(_ id: ItemID, in harness: SearchHarness) async throws -> ItemValue {
+        let state = try await ContentRepository(controller: harness.controller).recordState(.item(id))
+        guard case .item(let value) = state.value else { throw StoreError.corruptStore }
+        return value
+    }
+
+    /// A clip whose snippet was edited: one item with a history facet and an owned memo facet.
+    private func insertOwnedMemo(
+        _ text: String, copiedAt: Date, collectionID: CollectionID? = nil, into harness: SearchHarness
+    ) async throws -> (history: ContentRef, memo: ContentRef, itemID: ItemID) {
+        let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data(text.utf8))]])
+        let itemID = ItemID()
+        let body = Data("memo \(text)".utf8)
+        let memo = MemoValue(itemID: itemID, title: text, bodyMode: .ownedPlainText, body: body,
+                             version: ContentVersion(), digest: ContentDigest.sha256(body))
+        let item = ItemValue(id: itemID, sourceApp: "test.source", title: text, captureID: capture.id, memoID: memo.id,
+                             collectionID: collectionID, historyEligible: true, lastCopiedAt: copiedAt, copyCount: 1)
+        try await harness.commit([.insert(.capture(capture)), .insert(.memo(memo)), .insert(.item(item))])
+        let memoRef = ContentRef(itemID: itemID, facet: .memo, version: try XCTUnwrap(memo.version),
+                                 digest: try XCTUnwrap(memo.digest))
+        return (ContentStoreFixtures.ref(item, capture), memoRef, itemID)
+    }
+
     private func insertHistory(
         _ text: String, into harness: SearchHarness
     ) async throws -> (ItemValue, CaptureValue) {

@@ -90,6 +90,11 @@ final class AppEnvironment {
         lifecycle: captureSession.maintenance?.settings,
         shortcut: shortcutCoordinator,
         launchAtLogin: launchAtLogin,
+        directPaste: DirectPasteSettingsModel(
+            read: { [weak self] in self?.directPasteAccessState() },
+            turnOn: { [weak self] in self?.showEnableDirectPaste() },
+            quit: { NSApplication.shared.terminate(nil) }
+        ),
         actions: SettingsActions(
             showWelcome: { [weak self] in self?.showOnboarding() },
             exportArchive: { [weak self] in self?.exportLibrary() }
@@ -182,6 +187,7 @@ final class AppEnvironment {
     func showSettings() {
         panel?.close()
         launchAtLogin.refresh()
+        settingsModel.directPaste.refresh()
         let lifecycle = captureSession.maintenance?.settings
         settingsModel.updateLifecycle(lifecycle)
         settingsWindowController.updateLifecycle(lifecycle)
@@ -211,17 +217,32 @@ final class AppEnvironment {
 
     func applicationDidBecomeActive() {
         launchAtLogin.refresh()
+        // Coming back from System Settings, Settings shows what was changed there.
+        settingsModel.directPaste.refresh()
     }
 
-    /// Enable Direct Paste… from the panel's menu, once the panel has closed. Keeptide comes to the front and says what
-    /// turning direct paste on takes. Open System Settings asks the system for access, which shows its own prompt the
-    /// first time, and opens Accessibility settings where it does not grant it; Cancel asks nothing. The system lets
-    /// Keeptide see the access only once Keeptide reopens, which the alert says and the panel says again until then.
+    /// Whether Keeptide can paste directly, read through the panel's paste service, the capture session's own; nil
+    /// without a library.
+    func directPasteAccessState() -> DirectPasteAccessState? {
+        if let panel { return panel.state.directPasteAccessState() }
+        return captureSession.pasteService?.accessState()
+    }
+
+    /// Enable Direct Paste… from the panel's menu, once the panel has closed, and Turn On Direct Paste… in Settings.
+    /// Keeptide comes to the front and says what turning direct paste on takes. Open System Settings asks the system
+    /// for access, which shows its own prompt the first time, and opens Accessibility settings where it does not grant
+    /// it; Cancel asks nothing. The system lets Keeptide see the access only once Keeptide reopens, which the alert
+    /// says and the panel and Settings say again until then.
     func showEnableDirectPaste() {
         panel?.close()
         activateApp()
         guard runDirectPasteAlert(Self.enableDirectPasteAlert()) == .alertFirstButtonReturn else { return }
-        panel?.state.requestDirectPasteAccess()
+        if let panel {
+            panel.state.requestDirectPasteAccess()
+        } else {
+            captureSession.pasteService?.requestDirectPasteAccess()
+        }
+        settingsModel.directPaste.refresh()
     }
 
     /// What Enable Direct Paste… shows before anything is asked of the system.

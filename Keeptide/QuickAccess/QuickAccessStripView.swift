@@ -18,6 +18,8 @@ import SwiftUI
 final class QuickAccessStripView: NSView {
     var onSelect: ((QuickAccessRow.ID) -> Void)?
     var onCommand: ((QuickAccessCommand) -> Void)?
+    /// A double click asks to act on its clip as Return does, or as ⇧Return does when the second click held ⇧ (`true`).
+    var onActivate: ((QuickAccessRow.ID, Bool) -> Void)?
     /// The clips of the rows that have a frame, each once and the selected one first, and the last row on screen,
     /// which decides when to load more. Called when either changes, and again while a framed row has no details.
     var onVisibleRefsChanged: (([ContentRef], Int) -> Void)?
@@ -128,8 +130,11 @@ final class QuickAccessStripView: NSView {
     private var settlingUntil: CFTimeInterval = 0
     private var dividerPush: CGFloat = 0
     private var hovered: QuickAccessRow.ID?
-    /// The row chosen by the click that began the current run of clicks.
-    private var clickedRow: QuickAccessRow.ID?
+    /// The row chosen by the click that began the current run of clicks on the strip, and when the run's latest press
+    /// came.
+    private var clickRun: (row: QuickAccessRow.ID, lastPress: TimeInterval)?
+    /// A double click's row, and whether its second press held ⇧, until that press is released.
+    private var pendingActivation: (row: QuickAccessRow.ID, plainText: Bool)?
     private var reported: (refs: [ContentRef], lastOnScreen: Int)?
 
     override init(frame frameRect: NSRect) {
@@ -816,13 +821,35 @@ final class QuickAccessStripView: NSView {
         super.hitTest(point) == nil ? nil : self
     }
 
+    /// A click that the system counts as one more of a run continues the strip's run when the strip took the run's
+    /// previous press within the double-click interval: it goes to the clip the run's first click chose, even after the
+    /// film has slid and another frame lies under the pointer. Any other click starts a run on the clip under the
+    /// pointer, as when the run's first click closed the preview. A double click begun on the strip asks to act on its
+    /// clip once the second press is released.
     override func mouseDown(with event: NSEvent) {
-        // A double click is a click: it never copies, and its second click goes to the clip the first one
-        // chose, even after the film has slid and another frame lies under the pointer.
-        if event.clickCount <= 1 { clickedRow = row(at: event) }
-        guard let row = clickedRow else { return super.mouseDown(with: event) }
+        pendingActivation = nil
+        let continuesRun: Bool
+        if event.clickCount > 1, let run = clickRun, event.timestamp - run.lastPress <= NSEvent.doubleClickInterval {
+            clickRun = (run.row, event.timestamp)
+            continuesRun = true
+        } else {
+            clickRun = row(at: event).map { ($0, event.timestamp) }
+            continuesRun = false
+        }
+        guard let row = clickRun?.row else { return super.mouseDown(with: event) }
+        if continuesRun, event.clickCount == 2 {
+            pendingActivation = (row, event.modifierFlags.contains(.shift))
+        }
         onSelect?(row)
         window?.makeFirstResponder(self)
+    }
+
+    /// Acting waits for the release: hiding the panel with the button down would leave the release to the window
+    /// beneath. A third click acts no more.
+    override func mouseUp(with event: NSEvent) {
+        guard let pending = pendingActivation else { return super.mouseUp(with: event) }
+        pendingActivation = nil
+        onActivate?(pending.row, pending.plainText)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {

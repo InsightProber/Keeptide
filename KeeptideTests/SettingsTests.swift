@@ -61,6 +61,76 @@ final class SettingsTests: XCTestCase {
         }, "\(described)")
     }
 
+    func testTheGeneralPageSaysWhetherDirectPasteIsOnAndWhatFinishesIt() throws {
+        var current: DirectPasteAccessState? = .off
+        var turnOns = 0
+        var quits = 0
+        let directPaste = DirectPasteSettingsModel(read: { current }, turnOn: { turnOns += 1 }, quit: { quits += 1 })
+        directPaste.refresh()
+        XCTAssertEqual(directPaste.state, .off)
+        let hosting = NSHostingView(rootView: SettingsView(model: makeSettingsModel(directPaste: directPaste)))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 900), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        var applicationRole: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        func identified(_ identifier: String) -> (NSObject) -> Bool {
+            { self.attribute(of: $0, "accessibilityIdentifier") as? String == identifier }
+        }
+        func shows(_ identifier: String) -> Bool {
+            accessibilityElements(in: hosting).contains(where: identified(identifier))
+        }
+        func statusSays(_ text: String) -> Bool {
+            accessibilityElements(in: hosting).filter(identified("DirectPasteStatus")).contains { element in
+                ["accessibilityLabel", "accessibilityValue", "accessibilityTitle"].contains {
+                    (self.attribute(of: element, $0) as? String)?.contains(text) == true
+                }
+            }
+        }
+        let built = waitUntil { shows("DirectPasteStatus") }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        func described() -> String {
+            accessibilityElements(in: hosting).map {
+                "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+            }.joined(separator: " | ")
+        }
+
+        // Off: it says so, and offers to turn it on.
+        XCTAssertTrue(built, described())
+        XCTAssertTrue(statusSays("Off"), described())
+        XCTAssertTrue(shows("TurnOnDirectPasteButton"), described())
+        XCTAssertFalse(shows("QuitToFinishDirectPasteButton"), described())
+
+        // Allowed, but this run cannot send keystrokes yet: it says to reopen Keeptide, and offers to quit it.
+        current = .awaitsReopen
+        directPaste.refresh()
+        XCTAssertTrue(waitUntil { shows("QuitToFinishDirectPasteButton") }, described())
+        XCTAssertTrue(statusSays("Reopen Keeptide"), described())
+        XCTAssertFalse(shows("TurnOnDirectPasteButton"), described())
+
+        // On: nothing left to do.
+        current = .on
+        directPaste.refresh()
+        XCTAssertTrue(waitUntil { statusSays("On") && !shows("QuitToFinishDirectPasteButton") }, described())
+        XCTAssertFalse(shows("TurnOnDirectPasteButton"), described())
+
+        // Without a library to paste from, the page says nothing about it.
+        current = nil
+        directPaste.refresh()
+        XCTAssertTrue(waitUntil { !shows("DirectPasteStatus") }, described())
+
+        directPaste.turnOn()
+        directPaste.quit()
+        XCTAssertEqual(turnOns, 1)
+        XCTAssertEqual(quits, 1)
+    }
+
     func testSettingsModelKeepsSharedReferencesAndCanReleaseAStoreScopedLifecycle() throws {
         let quickAccess = QuickAccessPreferences(defaults: try makeDefaults())
         let capture = CapturePreferences(defaults: try makeDefaults())
@@ -582,7 +652,8 @@ final class SettingsTests: XCTestCase {
                                  setActivationPolicy: onPolicy)
     }
 
-    private func makeSettingsModel() -> SettingsModel {
+    private func makeSettingsModel(directPaste: DirectPasteSettingsModel = DirectPasteSettingsModel())
+        -> SettingsModel {
         let defaults = UserDefaults(suiteName: "SettingsModelTests-\(UUID().uuidString)")!
         defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
         return SettingsModel(
@@ -590,7 +661,8 @@ final class SettingsTests: XCTestCase {
             capture: CapturePreferences(defaults: defaults),
             lifecycle: nil,
             shortcut: GlobalShortcutCoordinator(preferences: GlobalShortcutPreferences(defaults: defaults)),
-            launchAtLogin: SettingsLaunchAtLoginFake()
+            launchAtLogin: SettingsLaunchAtLoginFake(),
+            directPaste: directPaste
         )
     }
 

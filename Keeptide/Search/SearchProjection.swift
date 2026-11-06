@@ -43,7 +43,7 @@ struct SearchDocument: Equatable, Sendable {
     let memoID: UUID?
     /// An inherited memo also shown through its item's history row.
     let merged: Bool
-    /// A history row that carries its inherited memo's title and note.
+    /// A history row whose item also has a memo; an inherited memo lends it its title and note.
     let savedAsMemo: Bool
     let kind: ContentKind
     let sourceApp: String?
@@ -63,7 +63,7 @@ struct SearchDocument: Equatable, Sendable {
 }
 
 enum SearchDocumentBuilder {
-    static let extractorVersion = 1
+    static let extractorVersion = 2
     static let bodyByteLimit = 1_048_576
 
     static func documents(for input: SearchProjectionInput) -> [SearchDocument] {
@@ -76,7 +76,7 @@ enum SearchDocumentBuilder {
             let memo = merged ? input.memo : nil
             documents.append(document(
                 ref: history, input: input, captureID: input.captureID, memoID: memo?.memoID,
-                merged: false, savedAsMemo: merged, kind: captureKind, collectionID: nil,
+                merged: false, savedAsMemo: input.memo != nil, kind: captureKind, collectionID: nil,
                 isFavorite: false,
                 title: memo.map { title(of: $0, input: input) } ?? input.title,
                 text: capture, note: memo?.note ?? ""

@@ -188,6 +188,42 @@ final class CollectionTests: XCTestCase {
         }
     }
 
+    func testSaveAsMemoIntoCollectionRequiresActiveCollection() async throws {
+        try await withStore { controller in
+            let collections = try await seedCollections(2, in: controller)
+            _ = try await CollectionService(controller: controller).delete(collections[0])
+            let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("clip".utf8))]])
+            let clip = ContentStoreFixtures.item(capture)
+            try await ContentStoreFixtures.insert(clip, capture, into: controller)
+            let library = LibraryService(controller: controller)
+
+            do {
+                _ = try await library.saveAsMemo(clip.id, collectionID: collections[0].value.id, isFavorite: true)
+                XCTFail("A deleted collection must not receive a new snippet")
+            } catch {
+                XCTAssertEqual(error as? StoreError, .preconditionFailed)
+            }
+            let untouched = try await item(clip.id, in: controller)
+            XCTAssertNil(untouched.memoID)
+            XCTAssertNil(untouched.collectionID)
+            XCTAssertFalse(untouched.isFavorite)
+
+            let outcome = try await library.saveAsMemo(clip.id, collectionID: collections[1].value.id, isFavorite: true)
+            guard case .created(let created) = outcome else { return XCTFail("Expected a new snippet") }
+            let saved = try await item(clip.id, in: controller)
+            XCTAssertNotNil(saved.memoID)
+            XCTAssertEqual(saved.collectionID, collections[1].value.id)
+            XCTAssertTrue(saved.isFavorite)
+
+            let repeated = try await library.saveAsMemo(clip.id, collectionID: nil, isFavorite: false)
+            guard case .existing(let existing) = repeated else { return XCTFail("A second save must not create") }
+            XCTAssertEqual(existing, created)
+            let kept = try await item(clip.id, in: controller)
+            XCTAssertEqual(kept.collectionID, collections[1].value.id)
+            XCTAssertTrue(kept.isFavorite)
+        }
+    }
+
     func testFavoriteIsIdempotentIndependentOfMembershipAndPersistsAfterReopen() async throws {
         let directory = temporaryDirectory()
         var controller: PersistenceController? = try PersistenceController(directory: directory)

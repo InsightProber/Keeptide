@@ -15,6 +15,9 @@ extension LibraryService {
               memo.bodyMode == .inheritedCapture,
               memoState.fingerprint == expectedFingerprint else { throw StoreError.preconditionFailed }
         item.memoID = nil
+        // Membership and the favorite flag belong to the memo facet; without it they go too.
+        item.collectionID = nil
+        item.isFavorite = false
         let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
         let marker = FacetDeletionMarkerValue(itemID: itemID, facet: .memo,
                                              generationID: memoID, purgedAt: Date())

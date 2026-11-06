@@ -32,6 +32,32 @@ enum CloudSettingsState: Equatable, Sendable {
     case unavailableInThisBuild
 }
 
+/// What Settings says about direct paste. It reads the system when Keeptide becomes active and when Settings opens,
+/// so a change made in System Settings shows once the user comes back.
+@MainActor @Observable
+final class DirectPasteSettingsModel {
+    /// nil without a library to paste from.
+    private(set) var state: DirectPasteAccessState?
+    /// Explains what turning direct paste on takes and asks the system for access, as Enable Direct Paste… does.
+    let turnOn: @MainActor () -> Void
+    /// Quits Keeptide, so that reopening it lets it use the access it was given.
+    let quit: @MainActor () -> Void
+    @ObservationIgnored private let read: @MainActor () -> DirectPasteAccessState?
+
+    init(read: @escaping @MainActor () -> DirectPasteAccessState? = { nil },
+         turnOn: @escaping @MainActor () -> Void = {},
+         quit: @escaping @MainActor () -> Void = {}) {
+        self.read = read
+        self.turnOn = turnOn
+        self.quit = quit
+    }
+
+    func refresh() {
+        let current = read()
+        if current != state { state = current }
+    }
+}
+
 struct SettingsActions {
     var showWelcome: @MainActor () -> Void
     var exportArchive: (@MainActor () -> Void)?
@@ -46,6 +72,7 @@ final class SettingsModel {
     private(set) var lifecycle: LifecycleSettingsModel?
     let shortcut: GlobalShortcutCoordinator
     let launchAtLogin: any LaunchAtLoginControlling
+    let directPaste: DirectPasteSettingsModel
     let cloud: CloudSettingsState
     let actions: SettingsActions
     @ObservationIgnored private let canExport: @MainActor () -> Bool
@@ -63,6 +90,7 @@ final class SettingsModel {
         lifecycle: LifecycleSettingsModel?,
         shortcut: GlobalShortcutCoordinator,
         launchAtLogin: any LaunchAtLoginControlling,
+        directPaste: DirectPasteSettingsModel = DirectPasteSettingsModel(),
         cloud: CloudSettingsState = .unavailableInThisBuild,
         actions: SettingsActions = .inert,
         canExport: @escaping @MainActor () -> Bool = { false }
@@ -72,6 +100,7 @@ final class SettingsModel {
         self.lifecycle = lifecycle
         self.shortcut = shortcut
         self.launchAtLogin = launchAtLogin
+        self.directPaste = directPaste
         self.cloud = cloud
         self.actions = actions
         self.canExport = canExport
