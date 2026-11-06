@@ -60,10 +60,9 @@ final class DirectPasteSettingsModel {
 
 struct SettingsActions {
     var showWelcome: @MainActor () -> Void
-    var manageIgnoredApplications: @MainActor () -> Void
     var exportArchive: (@MainActor () -> Void)?
 
-    static let inert = Self(showWelcome: {}, manageIgnoredApplications: {}, exportArchive: nil)
+    static let inert = Self(showWelcome: {}, exportArchive: nil)
 }
 
 @MainActor @Observable
@@ -80,6 +79,10 @@ final class SettingsModel {
     var canExportLibrary: Bool { canExport() }
     @ObservationIgnored private var temporaryPreferencesSuite: String?
     var selectedTab: SettingsTab = .general
+    /// The ignored-applications sheet, shown over the Settings window.
+    var showsIgnoredApplications = false
+
+    func presentIgnoredApplications() { showsIgnoredApplications = true }
 
     init(
         quickAccess: QuickAccessPreferences,

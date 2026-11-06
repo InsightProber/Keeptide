@@ -23,13 +23,14 @@ final class CaptureUITests: XCTestCase {
     func testIgnoredApplicationPickerCanBeCancelledAndOpenedAgain() {
         continueAfterFailure = false
         let sessionID = UUID()
-        let app = launchKeeptide(sessionID: sessionID)
+        let app = launchKeeptide(sessionID: sessionID, showing: "--show-settings")
 
         app.activate()
-        XCTAssertTrue(app.windows["KeeptideLibraryWindow"].waitForExistence(timeout: 8))
-        let ignoredApps = app.buttons["IgnoredApplicationsToolbar"]
-        XCTAssertTrue(ignoredApps.waitForExistence(timeout: 8))
-        ignoredApps.click()
+        XCTAssertTrue(app.windows["KeeptideSettingsWindow"].waitForExistence(timeout: 8))
+        app.tabs["Privacy"].click()
+        let manage = app.buttons["ManageIgnoredApplicationsButton"]
+        XCTAssertTrue(manage.waitForExistence(timeout: 8), app.debugDescription)
+        manage.click()
 
         let choose = app.buttons["Choose Application…"]
         XCTAssertTrue(choose.waitForExistence(timeout: 5), app.debugDescription)
@@ -107,14 +108,14 @@ final class CaptureUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Synthetic alternate text"].firstMatch.waitForExistence(timeout: 8))
     }
 
-    private func launchKeeptide(sessionID: UUID) -> XCUIApplication {
+    private func launchKeeptide(sessionID: UUID, showing window: String = "--show-library") -> XCUIApplication {
         let app = XCUIApplication()
         cleanupSessionID = sessionID
         cleanupApplication = app
         app.launchArguments = [
             "--ui-testing",
             "--disable-global-hotkey",
-            "--show-library",
+            window,
             "--capture-test-session",
             sessionID.uuidString
         ]
