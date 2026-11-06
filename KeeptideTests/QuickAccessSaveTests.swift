@@ -183,6 +183,126 @@ final class QuickAccessSaveTests: XCTestCase {
         return (state, harness, ref)
     }
 
+    // MARK: Collections and favorites
+
+    func testSavingIntoACollectionPutsTheNewSnippetThereAndItsUndoTakesItBack() async throws {
+        let (state, harness, ref) = try await fixture()
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
+        XCTAssertEqual(state.saveMessage, "Saved to “Prompts”")
+        XCTAssertTrue(state.canUndoSave)
+        XCTAssertEqual(state.selection.selectedRow?.savedAsMemo, true)
+        var value = try await item(ref, in: harness)
+        XCTAssertNotNil(value.memoID)
+        XCTAssertEqual(value.collectionID, prompts.value.id)
+
+        await state.undoSaveSelection()
+        XCTAssertEqual(state.saveMessage, "Save undone")
+        value = try await item(ref, in: harness)
+        XCTAssertNil(value.memoID)
+        XCTAssertNil(value.collectionID)
+    }
+
+    func testASavedClipMovesIntoTheCollectionChosenAndOnlyOnce() async throws {
+        let (state, harness, ref) = try await fixture()
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        _ = try await LibraryService(controller: harness.controller).saveAsMemo(ref.itemID)
+        let target = try XCTUnwrap(state.copyTarget)
+        await state.saveSelection(target, into: summary(prompts))
+        XCTAssertEqual(state.saveMessage, "Already in Snippets · Moved to “Prompts”")
+        XCTAssertFalse(state.canUndoSave)
+        let stored1 = try await item(ref, in: harness)
+        XCTAssertEqual(stored1.collectionID, prompts.value.id)
+        // Chosen again, it is there already, and nothing is written.
+        await state.saveSelection(target, into: summary(prompts))
+        XCTAssertEqual(state.saveMessage, "Already in “Prompts”")
+        await state.saveSelection(target, into: nil)
+        XCTAssertEqual(state.saveMessage, "Already in Snippets · Moved to Unfiled")
+        let stored2 = try await item(ref, in: harness)
+        XCTAssertNil(stored2.collectionID)
+    }
+
+    func testAFavoriteSavesTheClipFirst() async throws {
+        let (state, harness, ref) = try await fixture()
+        await state.toggleFavoriteSelection(try XCTUnwrap(state.copyTarget))
+        XCTAssertEqual(state.saveMessage, "Saved as Snippet · Added to Favorites")
+        XCTAssertTrue(state.canUndoSave)
+        XCTAssertEqual(state.selection.selectedRow?.isFavorite, true)
+        let value = try await item(ref, in: harness)
+        XCTAssertNotNil(value.memoID)
+        XCTAssertTrue(value.isFavorite)
+    }
+
+    func testAFavoriteOnASavedClipMarksItsSnippetAndNeverTakesTheMarkAway() async throws {
+        let (state, harness, ref) = try await fixture()
+        _ = try await LibraryService(controller: harness.controller).saveAsMemo(ref.itemID)
+        await state.toggleFavoriteSelection(try XCTUnwrap(state.copyTarget))
+        XCTAssertEqual(state.saveMessage, "Already in Snippets · Added to Favorites")
+        XCTAssertFalse(state.canUndoSave)
+        let stored3 = try await item(ref, in: harness)
+        XCTAssertTrue(stored3.isFavorite)
+        // The clip's card cannot tell the mark is there, so pressed again it adds it again.
+        await state.toggleFavoriteSelection(try XCTUnwrap(state.copyTarget))
+        let stored4 = try await item(ref, in: harness)
+        XCTAssertTrue(stored4.isFavorite)
+    }
+
+    func testSavingIntoACollectionDeletedMeanwhileSaysSoAndSavesNothing() async throws {
+        let (state, harness, ref) = try await fixture()
+        let service = CollectionService(controller: harness.controller)
+        let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
+        state.collectionsDidChange()
+        try await SearchTestSupport.waitUntil { state.collections.map(\.name) == ["Prompts"] }
+        _ = try await service.delete(prompts)
+        await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
+        XCTAssertEqual(state.saveMessage, "This collection no longer exists.")
+        let stored5 = try await item(ref, in: harness)
+        XCTAssertNil(stored5.memoID)
+        try await SearchTestSupport.waitUntil { state.collections.isEmpty }
+    }
+
+    func testASnippetMovesBetweenCollectionsAndTurnsItsFavoriteOver() async throws {
+        let (state, harness, ref) = try await fixture()
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        _ = try await LibraryService(controller: harness.controller).saveAsMemo(ref.itemID)
+        try await harness.consumer.synchronize()
+        state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { state.phase == .results && state.copyTarget?.ref.facet == .memo }
+        await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
+        XCTAssertEqual(state.saveMessage, "Moved to “Prompts”")
+        XCTAssertEqual(state.selection.selectedRow?.collectionID, prompts.value.id)
+        let stored6 = try await item(ref, in: harness)
+        XCTAssertEqual(stored6.collectionID, prompts.value.id)
+        await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
+        XCTAssertEqual(state.saveMessage, "Already in “Prompts”")
+
+        await state.toggleFavoriteSelection(try XCTUnwrap(state.copyTarget))
+        XCTAssertEqual(state.saveMessage, "Added to Favorites")
+        let stored7 = try await item(ref, in: harness)
+        XCTAssertTrue(stored7.isFavorite)
+        await state.toggleFavoriteSelection(try XCTUnwrap(state.copyTarget))
+        XCTAssertEqual(state.saveMessage, "Removed from Favorites")
+        let stored8 = try await item(ref, in: harness)
+        XCTAssertFalse(stored8.isFavorite)
+        // ⌘S on a snippet only says where it is.
+        await state.saveSelection(try XCTUnwrap(state.copyTarget))
+        XCTAssertEqual(state.saveMessage, "Already in Snippets")
+    }
+
+    private func summary(_ snapshot: CollectionSnapshot) -> CollectionSummary {
+        CollectionSummary(id: snapshot.value.id, name: snapshot.value.name, color: snapshot.value.color,
+                          sortOrder: snapshot.value.sortOrder)
+    }
+
+    private func item(_ ref: ContentRef, in harness: SearchHarness) async throws -> ItemValue {
+        let state = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
+        guard case .item(let value) = state.value else { throw StoreError.notFound }
+        return value
+    }
+
     /// An open state over the harness's store, once it lists the store's clips.
     private func openState(over harness: SearchHarness) async throws -> QuickAccessState {
         let board = NSPasteboard.withUniqueName()
@@ -190,8 +310,10 @@ final class QuickAccessSaveTests: XCTestCase {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: board, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in })
+        let collections = CollectionService(controller: harness.controller)
         let services = QuickAccessServices(repository: repository, search: harness.service, paste: paste,
-                                           library: LibraryService(controller: harness.controller))
+                                           library: LibraryService(controller: harness.controller),
+                                           collections: collections, collectionChanges: collections)
         let state = QuickAccessState(services: { services })
         state.open()
         try await SearchTestSupport.waitUntil { state.phase == .results }

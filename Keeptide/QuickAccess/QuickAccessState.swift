@@ -35,6 +35,8 @@ struct QuickAccessServices {
     var fileAccessIdentity: StoreIdentity? = nil
     /// The collections the memo lists can narrow to; without it there are none.
     var collections: (any QuickAccessCollections)? = nil
+    /// Moving snippets between collections and marking them as favorites; without it a saved clip can only be saved.
+    var collectionChanges: (any QuickAccessCollectionChanges)? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -612,42 +614,141 @@ final class QuickAccessState {
     /// Every await is fenced by the panel session and captured selection. A clip whose content is not all there, such
     /// as a file reference that has to be found again, is not saved, and the message says why.
     func saveSelection(_ target: CopyTarget) async {
+        await save(target, placing: nil)
+    }
+
+    /// ⇧⌘M: the selected clip saved straight into `collection`, or into none with nil, in one transaction; a clip
+    /// already saved, or a snippet, moved there. Moving one that is there already writes nothing.
+    func saveSelection(_ target: CopyTarget, into collection: CollectionSummary?) async {
+        await save(target, placing: .collection(collection))
+    }
+
+    /// ⌘D: a snippet's favorite mark turns over. A clip is saved as a favorite snippet, or the snippet it was saved as
+    /// becomes a favorite: the card does not know whether it is one already, so ⌘D never takes the mark away there.
+    func toggleFavoriteSelection(_ target: CopyTarget) async {
+        await save(target, placing: .favorite)
+    }
+
+    private enum Placement: Equatable {
+        case collection(CollectionSummary?)
+        case favorite
+    }
+
+    private func save(_ target: CopyTarget, placing placement: Placement?) async {
         guard isOpen, !saving, copyTarget == target, let currentSession = session,
               let services = services(), let library = services.library else { return }
         saving = true
         defer { saving = false }
         // The save is what was done last: a refused copy's reason before it no longer answers it.
         failure = nil
+        func stillAsked() -> Bool { isOpen && session === currentSession && copyTarget == target }
+        // A snippet's card knows its favorite mark as ⌘D was pressed.
+        let cardIsFavorite = selection.rows.first { $0.ref == target.ref }?.isFavorite ?? false
         do {
             let identity = try await library.controller.identity()
+            guard stillAsked() else { return }
+            // A snippet is placed or marked as it is; only a clip is saved first.
+            if target.ref.facet == .memo {
+                guard let placement, let changes = services.collectionChanges else {
+                    saveMessage = "Already in Snippets"
+                    return
+                }
+                try await place([target.ref], placement, by: changes, onSnippet: true, wasFavorite: cardIsFavorite,
+                                identity: identity, stillAsked: stillAsked)
+                return
+            }
             let content = try await services.repository.read(target.ref)
-            guard isOpen, session === currentSession, copyTarget == target else { return }
+            guard stillAsked() else { return }
             guard content.integrity == .complete else {
                 savedUndo = nil
                 canUndoSave = false
                 saveMessage = "This clip can't be saved as a snippet until its content is available."
                 return
             }
-            let outcome = try await library.saveAsMemo(target.ref.itemID, expecting: identity)
-            guard isOpen, session === currentSession, copyTarget == target else { return }
+            var collection: CollectionSummary?
+            if case .collection(let chosen)? = placement { collection = chosen }
+            let favorite = placement == .favorite
+            let outcome = try await library.saveAsMemo(target.ref.itemID, collectionID: collection?.id,
+                                                       isFavorite: favorite, expecting: identity)
+            guard stillAsked() else { return }
             switch outcome {
             case .created(let ref):
                 let snapshot = try await library.editingSnapshot(ref)
-                guard isOpen, session === currentSession, copyTarget == target else { return }
+                guard stillAsked() else { return }
                 savedUndo = (target.ref, target.ref.itemID, snapshot.memoID, snapshot.memoFingerprint, identity)
                 canUndoSave = true
-                saveMessage = "Saved to Snippets"
-                updateRow(ref: target.ref) { $0.savedAsMemo = true }
-            case .existing:
-                savedUndo = nil
-                canUndoSave = false
-                saveMessage = "Already in Snippets"
+                saveMessage = favorite ? "Saved as Snippet · Added to Favorites"
+                    : collection.map { "Saved to “\($0.name)”" } ?? "Saved to Snippets"
+                updateRow(ref: target.ref) {
+                    $0.savedAsMemo = true
+                    if favorite { $0.isFavorite = true }
+                }
+            case .existing(let memoRef):
+                // ⌘S again lets an earlier save's undo go; placing the snippet keeps it.
+                guard let placement, let changes = services.collectionChanges else {
+                    savedUndo = nil
+                    canUndoSave = false
+                    saveMessage = "Already in Snippets"
+                    return
+                }
+                try await place([memoRef], placement, by: changes, onSnippet: false, wasFavorite: false,
+                                identity: identity, stillAsked: stillAsked)
+                if placement == .favorite, stillAsked() { updateRow(ref: target.ref) { $0.isFavorite = true } }
             }
         } catch {
-            if isOpen, session === currentSession, copyTarget == target {
+            guard stillAsked() else { return }
+            var gone = false
+            if case .collection(let collection?)? = placement { gone = await isGone(collection, in: services) }
+            guard stillAsked() else { return }
+            if gone {
+                explainCollectionGone()
+            } else {
                 saveMessage = "This item could not be saved. Try again."
             }
         }
+    }
+
+    /// Moves or marks snippets that exist already, and says what came of it: on a snippet's own card as it is, on a
+    /// clip's card after "Already in Snippets".
+    private func place(_ refs: [ContentRef], _ placement: Placement, by changes: any QuickAccessCollectionChanges,
+                       onSnippet: Bool, wasFavorite: Bool, identity: StoreIdentity,
+                       stillAsked: () -> Bool) async throws {
+        let prefix = onSnippet ? "" : "Already in Snippets · "
+        switch placement {
+        case .collection(let collection):
+            let moved = try await changes.moveSnippets(refs, into: collection?.id, expecting: identity)
+            guard stillAsked() else { return }
+            let place = collection.map { "“\($0.name)”" } ?? CollectionMenu.unfiledTitle
+            saveMessage = moved ? "\(prefix)Moved to \(place)" : "Already in \(place)"
+            if moved, onSnippet { for ref in refs { updateRow(ref: ref) { $0.collectionID = collection?.id } } }
+        case .favorite:
+            // A snippet's card knows its mark and turns it over; a clip's only adds it.
+            let favorite = onSnippet ? !wasFavorite : true
+            try await changes.markSnippets(refs, favorite: favorite, expecting: identity)
+            guard stillAsked() else { return }
+            saveMessage = "\(prefix)\(favorite ? "Added to" : "Removed from") Favorites"
+            if onSnippet { for ref in refs { updateRow(ref: ref) { $0.isFavorite = favorite } } }
+        }
+    }
+
+    /// ⇧⌘M with no collection to choose: the toolbar says what it takes.
+    func explainNoCollections() {
+        failure = nil
+        saveMessage = ActionMenu.noCollectionsHelp
+    }
+
+    /// A collection chosen from a menu that went while the menu was open: the toolbar says so, and the collections are
+    /// read again.
+    func explainCollectionGone() {
+        failure = nil
+        saveMessage = "This collection no longer exists."
+        collectionsDidChange()
+    }
+
+    /// Whether `collection` is no longer among the collections, read again; a read that fails says nothing.
+    private func isGone(_ collection: CollectionSummary, in services: QuickAccessServices) async -> Bool {
+        guard let reader = services.collections, let read = try? await reader.collections() else { return false }
+        return !read.contains { $0.id == collection.id }
     }
 
     func undoSaveSelection() async {

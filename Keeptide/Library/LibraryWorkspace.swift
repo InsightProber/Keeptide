@@ -13,6 +13,25 @@ enum LibraryScope: Hashable, Sendable {
         if case .collection(let id) = self { return id }
         return nil
     }
+
+    /// Where a new snippet made from this list goes, and the list that then shows it: a collection keeps its snippet,
+    /// All Snippets and Unfiled keep theirs in no collection, and the lists that would not show a new snippet
+    /// (Recent Clips, Favorites and Recently Deleted) give way to All Snippets.
+    var newSnippetScope: LibraryScope {
+        switch self {
+        case .collection, .allSnippets, .uncategorized: self
+        case .recentClips, .favorites, .recentlyDeleted: .allSnippets
+        }
+    }
+}
+
+/// An item Show in Library brought into view: the list it is in and the item, for the window to select both.
+struct LibraryReveal: Equatable, Sendable {
+    let scope: LibraryScope
+    let ref: ContentRef
+    let generation: Int
+
+    var itemID: ItemID { ref.itemID }
 }
 
 /// What a search looks through: every clip and snippet (the default), or only the list on screen.
@@ -187,6 +206,8 @@ final class LibraryWorkspace {
     @ObservationIgnored private var loadedResultCount = 0
     private(set) var entries: [LibraryEntry] = []
     private(set) var selectedEntryID: ItemID?
+    /// The last item Show in Library found in its list; the window selects the list and the row.
+    private(set) var revealed: LibraryReveal?
     /// The item the last open could not read, until another item or a new snippet opens. The editor keeps the item
     /// it had, so the detail says this one is unavailable instead.
     private(set) var unavailableItemID: ItemID?
@@ -581,13 +602,80 @@ final class LibraryWorkspace {
         }
     }
 
+    /// A new snippet, in the list `requestedScope` (or the list shown) puts it: see `LibraryScope.newSnippetScope`. The
+    /// list that shows it is shown.
+    /// Show in Library from quick access. The list the item is in comes first, then the item is selected there: a
+    /// snippet's list is its collection, or All Snippets; a clip's is Recent Clips; a clip saved as a snippet shows as
+    /// the snippet when the request asks. A row not on the pages loaded brings up to five more; past them the item still
+    /// opens, and the status line says the list does not show it yet. Going anywhere else meanwhile stops it.
+    func open(_ request: LibraryOpenRequest) async {
+        guard !isClosing, !isClosed else { return }
+        var ref = request.ref
+        if request.showsSnippet, ref.facet != .memo,
+           let memo = try? await repository.currentRef(itemID: ref.itemID, facet: .memo) {
+            ref = memo
+        }
+        var target = LibraryScope.recentClips
+        if ref.facet == .memo {
+            target = .allSnippets
+            if case .item(let item)? = try? await repository.recordState(.item(ref.itemID)).value,
+               let id = item.collectionID {
+                // The sidebar lists the collection before it is chosen: one not known yet is read first.
+                if !collections.contains(where: { $0.value.id == id }) { await refreshCollections() }
+                if collections.contains(where: { $0.value.id == id }) { target = .collection(id) }
+            }
+        }
+        guard !isClosing, !isClosed else { return }
+        // The list is read again, without a search: what quick access just saved is in it, and nothing hides the item.
+        query = ""
+        if scope == target {
+            navigationGeneration &+= 1
+            scheduleQueryLoad(refreshIndex: true)
+        } else {
+            updateScope(target)
+        }
+        let navigation = navigationGeneration
+        await queryTask?.value
+        // Choosing another list or row, or typing a search, stops the paging. A page the list asked for itself, as it
+        // scrolled, is waited for rather than counted.
+        var pages = 0
+        var waits = 0
+        while navigation == navigationGeneration, query.isEmpty, !entries.contains(where: { $0.id == ref.itemID }),
+              hasMoreEntries, pages < 5 {
+            if isLoading {
+                guard waits < 250 else { break }
+                waits += 1
+                try? await Task.sleep(for: .milliseconds(20))
+                continue
+            }
+            await loadMore()
+            pages += 1
+        }
+        guard navigation == navigationGeneration, query.isEmpty else { return }
+        let listed = entries.contains { $0.id == ref.itemID }
+        await open(ref)
+        guard editor?.ref == ref else { return }
+        if listed {
+            revealed = LibraryReveal(scope: target, ref: ref, generation: request.generation)
+        } else {
+            message = "Opened. The list doesn't show it yet."
+        }
+    }
+
     func startNew(in requestedScope: LibraryScope? = nil) async {
         guard !isClosing, !isClosed else { return }
-        guard requestedScope != .recentlyDeleted, scope != .recentlyDeleted else {
-            message = "Choose a snippet collection before creating a new snippet."
-            return
+        var target = (requestedScope ?? scope).newSnippetScope
+        // A collection asked for from quick access may have gone meanwhile: the snippet then goes to Unfiled.
+        var collectionIsGone = false
+        if case .collection(let id) = target, !collections.contains(where: { $0.value.id == id }) {
+            await refreshCollections()
+            if !collections.contains(where: { $0.value.id == id }) {
+                target = .allSnippets
+                collectionIsGone = true
+            }
         }
-        if let requestedScope { updateScope(requestedScope) }
+        guard !isClosing, !isClosed else { return }
+        updateScope(target)
         navigationGeneration &+= 1
         let navigation = navigationGeneration
         do {
@@ -604,7 +692,7 @@ final class LibraryWorkspace {
         install(session)
         selectedEntryID = nil
         unavailableItemID = nil
-        message = nil
+        message = collectionIsGone ? "This collection no longer exists." : nil
     }
 
     /// Saves the selected clip as a memo, straight into `collectionID` and as a favorite when asked, in one

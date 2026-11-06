@@ -122,13 +122,15 @@ final class AppEnvironment {
         captureSession.onCollectionsChanged = { [weak panel] in panel?.state.collectionsDidChange() }
         // The panel's ⋯ menu does what the menu bar's Open Library and Settings… do.
         panel.onOpenLibrary = { [weak self] in self?.showLibrary() }
-        panel.onOpenInLibrary = { [weak self] ref in
+        // Show in Library opens the list the clip or its snippet is in, with it selected; New Snippet starts one in the
+        // collection the panel lists, or in Unfiled under All Snippets.
+        panel.onOpenInLibrary = { [weak self] ref, showsSnippet in
             self?.showLibrary()
-            self?.libraryWindowController.open(ref)
+            self?.libraryWindowController.open(ref, showsSnippet: showsSnippet)
         }
-        panel.onNewSnippet = { [weak self] in
+        panel.onNewSnippet = { [weak self] collection in
             self?.showLibrary()
-            self?.libraryWindowController.newDocument(nil)
+            self?.libraryWindowController.newSnippet(in: collection.map { .collection($0) } ?? .allSnippets)
         }
         panel.onOpenSettings = { [weak self] in self?.showSettings() }
         panel.onEnableDirectPaste = { [weak self] in self?.showEnableDirectPaste() }
@@ -285,7 +287,8 @@ extension CaptureSession {
             library: libraryService,
             fileAccess: fileAccessStore,
             fileAccessIdentity: fileAccessIdentity,
-            collections: collectionService
+            collections: collectionService,
+            collectionChanges: collectionService
         )
     }
 }

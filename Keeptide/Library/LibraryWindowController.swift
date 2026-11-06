@@ -226,11 +226,20 @@ final class LibraryWindowController: NSWindowController {
         commands.requestList(scope)
     }
 
-    func open(_ ref: ContentRef) {
+    /// Shows `ref` in the list it is in, selected: a clip in Recent Clips, a snippet in its collection or All Snippets.
+    /// With `showsSnippet`, a clip saved as a snippet shows as that snippet.
+    func open(_ ref: ContentRef, showsSnippet: Bool = false) {
         commands.openRequest = LibraryOpenRequest(
             ref: ref,
+            showsSnippet: showsSnippet,
             generation: (commands.openRequest?.generation ?? 0) + 1
         )
+    }
+
+    /// Starts a new snippet from quick access, in the list `scope` puts it (§6.2 of the redesign: a collection keeps
+    /// it, any other list puts it in Unfiled and shows All Snippets).
+    func newSnippet(in scope: LibraryScope) {
+        commands.requestNewSnippet(in: scope)
     }
 }
 
@@ -370,11 +379,16 @@ final class LibraryWindowCommands {
     /// subtitle.
     @ObservationIgnored var showListTitle: @MainActor (String) -> Void = { _ in }
 
+    /// The list a new snippet was asked for from outside the library, such as quick access; nil when the library's own
+    /// list decides. It is read with the request it came with.
+    @ObservationIgnored private(set) var newSnippetScope: LibraryScope?
+
     /// ⌘N and ⇧⌘F each take a newer focus generation; a new snippet's body asks for the keyboard only while its
     /// generation is current, so whichever came last keeps it.
-    func requestNewSnippet() {
+    func requestNewSnippet(in scope: LibraryScope? = nil) {
         focusGeneration &+= 1
         newSnippetFocusGeneration = focusGeneration
+        newSnippetScope = scope
         newSnippetRequest &+= 1
     }
 
@@ -479,5 +493,7 @@ struct LibraryListRequest: Equatable {
 
 struct LibraryOpenRequest: Equatable {
     let ref: ContentRef
+    /// A clip saved as a snippet shows as the snippet.
+    var showsSnippet = false
     let generation: Int
 }

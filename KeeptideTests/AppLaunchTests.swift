@@ -1324,15 +1324,16 @@ final class AppLaunchTests: XCTestCase {
         let (field, editor) = try searchEditor(in: controller)
         var opens = 0
         var creates = 0
-        controller.onOpenInLibrary = { _ in opens += 1 }
-        controller.onNewSnippet = { creates += 1 }
+        controller.onOpenInLibrary = { _, _ in opens += 1 }
+        controller.onNewSnippet = { _ in creates += 1 }
         editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
                              replacementRange: NSRange(location: NSNotFound, length: 0))
         let marked = editor.markedRange()
         let caret = editor.selectedRange()
         let query = controller.state.query
         for (code, character) in [(kVK_ANSI_S, "s"), (kVK_ANSI_E, "e"), (kVK_ANSI_N, "n"),
-                                  (kVK_ANSI_LeftBracket, "["), (kVK_ANSI_RightBracket, "]"), (kVK_ANSI_L, "l")] {
+                                  (kVK_ANSI_LeftBracket, "["), (kVK_ANSI_RightBracket, "]"), (kVK_ANSI_L, "l"),
+                                  (kVK_ANSI_D, "d")] {
             // Consumed without acting, so AppKit cannot offer it to New/Save in
             // the main menu after this window returns. A list does not change under a composition either.
             XCTAssertTrue(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)))
@@ -2013,9 +2014,9 @@ final class AppLaunchTests: XCTestCase {
         var announced: [String] = []
         controller.announce = { announced.append($0) }
         var opened: [ContentRef] = []
-        controller.onOpenInLibrary = { opened.append($0) }
+        controller.onOpenInLibrary = { ref, _ in opened.append(ref) }
         var newSnippets = 0
-        controller.onNewSnippet = { newSnippets += 1 }
+        controller.onNewSnippet = { _ in newSnippets += 1 }
         let selected = try XCTUnwrap(controller.state.copyTarget?.ref)
 
         // ⌘S saves the selected clip and says so. Held down, its repeats are taken and do nothing: saved again, the
@@ -2095,13 +2096,19 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(commandK.point.y, selected.maxY, accuracy: 1)
         XCTAssertEqual(commandK.menu.items.map(\.title), [
             "Copy", "Copy as Plain Text", "", "Show Preview", "",
-            "Save as Snippet", "Open in Library", "New Snippet",
+            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
         ])
-        XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent), ["\r", "\r", "", " ", "", "s", "e", "n"])
-        XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem }.map(\.keyEquivalentModifierMask), [
-            [], .shift, [], .command, .command, .command,
-        ])
-        XCTAssertTrue(commandK.menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled })
+        // Save to Collection has its submenu instead of a key: AppKit keeps none on such an item, and ⇧⌘M is the
+        // panel's own.
+        XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent),
+                       ["\r", "\r", "", " ", "", "s", "", "d", "", "e", "n"])
+        XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem && !$0.hasSubmenu }
+            .map(\.keyEquivalentModifierMask), [[], .shift, [], .command, .command, .command, .command])
+        // Everything is available but Save to Collection, which needs a collection first and says so.
+        let saveTo = try XCTUnwrap(commandK.menu.items.first { $0.title == "Save to Collection" })
+        XCTAssertFalse(saveTo.isEnabled)
+        XCTAssertEqual(saveTo.toolTip, "Create a collection first.")
+        XCTAssertTrue(commandK.menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled || $0 === saveTo })
         // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
             with: .rightMouseDown, location: strip.convert(NSPoint(x: selected.midX, y: selected.midY), to: nil),
@@ -2146,7 +2153,7 @@ final class AppLaunchTests: XCTestCase {
         // clip saved; a right-click on another clip does not, since its menu acts on that clip.
         let menu = try actionMenu(of: controller)
         let undo = try XCTUnwrap(menu.items.firstIndex { $0.title == "Undo Save as Snippet" })
-        XCTAssertEqual(menu.items[undo - 1].title, "Save as Snippet")
+        XCTAssertEqual(menu.items[undo - 1].title, "Save to Collection")
         XCTAssertEqual(menu.items[undo].keyEquivalent, "")
         XCTAssertTrue(menu.items[undo].isEnabled)
         let newer = try drawnFrame(of: "newer", in: strip)
@@ -2412,6 +2419,147 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { controller.state.phase == .results }
         toolbar.lists.keyDown(with: try key(kVK_DownArrow, "\u{F701}"))
         XCTAssertTrue(window.firstResponder is QuickAccessStripView)
+    }
+
+    // MARK: Saving into collections, favorites and the library
+
+    func testShiftCommandMShowsTheCollectionsBesideTheCardAndSavesIntoTheOneChosen() async throws {
+        let (controller, harness, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts", "Shell"])
+        let window = try XCTUnwrap(controller.window)
+        var shown: [(menu: NSMenu, point: NSPoint)] = []
+        controller.presentActionMenu = { menu, point, _ in shown.append((menu, point)) }
+        let shiftCommandM = try key(kVK_ANSI_M, "M", modifiers: [.command, .shift])
+        XCTAssertTrue(window.performKeyEquivalent(with: shiftCommandM))
+        let menu = try XCTUnwrap(shown.first?.menu)
+        // Unfiled, then each collection in the sidebar's order; a clip's card does not know its snippet's place, so
+        // nothing is checked. Held down, ⇧⌘M opens nothing more.
+        XCTAssertEqual(menu.title, "Save to Collection")
+        XCTAssertEqual(menu.items.map(\.title), ["Unfiled", "", "Prompts", "Shell"])
+        XCTAssertTrue(menu.items.allSatisfy { $0.state == .off })
+        XCTAssertNotNil(menu.items[2].image)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_M, "M", modifiers: [.command, .shift],
+                                                                isARepeat: true)))
+        XCTAssertEqual(shown.count, 1)
+
+        menu.performActionForItem(at: 2)
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Saved to “Prompts”" }
+        let ref = try XCTUnwrap(controller.state.copyTarget?.ref)
+        let state = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
+        guard case .item(let item) = state.value else { return XCTFail("Missing the clip") }
+        XCTAssertEqual(item.collectionID, made[0].value.id)
+        // The actions menu offers the same, under Save to Collection.
+        let actions = try actionMenu(of: controller)
+        let saveTo = try XCTUnwrap(actions.items.first { $0.title == "Save to Collection" })
+        XCTAssertTrue(saveTo.isEnabled)
+        XCTAssertEqual(saveTo.submenu?.items.map(\.title), ["Unfiled", "", "Prompts", "Shell"])
+    }
+
+    func testCommandDAndShiftCommandMWaitForTheComposition() async throws {
+        let (controller, harness, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, editor) = try searchEditor(in: controller)
+        var shown = 0
+        controller.presentActionMenu = { _, _, _ in shown += 1 }
+        let ref = try XCTUnwrap(controller.state.copyTarget?.ref)
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        // Taken without acting, so that neither saves nor opens a menu, and the composition goes on.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_D, "d", modifiers: .command)))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_M, "M", modifiers: [.command, .shift])))
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertTrue(isEditing(field, in: window))
+        // Plain ⌘M is no shortcut here at all, and opens nothing either.
+        _ = window.performKeyEquivalent(with: try key(kVK_ANSI_M, "m", modifiers: .command))
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(controller.state.saveMessage)
+        XCTAssertEqual(shown, 0)
+        let state = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
+        guard case .item(let item) = state.value else { return XCTFail("Missing the clip") }
+        XCTAssertNil(item.memoID)
+    }
+
+    func testShiftCommandMWithoutCollectionsSaysWhatItTakes() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: [])
+        let window = try XCTUnwrap(controller.window)
+        var shown = 0
+        controller.presentActionMenu = { _, _, _ in shown += 1 }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_M, "M", modifiers: [.command, .shift])))
+        XCTAssertEqual(shown, 0)
+        XCTAssertEqual(controller.state.saveMessage, "Create a collection first.")
+    }
+
+    func testCommandDSavesTheClipAsAFavoriteAndTurnsASnippetsMarkOver() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let commandD = try key(kVK_ANSI_D, "d", modifiers: .command)
+        XCTAssertTrue(window.performKeyEquivalent(with: commandD))
+        try await SearchTestSupport.waitUntil {
+            controller.state.saveMessage == "Saved as Snippet · Added to Favorites"
+        }
+        // On a snippet's card the mark turns over, and the actions menu names what ⌘D does next.
+        controller.state.setList(.collection(try XCTUnwrap(controller.state.collections.first).id))
+        try await SearchTestSupport.waitUntil {
+            controller.state.phase == .results && controller.state.copyTarget?.ref.facet == .memo
+        }
+        XCTAssertEqual(try actionMenu(of: controller).items.first { $0.keyEquivalent == "d" }?.title, "Add to Favorites")
+        XCTAssertTrue(window.performKeyEquivalent(with: commandD))
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Added to Favorites" }
+        XCTAssertEqual(try actionMenu(of: controller).items.first { $0.keyEquivalent == "d" }?.title,
+                       "Remove from Favorites")
+        XCTAssertTrue(window.performKeyEquivalent(with: commandD))
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Removed from Favorites" }
+        // Held down, ⌘D has acted already.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_D, "d", modifiers: .command, isARepeat: true)))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(controller.state.saveMessage, "Removed from Favorites")
+    }
+
+    func testShowInLibraryAsksForTheSnippetOfASnippetOrASavedClip() async throws {
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        var opened: [(ref: ContentRef, showsSnippet: Bool)] = []
+        controller.onOpenInLibrary = { opened.append(($0, $1)) }
+        let commandE = try key(kVK_ANSI_E, "e", modifiers: .command)
+        // A clip not saved shows as the clip.
+        XCTAssertTrue(window.performKeyEquivalent(with: commandE))
+        XCTAssertEqual(opened.last?.showsSnippet, false)
+        // Once saved, as its snippet.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.copyTarget != nil }
+        await controller.state.saveSelection(try XCTUnwrap(controller.state.copyTarget))
+        XCTAssertTrue(window.performKeyEquivalent(with: commandE))
+        XCTAssertEqual(opened.last?.showsSnippet, true)
+        XCTAssertEqual(opened.last?.ref.facet, .history)
+        // A snippet's card shows the snippet.
+        controller.show()
+        _ = try searchEditor(in: controller)
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil {
+            controller.state.phase == .results && controller.state.copyTarget?.ref.facet == .memo
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: commandE))
+        XCTAssertEqual(opened.last?.ref.facet, .memo)
+        XCTAssertEqual(opened.last?.showsSnippet, true)
+    }
+
+    func testNewSnippetGoesIntoTheCollectionListed() async throws {
+        let (controller, _, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        var asked: [CollectionID?] = []
+        controller.onNewSnippet = { asked.append($0) }
+        let commandN = try key(kVK_ANSI_N, "n", modifiers: .command)
+        XCTAssertTrue(window.performKeyEquivalent(with: commandN))
+        controller.show()
+        _ = try searchEditor(in: controller)
+        controller.state.setList(.snippets)
+        XCTAssertTrue(window.performKeyEquivalent(with: commandN))
+        controller.show()
+        _ = try searchEditor(in: controller)
+        controller.state.setList(.collection(made[0].value.id))
+        XCTAssertTrue(window.performKeyEquivalent(with: commandN))
+        // All and Snippets put it in Unfiled; a collection's list puts it there.
+        XCTAssertEqual(asked, [nil, nil, made[0].value.id])
     }
 
     func testFavoritesOnlyUnderAllSwitchesTheSegment() async throws {
@@ -3248,12 +3396,13 @@ final class AppLaunchTests: XCTestCase {
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview",
-                        "Save as Snippet", "Open in Library", "New Snippet", "Enable Direct Paste…"])
+                        "Save as Snippet", "Save to Collection", "Add to Favorites", "Show in Library", "New Snippet",
+                        "Enable Direct Paste…"])
         XCTAssertEqual(menu.items.map(\.isSeparatorItem),
-                       [false, false, true, false, true, false, false, false, true, false])
+                       [false, false, true, false, true, false, false, false, true, false, false, true, false])
         XCTAssertEqual(menu.items[0].keyEquivalent, "\r")
         XCTAssertEqual(menu.items[0].keyEquivalentModifierMask, [])
-        XCTAssertTrue(menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled })
+        XCTAssertTrue(menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled || $0.title == "Save to Collection" })
 
         // Copy As-Is copies the clip as captured, its trailing line break too, and sends nothing.
         menu.performActionForItem(at: 1)
@@ -3269,7 +3418,7 @@ final class AppLaunchTests: XCTestCase {
         let pasteMenu = try actionMenu(of: other)
         XCTAssertEqual(pasteMenu.items.map(\.title), [
             "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "",
-            "Save as Snippet", "Open in Library", "New Snippet",
+            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
         ])
         XCTAssertEqual(pasteMenu.items[1].keyEquivalentModifierMask, .shift)
         pasteMenu.performActionForItem(at: 2)
@@ -3308,7 +3457,7 @@ final class AppLaunchTests: XCTestCase {
         ))))
         XCTAssertEqual(menu.items.map(\.title), [
             "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "",
-            "Save as Snippet", "Open in Library", "New Snippet",
+            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
         ])
         XCTAssertEqual(fake.sent, [])
     }
@@ -4007,7 +4156,8 @@ final class AppLaunchTests: XCTestCase {
         _ = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
         XCTAssertEqual(try actionMenu(of: controller).items.map(\.title),
                        ["Copy", "Copy as Plain Text", "", "Show Preview", "",
-                        "Save as Snippet", "Open in Library", "New Snippet"])
+                        "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
+                        "New Snippet"])
 
         controller.perform(.primary)
         try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
@@ -4161,14 +4311,15 @@ final class AppLaunchTests: XCTestCase {
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.map(\.title), [
             "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "",
-            "Save as Snippet", "Open in Library", "New Snippet",
+            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
         ])
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[1].isEnabled)
         XCTAssertTrue(menu.items[3].isEnabled)
         XCTAssertTrue(menu.items[5].isEnabled)
-        XCTAssertTrue(menu.items[6].isEnabled)
         XCTAssertTrue(menu.items[7].isEnabled)
+        XCTAssertTrue(menu.items[9].isEnabled)
+        XCTAssertTrue(menu.items[10].isEnabled)
 
         // Without the card, Return's actions are offered again.
         controller.perform(.escape)
@@ -4294,12 +4445,12 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
         let chosen = try XCTUnwrap(controller.state.copyTarget?.ref)
         var opened: [ContentRef] = []
-        controller.onOpenInLibrary = { opened.append($0) }
+        controller.onOpenInLibrary = { ref, _ in opened.append(ref) }
         let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
         controller.currentEvent = { returnDown }
 
         let menu = try actionMenu(of: controller)
-        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Open in Library" }))
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Show in Library" }))
         try await Task.sleep(for: .milliseconds(200))
         XCTAssertEqual(opened, [], "The library must not receive Return repeats")
         XCTAssertEqual(controller.state.returnIsDown?(), true)
@@ -4317,7 +4468,7 @@ final class AppLaunchTests: XCTestCase {
         _ = try searchEditor(in: controller)
         try await SearchTestSupport.waitUntil { controller.state.selection.executableSelection != nil }
         var newSnippets = 0
-        controller.onNewSnippet = { newSnippets += 1 }
+        controller.onNewSnippet = { _ in newSnippets += 1 }
         let returnDown = try key(kVK_Return, "\r", windowNumber: window.windowNumber)
         let returnUp = try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber)
         controller.currentEvent = { returnDown }
@@ -4340,8 +4491,8 @@ final class AppLaunchTests: XCTestCase {
         let selected = try XCTUnwrap(controller.state.copyTarget?.ref)
         var opened: [ContentRef] = []
         var newSnippets = 0
-        controller.onOpenInLibrary = { opened.append($0) }
-        controller.onNewSnippet = { newSnippets += 1 }
+        controller.onOpenInLibrary = { ref, _ in opened.append(ref) }
+        controller.onNewSnippet = { _ in newSnippets += 1 }
         let click = try XCTUnwrap(NSEvent.mouseEvent(
             with: .leftMouseUp, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0
@@ -4349,7 +4500,7 @@ final class AppLaunchTests: XCTestCase {
         controller.currentEvent = { click }
 
         let menu = try actionMenu(of: controller)
-        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Open in Library" }))
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Show in Library" }))
         XCTAssertEqual(opened, [selected])
         menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "New Snippet" }))
         XCTAssertEqual(newSnippets, 1)
@@ -4705,7 +4856,8 @@ final class AppLaunchTests: XCTestCase {
         // A paste the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
-                                           usage: usage, library: library, collections: collections)
+                                           usage: usage, library: library, collections: collections,
+                                           collectionChanges: collections as? any QuickAccessCollectionChanges)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }

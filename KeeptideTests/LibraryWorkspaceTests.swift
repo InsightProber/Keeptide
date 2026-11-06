@@ -616,6 +616,102 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertEqual(afterReload, 1)
     }
 
+    func testShowInLibraryGoesToTheListTheItemIsInAndSelectsIt() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let library = LibraryService(controller: harness.controller)
+        let filed = try await library.create(MemoDraft(title: "Filed", body: "in Prompts",
+                                                       collectionID: prompts.value.id))
+        let loose = try await library.create(MemoDraft(title: "Loose", body: "in no collection"))
+        let (clipItem, clipCapture) = try await insertHistory("a clip", into: harness)
+        let clip = ContentStoreFixtures.ref(clipItem, clipCapture)
+        try await harness.consumer.synchronize()
+        let workspace = try await makeWorkspace(harness)
+
+        // A snippet's list is its collection, or All Snippets; a clip's is Recent Clips. The list comes first, then
+        // the row, which the window selects from what the workspace reveals.
+        await workspace.open(LibraryOpenRequest(ref: filed, generation: 1))
+        XCTAssertEqual(workspace.scope, .collection(prompts.value.id))
+        XCTAssertEqual(workspace.editor?.ref, filed)
+        XCTAssertEqual(workspace.revealed,
+                       LibraryReveal(scope: .collection(prompts.value.id), ref: filed, generation: 1))
+        await workspace.open(LibraryOpenRequest(ref: loose, generation: 2))
+        XCTAssertEqual(workspace.scope, .allSnippets)
+        XCTAssertEqual(workspace.revealed?.itemID, loose.itemID)
+        await workspace.open(LibraryOpenRequest(ref: clip, generation: 3))
+        XCTAssertEqual(workspace.scope, .recentClips)
+        XCTAssertEqual(workspace.revealed, LibraryReveal(scope: .recentClips, ref: clip, generation: 3))
+
+        // A clip saved as a snippet shows as the snippet when the request asks, and as the clip when it does not.
+        let saved = try await library.saveAsMemo(clip.itemID, collectionID: prompts.value.id).ref
+        try await harness.consumer.synchronize()
+        await workspace.open(LibraryOpenRequest(ref: clip, showsSnippet: true, generation: 4))
+        XCTAssertEqual(workspace.scope, .collection(prompts.value.id))
+        XCTAssertEqual(workspace.editor?.ref, saved)
+        await workspace.open(LibraryOpenRequest(ref: clip, generation: 5))
+        XCTAssertEqual(workspace.scope, .recentClips)
+        XCTAssertEqual(workspace.editor?.ref, clip)
+        XCTAssertNil(workspace.message)
+    }
+
+    func testShowInLibraryOnTheListShownReadsItAgainAndClearsTheSearch() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let library = LibraryService(controller: harness.controller)
+        _ = try await library.create(MemoDraft(title: "Earlier", body: "already listed"))
+        try await harness.consumer.synchronize()
+        let workspace = try await makeWorkspace(harness)
+        await workspace.setScope(.allSnippets)
+        workspace.updateQuery("earlier")
+        await workspace.setScope(.allSnippets)
+        // Saved from quick access while the library shows All Snippets, with a search that would hide it.
+        let saved = try await library.create(MemoDraft(title: "Saved just now", body: "from quick access"))
+        await workspace.open(LibraryOpenRequest(ref: saved, generation: 1))
+        XCTAssertEqual(workspace.scope, .allSnippets)
+        XCTAssertEqual(workspace.query, "")
+        XCTAssertEqual(workspace.editor?.ref, saved)
+        XCTAssertEqual(workspace.revealed, LibraryReveal(scope: .allSnippets, ref: saved, generation: 1))
+        XCTAssertNil(workspace.message)
+    }
+
+    func testANewSnippetForACollectionThatWentGoesToUnfiledAndSaysSo() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = CollectionService(controller: harness.controller)
+        let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
+        let workspace = try await makeWorkspace(harness)
+        _ = try await service.delete(prompts)
+        await workspace.startNew(in: .collection(prompts.value.id))
+        XCTAssertEqual(workspace.scope, .allSnippets)
+        XCTAssertNotNil(workspace.editor)
+        XCTAssertNil(workspace.editor?.collectionID)
+        XCTAssertEqual(workspace.message, "This collection no longer exists.")
+    }
+
+    func testANewSnippetGoesWhereTheListPutsItAndThatListShows() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let workspace = try await makeWorkspace(harness)
+        let cases: [(from: LibraryScope, to: LibraryScope)] = [
+            (.recentClips, .allSnippets), (.favorites, .allSnippets), (.recentlyDeleted, .allSnippets),
+            (.allSnippets, .allSnippets), (.uncategorized, .uncategorized),
+            (.collection(prompts.value.id), .collection(prompts.value.id)),
+        ]
+        for item in cases {
+            await workspace.setScope(item.from)
+            await workspace.startNew()
+            XCTAssertEqual(workspace.scope, item.to, "\(item.from)")
+            XCTAssertNotNil(workspace.editor, "\(item.from)")
+            XCTAssertEqual(workspace.editor?.collectionID, item.to.collectionID, "\(item.from)")
+            XCTAssertNil(workspace.message, "\(item.from)")
+        }
+        // Asked for from quick access, the list asked for decides.
+        await workspace.setScope(.recentClips)
+        await workspace.startNew(in: .collection(prompts.value.id))
+        XCTAssertEqual(workspace.scope, .collection(prompts.value.id))
+        XCTAssertEqual(workspace.editor?.collectionID, prompts.value.id)
+    }
+
     private func makeWorkspace(_ harness: SearchHarness) async throws -> LibraryWorkspace {
         try await LibraryWorkspace.make(
             controller: harness.controller,

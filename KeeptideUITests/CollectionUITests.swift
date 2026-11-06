@@ -184,6 +184,40 @@ final class CollectionUITests: XCTestCase {
         XCTAssertTrue(snippetRow(containing: "Unselected Gamma", in: app).waitForNonExistence(timeout: 8))
     }
 
+    func testQuickAccessNewSnippetLandsInCurrentList() {
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        let sessionID = UUID()
+        app.launchArguments = ["--ui-testing", "--disable-global-hotkey", "--show-quick-access",
+                               "--capture-test-session", sessionID.uuidString, "--seed-synthetic-clips",
+                               "--seed-synthetic-snippets"]
+        self.sessionID = sessionID
+        application = app
+        app.launch()
+
+        // Quick access lists Shell; ⌘N there starts a snippet in Shell, which the library shows.
+        let snippets = app.radioButtons["Snippets"]
+        XCTAssertTrue(snippets.waitForExistence(timeout: 8), app.debugDescription)
+        snippets.click()
+        let shell = app.radioButtons["Shell"]
+        XCTAssertTrue(shell.waitForExistence(timeout: 5), app.debugDescription)
+        shell.click()
+        app.searchFields["Quick access query"].typeKey("n", modifierFlags: .command)
+        waitForScope("Shell", in: app)
+
+        let titleField = app.textFields["SnippetTitleEditor"]
+        let bodyEditor = app.textViews["SnippetBodyTextView"]
+        XCTAssertTrue(titleField.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(bodyEditor.waitForExistence(timeout: 5), app.debugDescription)
+        bodyEditor.click()
+        bodyEditor.typeText("git status --short")
+        replaceText(in: titleField, with: "Short status")
+        app.typeKey("s", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Saved"].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(snippetRow(containing: "Short status", in: app).waitForExistence(timeout: 8),
+                      app.debugDescription)
+    }
+
     func testDeleteInACollectionRemovesTheSnippetFromIt() {
         let app = launchKeeptide()
         let library = requireLibrary(in: app)

@@ -42,7 +42,8 @@ struct LibraryView: View {
     @State private var selectedEntryIDs: Set<ItemID> = []
     @State private var inspectorPresented = false
     @State private var applicationNames = ApplicationNames()
-    /// A snippet or clip to select once its list shows: Show Snippet and Show in Recent Clips switch lists first.
+    /// A snippet or clip to select once its list shows: Show Snippet, Show in Recent Clips and quick access's Show in
+    /// Library switch lists first.
     @State private var pendingReveal: ContentRef?
     /// The deleted facet selected in Recently Deleted: one at a time, and exactly that facet.
     @State private var selectedDeleted: DeletedFacetIdentity?
@@ -210,9 +211,16 @@ struct LibraryView: View {
             session.libraryWorkspace?.updateScope(selectedScope)
         }
         .onChange(of: session.libraryWorkspace?.scope) { previous, scope in
-            // The library left a list that is gone: a deleted collection, or Unfiled with the last collection.
+            // The library changed lists itself: it left a deleted collection, or Unfiled with the last collection, or it
+            // went to the list a new snippet or Show in Library shows.
             guard previous != nil, let scope, scope != selectedScope else { return }
             selectedScope = scope
+        }
+        .onChange(of: session.libraryWorkspace?.revealed) { _, reveal in
+            // Show in Library from quick access: the sidebar takes the item's list first, then the list takes its row.
+            guard let reveal else { return }
+            pendingReveal = reveal.ref
+            if selectedScope == reveal.scope { revealPending() } else { selectedScope = reveal.scope }
         }
     }
 
@@ -275,7 +283,7 @@ struct LibraryView: View {
         .onChange(of: commands.copyRequest) { _, _ in copyCurrentEditor() }
         .onChange(of: commands.openRequest) { _, request in
             guard let request else { return }
-            Task { await session.libraryWorkspace?.open(request.ref) }
+            Task { await session.libraryWorkspace?.open(request) }
         }
         .onChange(of: commands.exportLibraryRequest, initial: true) { _, request in
             if request > 0 { beginExport(selectedOnly: false) }
@@ -656,7 +664,8 @@ struct LibraryView: View {
             }
             .help("New Snippet")
             .accessibilityIdentifier("NewSnippet")
-            .disabled(session.libraryWorkspace == nil || selectedScope == .recentlyDeleted)
+            // From Recently Deleted too: the new snippet goes to Unfiled, and All Snippets shows it.
+            .disabled(session.libraryWorkspace == nil)
         }
     }
 
@@ -860,9 +869,10 @@ struct LibraryView: View {
         splitVisibility = next == .visible ? .all : .doubleColumn
     }
 
+    /// ⌘N, here or from quick access: the new snippet goes where the list asked for, or the list shown, puts it, and
+    /// that list is shown (`LibraryScope.newSnippetScope`).
     private func startNewSnippet(focusGeneration: Int) {
-        let requestedScope = selectedScope ?? .recentClips
-        guard requestedScope != .recentlyDeleted else { return }
+        let requestedScope = commands.newSnippetScope ?? selectedScope ?? .recentClips
         Task {
             await session.libraryWorkspace?.startNew(in: requestedScope)
             guard commands.focusGeneration == focusGeneration else { return }
