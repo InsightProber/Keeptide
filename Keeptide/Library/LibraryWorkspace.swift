@@ -92,6 +92,12 @@ enum LibrarySidebar {
         }
     }
 
+    /// The window's subtitle for a list: a collection's name, which anyone may make long, shortened in the middle;
+    /// Keeptide's own lists by their whole names.
+    static func listSubtitle(for scope: LibraryScope, named name: String) -> String {
+        scope.collectionID == nil ? name : subtitle(name)
+    }
+
     static func subtitle(_ name: String, limit: Int = 15) -> String {
         guard name.count > limit else { return name }
         let head = (limit - 1) / 2
