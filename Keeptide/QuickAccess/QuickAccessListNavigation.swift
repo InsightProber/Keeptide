@@ -284,10 +284,11 @@ final class QuickAccessListNavigation: NSView {
         }
     }
 
-    /// With the keys here, what VoiceOver has in focus is the segment or chip under the cursor, not the row.
+    /// With the keys here, what VoiceOver has in focus is the segment or chip under the cursor, not the row. AppKit
+    /// asks on the main thread, but this property is not main-actor isolated in every SDK, so that is assumed here.
     override var accessibilityFocusedUIElement: Any? {
-        guard window?.firstResponder === self, let view = cursorView else { return super.accessibilityFocusedUIElement }
-        return view
+        let focused: NSView? = MainActor.assumeIsolated { window?.firstResponder === self ? cursorView : nil }
+        return focused ?? super.accessibilityFocusedUIElement
     }
 
     private func makeChips(for collections: [CollectionSummary]) {
