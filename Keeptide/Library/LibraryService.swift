@@ -3,8 +3,11 @@ import Foundation
 struct LibraryService: Sendable {
     let controller: PersistenceController
 
+    /// Gives a clip its memo facet, placed in `collectionID` and marked a favorite when asked, in one
+    /// transaction. A clip that already has a memo is returned as it is, whatever was asked for it.
     func saveAsMemo(
-        _ itemID: ItemID, expecting expectedIdentity: StoreIdentity? = nil
+        _ itemID: ItemID, collectionID: CollectionID? = nil, isFavorite: Bool = false,
+        expecting expectedIdentity: StoreIdentity? = nil
     ) async throws -> SaveMemoOutcome {
         let identity = try await operationIdentity(expectedIdentity)
         let repository = ContentRepository(controller: controller)
@@ -31,14 +34,20 @@ struct LibraryService: Sendable {
             displayKind: displayKind.rawValue
         )
         item.memoID = memo.id
+        item.collectionID = collectionID
+        item.isFavorite = isFavorite
+        var preconditions: [StorePrecondition] = [
+            .recordUnchanged(.item(itemID), fingerprint: itemState.fingerprint),
+            .contentVersion(historyRef),
+            .facetVisible(itemID, .memo, false),
+        ]
+        if let collectionPrecondition = activeCollectionPrecondition(collectionID) {
+            preconditions.append(collectionPrecondition)
+        }
         do {
             _ = try await writer.commit(StoreTransaction(
                 identity: identity,
-                preconditions: [
-                    .recordUnchanged(.item(itemID), fingerprint: itemState.fingerprint),
-                    .contentVersion(historyRef),
-                    .facetVisible(itemID, .memo, false),
-                ],
+                preconditions: preconditions,
                 mutations: [.insert(.memo(memo)), .update(.item(item))]
             ))
             return .created(ContentRef(

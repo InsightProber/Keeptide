@@ -178,6 +178,42 @@ final class SearchServiceTests: XCTestCase {
         XCTAssertEqual(browseUncategorized.results.map(\.ref), [unfiled.ref])
     }
 
+    func testBrowseOrdersByLastUseWhenRequested() async throws {
+        let oldest = SearchTestSupport.document(facet: .memo, title: "oldest", memoID: UUID(),
+                                                lastCopiedAt: Date(timeIntervalSince1970: 1_000))
+        let middle = SearchTestSupport.document(facet: .memo, title: "middle", memoID: UUID(),
+                                                lastCopiedAt: Date(timeIntervalSince1970: 2_000))
+        let newest = SearchTestSupport.document(facet: .memo, title: "newest", memoID: UUID(),
+                                                lastCopiedAt: Date(timeIntervalSince1970: 3_000))
+        // The last use stands in for the copy time outright: neither a use count nor a use that
+        // predates the copy ranks a document higher.
+        let usage = [
+            UsageSummary(itemID: oldest.ref.itemID, facet: .memo,
+                         lastUsedAt: Date(timeIntervalSince1970: 5_000), useCount: 1),
+            UsageSummary(itemID: middle.ref.itemID, facet: .memo,
+                         lastUsedAt: Date(timeIntervalSince1970: 1_500), useCount: 9),
+        ]
+        let service = try makeService([oldest, middle, newest], usage: usage)
+
+        let byUse = try await lastPage(service, request("", scope: .memo, order: .lastUsed))
+        let byCopy = try await lastPage(service, request("", scope: .memo))
+
+        XCTAssertEqual(byUse.results.map(\.ref), [oldest.ref, newest.ref, middle.ref])
+        XCTAssertEqual(byCopy.results.map(\.ref), [newest.ref, middle.ref, oldest.ref])
+    }
+
+    func testResultsCarryTheirCollection() async throws {
+        let collection = CollectionID()
+        let filed = SearchTestSupport.document(facet: .memo, body: "filed", memoID: UUID(), collectionID: collection)
+        let unfiled = SearchTestSupport.document(facet: .memo, body: "unfiled", memoID: UUID())
+        let service = try makeService([filed, unfiled])
+
+        let page = try await lastPage(service, request("", scope: .memo))
+
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: page.results.map { ($0.ref, $0.collectionID) }),
+                       [filed.ref: collection, unfiled.ref: nil])
+    }
+
     func testKindAndSourceFilters() async throws {
         let text = SearchTestSupport.document(body: "release notes", kind: .text, sourceApp: "com.apple.Notes")
         let link = SearchTestSupport.document(body: "release page", kind: .url, sourceApp: "com.apple.Safari")
@@ -464,11 +500,11 @@ final class SearchServiceTests: XCTestCase {
 
     private func request(
         _ query: String, scope: SearchScope = .all, kinds: Set<ContentKind> = [],
-        collection: CollectionFilter? = nil, sourceApp: String? = nil, generation: UInt64 = 1,
-        offset: Int = 0, limit: Int = 200
+        collection: CollectionFilter? = nil, sourceApp: String? = nil, order: SearchOrder = .lastCopied,
+        generation: UInt64 = 1, offset: Int = 0, limit: Int = 200
     ) -> SearchRequest {
         SearchRequest(query: query, scope: scope, kinds: kinds, collection: collection, sourceApp: sourceApp,
-                      generation: generation, offset: offset, limit: limit)
+                      order: order, generation: generation, offset: offset, limit: limit)
     }
 
     private func makeService(
