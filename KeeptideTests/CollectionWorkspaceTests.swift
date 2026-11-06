@@ -49,6 +49,8 @@ final class CollectionWorkspaceTests: XCTestCase {
             MemoDraft(body: "deploy 合成", collectionID: a.value.id)
         )
         let workspace = try await workspace(harness)
+        // A search keeps to the list shown only under This View; All Content, the default, looks everywhere.
+        await workspace.setSearchScope(.thisView)
         await workspace.setScope(.collection(a.value.id))
         await workspace.setQuery("合成")
         XCTAssertEqual(workspace.entries.map(\.ref), [ref])

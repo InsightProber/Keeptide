@@ -255,6 +255,29 @@ final class LibraryLayoutTests: XCTestCase {
         try await waitUntilLaidOut(window) { window.subtitle == "Favorites" }
     }
 
+    func testSearchingAgainFocusesTheSearchFieldItLeft() async throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { @MainActor in window.close() }
+        window.makeKeyAndOrderFront(nil)
+        try await waitUntilLaidOut(window) { window.subtitle == "Recent Clips" }
+        func searchIsFocused() -> Bool {
+            guard let editor = window.firstResponder as? NSTextView else { return false }
+            return editor.delegate is NSSearchField
+        }
+
+        controller.searchLibrary(nil)
+        try await waitUntilLaidOut(window) { searchIsFocused() }
+
+        // The keyboard leaves while the search stays open; asking again brings it back.
+        window.makeFirstResponder(nil)
+        XCTAssertFalse(searchIsFocused())
+        controller.searchLibrary(nil)
+        try await waitUntilLaidOut(window) { searchIsFocused() }
+    }
+
     func testTheSidebarCannotBeLeftWithoutAList() async throws {
         let controller = LibraryWindowController(
             session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }

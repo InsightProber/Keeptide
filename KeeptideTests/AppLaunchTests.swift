@@ -1090,7 +1090,7 @@ final class AppLaunchTests: XCTestCase {
         }, [reason])
         // Recently Deleted, which new copies never reach, says nothing about them.
         try selectLibraryList("Recently Deleted", in: content)
-        XCTAssertEqual(try notices { $0.contains(where: identified("RefreshRecentlyDeleted")) }, [])
+        XCTAssertEqual(try notices { $0.contains(where: identified("RecentlyDeletedEmptyState")) }, [])
         // Back over the recent clips, the line is there again.
         try selectLibraryList("Recent Clips", in: content)
         XCTAssertEqual(try notices {

@@ -213,7 +213,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertNotNil(workspace.message)
     }
 
-    func testRecentlyDeletedScopeClearsSearchAndDoesNotLoadActiveEntries() async throws {
+    func testRecentlyDeletedKeepsTheSearchAndLoadsNoActiveEntries() async throws {
         let harness = try SearchHarness.make(in: self)
         _ = try await insertHistory("still active", into: harness)
         let workspace = try await makeWorkspace(harness)
@@ -222,10 +222,84 @@ final class LibraryWorkspaceTests: XCTestCase {
 
         await workspace.setScope(.recentlyDeleted)
 
+        // The search field is never rewritten while nobody types in it, so a composition in it survives.
         XCTAssertEqual(workspace.scope, .recentlyDeleted)
-        XCTAssertEqual(workspace.query, "")
+        XCTAssertEqual(workspace.query, "active")
         XCTAssertTrue(workspace.entries.isEmpty)
         XCTAssertFalse(workspace.hasMoreEntries)
+
+        // Recently Deleted is searched too, by title, from the deleted items rather than the index.
+        await workspace.setQuery("still")
+        XCTAssertEqual(workspace.query, "still")
+        XCTAssertTrue(workspace.entries.isEmpty)
+    }
+
+    func testRecentlyDeletedSearchMatchesTitles() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        func row(_ title: String) -> TrashFacetSnapshot {
+            TrashFacetSnapshot(identity: .memo(itemID: ItemID(), memoID: UUID()), title: title, deletedAt: now,
+                               purgeAfter: now.addingTimeInterval(60), canRestore: true)
+        }
+        let rows = [row("Deploy script"), row("部署命令"), row("Grocery list")]
+
+        XCTAssertEqual(RecentlyDeletedPresentation.rows(rows, matching: "").map(\.title), rows.map(\.title))
+        XCTAssertEqual(RecentlyDeletedPresentation.rows(rows, matching: " deploy ").map(\.title), ["Deploy script"])
+        XCTAssertEqual(RecentlyDeletedPresentation.rows(rows, matching: "部署").map(\.title), ["部署命令"])
+        XCTAssertEqual(RecentlyDeletedPresentation.rows(rows, matching: "nothing").map(\.title), [])
+    }
+
+    func testAllContentSearchFindsClipsAndSnippetsFromAnyList() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (clip, _) = try await insertHistory("deploy from a clip", into: harness)
+        let snippet = try await LibraryService(controller: harness.controller)
+            .create(MemoDraft(title: "Deploy snippet", body: "deploy from a snippet"))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.setScope(.favorites)
+
+        // All Content, the default, searches every clip and snippet, whatever list is shown.
+        XCTAssertEqual(workspace.searchScope, .allContent)
+        await workspace.setQuery("deploy")
+        XCTAssertEqual(Set(workspace.entries.map(\.ref.itemID)), [clip.id, snippet.itemID])
+
+        // This View searches the list shown: no favorites here.
+        await workspace.setSearchScope(.thisView)
+        XCTAssertEqual(workspace.entries.map(\.ref.itemID), [])
+
+        // Without a query, the list is the list.
+        await workspace.setSearchScope(.allContent)
+        await workspace.setQuery("")
+        XCTAssertEqual(workspace.entries.map(\.ref.itemID), [])
+    }
+
+    func testAllContentSearchShowsAnItemOnceAndPrefersItsSnippet() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let edited = try await insertOwnedMemo("shared words", copiedAt: Date(timeIntervalSince1970: 1_000),
+                                               into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+
+        await workspace.setQuery("shared")
+
+        // The clip and its edited snippet both match; one row stands for the item, and it is the snippet.
+        XCTAssertEqual(workspace.entries.map(\.ref), [edited.memo])
+    }
+
+    func testOneRowPerItemKeepsTheFirstPlaceAndPrefersTheSnippet() {
+        let clipOnly = ItemID()
+        let both = ItemID()
+        func entry(_ itemID: ItemID, _ facet: ContentFacet) -> LibraryEntry {
+            let ref = ContentRef(itemID: itemID, facet: facet, version: ContentVersion(),
+                                 digest: Data(repeating: facet == .memo ? 1 : 2, count: 32))
+            return LibraryEntry(id: itemID, ref: ref, title: "", snippet: nil, lastCopiedAt: Date(), kind: .text,
+                                isMemo: facet == .memo)
+        }
+        let firstPage = [entry(both, .history), entry(clipOnly, .history)]
+        let secondPage = [entry(both, .memo)]
+
+        let merged = LibraryEntry.oneRowPerItem(firstPage + secondPage)
+
+        XCTAssertEqual(merged.map(\.id), [both, clipOnly])
+        XCTAssertEqual(merged.map(\.ref.facet), [.memo, .history])
     }
 
     func testUndoNewSaveRestoresHistoryWithoutDeletingChangedMemo() async throws {

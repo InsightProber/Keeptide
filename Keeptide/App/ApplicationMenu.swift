@@ -52,6 +52,8 @@ enum ApplicationMenuBuilder {
                 modifierMask: [.command, .shift]
             )
         )
+        // Collection and favorite changes are undone here, apart from Undo: ⌘Z belongs to the text being edited.
+        editMenu.addItem(item(title: "Undo Collection Change", action: #selector(LibraryWindowController.undoCollectionChange(_:))))
         editMenu.addItem(.separator())
         editMenu.addItem(item(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
         editMenu.addItem(item(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))

@@ -15,6 +15,12 @@ enum LibraryScope: Hashable, Sendable {
     }
 }
 
+/// What a search looks through: every clip and snippet (the default), or only the list on screen.
+enum LibrarySearchScope: Hashable, Sendable {
+    case allContent
+    case thisView
+}
+
 /// The library's lists in sidebar order, and the moves between them.
 enum LibrarySidebar {
     /// A list as the scope menus name it.
@@ -98,6 +104,22 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     var sourceApp: String? = nil
     /// The memo's collection; nil for an unfiled memo and for every clip.
     var collectionID: CollectionID? = nil
+
+    /// One row per item, each where the item first appears. An item whose clip and edited snippet both match
+    /// stands as its snippet: the rows are selected and opened by item.
+    static func oneRowPerItem(_ entries: [LibraryEntry]) -> [LibraryEntry] {
+        var rows: [LibraryEntry] = []
+        var rowOfItem: [ItemID: Int] = [:]
+        for entry in entries {
+            if let row = rowOfItem[entry.id] {
+                if entry.ref.facet == .memo, rows[row].ref.facet != .memo { rows[row] = entry }
+            } else {
+                rowOfItem[entry.id] = rows.count
+                rows.append(entry)
+            }
+        }
+        return rows
+    }
 }
 
 struct RecoveredDraftSummary: Identifiable, Equatable, Sendable {
@@ -137,6 +159,9 @@ struct HistorySaveFailure: Sendable {
 final class LibraryWorkspace {
     private(set) var scope: LibraryScope = .recentClips
     private(set) var query = ""
+    private(set) var searchScope: LibrarySearchScope = .allContent
+    /// How many results the loaded pages hold, which can be more than the rows: the next page starts after them.
+    @ObservationIgnored private var loadedResultCount = 0
     private(set) var entries: [LibraryEntry] = []
     private(set) var selectedEntryID: ItemID?
     private(set) var editor: MemoEditorSession?
@@ -381,7 +406,8 @@ final class LibraryWorkspace {
             guard generation == loadGeneration else { return }
             let loaded = try await loadEntries(generation: generation, offset: 0)
             guard generation == loadGeneration else { return }
-            entries = loaded.entries
+            entries = LibraryEntry.oneRowPerItem(loaded.entries)
+            loadedResultCount = loaded.entries.count
             hasMoreEntries = loaded.hasMore
             searchIsPartial = loaded.isPartial
             if let selectedEntryID, !loaded.entries.contains(where: { $0.id == selectedEntryID }) {
@@ -400,10 +426,11 @@ final class LibraryWorkspace {
         let generation = loadGeneration
         isLoading = true
         do {
-            let loaded = try await loadEntries(generation: generation, offset: entries.count)
+            let loaded = try await loadEntries(generation: generation, offset: loadedResultCount)
             guard generation == loadGeneration else { return }
             let known = Set(entries.map(\.ref))
-            entries.append(contentsOf: loaded.entries.filter { !known.contains($0.ref) })
+            entries = LibraryEntry.oneRowPerItem(entries + loaded.entries.filter { !known.contains($0.ref) })
+            loadedResultCount += loaded.entries.count
             hasMoreEntries = loaded.hasMore
             searchIsPartial = loaded.isPartial
         } catch is CancellationError {
@@ -421,10 +448,11 @@ final class LibraryWorkspace {
         navigationGeneration &+= 1
         scope = value
         if value == .recentlyDeleted {
+            // The query stays: nothing rewrites the search field while nobody types in it, so an input method's
+            // composition there survives, and Recently Deleted is searched by the same field.
             queryTask?.cancel()
             queryTask = nil
             loadGeneration &+= 1
-            query = ""
             entries = []
             selectedEntryID = nil
             hasMoreEntries = false
@@ -446,13 +474,25 @@ final class LibraryWorkspace {
         await queryTask?.value
     }
 
+    /// All Content or This View. Only a search reads it, so nothing reloads without a query.
+    func updateSearchScope(_ value: LibrarySearchScope) {
+        guard !isClosing, !isClosed, searchScope != value else { return }
+        searchScope = value
+        if !query.isEmpty { scheduleQueryLoad() }
+    }
+
+    func setSearchScope(_ value: LibrarySearchScope) async {
+        updateSearchScope(value)
+        await queryTask?.value
+    }
+
     /// Publish native input synchronously, before SwiftUI can render the old value.
     /// Only result loading is asynchronous; every edit invalidates older loads.
     func updateQuery(_ value: String) {
         guard !isClosing, !isClosed else { return }
-        guard scope != .recentlyDeleted else { return }
         guard query != value else { return }
         query = value
+        // In Recently Deleted the view filters the deleted items by title; the reload only clears the rows.
         scheduleQueryLoad()
     }
 
@@ -946,11 +986,14 @@ final class LibraryWorkspace {
     ) async throws -> (entries: [LibraryEntry], hasMore: Bool, isPartial: Bool) {
         if scope == .recentlyDeleted { return ([], false, false) }
         if let searchService {
-            let searchScope: SearchScope = scope == .recentClips ? .history : .memo
+            // All Content looks through every clip and snippet, whatever list is shown; This View, and the list
+            // itself without a query, keep to the list.
+            let searchesEverything = !query.isEmpty && self.searchScope == .allContent
+            let searchScope: SearchScope = searchesEverything ? .all : scope == .recentClips ? .history : .memo
             let collection: CollectionFilter?
             switch scope {
-            case .uncategorized: collection = .uncategorized
-            case .collection(let id): collection = .collection(id)
+            case .uncategorized where !searchesEverything: collection = .uncategorized
+            case .collection(let id) where !searchesEverything: collection = .collection(id)
             default: collection = nil
             }
             var latest: [SearchResult] = []
@@ -958,7 +1001,7 @@ final class LibraryWorkspace {
             var isPartial = false
             for try await page in searchService.search(SearchRequest(
                 query: query, scope: searchScope, collection: collection,
-                favoritesOnly: scope == .favorites,
+                favoritesOnly: !searchesEverything && scope == .favorites,
                 // An owned memo's copy time is its creation time and never moves, so memos are listed by use.
                 order: searchScope == .memo ? .lastUsed : .lastCopied,
                 generation: generation, offset: offset, limit: 100

@@ -48,6 +48,8 @@ struct LibraryView: View {
     @State private var bodyFocus = BodyFocusRequestState()
     @State private var availableWidth: CGFloat = 1_120
     @FocusState private var sidebarHasFocus: Bool
+    @State private var searchPresented = false
+    @State private var searchScope: LibrarySearchScope = .allContent
 
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
         _session = Bindable(wrappedValue: session)
@@ -60,16 +62,21 @@ struct LibraryView: View {
                 librarySidebar
                 .navigationSplitViewColumnWidth(min: 170, ideal: 200, max: 260)
             } content: {
+                // The system draws the columns' backgrounds, the sidebar's glass and the scroll edges under the toolbar.
                 contentColumn
                     .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 380)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .toolbar { scopeToolbar }
+                    .toolbar { contentToolbar }
             } detail: {
                 detailColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .toolbar { detailToolbar }
             }
+            // The system search field at the toolbar's trailing end, and under it while searching, All Content or
+            // This View. The scopes modifier must follow the searchable one.
+            .searchable(text: searchBinding, isPresented: $searchPresented, placement: .toolbar,
+                        prompt: Text(searchPrompt))
+            .searchScopes($searchScope, activation: .onSearchPresentation) { searchScopeOptions }
             .onAppear {
                 availableWidth = geometry.size.width
                 updateSidebar(for: geometry.size.width)
@@ -80,7 +87,6 @@ struct LibraryView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar { libraryToolbar }
         .onChange(of: splitVisibility) { _, visibility in
             let next: LibrarySidebarVisibility = visibility == .all ? .visible : .hidden
             guard next != sidebarVisibility else { return }
@@ -167,6 +173,9 @@ struct LibraryView: View {
             if let request { selectedScope = request.scope }
         }
         .onChange(of: commands.sidebarFocusRequest) { _, _ in sidebarHasFocus = true }
+        .onChange(of: commands.searchRequest) { _, _ in searchPresented = true }
+        .onChange(of: searchPresented, initial: true) { _, presented in commands.updateSearchPresented(presented) }
+        .onChange(of: searchScope) { _, scope in session.libraryWorkspace?.updateSearchScope(scope) }
         .onChange(of: commands.sidebarToggleRequest) { _, _ in toggleSidebar() }
         .onChange(of: commands.newCollectionRequest) { _, _ in
             if session.libraryWorkspace != nil { collectionEditorMode = .create }
@@ -400,7 +409,7 @@ struct LibraryView: View {
     private var scopeColumn: some View {
         if selectedScope == .recentlyDeleted {
             if let maintenance = session.maintenance {
-                RecentlyDeletedView(maintenance: maintenance)
+                RecentlyDeletedView(maintenance: maintenance, query: session.libraryWorkspace?.query ?? "")
             } else {
                 ContentUnavailableView {
                     Label("Recently Deleted Unavailable", systemImage: "exclamationmark.triangle")
@@ -562,50 +571,51 @@ struct LibraryView: View {
         }
     }
 
+    /// Over the list: while the sidebar is hidden, a menu at the toolbar's leading edge chooses the list; then the
+    /// group that creates, New Snippet.
     @ToolbarContentBuilder
-    private var libraryToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .primaryAction) {
-            let searchFocus = commands.pendingSearchFocus
-            LibrarySearchField(
-                text: searchBinding,
-                focusRequest: searchFocus?.request ?? 0,
-                shouldFocus: {
-                    guard let searchFocus else { return false }
-                    return commands.isCurrentSearchFocus(searchFocus)
-                },
-                onFocusAccepted: { request in
-                    guard let searchFocus, searchFocus.request == request else { return }
-                    commands.consumeSearchFocus(searchFocus)
-                }
-            )
-                .frame(width: 220)
-                .disabled(selectedScope == .recentlyDeleted)
-
+    private var contentToolbar: some ToolbarContent {
+        if sidebarVisibility == .hidden {
+            ToolbarItem(placement: .navigation) { scopeMenu }
+        }
+        ToolbarItem {
             Button {
                 commands.requestNewSnippet()
             } label: {
                 Label("New Snippet", systemImage: "square.and.pencil")
             }
+            .help("New Snippet")
             .accessibilityIdentifier("NewSnippet")
             .disabled(session.libraryWorkspace == nil || selectedScope == .recentlyDeleted)
-
-            if session.libraryWorkspace?.canUndoCollectionChange == true {
-                Button {
-                    Task { _ = await session.libraryWorkspace?.undoCollectionChange() }
-                } label: {
-                    Label("Undo Collection Change", systemImage: "arrow.uturn.backward")
-                }
-                .help("Undo the last collection or favorite change")
-                .accessibilityIdentifier("UndoCollectionChange")
-            }
         }
     }
 
-    /// While the sidebar is hidden, a menu at the toolbar's leading edge chooses the list instead.
+    /// Over the detail: the system's search item. Giving the detail column toolbar items of its own is also what
+    /// splits the toolbar by column, so New Snippet stays over the list.
     @ToolbarContentBuilder
-    private var scopeToolbar: some ToolbarContent {
-        if sidebarVisibility == .hidden {
-            ToolbarItem(placement: .navigation) { scopeMenu }
+    private var detailToolbar: some ToolbarContent {
+        ToolbarSpacer(.flexible)
+        DefaultToolbarItem(kind: .search)
+    }
+
+    /// The search field's prompt names what an empty search lists, and Recently Deleted says it matches titles.
+    private var searchPrompt: String {
+        switch selectedScope ?? .recentClips {
+        case .recentClips: "Search Recent Clips"
+        case .allSnippets: "Search Snippets"
+        case .favorites: "Search Favorites"
+        case .uncategorized: "Search Unfiled"
+        case .recentlyDeleted: "Search Recently Deleted by Title"
+        case .collection: "Search “\(currentScopeTitle)”"
+        }
+    }
+
+    /// All Content never includes deleted items, so Recently Deleted's search has no scope bar.
+    @ViewBuilder
+    private var searchScopeOptions: some View {
+        if selectedScope != .recentlyDeleted {
+            Text("All Content").tag(LibrarySearchScope.allContent)
+            Text("This View").tag(LibrarySearchScope.thisView)
         }
     }
 
@@ -793,7 +803,16 @@ struct LibraryView: View {
     /// What an empty list holds and how things get there; a search that finds nothing says so in the system's words.
     @ViewBuilder
     private func emptyList(_ workspace: LibraryWorkspace, recentStyle: Bool) -> some View {
-        if !workspace.query.isEmpty {
+        if !workspace.query.isEmpty, searchScope == .thisView {
+            ContentUnavailableView {
+                Label("No Results for “\(workspace.query)”", systemImage: "magnifyingglass")
+            } description: {
+                Text("Check the spelling or try a new search.")
+            } actions: {
+                Button("Search All Content") { searchScope = .allContent }
+            }
+            .accessibilityIdentifier("LibrarySearchEmptyState")
+        } else if !workspace.query.isEmpty {
             ContentUnavailableView.search(text: workspace.query)
                 .accessibilityIdentifier("LibrarySearchEmptyState")
         } else {
