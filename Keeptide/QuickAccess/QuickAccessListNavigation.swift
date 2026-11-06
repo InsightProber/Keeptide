@@ -67,6 +67,8 @@ final class QuickAccessListNavigation: NSView {
         addSubview(segments)
         addSubview(chipsView)
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Lists")
         setAccessibilityIdentifier("QuickAccessListNavigation")
@@ -364,6 +366,8 @@ final class QuickAccessListSegments: NSView {
         super.init(frame: frameRect)
         buttons.forEach(addSubview)
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.radioGroup)
         setAccessibilityLabel("List")
         setAccessibilityIdentifier("QuickAccessListSegments")
@@ -446,6 +450,8 @@ final class QuickAccessChipsView: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.radioGroup)
         setAccessibilityLabel("Collections")
         setAccessibilityIdentifier("QuickAccessCollectionChips")
@@ -626,6 +632,8 @@ final class QuickAccessFilterButton: NSView {
         addSubview(face)
         // The button itself is what Tab reaches and VoiceOver reads: a pop-up button named Filter.
         setAccessibilityElement(true)
+        // A view is no control, so the element says it is enabled; VoiceOver would call it dimmed otherwise.
+        setAccessibilityEnabled(true)
         setAccessibilityRole(.popUpButton)
         setAccessibilityLabel("Filter")
         setAccessibilityIdentifier("QuickAccessFilterButton")

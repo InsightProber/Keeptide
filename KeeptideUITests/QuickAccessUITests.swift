@@ -122,14 +122,14 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(panel.exists)
 
         // The search is folded to its icon; a click on it opens the search with the keys in its field.
-        app.buttons["Search clips"].click()
-        XCTAssertTrue(app.buttons["Search clips"].waitForNonExistence(timeout: 5), app.debugDescription)
+        app.buttons["Search Clips and Snippets"].click()
+        XCTAssertTrue(app.buttons["Search Clips and Snippets"].waitForNonExistence(timeout: 5), app.debugDescription)
         query.typeText("x")
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertEqual(query.value as? String, "")
         XCTAssertTrue(panel.exists)
         // Clearing the query folded the search again.
-        XCTAssertTrue(app.buttons["Search clips"].exists, app.debugDescription)
+        XCTAssertTrue(app.buttons["Search Clips and Snippets"].exists, app.debugDescription)
 
         query.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(panel.waitForNonExistence(timeout: 5))
@@ -170,7 +170,7 @@ final class QuickAccessUITests: XCTestCase {
         let frames = try openPanel(app)
         let panel = app.dialogs["KeeptideQuickAccessPanel"]
         let preview = app.descendants(matching: .any)["QuickAccessPreview"]
-        let search = app.buttons["Search clips"]
+        let search = app.buttons["Search Clips and Snippets"]
         let query = app.searchFields["Quick access query"]
         let selectedBeforePreview = selectedClip(in: frames)?.label
 
