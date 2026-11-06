@@ -8,6 +8,38 @@ enum MemoEditorSaveStatus: Equatable, Sendable {
     case failed
 }
 
+/// What the detail header and the inspector say about the item open in the editor. Read when the item opens and
+/// again after a favorite or collection change; nothing here is edited in place.
+struct LibraryItemDetails: Equatable, Sendable {
+    /// Whether all of a clip's original formats can be read; a snippet's own text is always complete.
+    var integrity: ContentIntegrity = .complete
+    var formatCount = 0
+    var byteCount: Int64 = 0
+    var sourceApp: String?
+    var createdAt: Date
+    var lastCopiedAt: Date
+    var copyCount: Int64
+    /// A snippet's own collection and favorite mark.
+    var collectionID: CollectionID?
+    var isFavorite = false
+    /// The snippet a clip was saved as.
+    var savedSnippet: SavedSnippet?
+    /// Where the clip a snippet was saved from is now; nil for a snippet written in Keeptide.
+    var originalClip: OriginalClip?
+
+    struct SavedSnippet: Equatable, Sendable {
+        var ref: ContentRef
+        var collectionID: CollectionID?
+        var isFavorite: Bool
+    }
+
+    enum OriginalClip: Equatable, Sendable {
+        case available(ContentRef)
+        case recentlyDeleted(until: Date)
+        case gone
+    }
+}
+
 @MainActor @Observable
 final class MemoEditorSession {
     let draftID: UUID
@@ -27,12 +59,14 @@ final class MemoEditorSession {
     private(set) var noteIsComposing: Bool
     private(set) var revision: UInt64
     private(set) var richSourceWarning: Bool
+    private(set) var details: LibraryItemDetails?
 
     @ObservationIgnored private(set) var conflictItemID: ItemID
     @ObservationIgnored private(set) var storeIdentity: StoreIdentity
     @ObservationIgnored private(set) var baseMemoFingerprint: Data?
     @ObservationIgnored private(set) var languageHint: String?
-    @ObservationIgnored private(set) var collectionID: CollectionID?
+    /// The collection a new snippet is created in; it applies only until the first save.
+    private(set) var collectionID: CollectionID?
     @ObservationIgnored private var onChange: (() -> Void)?
     @ObservationIgnored private var lastAppliedReceiptRevision: UInt64?
 
@@ -97,11 +131,21 @@ final class MemoEditorSession {
         didEdit()
     }
 
+    func updateDetails(_ value: LibraryItemDetails?) {
+        details = value
+    }
+
     func setNote(_ value: String, isComposing: Bool = false) {
         guard !isReadOnly, note != value || noteIsComposing != isComposing else { return }
         note = value
         noteIsComposing = isComposing
         didEdit()
+    }
+
+    /// Chooses the collection a new snippet is created in. A saved snippet moves through its collection instead.
+    func setCollectionID(_ value: CollectionID?) {
+        guard ref == nil, !isReadOnly else { return }
+        collectionID = value
     }
 
     func setKind(_ value: MemoKind) {

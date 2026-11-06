@@ -5,10 +5,6 @@ import Observation
 final class CaptureSession {
     private(set) var preferences: CapturePreferences
     private(set) var recent: [ItemSummary] = []
-    private(set) var selectedContent: ResolvedContent?
-    private(set) var selectedPreview: ClipTextPreview?
-    private(set) var selectionIsLoading = false
-    private(set) var selectionError: String?
     private(set) var isReady = false
     private(set) var libraryWorkspace: LibraryWorkspace?
     private(set) var maintenance: LibraryMaintenance?
@@ -18,12 +14,9 @@ final class CaptureSession {
     private var monitor: PasteboardMonitor?
     @ObservationIgnored private var controller: PersistenceController?
     @ObservationIgnored private var pasteboard: NSPasteboard?
-    @ObservationIgnored private var selectionGeneration = 0
     @ObservationIgnored private var refreshGeneration = 0
     @ObservationIgnored private var initializing = false
     @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
-    @ObservationIgnored private var selectionRead: Task<(ResolvedContent, ClipTextPreview?), Error>?
-    @ObservationIgnored private var readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)?
     /// Every copy goes through this service; nil until the store opens.
     @ObservationIgnored private(set) var pasteService: PasteService?
     /// What the strip shows of each clip is read through this; nil until the store opens.
@@ -34,8 +27,6 @@ final class CaptureSession {
     @ObservationIgnored private(set) var usageStore: LocalUsageStore?
     /// Local export is bound to the exact store identity opened by this session.
     private(set) var exportCoordinator: ExportCoordinator?
-    /// The library window's copies share one session; selections and newer copies refuse older ones.
-    @ObservationIgnored private var librarySession: PasteSession?
     /// Called when the store-backed services appear or go away.
     @ObservationIgnored var onServicesChanged: (@MainActor () -> Void)?
     /// Called after recent clips are reloaded, for example after a new capture.
@@ -82,21 +73,14 @@ final class CaptureSession {
     /// `directPaste` stays `.unavailable` everywhere but in the app delegate, and `clipboardReader` reads the real
     /// clipboard everywhere but in tests: tests use fakes.
     init(preferences: CapturePreferences? = nil,
-         readContent: (@Sendable (ContentRef) async throws -> ResolvedContent)? = nil,
          pasteboard: NSPasteboard? = nil,
          directPaste: DirectPasteSystem = .unavailable,
          clipboardReader: (any SnapshotReading)? = nil) {
         self.preferences = preferences ?? CapturePreferences()
         keepsPreferenceIdentity = preferences != nil
-        self.readContent = readContent
         self.pasteboard = pasteboard
         self.directPaste = directPaste
         self.clipboardReader = clipboardReader
-        if let readContent, let pasteboard {
-            pasteService = PasteService(pasteboard: pasteboard, read: readContent, recordUse: { _ in },
-                                        didWrite: { _ in }, system: directPaste)
-            previewService = PreviewService(read: readContent)
-        }
     }
 
     /// Once application-level UI observes this session, its preference reference must remain stable. Launch wiring
@@ -202,7 +186,6 @@ final class CaptureSession {
                 try Task.checkCancellation()
                 return try await ContentRepository(controller: store).read(ref)
             }
-            readContent = read
             pasteboard = board
             let monitor = library.recordsClipboard
                 ? PasteboardMonitor(reader: clipboardReader ?? SnapshotReader(pasteboard: board),
@@ -329,74 +312,12 @@ final class CaptureSession {
         }
     }
 
-    func select(_ ref: ContentRef?) async {
-        selectionRead?.cancel()
-        selectionGeneration += 1
-        librarySession?.advanceQueryGeneration()
-        actionMessage = nil; selectionError = nil; selectedContent = nil; selectedPreview = nil
-        selectionIsLoading = false
-        let generation = selectionGeneration
-        guard let ref, let readContent else { return }
-        selectionIsLoading = true
-        let operation = Task.detached(priority: .userInitiated) {
-            try Task.checkCancellation()
-            let content = try await readContent(ref)
-            try Task.checkCancellation()
-            return (content, ClipboardTextDecoder.preview(content.representations))
-        }
-        selectionRead = operation
-        defer {
-            if generation == selectionGeneration { selectionIsLoading = false; selectionRead = nil }
-        }
-        do {
-            let (content, preview) = try await withTaskCancellationHandler {
-                try await operation.value
-            } onCancel: { operation.cancel() }
-            guard generation == selectionGeneration, !Task.isCancelled else { return }
-            selectedContent = content
-            selectedPreview = preview
-        } catch is CancellationError {
-            // A newer selection or shutdown owns the detail pane.
-        } catch {
-            if generation == selectionGeneration { selectionError = "This clip is no longer available." }
-        }
-    }
-
-    func copy(_ ref: ContentRef) async {
-        guard let pasteService else { return }
-        // The library window only copies, so its session has no target and the front window is not probed.
-        let session = librarySession ?? pasteService.beginSession(target: nil)
-        librarySession = session
-        let generation = session.advanceQueryGeneration()
-        actionMessage = nil
-        switch await pasteService.execute(PasteRequest(ref: ref, queryGeneration: generation, mode: .original,
-                                                       session: session)) {
-        case .copied, .copiedInstead:
-            actionMessage = "Copied"
-        case .dispatched, .needsConfirmation:
-            break // A copy without a target never pastes and never makes a command to review.
-        case .refused(.stale):
-            break // A newer selection or copy owns the message.
-        case .refused:
-            actionMessage = "This clip could not be copied. Its original formats must all be available."
-        }
-    }
-
     func shutdown() async {
         // Export owns a pinned snapshot and a security-scoped destination. Drain it before any store service closes.
         await exportCoordinator?.stopAndDrain()
         exportCoordinator = nil
         await maintenance?.stopAndDrain()
         maintenance = nil
-        librarySession?.end()
-        librarySession = nil
-        selectionGeneration += 1
-        selectionRead?.cancel()
-        selectionRead = nil
-        selectionIsLoading = false
-        selectedContent = nil
-        selectedPreview = nil
-        selectionError = nil
         if let foregroundObserver { NSWorkspace.shared.notificationCenter.removeObserver(foregroundObserver) }
         foregroundObserver = nil
         await monitor?.stopAndDrain()
@@ -419,7 +340,6 @@ final class CaptureSession {
         searchService = nil
         searchStatus = nil
         libraryWorkspace = nil
-        readContent = nil
         pasteService = nil
         usageStore = nil
         isReady = false

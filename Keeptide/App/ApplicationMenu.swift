@@ -54,6 +54,9 @@ enum ApplicationMenuBuilder {
         )
         // Collection and favorite changes are undone here, apart from Undo: ⌘Z belongs to the text being edited.
         editMenu.addItem(item(title: "Undo Collection Change", action: #selector(LibraryWindowController.undoCollectionChange(_:))))
+        let undoSave = item(title: "Undo Save as Snippet", action: #selector(LibraryWindowController.undoSaveAsSnippet(_:)))
+        undoSave.identifier = NSUserInterfaceItemIdentifier("LibraryUndoNewSave")
+        editMenu.addItem(undoSave)
         editMenu.addItem(.separator())
         editMenu.addItem(item(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
         editMenu.addItem(item(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
@@ -70,11 +73,30 @@ enum ApplicationMenuBuilder {
         // The library's own sidebar and list commands; validation names Show or Hide Sidebar.
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(item(title: "Show Sidebar", action: #selector(LibraryWindowController.toggleLibrarySidebar(_:)), keyEquivalent: "s", modifierMask: [.control, .command]))
+        viewMenu.addItem(item(title: "Show Inspector", action: #selector(LibraryWindowController.toggleInspector(_:)), keyEquivalent: "i", modifierMask: [.control, .command]))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item(title: "Previous List", action: #selector(LibraryWindowController.selectPreviousList(_:)), keyEquivalent: "["))
         viewMenu.addItem(item(title: "Next List", action: #selector(LibraryWindowController.selectNextList(_:)), keyEquivalent: "]"))
         viewMenu.addItem(item(title: "Choose List…", action: #selector(LibraryWindowController.chooseList(_:)), keyEquivalent: "l"))
         mainMenu.addItem(menuItem(title: "View", submenu: viewMenu))
+
+        // The selected items' commands; validation names them for the selection.
+        let itemMenu = NSMenu(title: "Item")
+        itemMenu.addItem(item(title: "Add to Favorites", action: #selector(LibraryWindowController.toggleFavorite(_:)), keyEquivalent: "d", identifier: "ItemMenu-Favorite"))
+        itemMenu.addItem(item(title: "Move to Collection…", action: #selector(LibraryWindowController.moveToCollection(_:)), keyEquivalent: "m", modifierMask: [.shift, .command], identifier: "ItemMenu-Collection"))
+        let typeMenu = NSMenu(title: "Type")
+        for (index, title) in ["Text", "Prompt", "Code", "Markdown"].enumerated() {
+            let kind = item(title: title, action: #selector(LibraryWindowController.setSnippetKind(_:)))
+            kind.tag = index
+            kind.identifier = NSUserInterfaceItemIdentifier("SnippetKind-\(title)")
+            typeMenu.addItem(kind)
+        }
+        itemMenu.addItem(menuItem(title: "Type", submenu: typeMenu))
+        itemMenu.addItem(.separator())
+        itemMenu.addItem(item(title: "Show Snippet", action: #selector(LibraryWindowController.showLinkedItem(_:)), identifier: "ItemMenu-ShowLinked"))
+        itemMenu.addItem(.separator())
+        itemMenu.addItem(item(title: "Move to Recently Deleted", action: #selector(LibraryWindowController.moveToRecentlyDeleted(_:)), keyEquivalent: "\u{8}", identifier: "ItemMenu-MoveToRecentlyDeleted"))
+        mainMenu.addItem(menuItem(title: "Item", submenu: itemMenu))
 
         let windowMenu = NSMenu(title: "Window")
         windowMenu.addItem(
@@ -95,16 +117,20 @@ enum ApplicationMenuBuilder {
         return menuItem
     }
 
+    /// `identifier` names an item whose title a context menu repeats, so assistive apps and UI tests can tell the
+    /// two apart.
     private static func item(
         title: String,
         action: Selector,
         keyEquivalent: String = "",
         modifierMask: NSEvent.ModifierFlags = .command,
-        target: AnyObject? = nil
+        target: AnyObject? = nil,
+        identifier: String? = nil
     ) -> NSMenuItem {
         let menuItem = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         menuItem.keyEquivalentModifierMask = modifierMask
         menuItem.target = target
+        menuItem.identifier = identifier.map { NSUserInterfaceItemIdentifier($0) }
         return menuItem
     }
 }

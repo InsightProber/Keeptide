@@ -120,9 +120,11 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 Choose **Open Library** from the menu-bar menu, or press ⌘E in quick access to
 open the selected clip there.
 
-- **Recent Clips** lists everything Keeptide kept. The selected clip shows a
-  preview with **Copy** and **Save as Snippet**. Images open fitted or at
-  actual size, links open only when you ask, and files use Quick Look.
+- **Recent Clips** lists everything Keeptide kept. The toolbar copies the
+  selected clip or saves it as a snippet, straight into a collection if you
+  like; the Info button shows a snippet's type, collection, favorite and note.
+  Images open fitted or at actual size, links open only when you ask, and files
+  use Quick Look.
 - **All Snippets** and **Favorites** hold what you keep on purpose; your
   **collections** sort them, and **Unfiled** shows snippets that are in no
   collection. Snippets have native text editing, find, a Markdown reading

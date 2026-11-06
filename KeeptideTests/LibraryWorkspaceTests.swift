@@ -625,6 +625,25 @@ final class LibraryWorkspaceTests: XCTestCase {
         )
     }
 
+    /// A workspace that copies to a clipboard of the test's own, holding "existing" until something is copied.
+    private func makeCopyingWorkspace(_ harness: SearchHarness) async throws -> (LibraryWorkspace, NSPasteboard) {
+        let pasteboard = NSPasteboard.withUniqueName()
+        addTeardownBlock { pasteboard.releaseGlobally() }
+        pasteboard.clearContents()
+        pasteboard.setString("existing", forType: .string)
+        let repository = ContentRepository(controller: harness.controller)
+        let pasteService = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
+                                        recordUse: { _ in }, didWrite: { _ in })
+        let workspace = try await LibraryWorkspace.make(
+            controller: harness.controller,
+            draftDirectory: harness.directory.appendingPathComponent("Drafts"),
+            searchService: harness.service,
+            pasteService: pasteService,
+            refreshSearch: { try await harness.consumer.synchronize() }
+        )
+        return (workspace, pasteboard)
+    }
+
     func testNativeQueryPublishesSynchronouslyAndLatestInputWins() async throws {
         let harness = try SearchHarness.make(in: self)
         let (item, capture) = try await insertHistory("abc final query", into: harness)
@@ -892,6 +911,230 @@ final class LibraryWorkspaceTests: XCTestCase {
 
         XCTAssertTrue(deleted)
         XCTAssertEqual(workspace.scope, .collection(drafts.value.id))
+    }
+
+    // MARK: The item open in the editor
+
+    func testSelectingARelocationRequiredClipOpensReadOnlyAndSaysWhy() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let capture = try ContentStoreFixtures.localReferenceCapture()
+        let item = ContentStoreFixtures.item(capture)
+        try await ContentStoreFixtures.insertLocalReference(item, capture, into: harness.controller)
+        // Without its local file access the reference has to be relocated before its content can be used.
+        try await FileAccessStore(controller: harness.controller).remove(
+            representationID: try XCTUnwrap(capture.representations.first).id,
+            permit: StoreSafetyGate(controller: harness.controller).permit(.maintenance))
+        let (workspace, pasteboard) = try await makeCopyingWorkspace(harness)
+
+        await workspace.open(ContentStoreFixtures.ref(item, capture))
+
+        // The clip opens read-only without a body, and its details say why its content cannot be used.
+        XCTAssertEqual(workspace.editor?.ref?.itemID, item.id)
+        XCTAssertEqual(workspace.editor?.isReadOnly, true)
+        XCTAssertNil(workspace.editor?.body)
+        XCTAssertEqual(workspace.editor?.details?.integrity, .requiresRelocation)
+        XCTAssertNil(workspace.message)
+
+        // Copying it is refused and says so; the clipboard keeps what it had.
+        _ = await workspace.copyCurrent()
+        XCTAssertEqual(workspace.actionMessage,
+                       "This clip could not be copied. Its original formats must all be available.")
+        XCTAssertEqual(pasteboard.string(forType: .string), "existing")
+    }
+
+    func testAnItemThatCannotBeOpenedIsNamedUntilAnotherOpens() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, capture) = try await insertHistory("still here", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        let gone = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(),
+                              digest: Data(repeating: 9, count: 32))
+
+        await workspace.open(gone)
+        XCTAssertEqual(workspace.unavailableItemID, gone.itemID)
+        XCTAssertEqual(workspace.message, "This item is no longer available.")
+
+        await workspace.open(ContentStoreFixtures.ref(item, capture))
+        XCTAssertNil(workspace.unavailableItemID)
+        XCTAssertEqual(workspace.editor?.ref?.itemID, item.id)
+    }
+
+    func testSavingSelectedClipsSaysWhatHappened() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (first, firstCapture) = try await insertHistory("first to keep", into: harness)
+        let (second, secondCapture) = try await insertHistory("second to keep", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        let refs = [ContentStoreFixtures.ref(first, firstCapture), ContentStoreFixtures.ref(second, secondCapture)]
+
+        await workspace.saveAsSnippets(refs)
+        XCTAssertEqual(workspace.actionMessage, "Saved to Snippets")
+        let summaries = try await ContentRepository(controller: harness.controller).summaries(for: [first.id, second.id])
+        XCTAssertEqual(summaries.compactMap(\.memo).count, 2)
+        // Several saved together are not undone as one new save.
+        XCTAssertFalse(workspace.canUndoNewSave)
+
+        await workspace.saveAsSnippets(refs)
+        XCTAssertEqual(workspace.actionMessage, "Already in Snippets")
+    }
+
+    func testCopyingARowThatIsNotOpenCopiesThatRow() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (open, openCapture) = try await insertHistory("the open one", into: harness)
+        let (row, rowCapture) = try await insertHistory("the row clicked", into: harness)
+        let (workspace, pasteboard) = try await makeCopyingWorkspace(harness)
+        await workspace.open(ContentStoreFixtures.ref(open, openCapture))
+
+        _ = await workspace.copy(ContentStoreFixtures.ref(row, rowCapture))
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "the row clicked")
+        XCTAssertEqual(workspace.actionMessage, "Copied")
+        XCTAssertEqual(workspace.editor?.ref?.itemID, open.id)
+    }
+
+    func testTheOpenClipKnowsItsFormatsAndItsSnippet() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, capture) = try await insertHistory("saved before", into: harness)
+        let memo = try await LibraryService(controller: harness.controller).saveAsMemo(item.id).ref
+        let workspace = try await makeWorkspace(harness)
+
+        await workspace.open(ContentStoreFixtures.ref(item, capture))
+
+        let details = try XCTUnwrap(workspace.editor?.details)
+        XCTAssertEqual(details.integrity, .complete)
+        XCTAssertEqual(details.formatCount, 1)
+        XCTAssertEqual(details.copyCount, item.copyCount)
+        XCTAssertEqual(details.savedSnippet?.ref, memo)
+        XCTAssertEqual(details.savedSnippet?.isFavorite, false)
+    }
+
+    func testASnippetSaysWhereItsClipIs() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, capture) = try await insertHistory("from a clip", into: harness)
+        let library = LibraryService(controller: harness.controller)
+        let memo = try await library.saveAsMemo(item.id).ref
+        let written = try await library.create(MemoDraft(body: "written here"))
+        let workspace = try await makeWorkspace(harness)
+
+        await workspace.open(memo)
+        XCTAssertEqual(workspace.editor?.details?.originalClip, .available(ContentStoreFixtures.ref(item, capture)))
+
+        // Once the clip is in Recently Deleted, the snippet says until when.
+        let identity = try await harness.controller.identity()
+        _ = try await LifecycleService(controller: harness.controller).remove(
+            ref: ContentStoreFixtures.ref(item, capture), at: Date(), expecting: identity,
+            permit: StoreSafetyGate(controller: harness.controller).permit(.maintenance)
+        )
+        await workspace.open(written)
+        await workspace.open(memo)
+        guard case .recentlyDeleted = workspace.editor?.details?.originalClip else {
+            return XCTFail("Expected the clip in Recently Deleted, found \(String(describing: workspace.editor?.details))")
+        }
+
+        await workspace.open(written)
+        XCTAssertNil(workspace.editor?.details?.originalClip, "A snippet written in Keeptide has no clip")
+    }
+
+    func testCopyingSaysWhatHappened() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, capture) = try await insertHistory("copy me", into: harness)
+        let (workspace, pasteboard) = try await makeCopyingWorkspace(harness)
+        await workspace.open(ContentStoreFixtures.ref(item, capture))
+
+        let outcome = await workspace.copyCurrent()
+
+        XCTAssertEqual(outcome, .copied)
+        XCTAssertEqual(workspace.actionMessage, "Copied")
+        XCTAssertEqual(pasteboard.string(forType: .string), "copy me")
+    }
+
+    func testAnyCollectionChangeEndsTheUndoOfANewSave() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, _) = try await insertHistory("save then star", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.select(item.id)
+        _ = try await workspace.saveSelectedHistory()
+        XCTAssertTrue(workspace.canUndoNewSave)
+        let memo = try XCTUnwrap(workspace.editor?.ref)
+
+        let starred = await workspace.setFavorite([memo], isFavorite: true)
+
+        // The item changed since the save, so undoing the save as it was is no longer offered.
+        XCTAssertTrue(starred)
+        XCTAssertFalse(workspace.canUndoNewSave)
+    }
+
+    func testFavoriteOnAClipSavesItFirst() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, _) = try await insertHistory("star me", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.select(item.id)
+        let entry = try XCTUnwrap(workspace.entries.first { $0.id == item.id })
+
+        await workspace.setFavorite(of: [entry.ref], to: true)
+
+        let stored = try await storedItem(item.id, in: harness)
+        XCTAssertNotNil(stored.memoID)
+        XCTAssertTrue(stored.isFavorite)
+        XCTAssertEqual(workspace.editor?.ref?.facet, .memo)
+        XCTAssertEqual(workspace.editor?.details?.isFavorite, true)
+        XCTAssertEqual(workspace.actionMessage, "Saved as Snippet · Added to Favorites")
+    }
+
+    func testFavoriteOnASavedClipMarksItsSnippet() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let (item, _) = try await insertHistory("already kept", into: harness)
+        let memo = try await LibraryService(controller: harness.controller).saveAsMemo(item.id).ref
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.select(item.id)
+        let entry = try XCTUnwrap(workspace.entries.first { $0.id == item.id })
+        XCTAssertEqual(workspace.editor?.details?.savedSnippet?.ref, memo)
+
+        await workspace.setFavorite(of: [entry.ref], to: true)
+
+        let stored = try await storedItem(item.id, in: harness)
+        XCTAssertTrue(stored.isFavorite)
+        XCTAssertEqual(workspace.editor?.ref?.facet, .history, "The clip stays open")
+        XCTAssertEqual(workspace.editor?.details?.savedSnippet?.isFavorite, true)
+        XCTAssertEqual(workspace.actionMessage, "Already in Snippets · Added to Favorites")
+    }
+
+    func testFilingAClipSavesItIntoTheCollection() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let (item, _) = try await insertHistory("file me", into: harness)
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        await workspace.select(item.id)
+        let entry = try XCTUnwrap(workspace.entries.first { $0.id == item.id })
+
+        await workspace.file([entry.ref], into: prompts)
+
+        let filed = try await storedItem(item.id, in: harness)
+        XCTAssertEqual(filed.collectionID, prompts.value.id)
+        XCTAssertEqual(workspace.actionMessage, "Saved to “Prompts”")
+    }
+
+    func testRemovingFromACollectionLeavesTheSnippetUnfiled() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let memo = try await LibraryService(controller: harness.controller)
+            .create(MemoDraft(body: "filed", collectionID: prompts.value.id))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.refreshCollections()
+        await workspace.setScope(.collection(prompts.value.id))
+        let entry = try XCTUnwrap(workspace.entries.first)
+
+        await workspace.removeFromCollection([entry.ref])
+
+        let removed = try await storedItem(memo.itemID, in: harness)
+        XCTAssertNil(removed.collectionID)
+        XCTAssertEqual(workspace.entries, [])
+        XCTAssertEqual(workspace.actionMessage, "Removed from “Prompts”")
+        XCTAssertTrue(workspace.canUndoCollectionChange)
     }
 
     private func storedItem(_ id: ItemID, in harness: SearchHarness) async throws -> ItemValue {
