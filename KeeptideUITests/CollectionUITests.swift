@@ -211,8 +211,14 @@ final class CollectionUITests: XCTestCase {
     private func createCollection(named name: String, in app: XCUIApplication, withPlusButton: Bool = false) {
         if withPlusButton {
             let add = app.buttons["AddCollection"]
-            XCTAssertTrue(add.waitForExistence(timeout: 5), app.debugDescription)
-            add.click()
+            if add.waitForExistence(timeout: 2) {
+                add.click()
+            } else {
+                // macOS 26 reads the heading as one text that holds the plus, drawn at its trailing end.
+                let heading = app.staticTexts["AddCollection"]
+                XCTAssertTrue(heading.waitForExistence(timeout: 5), app.debugDescription)
+                heading.coordinate(withNormalizedOffset: CGVector(dx: 0.96, dy: 0.5)).click()
+            }
         } else {
             app.typeKey("n", modifierFlags: [.shift, .command])
         }

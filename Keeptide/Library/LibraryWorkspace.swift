@@ -85,6 +85,19 @@ enum LibrarySidebar {
 
     /// The window's subtitle for a list called `name`: past `limit` characters, the middle gives way to an ellipsis
     /// so the start and end of a long collection name both stay readable.
+    /// A list's menu item identifier. The items of the list menu share one action, and AppKit otherwise names each
+    /// after it, so assistive apps and UI tests could not tell them apart.
+    static func menuIdentifier(for scope: LibraryScope) -> String {
+        switch scope {
+        case .recentClips: "ChooseList-RecentClips"
+        case .allSnippets: "ChooseList-AllSnippets"
+        case .favorites: "ChooseList-Favorites"
+        case .uncategorized: "ChooseList-Unfiled"
+        case .recentlyDeleted: "ChooseList-RecentlyDeleted"
+        case .collection(let id): "ChooseList-Collection-\(id.rawValue.uuidString)"
+        }
+    }
+
     static func subtitle(_ name: String, limit: Int = 15) -> String {
         guard name.count > limit else { return name }
         let head = (limit - 1) / 2
