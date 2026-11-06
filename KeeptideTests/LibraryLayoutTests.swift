@@ -267,6 +267,9 @@ final class LibraryLayoutTests: XCTestCase {
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Recent Clips", "All Snippets", "Favorites", "Recently Deleted", "New Collection…"])
         XCTAssertEqual(menu.items.filter { $0.state == .on }.map(\.title), ["Recent Clips"])
+        // The lists share one action; each has its own identifier, or a click found by title lands on the first.
+        let lists = menu.items.filter { $0.representedObject is LibraryScope }
+        XCTAssertEqual(Set(lists.compactMap(\.identifier)).count, lists.count)
 
         // Choosing from it chooses the list, as the sidebar would.
         let favorites = try XCTUnwrap(menu.items.first { $0.title == "Favorites" })

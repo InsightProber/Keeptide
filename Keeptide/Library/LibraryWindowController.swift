@@ -112,6 +112,7 @@ final class LibraryWindowController: NSWindowController {
                 let item = NSMenuItem(title: list.title, action: #selector(chooseListItem(_:)), keyEquivalent: "")
                 item.target = self
                 item.image = NSImage(systemSymbolName: list.symbolName, accessibilityDescription: nil)
+                item.identifier = NSUserInterfaceItemIdentifier(LibrarySidebar.menuIdentifier(for: list.scope))
                 item.representedObject = list.scope
                 item.state = list.scope == commands.listScope ? .on : .off
                 menu.addItem(item)
