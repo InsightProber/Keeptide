@@ -18,6 +18,23 @@ enum DirectPasteKeystroke {
     }
 }
 
+/// Whether Keeptide can paste directly, as Settings and the panel say it.
+enum DirectPasteAccessState: Equatable, Sendable {
+    /// This run of Keeptide may send ⌘V.
+    case on
+    /// This run asked for access but still cannot send ⌘V: the system lets Keeptide use a grant once it reopens.
+    case awaitsReopen
+    case off
+
+    init(canPostEvents: Bool, accessRequested: Bool) {
+        if canPostEvents {
+            self = .on
+        } else {
+            self = accessRequested ? .awaitsReopen : .off
+        }
+    }
+}
+
 /// Everything direct paste asks of the system. Tests inject a fake or `unavailable`.
 @MainActor
 struct DirectPasteSystem {

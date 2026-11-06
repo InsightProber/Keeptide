@@ -1735,7 +1735,7 @@ final class QuickAccessStateTests: XCTestCase {
         state.open()
         try await settled(state)
         XCTAssertEqual(state.directPaste, .copy(.notPermitted))
-        XCTAssertNil(state.actions.hint)
+        XCTAssertEqual(state.actions.hint, "Direct paste is off")
 
         // Access is granted in System Settings, which this run of Keeptide cannot see yet.
         state.requestDirectPasteAccess()

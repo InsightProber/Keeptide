@@ -15,8 +15,9 @@ Keeptide more than once, and used in the last 90 days, appear to the left of
 the newest one, apart from the recent clips; Settings can turn this off. The
 panel searches all content with a local full-text index from a search that
 folds into an icon at the band's left end until you type, filters by type,
-previews text and images, and can paste the selected clip directly into the app
-window it was opened from. The native library supports editable snippets;
+previews text and images, and can paste the selected clip, with Return or a
+double click, directly into the app window it was opened from; Settings shows
+whether direct paste is on. The native library supports editable snippets;
 iCloud saving remains planned. There is no application release yet.
 
 Space opens a preview over the stationary quick-access band, with a brief zoom
