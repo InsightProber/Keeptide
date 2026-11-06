@@ -71,22 +71,26 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
         capture.click()
 
+        // The toolbar's items stay put; what the selection allows is enabled.
         let saveAsSnippet = library.buttons["SaveHistoryAsSnippet"]
         XCTAssertTrue(saveAsSnippet.waitForExistence(timeout: 5), app.debugDescription)
-        XCTAssertFalse(library.buttons["CopyLibraryItem"].exists)
+        XCTAssertTrue(library.buttons["CopyLibraryItem"].exists)
+        waitUntil(saveAsSnippet, isEnabled: true)
         saveAsSnippet.click()
 
-        let editableCopy = library.buttons["CopyLibraryItem"]
-        XCTAssertTrue(editableCopy.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(saveAsSnippet.waitForNonExistence(timeout: 5))
-        let undoSave = library.buttons["LibraryUndoNewSave"]
+        // Saved: the clip's item is a snippet now, and the save is undone from the Edit menu.
+        waitUntil(saveAsSnippet, isEnabled: false)
+        XCTAssertTrue(app.staticTexts["Saved to Snippets"].firstMatch.waitForExistence(timeout: 5),
+                      app.debugDescription)
+        app.menuBars.menuBarItems["Edit"].click()
+        let undoSave = app.menuItems["Undo Save as Snippet"]
         XCTAssertTrue(undoSave.waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(undoSave.isEnabled, app.debugDescription)
         undoSave.click()
-        XCTAssertTrue(saveAsSnippet.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(editableCopy.waitForNonExistence(timeout: 5))
+        waitUntil(saveAsSnippet, isEnabled: true)
 
         saveAsSnippet.click()
-        XCTAssertTrue(editableCopy.waitForExistence(timeout: 8), app.debugDescription)
+        waitUntil(saveAsSnippet, isEnabled: false)
         let titleEditor = library.descendants(matching: .any)["SnippetTitleEditor"]
         let revisedTitle = "Saved synthetic alpha"
         replaceText(in: titleEditor, with: revisedTitle)
@@ -95,6 +99,41 @@ final class LibraryUITests: XCTestCase {
         openAllSnippets(in: app)
         searchLibrary(for: revisedTitle, in: app)
         XCTAssertTrue(app.staticTexts[revisedTitle].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+    }
+
+    func testFavoriteOnAClipSavesItFirst() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        _ = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+        capture.click()
+
+        // ⌘D on a clip saves it as a snippet that is a favorite, and says both.
+        app.typeKey("d", modifierFlags: .command)
+        XCTAssertTrue(app.staticTexts["Saved as Snippet · Added to Favorites"].firstMatch.waitForExistence(timeout: 8),
+                      app.debugDescription)
+        sidebarRow("Favorites", in: app).click()
+        waitForList("Favorites", in: app)
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
+    }
+
+    func testCommandDeleteMovesTheSelectionToRecentlyDeleted() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        _ = requireLibrary(in: app)
+        let title = "Synthetic alpha note"
+        let capture = app.staticTexts[title].firstMatch
+        XCTAssertTrue(capture.waitForExistence(timeout: 8), app.debugDescription)
+        capture.click()
+
+        // The list has the keyboard, so ⌘⌫ moves the clip, not text.
+        app.typeKey(.delete, modifierFlags: .command)
+        XCTAssertTrue(capture.waitForNonExistence(timeout: 8), app.debugDescription)
+        sidebarRow("Recently Deleted", in: app).click()
+        waitForList("Recently Deleted", in: app)
+        XCTAssertTrue(app.staticTexts[title].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
     }
 
     func testRecentClipCanMoveToRecentlyDeletedAndBeRestored() {
@@ -256,6 +295,18 @@ final class LibraryUITests: XCTestCase {
         let section = sidebarRow("All Snippets", in: app)
         XCTAssertTrue(section.waitForExistence(timeout: 5), app.debugDescription)
         section.click()
+    }
+
+    /// The window's title ends with the list's name once the list shows.
+    private func waitForList(_ name: String, in app: XCUIApplication) {
+        expectation(for: NSPredicate(format: "title ENDSWITH %@", name),
+                    evaluatedWith: app.windows["KeeptideLibraryWindow"])
+        waitForExpectations(timeout: 8)
+    }
+
+    private func waitUntil(_ element: XCUIElement, isEnabled: Bool) {
+        expectation(for: NSPredicate(format: "enabled == %@", NSNumber(value: isEnabled)), evaluatedWith: element)
+        waitForExpectations(timeout: 8)
     }
 
     /// A list in the sidebar. The window's subtitle repeats the chosen list's name, so the sidebar is named.

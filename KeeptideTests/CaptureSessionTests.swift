@@ -91,11 +91,12 @@ final class CaptureSessionTests: XCTestCase {
         let session = CaptureSession()
         await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
         let ref = try XCTUnwrap(session.recent.first?.history)
+        let workspace = try XCTUnwrap(session.libraryWorkspace)
 
-        await session.select(ref)
-        await session.copy(ref)
+        await workspace.open(ref)
+        _ = await workspace.copyCurrent()
 
-        XCTAssertEqual(session.actionMessage, "Copied")
+        XCTAssertEqual(workspace.actionMessage, "Copied")
         let board = NSPasteboard(name: .init(configuration.pasteboardName))
         XCTAssertEqual(board.string(forType: .string), "Synthetic alpha note")
         let usage = try XCTUnwrap(session.usageStore)
@@ -121,26 +122,29 @@ final class CaptureSessionTests: XCTestCase {
     }
 
     func testLibraryCopiesNeverPasteEvenWithATerminalInFront() async throws {
-        let board = NSPasteboard.withUniqueName()
-        defer { board.releaseGlobally() }
-        // One line and a trailing newline: a terminal would take it as a command that needs no review, so a library
-        // that pasted would send ⌘V here.
-        let clip = try content("echo synthetic-beta\n")
+        let configuration = try makeIsolatedSession()
         let system = FakeDirectPasteSystem()
         system.front = .terminal
-        // Made as the user's library is, with no test session's rule between its copies and a paste.
-        let session = CaptureSession(readContent: { _ in clip }, pasteboard: board, directPaste: system.system)
+        // The terminal is in front as the library opens, and stays there.
+        let session = CaptureSession(directPaste: system.system)
+        await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
+        let workspace = try XCTUnwrap(session.libraryWorkspace)
+        // One line and a trailing newline: a terminal would take it as a command that needs no review, so a library
+        // that pasted would send ⌘V here.
+        let clip = try XCTUnwrap(session.recent.first { $0.title == "echo synthetic-beta" }?.history)
 
-        await session.select(clip.ref)
-        await session.copy(clip.ref)
+        await workspace.open(clip)
+        _ = await workspace.copyCurrent()
 
         // The clip is copied as captured: it is not made a command for the terminal, which would drop its trailing
         // newline.
-        XCTAssertEqual(session.actionMessage, "Copied")
-        XCTAssertEqual(board.string(forType: .string), "echo synthetic-beta\n")
+        XCTAssertEqual(workspace.actionMessage, "Copied")
+        XCTAssertEqual(NSPasteboard(name: .init(configuration.pasteboardName)).string(forType: .string),
+                       "echo synthetic-beta\n")
         XCTAssertEqual(system.sent, [])
         // The front window is never read for the library.
         XCTAssertEqual(system.probes, 0)
+        await session.shutdown()
     }
 
     #if DEBUG
@@ -335,7 +339,9 @@ final class CaptureSessionTests: XCTestCase {
         // The QA session copies to the clipboard it was given, the test's own.
         let before = board.changeCount
         let newest = try XCTUnwrap(session.recent.first?.history)
-        await session.copy(newest)
+        let workspace = try XCTUnwrap(session.libraryWorkspace)
+        await workspace.open(newest)
+        _ = await workspace.copyCurrent()
         XCTAssertGreaterThan(board.changeCount, before)
         XCTAssertNotNil(board.string(forType: .string))
 
@@ -609,131 +615,6 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertTrue(rows.isEmpty)
     }
 
-    func testSelectionFailurePublishesVisibleErrorAndStopsLoading() async throws {
-        let failed = try content("unavailable")
-        let session = CaptureSession(readContent: { _ in throw SelectionTestError.unavailable })
-
-        await session.select(failed.ref)
-
-        XCTAssertNil(session.selectedContent)
-        XCTAssertNil(session.selectedPreview)
-        XCTAssertEqual(session.selectionError, "This clip is no longer available.")
-        XCTAssertFalse(session.selectionIsLoading)
-    }
-
-    func testNewSelectionCancelsPreviousReadAndKeepsOnlyNewestResult() async throws {
-        let first = try content("first")
-        let second = try content("second")
-        let firstStarted = expectation(description: "First selection started")
-        let firstCancelled = expectation(description: "First selection cancelled")
-        let probe = SleepingSelectionRead(started: firstStarted, cancelled: firstCancelled)
-        let session = CaptureSession(readContent: { ref in
-            if ref == first.ref { return try await probe.read(first) }
-            return second
-        })
-
-        let oldSelection = Task { await session.select(first.ref) }
-        await fulfillment(of: [firstStarted], timeout: 3)
-        await session.select(second.ref)
-        await fulfillment(of: [firstCancelled], timeout: 3)
-        await oldSelection.value
-
-        XCTAssertEqual(session.selectedContent, second)
-        XCTAssertEqual(session.selectedPreview?.text, "second")
-        XCTAssertNil(session.selectionError)
-        XCTAssertFalse(session.selectionIsLoading)
-    }
-
-    func testNonActionableSelectionKeepsIntegrityAndCannotOverwritePasteboard() async throws {
-        let board = NSPasteboard.withUniqueName()
-        defer { board.releaseGlobally() }
-        board.clearContents()
-        XCTAssertTrue(board.setString("existing", forType: .string))
-        let complete = try content("must not be copied")
-        let unavailable = ResolvedContent(
-            ref: complete.ref,
-            integrity: .requiresRelocation,
-            representations: complete.representations
-        )
-        let session = CaptureSession(readContent: { _ in unavailable }, pasteboard: board)
-
-        await session.select(unavailable.ref)
-        XCTAssertEqual(session.selectedContent?.integrity, .requiresRelocation)
-        XCTAssertFalse(try XCTUnwrap(session.selectedContent).isActionable)
-        XCTAssertNil(session.selectedPreview)
-
-        await session.copy(unavailable.ref)
-        XCTAssertEqual(board.string(forType: .string), "existing")
-        XCTAssertEqual(
-            session.actionMessage,
-            "This clip could not be copied. Its original formats must all be available."
-        )
-    }
-
-    func testLargeTextSelectionPublishesOnlyABoundedPreview() async throws {
-        let large = try content(String(repeating: "a", count: 1_000_000))
-        let session = CaptureSession(readContent: { _ in large })
-
-        await session.select(large.ref)
-
-        let preview = try XCTUnwrap(session.selectedPreview)
-        XCTAssertTrue(preview.isTruncated)
-        XCTAssertEqual(preview.text.utf8.count, 8_192)
-        XCTAssertEqual(session.selectedContent, large)
-        XCTAssertFalse(session.selectionIsLoading)
-    }
-
-    func testShutdownCancelsInflightSelectionAndNeverPublishesItsLateResult() async throws {
-        let late = try content("late")
-        let started = expectation(description: "Selection started")
-        let cancelled = expectation(description: "Selection cancelled")
-        let probe = DelayedSelectionRead(content: late, started: started, cancelled: cancelled)
-        let session = CaptureSession(readContent: { _ in await probe.read() })
-        let selection = Task { await session.select(late.ref) }
-        await fulfillment(of: [started], timeout: 3)
-
-        await session.shutdown()
-        await fulfillment(of: [cancelled], timeout: 3)
-        await probe.finish()
-        await selection.value
-
-        XCTAssertNil(session.selectedContent)
-        XCTAssertNil(session.selectedPreview)
-        XCTAssertNil(session.selectionError)
-        XCTAssertFalse(session.selectionIsLoading)
-    }
-
-    func testLateCopyCannotOverwriteNewSelectionAndNewerCopy() async throws {
-        let board = NSPasteboard.withUniqueName()
-        defer { board.releaseGlobally() }
-        let a = try content("first")
-        let b = try content("second")
-        let started = expectation(description: "First copy waiting on storage")
-        let gate = DelayedCaptureRead(content: a, started: started)
-        let session = CaptureSession(readContent: { ref in
-            if ref == a.ref { return await gate.read() }
-            return b
-        }, pasteboard: board)
-        let oldCopy = Task { await session.copy(a.ref) }
-        await fulfillment(of: [started], timeout: 3)
-        await session.select(b.ref)
-        await session.copy(b.ref)
-        XCTAssertEqual(board.string(forType: .string), "second")
-        await gate.finish()
-        await oldCopy.value
-        XCTAssertEqual(board.string(forType: .string), "second")
-        XCTAssertEqual(session.actionMessage, "Copied")
-        await session.select(nil)
-        XCTAssertNil(session.actionMessage)
-    }
-
-    private func content(_ text: String) throws -> ResolvedContent {
-        let capture = try ContentStoreFixtures.capture([[ ("public.utf8-plain-text", Data(text.utf8)) ]])
-        let item = ContentStoreFixtures.item(capture)
-        return ResolvedContent(ref: ContentStoreFixtures.ref(item, capture), integrity: .complete,
-                               representations: capture.representations)
-    }
-
     private func removeLocalStoreFiles(in directory: URL) throws {
         for suffix in ["", "-wal", "-shm"] {
             let url = directory.appendingPathComponent("Local.sqlite" + suffix)
@@ -744,82 +625,8 @@ final class CaptureSessionTests: XCTestCase {
     }
 }
 
-private enum SelectionTestError: Error {
-    case unavailable
-}
-
 /// An error the capture monitor knows nothing of, which it takes for the library's.
 private struct LibraryStoppedWorking: Error {}
-
-private actor SleepingSelectionRead {
-    let started: XCTestExpectation
-    let cancelled: XCTestExpectation
-
-    init(started: XCTestExpectation, cancelled: XCTestExpectation) {
-        self.started = started
-        self.cancelled = cancelled
-    }
-
-    func read(_ content: ResolvedContent) async throws -> ResolvedContent {
-        started.fulfill()
-        do {
-            try await Task.sleep(for: .seconds(30))
-            return content
-        } catch {
-            cancelled.fulfill()
-            throw error
-        }
-    }
-}
-
-private actor DelayedSelectionRead {
-    let content: ResolvedContent
-    let started: XCTestExpectation
-    let cancelled: XCTestExpectation
-    private var continuation: CheckedContinuation<ResolvedContent, Never>?
-
-    init(content: ResolvedContent, started: XCTestExpectation, cancelled: XCTestExpectation) {
-        self.content = content
-        self.started = started
-        self.cancelled = cancelled
-    }
-
-    func read() async -> ResolvedContent {
-        await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                self.continuation = continuation
-                started.fulfill()
-            }
-        } onCancel: {
-            cancelled.fulfill()
-        }
-    }
-
-    func finish() {
-        continuation?.resume(returning: content)
-        continuation = nil
-    }
-}
-
-private actor DelayedCaptureRead {
-    let content: ResolvedContent
-    let started: XCTestExpectation
-    private var continuation: CheckedContinuation<ResolvedContent, Never>?
-
-    init(content: ResolvedContent, started: XCTestExpectation) {
-        self.content = content
-        self.started = started
-    }
-
-    func read() async -> ResolvedContent {
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
-            started.fulfill()
-        }
-    }
-
-    func finish() { continuation?.resume(returning: content); continuation = nil }
-}
 
 /// The clipboard a session's monitor reads in place of its named pasteboard, where a copy is a change of count and
 /// holds the synthetic text "Synthetic copy <count>". It can refuse every read, as the system does when it denies

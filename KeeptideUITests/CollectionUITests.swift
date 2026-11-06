@@ -157,16 +157,18 @@ final class CollectionUITests: XCTestCase {
         alpha.click()
         XCUIElement.perform(withKeyModifiers: [.command]) { beta.click() }
 
-        let actions = app.descendants(matching: .menuButton)["SelectionActions"]
-        XCTAssertTrue(actions.waitForExistence(timeout: 5), app.debugDescription)
-        actions.click()
-        app.menuItems["Add to Favorites"].click()
-
-        openSelectionActions(actions, expecting: "Remove from Favorites", in: app)
-        let moveTo = app.menuItems["Move To"]
-        XCTAssertTrue(moveTo.waitForExistence(timeout: 5), app.debugDescription)
-        moveTo.click()
-        let prompts = app.menuItems["Move to Prompts"]
+        // The toolbar acts on both: the star marks them, and the collection menu files them.
+        let favorite = library.buttons["SnippetFavoriteToggle"]
+        XCTAssertTrue(favorite.waitForExistence(timeout: 5), app.debugDescription)
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: favorite)
+        waitForExpectations(timeout: 5)
+        favorite.click()
+        expectation(for: NSPredicate(format: "label == %@", "Remove from Favorites"), evaluatedWith: favorite)
+        waitForExpectations(timeout: 8)
+        let collection = library.descendants(matching: .menuButton)["CollectionMenu"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 5), app.debugDescription)
+        collection.click()
+        let prompts = app.menuItems["Prompts"]
         XCTAssertTrue(prompts.waitForExistence(timeout: 5), app.debugDescription)
         prompts.click()
         collectionRow(named: "Prompts", in: library).click()
@@ -180,6 +182,28 @@ final class CollectionUITests: XCTestCase {
         XCTAssertTrue(snippetRow(containing: "Selected Alpha", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Selected Beta", in: app).waitForExistence(timeout: 8))
         XCTAssertTrue(snippetRow(containing: "Unselected Gamma", in: app).waitForNonExistence(timeout: 8))
+    }
+
+    func testDeleteInACollectionRemovesTheSnippetFromIt() {
+        let app = launchKeeptide()
+        let library = requireLibrary(in: app)
+        createCollection(named: "Prompts", in: app)
+        collectionRow(named: "Prompts", in: library).click()
+        waitForScope("Prompts", in: app)
+        createSnippet(title: "Filed Snippet", body: "filed body", in: app)
+        let row = snippetRow(containing: "Filed Snippet", in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 8), app.debugDescription)
+        row.click()
+
+        // ⌫ in a collection takes the snippet out of it, as a photo leaves an album; nothing is deleted.
+        app.typeKey(.delete, modifierFlags: [])
+        XCTAssertTrue(row.waitForNonExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["Removed from “Prompts”"].firstMatch.waitForExistence(timeout: 5),
+                      app.debugDescription)
+        scopeRow(named: "Unfiled", in: library).click()
+        waitForScope("Unfiled", in: app)
+        XCTAssertTrue(snippetRow(containing: "Filed Snippet", in: app).waitForExistence(timeout: 8),
+                      app.debugDescription)
     }
 
     private func launchKeeptide() -> XCUIApplication {
@@ -292,23 +316,6 @@ final class CollectionUITests: XCTestCase {
         let library = app.windows["KeeptideLibraryWindow"]
         expectation(for: NSPredicate(format: "title ENDSWITH %@", name), evaluatedWith: library)
         waitForExpectations(timeout: 8)
-    }
-
-    private func openSelectionActions(
-        _ actions: XCUIElement,
-        expecting itemName: String,
-        in app: XCUIApplication
-    ) {
-        let expectedItem = app.menuItems[itemName]
-        let deadline = Date().addingTimeInterval(8)
-        repeat {
-            guard actions.waitForExistence(timeout: 1) else { continue }
-            actions.click()
-            if expectedItem.waitForExistence(timeout: 1) { return }
-            app.typeKey(.escape, modifierFlags: [])
-        } while Date() < deadline
-
-        XCTFail("Selection actions never reflected \(itemName). \(app.debugDescription)")
     }
 
     private func removeTestSession(_ sessionID: UUID, app: XCUIApplication) {

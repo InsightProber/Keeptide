@@ -38,8 +38,12 @@ struct LibraryView: View {
     @Bindable private var session: CaptureSession
     @Bindable private var commands: LibraryWindowCommands
     @State private var selectedScope: LibraryScope? = .recentClips
-    @State private var selectedItemID: ItemID?
+    /// The rows selected in every list but Recently Deleted. Exactly one opens in the editor.
     @State private var selectedEntryIDs: Set<ItemID> = []
+    @State private var inspectorPresented = false
+    @State private var applicationNames = ApplicationNames()
+    /// A snippet or clip to select once its list shows: Show Snippet and Show in Recent Clips switch lists first.
+    @State private var pendingReveal: ContentRef?
     @State private var collectionEditorMode: CollectionEditorMode?
     @State private var collectionPendingDeletion: CollectionSnapshot?
     @State private var sidebarPreference: LibrarySidebarPreference = .automatic
@@ -70,6 +74,10 @@ struct LibraryView: View {
             } detail: {
                 detailColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .inspector(isPresented: $inspectorPresented) {
+                        inspector
+                            .inspectorColumnWidth(min: 220, ideal: 250, max: 320)
+                    }
                     .toolbar { detailToolbar }
             }
             // The system search field at the toolbar's trailing end, and under it while searching, All Content or
@@ -132,13 +140,6 @@ struct LibraryView: View {
 
     private var selectionLibrary: some View {
         presentedLibrary
-        .task(id: selectedItemID) {
-            let ref = session.recent.first(where: { $0.itemID == selectedItemID })?.history
-            await session.select(ref)
-            if selectedScope == .recentClips, let selectedItemID {
-                await session.libraryWorkspace?.select(selectedItemID)
-            }
-        }
         .onChange(of: selectedScope) { previous, scope in
             // A list cannot be deselected: the one chosen stays, and so do the subtitle and the library's list.
             guard let scope else {
@@ -146,12 +147,11 @@ struct LibraryView: View {
                 return
             }
             guard previous != nil else { return }
-            selectedItemID = nil
             selectedEntryIDs.removeAll()
             updateExportContext()
             session.libraryWorkspace?.updateScope(scope)
+            revealPending()
         }
-        .onChange(of: selectedItemID) { _, _ in updateExportContext() }
         .onChange(of: selectedEntryIDs) { _, _ in updateExportContext() }
         .onChange(of: session.libraryWorkspace?.entries.map(\.ref) ?? []) { _, _ in
             updateExportContext()
@@ -212,8 +212,35 @@ struct LibraryView: View {
         )
     }
 
-    var body: some View {
+    /// The item commands from the menus act on the selection; the menus show what it allows.
+    private var itemLibrary: some View {
         listLibrary
+        .onChange(of: itemContext, initial: true) { _, context in commands.updateItemContext(context) }
+        .onChange(of: commands.favoriteRequest) { _, _ in toggleFavorite() }
+        .onChange(of: commands.collectionRequest) { _, request in
+            guard let request else { return }
+            if request.createsCollection {
+                collectionEditorMode = .create
+            } else {
+                file(into: request.collectionID)
+            }
+        }
+        .onChange(of: commands.kindRequest) { _, request in
+            guard let request else { return }
+            session.libraryWorkspace?.editor?.setKind(request.kind)
+        }
+        .onChange(of: commands.showLinkedRequest) { _, _ in
+            if let linked = selectionState.linked { show(linked) }
+        }
+        .onChange(of: commands.deleteRequest) { _, _ in
+            guard let workspace = session.libraryWorkspace else { return }
+            moveToRecentlyDeleted(selectedEntries(workspace), workspace: workspace)
+        }
+        .onChange(of: commands.inspectorToggleRequest) { _, _ in inspectorPresented.toggle() }
+    }
+
+    var body: some View {
+        itemLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }
@@ -257,11 +284,7 @@ struct LibraryView: View {
 
     private func currentExportRefs() -> [ContentRef] {
         guard selectedScope != .recentlyDeleted, let workspace = session.libraryWorkspace else { return [] }
-        if selectedScope == .recentClips {
-            guard let selectedItemID else { return [] }
-            return workspace.entries.filter { $0.id == selectedItemID }.map(\.ref)
-        }
-        return workspace.entries.filter { selectedEntryIDs.contains($0.id) }.map(\.ref)
+        return selectedEntries(workspace).map(\.ref)
     }
 
     private func beginExport(selectedOnly: Bool) {
@@ -421,27 +444,8 @@ struct LibraryView: View {
                 }
                 .accessibilityIdentifier("RecentlyDeletedUnavailable")
             }
-        } else if selectedScope == .recentClips {
-            VStack(spacing: 0) {
-                if session.actionMessage != nil {
-                    actionStatus.padding(12)
-                    Divider()
-                }
-                if let workspace = session.libraryWorkspace {
-                    snippetList(workspace, recentStyle: true)
-                } else if let error = session.libraryInitializationError {
-                    ContentUnavailableView {
-                        Label("Keeptide Couldn't Open the Library", systemImage: "exclamationmark.triangle")
-                    } description: {
-                        Text(error)
-                    }
-                    .accessibilityIdentifier("LibraryInitializationError")
-                } else {
-                    ProgressView("Preparing library…")
-                }
-            }
         } else if let workspace = session.libraryWorkspace {
-            snippetList(workspace)
+            snippetList(workspace, recentStyle: selectedScope == .recentClips)
         } else if let error = session.libraryInitializationError {
             ContentUnavailableView {
                 Label("Keeptide Couldn't Open the Library", systemImage: "exclamationmark.triangle")
@@ -468,11 +472,25 @@ struct LibraryView: View {
         .background(.regularMaterial)
     }
 
+    /// The open item, or what the selection is when no single item is open: several items, one that could not be read,
+    /// or none.
     @ViewBuilder
     private var detailColumn: some View {
         if selectedScope == .recentlyDeleted {
             ContentUnavailableView { Text("No Item Selected") }
                 .accessibilityIdentifier("RecentlyDeletedDetail")
+        } else if let workspace = session.libraryWorkspace, selectedEntryIDs.count > 1 {
+            ContentUnavailableView { Text(multipleSelectionTitle(workspace)) }
+                .accessibilityIdentifier("LibraryMultipleSelection")
+        } else if let workspace = session.libraryWorkspace, let selected = selectedEntryIDs.first,
+                  workspace.unavailableItemID == selected {
+            ContentUnavailableView {
+                Label(selectedScope == .recentClips ? "Clip Unavailable" : "Item Unavailable",
+                      systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("It may have been deleted or changed elsewhere.")
+            }
+            .accessibilityIdentifier("LibraryItemUnavailable")
         } else if let workspace = session.libraryWorkspace, let editor = workspace.editor {
             let focusRequest = bodyFocus.request(for: editor.sessionID, documentID: editor.draftID)
             MemoEditorView(
@@ -482,6 +500,7 @@ struct LibraryView: View {
                 previewService: session.previewService,
                 fileAccessStore: session.fileAccessStore,
                 fileAccessIdentity: session.fileAccessIdentity,
+                applicationNames: applicationNames,
                 bodyFocusRequest: focusRequest,
                 shouldFocusBody: {
                     bodyFocus.isCurrent(
@@ -497,81 +516,36 @@ struct LibraryView: View {
                         documentID: documentID,
                         request: request
                     )
-                }
+                },
+                onShowInspector: { inspectorPresented = true },
+                onShow: { ref in show(ref) }
             )
             .id(editor.sessionID)
         } else {
-            captureDetailColumn
+            ContentUnavailableView { Text(selectedScope == .recentClips ? "No Clip Selected" : "No Snippet Selected") }
         }
     }
 
+    /// Info (⌃⌘I): the open snippet's type, collection, favorite mark and note, and the open item's details.
     @ViewBuilder
-    private var captureDetailColumn: some View {
-        if session.selectionIsLoading {
-            ProgressView("Loading clip…")
-        } else if let content = session.selectedContent,
-           let summary = session.recent.first(where: { $0.itemID == selectedItemID }),
-           let ref = summary.history {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(summary.title.isEmpty ? "Clipboard Item" : summary.title)
-                                .font(.title2.weight(.semibold))
-                            Text(content.isActionable ? formatSummary(content) : integritySummary(content.integrity))
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Button {
-                            Task { await session.copy(ref) }
-                        } label: {
-                            Label("Copy", systemImage: "doc.on.doc")
-                        }
-                        .keyboardShortcut("c", modifiers: [.command, .shift])
-                        .accessibilityIdentifier("CopyCapture")
-                        .disabled(!content.isActionable || session.selectionIsLoading)
-
-                        Button {
-                            Task {
-                                guard let workspace = session.libraryWorkspace else { return }
-                                await workspace.open(ref)
-                                guard workspace.editor?.ref == ref else { return }
-                                _ = try? await workspace.saveSelectedHistory()
-                            }
-                        } label: {
-                            Label("Save as Snippet", systemImage: "bookmark")
-                        }
-                        .accessibilityIdentifier("SaveCaptureAsSnippet")
-                        .disabled(!content.isActionable || session.selectionIsLoading)
-                    }
-
-                    Divider()
-                    if !content.isActionable {
-                        unavailableContent(content.integrity)
-                    } else {
-                        LibraryContentPreview(
-                            ref: ref,
-                            kind: summary.kind,
-                            service: session.previewService,
-                            fileAccessStore: session.fileAccessStore,
-                            fileAccessIdentity: session.fileAccessIdentity,
-                            applicationName: summary.sourceApp
-                        )
-                        .frame(minHeight: 360)
-                    }
-                }
-                .padding(24)
-            }
-        } else if selectedItemID != nil, session.selectionError != nil {
-            ContentUnavailableView {
-                Label("Clip unavailable", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(session.selectionError ?? "This clip could not be loaded.")
-            }
-            .accessibilityIdentifier("CaptureSelectionError")
+    private var inspector: some View {
+        if let workspace = session.libraryWorkspace, selectedScope != .recentlyDeleted {
+            LibraryInspector(workspace: workspace, selectionCount: selectedEntryIDs.count,
+                             applicationNames: applicationNames, onShow: { show($0) })
         } else {
-            ContentUnavailableView { Text(selectedScope == .recentClips ? "No Clip Selected" : "No Snippet Selected") }
+            Form {
+                Text("No Item Selected").foregroundStyle(.secondary)
+            }
+            .formStyle(.grouped)
+            .accessibilityIdentifier("LibraryInspector")
         }
+    }
+
+    /// "3 Clips Selected", "2 Snippets Selected", or "4 Items Selected" for clips and snippets found together.
+    private func multipleSelectionTitle(_ workspace: LibraryWorkspace) -> String {
+        let facets = Set(selectedEntries(workspace).map(\.ref.facet))
+        let noun = facets == [.history] ? "Clips" : facets == [.memo] ? "Snippets" : "Items"
+        return "\(selectedEntryIDs.count) \(noun) Selected"
     }
 
     /// Over the list: while the sidebar is hidden, a menu at the toolbar's leading edge chooses the list; then the
@@ -593,12 +567,72 @@ struct LibraryView: View {
         }
     }
 
-    /// Over the detail: the system's search item. Giving the detail column toolbar items of its own is also what
-    /// splits the toolbar by column, so New Snippet stays over the list.
+    /// Over the detail: what acts on the selection, the same four items whatever is selected, then Info and the
+    /// system's search item, which the system keeps last.
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
+        let state = selectionState
         ToolbarSpacer(.flexible)
+        ToolbarItemGroup {
+            Button { copySelection() } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .help(state.copyHelp)
+            .accessibilityIdentifier("CopyLibraryItem")
+            .disabled(!state.canCopy)
+
+            Button { saveSelection() } label: {
+                Label("Save as Snippet", systemImage: "bookmark")
+            }
+            .help(state.saveHelp)
+            .accessibilityIdentifier("SaveHistoryAsSnippet")
+            .disabled(!state.canSave)
+
+            Button { toggleFavorite() } label: {
+                Label(state.favoriteTitle, systemImage: state.isFavorite ? "star.fill" : "star")
+            }
+            .help(state.favoriteTitle)
+            .accessibilityIdentifier("SnippetFavoriteToggle")
+            .disabled(!state.canFavorite)
+
+            Menu {
+                collectionMenu(current: state.currentCollections)
+            } label: {
+                Label(state.collectionTitle, systemImage: "folder")
+            }
+            .help(state.hasCollections ? state.collectionTitle : "Create a collection first.")
+            .accessibilityIdentifier("CollectionMenu")
+            .disabled(!state.canFile)
+        }
+        ToolbarSpacer(.fixed)
+        ToolbarItem {
+            Button { inspectorPresented.toggle() } label: {
+                Label("Info", systemImage: "info.circle")
+            }
+            .help(inspectorPresented ? "Hide Inspector" : "Show Inspector")
+            .accessibilityIdentifier("ToggleInspector")
+        }
         DefaultToolbarItem(kind: .search)
+    }
+
+    /// Unfiled, the collections and New Collection…, the place of the selection checked. Choosing files it there;
+    /// a clip not yet saved is saved into it.
+    @ViewBuilder
+    private func collectionMenu(current: Set<CollectionID?>) -> some View {
+        let collections = session.libraryWorkspace?.collections.map(\.value) ?? []
+        ForEach(CollectionMenu.make(collections: collections, current: current)) { entry in
+            switch entry.role {
+            case .separator:
+                Divider()
+            case .newCollection:
+                Button(entry.title) { collectionEditorMode = .create }
+            case .unfiled, .collection:
+                Toggle(entry.title, isOn: Binding(
+                    get: { entry.isChecked },
+                    set: { _ in if !entry.isChecked { file(into: entry.collectionID) } }
+                ))
+            }
+        }
     }
 
     /// The search field's prompt names what an empty search lists, and Recently Deleted says it matches titles.
@@ -712,18 +746,113 @@ struct LibraryView: View {
         }
     }
 
+    /// ⌘S: saves the snippet being edited, or saves the selected clips as snippets.
     private func saveCurrentEditor() {
-        Task {
-            guard let workspace = session.libraryWorkspace else { return }
-            do {
-                if workspace.editor?.isReadOnly == true { _ = try await workspace.saveSelectedHistory() }
-                else { _ = try await workspace.flush() }
-            } catch { /* Workspace retains the draft and its visible failure. */ }
+        guard let workspace = session.libraryWorkspace else { return }
+        guard workspace.editor?.isReadOnly == true else {
+            Task { _ = try? await workspace.flush() } // The workspace keeps the draft and says why it failed.
+            return
         }
+        saveSelection()
     }
 
+    /// ⇧⌘C: the open item, saved first.
     private func copyCurrentEditor() {
         Task { _ = await session.libraryWorkspace?.copyCurrent(mode: .original) }
+    }
+
+    // MARK: The selection's actions
+
+    private func selectedEntries(_ workspace: LibraryWorkspace) -> [LibraryEntry] {
+        workspace.entries.filter { selectedEntryIDs.contains($0.id) }
+    }
+
+    private var selectionState: LibrarySelectionState {
+        guard selectedScope != .recentlyDeleted, let workspace = session.libraryWorkspace else {
+            return LibrarySelectionState()
+        }
+        let open = workspace.editor.flatMap { editor in
+            editor.ref.map {
+                LibrarySelectionState.OpenItem(ref: $0, details: editor.details, kind: editor.kind,
+                                               isReadOnly: editor.isReadOnly)
+            }
+        }
+        var entries = selectedEntries(workspace)
+        if selectedEntryIDs.isEmpty, let open {
+            // Nothing selected, as after writing a new snippet: the actions apply to the item the detail shows.
+            entries = [workspace.entries.first { $0.ref == open.ref } ?? LibraryEntry(
+                id: open.ref.itemID, ref: open.ref, title: "", snippet: nil, lastCopiedAt: Date(), kind: .text,
+                isMemo: open.ref.facet == .memo
+            )]
+        }
+        // Only selected rows move to Recently Deleted, from the list.
+        return .make(entries: entries, open: open, hasCollections: !workspace.collections.isEmpty,
+                     canDelete: session.maintenance != nil && !selectedEntryIDs.isEmpty)
+    }
+
+    private var itemContext: LibraryItemContext {
+        let state = selectionState
+        return LibraryItemContext(
+            selection: state,
+            collectionEntries: CollectionMenu.make(
+                collections: session.libraryWorkspace?.collections.map(\.value) ?? [],
+                current: state.currentCollections
+            ),
+            inspectorIsPresented: inspectorPresented,
+            isRecentlyDeleted: selectedScope == .recentlyDeleted
+        )
+    }
+
+    private func copySelection() {
+        guard let workspace = session.libraryWorkspace, let ref = selectionState.refs.first else { return }
+        Task { _ = await workspace.copy(ref) }
+    }
+
+    private func saveSelection() {
+        guard let workspace = session.libraryWorkspace else { return }
+        let refs = selectionState.refs.isEmpty ? [workspace.editor?.ref].compactMap { $0 } : selectionState.refs
+        Task { await workspace.saveAsSnippets(refs) }
+    }
+
+    /// ⌘D and the toolbar's star: a clip not yet saved is saved as a favorite snippet.
+    private func toggleFavorite() {
+        let state = selectionState
+        guard state.canFavorite, !state.refs.isEmpty, let workspace = session.libraryWorkspace else { return }
+        Task { await workspace.setFavorite(of: state.refs, to: !state.isFavorite) }
+    }
+
+    private func file(into collectionID: CollectionID?) {
+        guard let workspace = session.libraryWorkspace else { return }
+        let refs = selectionState.refs
+        let collection = collectionID.flatMap { id in workspace.collections.first { $0.value.id == id } }
+        guard !refs.isEmpty, collectionID == nil || collection != nil else { return }
+        Task { await workspace.file(refs, into: collection) }
+    }
+
+    /// Show Snippet and Show in Recent Clips: the list that holds `ref`, with it selected and open.
+    private func show(_ ref: ContentRef) {
+        let scope: LibraryScope = ref.facet == .memo ? .allSnippets : .recentClips
+        pendingReveal = ref
+        if selectedScope == scope { revealPending() } else { selectedScope = scope }
+    }
+
+    private func revealPending() {
+        guard let ref = pendingReveal else { return }
+        pendingReveal = nil
+        selectedEntryIDs = [ref.itemID]
+        Task { await session.libraryWorkspace?.open(ref) }
+    }
+
+    /// ⌫ in a list: in a collection the selection leaves the collection, as an album's photos leave the album;
+    /// elsewhere it moves to Recently Deleted.
+    private func deleteFromList(_ workspace: LibraryWorkspace) {
+        let entries = selectedEntries(workspace)
+        guard !entries.isEmpty else { return }
+        if selectedScope?.collectionID != nil {
+            Task { await workspace.removeFromCollection(entries.map(\.ref)) }
+        } else {
+            moveToRecentlyDeleted(entries, workspace: workspace)
+        }
     }
 
     @ViewBuilder
@@ -758,6 +887,7 @@ struct LibraryView: View {
     @ViewBuilder
     private func snippetList(_ workspace: LibraryWorkspace, recentStyle: Bool = false) -> some View {
         VStack(spacing: 0) {
+            actionStatusLine(workspace)
             if !workspace.recoveredDrafts.isEmpty || workspace.recoveryNotice != nil {
                 recoveredDrafts(workspace)
                 Divider()
@@ -778,14 +908,10 @@ struct LibraryView: View {
             if workspace.isLoading {
                 ProgressView().controlSize(.small).padding(8)
             }
-            if !recentStyle, !selectedEntryIDs.isEmpty {
-                selectionActionBar(workspace)
-                Divider()
-            }
             if workspace.entries.isEmpty, !workspace.isLoading {
                 emptyList(workspace, recentStyle: recentStyle)
             } else {
-                List(workspace.entries, selection: entrySelection(workspace, recentStyle: recentStyle)) { entry in
+                List(workspace.entries, selection: entrySelection(workspace)) { entry in
                     LibraryEntryRow(entry: entry)
                         .tag(entry.id)
                         .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
@@ -798,6 +924,7 @@ struct LibraryView: View {
                         }
                 }
                 .listStyle(.inset)
+                .onDeleteCommand { deleteFromList(workspace) }
                 .accessibilityIdentifier("SnippetList")
             }
         }
@@ -835,20 +962,11 @@ struct LibraryView: View {
         }
     }
 
-    private func entrySelection(
-        _ workspace: LibraryWorkspace,
-        recentStyle: Bool
-    ) -> Binding<Set<ItemID>> {
+    /// Every list selects several rows; exactly one opens in the editor.
+    private func entrySelection(_ workspace: LibraryWorkspace) -> Binding<Set<ItemID>> {
         Binding(
-            get: {
-                if recentStyle { return selectedItemID.map { [$0] } ?? [] }
-                return selectedEntryIDs
-            },
+            get: { selectedEntryIDs },
             set: { itemIDs in
-                if recentStyle {
-                    selectedItemID = itemIDs.first
-                    return
-                }
                 selectedEntryIDs = itemIDs
                 if itemIDs.count == 1, let itemID = itemIDs.first {
                     Task { await workspace.select(itemID) }
@@ -857,60 +975,61 @@ struct LibraryView: View {
         )
     }
 
-    private func selectionActionBar(_ workspace: LibraryWorkspace) -> some View {
-        HStack(spacing: 12) {
-            Text("\(selectedActionEntries(workspace).count) selected")
-                .font(.callout.weight(.medium))
-            Spacer()
-            selectionActionsMenu(entries: selectedActionEntries(workspace), workspace: workspace)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.bar)
-    }
-
-    private func selectionActionsMenu(
-        entries: [LibraryEntry],
-        workspace: LibraryWorkspace
-    ) -> some View {
-        Menu {
-            entryActions(for: entries, workspace: workspace)
-        } label: {
-            Label("Actions", systemImage: "ellipsis.circle")
-        }
-        .disabled(entries.isEmpty)
-        .accessibilityLabel("Actions for \(entries.count) selected items")
-        .accessibilityIdentifier("SelectionActions")
-    }
-
+    /// A row's context menu acts on the selection when the row is in it, and on the row alone otherwise.
     @ViewBuilder
     private func entryActions(for entries: [LibraryEntry], workspace: LibraryWorkspace) -> some View {
         let refs = entries.map(\.ref)
-        let canOrganize = !entries.isEmpty && entries.allSatisfy { $0.ref.facet == .memo }
-        let removesFavorite = !entries.isEmpty && entries.allSatisfy(\.isFavorite)
-
-        Button(removesFavorite ? "Remove from Favorites" : "Add to Favorites") {
-            Task { _ = await workspace.setFavorite(refs, isFavorite: !removesFavorite) }
-        }
-        .disabled(!canOrganize)
-
-        Menu("Move To") {
-            Button("Move to Unfiled") {
-                Task { _ = await workspace.moveItems(refs, to: nil) }
+        let open = workspace.editor.flatMap { editor in
+            editor.ref.map {
+                LibrarySelectionState.OpenItem(ref: $0, details: editor.details, kind: editor.kind,
+                                               isReadOnly: editor.isReadOnly)
             }
-            ForEach(workspace.collections, id: \.value.id) { collection in
-                Button("Move to \(collection.value.name)") {
-                    Task { _ = await workspace.moveItems(refs, to: collection) }
+        }
+        let state = LibrarySelectionState.make(entries: entries, open: open,
+                                               hasCollections: !workspace.collections.isEmpty,
+                                               canDelete: session.maintenance != nil)
+        Button("Copy") {
+            guard let ref = refs.first else { return }
+            Task { _ = await workspace.copy(ref) }
+        }
+        .disabled(!state.canCopy)
+        if state.savesIntoCollection {
+            Button("Save as Snippet") { Task { await workspace.saveAsSnippets(refs) } }
+                .disabled(!state.canSave)
+        }
+        Menu(state.collectionTitle) {
+            ForEach(CollectionMenu.make(collections: workspace.collections.map(\.value),
+                                        current: state.currentCollections)) { entry in
+                switch entry.role {
+                case .separator:
+                    Divider()
+                case .newCollection:
+                    Button(entry.title) { collectionEditorMode = .create }
+                case .unfiled, .collection:
+                    Toggle(entry.title, isOn: Binding(get: { entry.isChecked }, set: { _ in
+                        guard !entry.isChecked else { return }
+                        let collection = entry.collectionID.flatMap { id in
+                            workspace.collections.first { $0.value.id == id }
+                        }
+                        Task { await workspace.file(refs, into: collection) }
+                    }))
                 }
             }
         }
-        .disabled(!canOrganize)
-
+        .disabled(entries.isEmpty)
+        Button(state.favoriteTitle) {
+            Task { await workspace.setFavorite(of: refs, to: !state.isFavorite) }
+        }
+        .disabled(!state.canFavorite)
+        if let linked = state.linked {
+            Divider()
+            Button(state.linkedTitle) { show(linked) }
+        }
         Divider()
         Button("Move to Recently Deleted", role: .destructive) {
             moveToRecentlyDeleted(entries, workspace: workspace)
         }
-        .disabled(entries.isEmpty || session.maintenance == nil)
+        .disabled(!state.canDelete)
     }
 
     private func moveToRecentlyDeleted(_ entries: [LibraryEntry], workspace: LibraryWorkspace) {
@@ -923,71 +1042,32 @@ struct LibraryView: View {
                 guard removed else { break }
             }
             selectedEntryIDs.removeAll()
-            selectedItemID = nil
         }
-    }
-
-    private func selectedActionEntries(_ workspace: LibraryWorkspace) -> [LibraryEntry] {
-        workspace.entries.filter { selectedEntryIDs.contains($0.id) }
     }
 
     private func contextEntries(_ entry: LibraryEntry, workspace: LibraryWorkspace) -> [LibraryEntry] {
         if selectedEntryIDs.contains(entry.id) {
-            let selected = selectedActionEntries(workspace)
+            let selected = selectedEntries(workspace)
             if !selected.isEmpty { return selected }
         }
         return [entry]
     }
 
+    /// What the last action did ("Copied", "Saved to “Prompts”"), or why the clips could not be read, at the top of
+    /// every list but Recently Deleted.
     @ViewBuilder
-    private var actionStatus: some View {
-        if let actionMessage = session.actionMessage {
-            Label(actionMessage, systemImage: "info.circle")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("CaptureActionStatus")
+    private func actionStatusLine(_ workspace: LibraryWorkspace) -> some View {
+        if let actionMessage = workspace.actionMessage ?? session.actionMessage {
+            VStack(spacing: 0) {
+                Label(actionMessage, systemImage: "info.circle")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .accessibilityIdentifier("CaptureActionStatus")
+                Divider()
+            }
         }
-    }
-
-    private func integritySummary(_ integrity: ContentIntegrity) -> String {
-        switch integrity {
-        case .complete: "Original formats available"
-        case .requiresRelocation: "File access required"
-        case .recovering: "Content is still recovering"
-        case .corrupt: "Content is unavailable"
-        }
-    }
-
-    @ViewBuilder
-    private func unavailableContent(_ integrity: ContentIntegrity) -> some View {
-        switch integrity {
-        case .complete:
-            EmptyView()
-        case .requiresRelocation:
-            ContentUnavailableView(
-                "File access required",
-                systemImage: "doc.badge.ellipsis",
-                description: Text("Choose the original file again before copying this clip.")
-            )
-        case .recovering:
-            ContentUnavailableView(
-                "Content is recovering",
-                systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
-                description: Text("Keeptide will make this clip available after recovery completes.")
-            )
-        case .corrupt:
-            ContentUnavailableView(
-                "Content unavailable",
-                systemImage: "exclamationmark.triangle",
-                description: Text("The original formats could not be verified, so this clip cannot be copied.")
-            )
-        }
-    }
-
-    private func formatSummary(_ content: ResolvedContent) -> String {
-        let itemCount = Set(content.representations.map(\.itemIndex)).count
-        let formatCount = content.representations.count
-        return "\(itemCount) item\(itemCount == 1 ? "" : "s") • \(formatCount) format\(formatCount == 1 ? "" : "s")"
     }
 
     private func editorContentKind(
@@ -1057,24 +1137,37 @@ private struct MemoEditorView: View {
     let previewService: PreviewService?
     let fileAccessStore: FileAccessStore?
     let fileAccessIdentity: StoreIdentity?
+    let applicationNames: ApplicationNames
     let bodyFocusRequest: Int
     let shouldFocusBody: @MainActor () -> Bool
     let onBodyFocusAccepted: @MainActor (UUID, UUID, Int) -> Void
+    /// Opens the inspector: the header's type, collection and note answer a click there.
+    let onShowInspector: () -> Void
+    /// Show Snippet and Show in Recent Clips.
+    let onShow: (ContentRef) -> Void
     @State private var markdownMode = MarkdownReadingMode.source
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if let ref = editor.ref, showsTypedPreview {
+            if let integrity = editor.details?.integrity, integrity != .complete {
+                LibraryItemText.unavailableContent(integrity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let ref = editor.ref, showsTypedPreview {
                 LibraryContentPreview(
                     ref: ref,
                     kind: contentKind,
                     service: previewService,
                     fileAccessStore: fileAccessStore,
-                    fileAccessIdentity: fileAccessIdentity
+                    fileAccessIdentity: fileAccessIdentity,
+                    applicationName: editor.details?.sourceApp.flatMap { applicationNames.name(for: $0) }
                 )
             } else if let body = editor.body {
+                if editor.kind == .markdown {
+                    markdownBar
+                    Divider()
+                }
                 ZStack {
                     EditorBridge(
                         documentID: editor.draftID,
@@ -1112,8 +1205,6 @@ private struct MemoEditorView: View {
                 )
                 .accessibilityIdentifier("SnippetMetadataOnly")
             }
-            Divider()
-            footer
         }
         .background(Color(nsColor: .textBackgroundColor))
         .onChange(of: editor.kind) { _, kind in
@@ -1121,109 +1212,125 @@ private struct MemoEditorView: View {
         }
     }
 
+    /// The title, and one line about the item under it. Actions are in the toolbar and the menus, not here.
     private var header: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center, spacing: 12) {
-                ComposingTextField(
-                    text: editor.title,
-                    placeholder: "Untitled Snippet",
-                    isEditable: !editor.isReadOnly,
-                    font: .preferredFont(forTextStyle: .title2),
-                    onChange: editor.setTitle
-                )
-                .frame(height: 34)
-                .accessibilityIdentifier("SnippetTitleEditor")
+        VStack(alignment: .leading, spacing: 4) {
+            ComposingTextField(
+                text: editor.title,
+                placeholder: editor.ref?.facet == .history ? "Clipboard Item" : "Untitled Snippet",
+                isEditable: !editor.isReadOnly,
+                font: .systemFont(ofSize: NSFont.preferredFont(forTextStyle: .title2).pointSize, weight: .semibold),
+                onChange: editor.setTitle
+            )
+            .frame(height: 30)
+            .accessibilityIdentifier("SnippetTitleEditor")
 
-                Spacer(minLength: 16)
-
-                if workspace.canUndoNewSave {
-                    Button("Undo Save") {
-                        Task { _ = try? await workspace.undoNewSave() }
-                    }
-                    .accessibilityIdentifier("LibraryUndoNewSave")
-                }
-
-                if editor.isReadOnly {
-                    Button {
-                        Task { _ = try? await workspace.saveSelectedHistory() }
-                    } label: {
-                        Label("Save as Snippet", systemImage: "bookmark")
-                    }
-                    .accessibilityIdentifier("SaveHistoryAsSnippet")
-                }
-
-                Button {
-                    Task { _ = await workspace.copyCurrent(mode: .original) }
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
-                .accessibilityIdentifier(editor.isReadOnly ? "CopyCapture" : "CopyLibraryItem")
-            }
-
-            HStack(spacing: 10) {
-                Picker("Kind", selection: kindBinding) {
-                    Text("Text").tag(MemoKind.plainText)
-                    Text("Prompt").tag(MemoKind.prompt)
-                    Text("Code").tag(MemoKind.code)
-                    Text("Markdown").tag(MemoKind.markdown)
-                }
-                .pickerStyle(.menu)
-                .frame(width: 150)
-                .disabled(editor.isReadOnly)
-                .accessibilityIdentifier("SnippetKindPicker")
-
-                if editor.kind == .markdown, editor.body != nil {
-                    Picker("Markdown view", selection: markdownModeBinding) {
-                        Text("Source")
-                            .tag(MarkdownReadingMode.source)
-                            .accessibilityIdentifier("MarkdownModeSource")
-                        Text("Preview")
-                            .tag(MarkdownReadingMode.preview)
-                            .accessibilityIdentifier("MarkdownModePreview")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .frame(width: 180)
-                    .disabled(editor.isComposing || activeTextViewIsComposing)
-                    .accessibilityIdentifier("MarkdownModePicker")
-                    .help(
-                        editor.isComposing || activeTextViewIsComposing
-                            ? "Finish text composition before changing view"
-                            : "Switch Markdown view"
-                    )
-                }
-
-                statusLabel
-
-                if editor.richSourceWarning {
-                    Label("Saving edits creates an owned text version", systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            metadataLine
         }
         .padding(.horizontal, 24)
-        .padding(.vertical, 18)
+        .padding(.top, 20)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var footer: some View {
-        HStack(spacing: 10) {
-            Text("Note")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ComposingTextField(
-                text: editor.note,
-                placeholder: "Optional note",
-                isEditable: !editor.isReadOnly,
-                font: .preferredFont(forTextStyle: .callout),
-                onChange: editor.setNote
+    /// A clip: "Text · Safari · 3 formats · Copied 2 hours ago", and Show Snippet once it is saved. A snippet:
+    /// "★ Markdown snippet · ● Prompts · Created yesterday", its note, Show in Recent Clips while its clip is there,
+    /// and how saving goes.
+    private var metadataLine: some View {
+        HStack(spacing: 8) {
+            if editor.ref?.facet == .history {
+                Text(clipMetadata)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if let snippet = editor.details?.savedSnippet {
+                    Button("Show Snippet") { onShow(snippet.ref) }
+                        .buttonStyle(.link)
+                        .accessibilityIdentifier("OpenSavedSnippet")
+                }
+            } else {
+                Button(action: onShowInspector) {
+                    Text(snippetMetadata)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                .buttonStyle(.plain)
+                .help("Show Inspector")
+                .accessibilityIdentifier("SnippetMetadata")
+                if !editor.note.isEmpty {
+                    Button(action: onShowInspector) {
+                        Label("Note", systemImage: "note.text")
+                    }
+                    .buttonStyle(.plain)
+                    .help(editor.note)
+                    .accessibilityIdentifier("SnippetNoteLink")
+                }
+                if case .available(let clip)? = editor.details?.originalClip {
+                    Button("Show in Recent Clips") { onShow(clip) }
+                        .buttonStyle(.link)
+                        .accessibilityIdentifier("ShowInRecentClips")
+                }
+            }
+            Spacer(minLength: 0)
+            statusLabel
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+        .frame(minHeight: 18)
+    }
+
+    private var clipMetadata: String {
+        var parts = [contentKind.accessibilityName]
+        if let details = editor.details {
+            if let app = details.sourceApp.flatMap({ applicationNames.name(for: $0) }) { parts.append(app) }
+            parts.append(details.integrity == .complete
+                ? LibraryItemText.formats(details.formatCount)
+                : LibraryItemText.integritySummary(details.integrity))
+            parts.append("Copied \(details.lastCopiedAt.formatted(.relative(presentation: .named)))")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var snippetMetadata: AttributedString {
+        let details = editor.details
+        var line = AttributedString((details?.isFavorite == true ? "★ " : "") + LibraryItemText.snippetName(editor.kind))
+        let collectionID = editor.ref == nil ? editor.collectionID : details?.collectionID
+        if let collection = workspace.collections.first(where: { $0.value.id == collectionID })?.value {
+            var dot = AttributedString(" · ● ")
+            dot.foregroundColor = Color.collection(collection.color)
+            line += dot + AttributedString(collection.name)
+        }
+        if let created = details?.createdAt {
+            line += AttributedString(" · Created \(created.formatted(.relative(presentation: .named)))")
+        }
+        return line
+    }
+
+    /// Source or Preview for a Markdown snippet, over its body, apart from the header.
+    private var markdownBar: some View {
+        HStack {
+            Picker("Markdown view", selection: markdownModeBinding) {
+                Text("Source")
+                    .tag(MarkdownReadingMode.source)
+                    .accessibilityIdentifier("MarkdownModeSource")
+                Text("Preview")
+                    .tag(MarkdownReadingMode.preview)
+                    .accessibilityIdentifier("MarkdownModePreview")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .frame(width: 160)
+            .disabled(editor.isComposing || activeTextViewIsComposing)
+            .accessibilityIdentifier("MarkdownModePicker")
+            .help(
+                editor.isComposing || activeTextViewIsComposing
+                    ? "Finish text composition before changing view"
+                    : "Switch Markdown view"
             )
-            .frame(height: 28)
-            .accessibilityIdentifier("SnippetNoteEditor")
+            Spacer()
         }
         .padding(.horizontal, 24)
-        .padding(.vertical, 12)
+        .frame(height: 28)
         .background(.bar)
     }
 
@@ -1249,10 +1356,6 @@ private struct MemoEditorView: View {
                     .controlSize(.small)
             }
         }
-    }
-
-    private var kindBinding: Binding<MemoKind> {
-        Binding(get: { editor.kind }, set: { editor.setKind($0) })
     }
 
     private var markdownModeBinding: Binding<MarkdownReadingMode> {
@@ -1286,6 +1389,276 @@ private struct MemoEditorView: View {
     }
 }
 
+/// The inspector's grouped form. Type, collection, favorite and note belong to the open snippet; Details describe
+/// the open item. Several selected items have no single set of details.
+private struct LibraryInspector: View {
+    @Bindable var workspace: LibraryWorkspace
+    let selectionCount: Int
+    let applicationNames: ApplicationNames
+    let onShow: (ContentRef) -> Void
+
+    var body: some View {
+        Form {
+            if selectionCount > 1 {
+                Text("Select one snippet to edit its details.")
+                    .foregroundStyle(.secondary)
+            } else if let editor = workspace.editor {
+                if !editor.isReadOnly { snippetSection(editor) }
+                detailsSection(editor)
+            } else {
+                Text("No Item Selected")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .accessibilityIdentifier("LibraryInspector")
+    }
+
+    private func snippetSection(_ editor: MemoEditorSession) -> some View {
+        Section("Snippet") {
+            Picker("Type", selection: Binding(get: { editor.kind }, set: { editor.setKind($0) })) {
+                Text("Text").tag(MemoKind.plainText)
+                Text("Prompt").tag(MemoKind.prompt)
+                Text("Code").tag(MemoKind.code)
+                Text("Markdown").tag(MemoKind.markdown)
+            }
+            .accessibilityIdentifier("SnippetKindPicker")
+
+            Picker("Collection", selection: collectionBinding(editor)) {
+                Text(CollectionMenu.unfiledTitle).tag(CollectionID?.none)
+                ForEach(workspace.collections, id: \.value.id) { collection in
+                    Text(collection.value.name).tag(CollectionID?.some(collection.value.id))
+                }
+            }
+            .accessibilityIdentifier("CollectionPicker")
+
+            // A new snippet is marked once it is saved.
+            Toggle("Favorite", isOn: Binding(
+                get: { editor.details?.isFavorite == true },
+                set: { value in
+                    guard let ref = editor.ref else { return }
+                    Task { await workspace.setFavorite(of: [ref], to: value) }
+                }
+            ))
+            .disabled(editor.ref == nil)
+            .accessibilityIdentifier("InspectorFavoriteToggle")
+
+            LabeledContent("Note") {
+                ComposingTextField(
+                    text: editor.note,
+                    placeholder: "Optional note",
+                    isEditable: true,
+                    font: .preferredFont(forTextStyle: .body),
+                    isBezeled: true,
+                    onChange: editor.setNote
+                )
+                .frame(height: 22)
+                .accessibilityIdentifier("SnippetNoteEditor")
+            }
+        }
+    }
+
+    /// A new snippet is created in the collection chosen; a saved one moves there.
+    private func collectionBinding(_ editor: MemoEditorSession) -> Binding<CollectionID?> {
+        Binding(
+            get: { editor.ref == nil ? editor.collectionID : editor.details?.collectionID },
+            set: { id in
+                guard let ref = editor.ref else {
+                    editor.setCollectionID(id)
+                    return
+                }
+                let collection = id.flatMap { id in workspace.collections.first { $0.value.id == id } }
+                Task { await workspace.file([ref], into: collection) }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func detailsSection(_ editor: MemoEditorSession) -> some View {
+        if let details = editor.details {
+            Section("Details") {
+                if editor.ref?.facet == .history {
+                    if let app = details.sourceApp {
+                        LabeledContent("Source", value: applicationNames.name(for: app) ?? app)
+                    }
+                    LabeledContent("Created", value: details.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Last Copied",
+                                   value: details.lastCopiedAt.formatted(date: .abbreviated, time: .shortened))
+                    LabeledContent("Copies", value: details.copyCount.formatted())
+                    if details.integrity == .complete {
+                        LabeledContent("Formats", value: details.formatCount.formatted())
+                        LabeledContent("Size",
+                                       value: ByteCountFormatter.string(fromByteCount: details.byteCount, countStyle: .file))
+                    } else {
+                        LabeledContent("Formats", value: LibraryItemText.integritySummary(details.integrity))
+                    }
+                } else {
+                    LabeledContent("Created", value: details.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    if let original = details.originalClip {
+                        LabeledContent("Original Clip") { originalClip(original) }
+                    }
+                    if editor.richSourceWarning {
+                        Text("Edits are saved as plain text. The original clip keeps its formats.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func originalClip(_ state: LibraryItemDetails.OriginalClip) -> some View {
+        switch state {
+        case .available(let clip):
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("Formats kept in Recent Clips")
+                Button("Show in Recent Clips") { onShow(clip) }
+                    .buttonStyle(.link)
+            }
+        case .recentlyDeleted(let until):
+            Text("Clip in Recently Deleted until \(until.formatted(date: .abbreviated, time: .omitted))")
+        case .gone:
+            Text("Clip expired")
+        }
+    }
+}
+
+/// What the library says about an item's content: in the header, the inspector and in place of a body.
+enum LibraryItemText {
+    static func integritySummary(_ integrity: ContentIntegrity) -> String {
+        switch integrity {
+        case .complete: "Original formats available"
+        case .requiresRelocation: "File access required"
+        case .recovering: "Content is still recovering"
+        case .corrupt: "Content is unavailable"
+        }
+    }
+
+    static func formats(_ count: Int) -> String {
+        count == 1 ? "1 format" : "\(count) formats"
+    }
+
+    static func snippetName(_ kind: MemoKind) -> String {
+        switch kind {
+        case .plainText: "Text snippet"
+        case .prompt: "Prompt snippet"
+        case .code: "Code snippet"
+        case .markdown: "Markdown snippet"
+        }
+    }
+
+    @MainActor @ViewBuilder
+    static func unavailableContent(_ integrity: ContentIntegrity) -> some View {
+        switch integrity {
+        case .complete:
+            EmptyView()
+        case .requiresRelocation:
+            ContentUnavailableView(
+                "File access required",
+                systemImage: "doc.badge.ellipsis",
+                description: Text("Choose the original file again before copying this clip.")
+            )
+        case .recovering:
+            ContentUnavailableView(
+                "Content is recovering",
+                systemImage: "arrow.trianglehead.2.clockwise.rotate.90",
+                description: Text("Keeptide will make this clip available after recovery completes.")
+            )
+        case .corrupt:
+            ContentUnavailableView(
+                "Content unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text("The original formats could not be verified, so this clip cannot be copied.")
+            )
+        }
+    }
+}
+
+/// What the selection allows. The toolbar's current-item group, the Item menu and a row's context menu all read
+/// this one answer. The editor speaks for the selection only while it holds the one item selected.
+struct LibrarySelectionState: Equatable {
+    struct OpenItem: Equatable {
+        var ref: ContentRef
+        var details: LibraryItemDetails?
+        var kind: MemoKind
+        var isReadOnly: Bool
+    }
+
+    var refs: [ContentRef] = []
+    var canCopy = false
+    var copyHelp = "Copy Entire Item"
+    var canSave = false
+    var saveHelp = "Save as Snippet"
+    var canFavorite = false
+    var isFavorite = false
+    var hasCollections = false
+    /// The toolbar's collection menu needs a collection to offer; the context menu also offers New Collection….
+    var canFile = false
+    /// A clip not yet saved is saved into the collection chosen.
+    var savesIntoCollection = false
+    /// Where the selected snippets are, nil for unfiled: one place is checked in the collection menus.
+    var currentCollections: Set<CollectionID?> = []
+    /// The open snippet's type; nil when no type can be chosen.
+    var kind: MemoKind?
+    /// The open clip's snippet, or the open snippet's clip while it is in Recent Clips.
+    var linked: ContentRef?
+    var canDelete = false
+
+    var favoriteTitle: String { isFavorite ? "Remove from Favorites" : "Add to Favorites" }
+    var collectionTitle: String { savesIntoCollection ? "Save to Collection" : "Move to Collection" }
+    var linkedTitle: String { linked?.facet == .history ? "Show in Recent Clips" : "Show Snippet" }
+
+    static func make(
+        entries: [LibraryEntry], open: OpenItem?, hasCollections: Bool, canDelete: Bool
+    ) -> LibrarySelectionState {
+        var state = LibrarySelectionState()
+        state.refs = entries.map(\.ref)
+        state.hasCollections = hasCollections
+        guard !entries.isEmpty else { return state }
+        let open = entries.count == 1 && open?.ref.itemID == entries[0].id ? open : nil
+        let details = open?.details
+        // A clip whose formats cannot all be read is neither copied nor saved.
+        let unreadable = (details?.integrity ?? .complete) != .complete
+        let clips = entries.filter { $0.ref.facet == .history }
+        let unsavedClips = clips.filter { clip in
+            guard let open, open.ref.itemID == clip.id else { return !clip.isMemo }
+            return open.ref.facet == .history && details?.savedSnippet == nil
+        }
+
+        state.canCopy = entries.count == 1 && !unreadable
+        state.copyHelp = entries.count > 1 ? "Select one item to copy."
+            : unreadable ? "This clip can't be copied until its content is available." : "Copy Entire Item"
+        state.canSave = clips.count == entries.count && !unsavedClips.isEmpty && !unreadable
+        state.saveHelp = unreadable ? "This clip can't be saved until its content is available."
+            : clips.count == entries.count && unsavedClips.isEmpty ? "Already in Snippets" : "Save as Snippet"
+        state.canFavorite = !unreadable
+        state.canFile = hasCollections && !unreadable
+        state.savesIntoCollection = !unsavedClips.isEmpty
+        state.canDelete = canDelete
+        if let open {
+            switch open.ref.facet {
+            case .history:
+                state.isFavorite = details?.savedSnippet?.isFavorite == true
+                if let snippet = details?.savedSnippet {
+                    state.currentCollections = [snippet.collectionID]
+                    state.linked = snippet.ref
+                }
+            case .memo:
+                state.isFavorite = details?.isFavorite == true
+                state.currentCollections = [details?.collectionID]
+                if !open.isReadOnly { state.kind = open.kind }
+                if case .available(let clip)? = details?.originalClip { state.linked = clip }
+            }
+        } else {
+            state.isFavorite = entries.allSatisfy { $0.ref.facet == .memo && $0.isFavorite }
+            state.currentCollections = Set(entries.filter { $0.ref.facet == .memo }.map(\.collectionID))
+        }
+        return state
+    }
+}
+
 enum LibraryContentPresentation {
     nonisolated static func showsTypedPreview(
         isReadOnly: Bool,
@@ -1303,6 +1676,8 @@ private struct ComposingTextField: NSViewRepresentable {
     let placeholder: String
     let isEditable: Bool
     let font: NSFont
+    /// A bordered field, as the inspector's rows have; the header's title is plain text that can be edited.
+    var isBezeled = false
     let onChange: @MainActor (String, Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(onChange: onChange) }
@@ -1316,9 +1691,11 @@ private struct ComposingTextField: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
-        field.isBordered = false
-        field.drawsBackground = false
-        field.focusRingType = .none
+        field.isBordered = isBezeled
+        field.isBezeled = isBezeled
+        if isBezeled { field.bezelStyle = .roundedBezel }
+        field.drawsBackground = isBezeled
+        field.focusRingType = isBezeled ? .default : .none
         field.placeholderString = placeholder
         field.font = font
         field.delegate = context.coordinator

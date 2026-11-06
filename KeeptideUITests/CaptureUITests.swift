@@ -88,8 +88,10 @@ final class CaptureUITests: XCTestCase {
 
         // The first copy goes back to the session's clipboard as it was copied.
         capturedRow.click()
-        let copyButton = app.buttons["CopyCapture"]
+        let copyButton = app.buttons["CopyLibraryItem"]
         XCTAssertTrue(copyButton.waitForExistence(timeout: 5))
+        expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: copyButton)
+        waitForExpectations(timeout: 5)
         copyButton.click()
         host.activate()
         host.buttons["Inspect Synthetic Pasteboard"].click()
