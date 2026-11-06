@@ -45,6 +45,9 @@ struct SettingsView: View {
                 Text(Self.confirmationMessage(historyCount: confirmation.historyCount))
             }
         }
+        .sheet(isPresented: $model.showsIgnoredApplications) {
+            IgnoredApplicationsView(preferences: model.capture)
+        }
     }
 
     private func page<Content: View>(
@@ -93,6 +96,10 @@ struct SettingsView: View {
                 Text("Larger cards give each clip more room and larger type. Space always shows the selected clip in full. Ticks play on a Force Touch trackpad while your fingers are on it.")
             }
 
+            if let directPaste = model.directPaste.state {
+                directPasteSection(directPaste)
+            }
+
             Section("Application") {
                 launchAtLoginControl
                 Button("Show Welcome", action: model.actions.showWelcome)
@@ -136,7 +143,7 @@ struct SettingsView: View {
                     Text(ignoredApplicationsDescription)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Button("Manage Ignored Apps…", action: model.actions.manageIgnoredApplications)
+                    Button("Manage Ignored Apps…") { model.presentIgnoredApplications() }
                         .accessibilityIdentifier("ManageIgnoredApplicationsButton")
                 }
             }
@@ -201,6 +208,40 @@ struct SettingsView: View {
             get: { model.shortcut.selection },
             set: { _ = model.shortcut.apply($0) }
         )
+    }
+
+    /// Whether Return can paste into the app the panel was opened from, and the one thing to do about it: allow
+    /// Keeptide, or reopen it once allowed.
+    private func directPasteSection(_ state: DirectPasteAccessState) -> some View {
+        Section {
+            LabeledContent("Paste into the app you were using") {
+                Text(Self.directPasteStatus(state))
+                    .accessibilityIdentifier("DirectPasteStatus")
+            }
+            switch state {
+            case .off:
+                Button("Turn On Direct Paste…", action: model.directPaste.turnOn)
+                    .accessibilityIdentifier("TurnOnDirectPasteButton")
+            case .awaitsReopen:
+                Button("Quit Keeptide", action: model.directPaste.quit)
+                    .help("Open Keeptide again to finish turning on direct paste.")
+                    .accessibilityIdentifier("QuitToFinishDirectPasteButton")
+            case .on:
+                EmptyView()
+            }
+        } header: {
+            Text("Direct Paste")
+        } footer: {
+            Text("Return and a double click paste the selected clip into the app you were using. This needs Keeptide in System Settings › Privacy & Security › Accessibility, and takes effect once Keeptide reopens. If Keeptide is already in that list but direct paste stays off, remove it there and add it again.")
+        }
+    }
+
+    static func directPasteStatus(_ state: DirectPasteAccessState) -> String {
+        switch state {
+        case .on: "On"
+        case .awaitsReopen: "Reopen Keeptide to finish"
+        case .off: "Off"
+        }
     }
 
     private var launchAtLoginEnabled: Binding<Bool> {

@@ -35,7 +35,6 @@ struct LibraryView: View {
     @State private var selectedScope: LibraryScope? = .recentClips
     @State private var selectedItemID: ItemID?
     @State private var selectedEntryIDs: Set<ItemID> = []
-    @State private var showsIgnoredApplications = false
     @State private var collectionEditorMode: CollectionEditorMode?
     @State private var collectionPendingDeletion: CollectionSnapshot?
     @State private var collectionFilter = ""
@@ -86,9 +85,6 @@ struct LibraryView: View {
 
     private var presentedLibrary: some View {
         libraryLayout
-        .sheet(isPresented: $showsIgnoredApplications) {
-            IgnoredApplicationsView(preferences: session.preferences)
-        }
         .sheet(isPresented: exportStatusPresentation) {
             if let coordinator = session.exportCoordinator {
                 ExportStatusView(coordinator: coordinator)
@@ -152,9 +148,6 @@ struct LibraryView: View {
         }
         .onChange(of: commands.saveRequest) { _, _ in saveCurrentEditor() }
         .onChange(of: commands.copyRequest) { _, _ in copyCurrentEditor() }
-        .onChange(of: commands.ignoredApplicationsRequest, initial: true) { _, request in
-            if request > 0 { showsIgnoredApplications = true }
-        }
         .onChange(of: commands.openRequest) { _, request in
             guard let request else { return }
             Task { await session.libraryWorkspace?.open(request.ref) }
@@ -288,7 +281,7 @@ struct LibraryView: View {
     ) -> some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(collectionColor(collection.value.color))
+                .fill(Color.collection(collection.value.color))
                 .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
             Text(collection.value.name)
@@ -321,20 +314,6 @@ struct LibraryView: View {
         return workspace.collections.filter { collection in
             collection.value.name.localizedCaseInsensitiveContains(query)
                 || selectedScope == .collection(collection.value.id)
-        }
-    }
-
-    private func collectionColor(_ value: String) -> Color {
-        switch value {
-        case "purple": .purple
-        case "pink": .pink
-        case "red": .red
-        case "orange": .orange
-        case "yellow": .yellow
-        case "green": .green
-        case "teal": .teal
-        case "gray": .gray
-        default: .blue
         }
     }
 
@@ -569,11 +548,6 @@ struct LibraryView: View {
                 .help("Undo the last collection or favorite change")
                 .accessibilityIdentifier("UndoCollectionChange")
             }
-
-            Button { showsIgnoredApplications = true } label: {
-                Label("Ignored Apps", systemImage: "hand.raised")
-            }
-            .accessibilityIdentifier("IgnoredApplicationsToolbar")
         }
     }
 
@@ -1293,101 +1267,6 @@ private struct ComposingTextField: NSViewRepresentable {
         func controlTextDidEndEditing(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
             onChange(field.stringValue, false)
-        }
-    }
-}
-
-private struct IgnoredApplicationsView: View {
-    @Bindable var preferences: CapturePreferences
-    @Environment(\.dismiss) private var dismiss
-    @State private var manualBundleID = ""
-    @State private var showsApplicationPicker = false
-    @State private var applicationPickerMessage: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Ignored Applications")
-                        .font(.title2.weight(.semibold))
-                    Text("New copies observed from these apps are skipped. Source identification is best effort.")
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-
-            if preferences.excludedApplications.isEmpty {
-                ContentUnavailableView(
-                    "No ignored apps",
-                    systemImage: "hand.raised.slash",
-                    description: Text("Choose an application or add its bundle identifier.")
-                )
-            } else {
-                List(preferences.excludedApplications, id: \.self) { bundleID in
-                    HStack {
-                        Text(bundleID).textSelection(.enabled)
-                        Spacer()
-                        Button(role: .destructive) {
-                            preferences.removeExclusion(bundleID)
-                        } label: {
-                            Image(systemName: "minus.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Remove \(bundleID)")
-                    }
-                }
-                .frame(minHeight: 150)
-            }
-
-            HStack {
-                Button("Choose Application…") { showsApplicationPicker = true }
-                TextField("Bundle identifier", text: $manualBundleID)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(addManualBundleID)
-                Button("Add", action: addManualBundleID)
-                    .disabled(manualBundleID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if let applicationPickerMessage {
-                Label(applicationPickerMessage, systemImage: "exclamationmark.triangle")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("IgnoredApplicationPickerMessage")
-            }
-        }
-        .padding(24)
-        .frame(minWidth: 560, minHeight: 360)
-        .fileImporter(
-            isPresented: $showsApplicationPicker,
-            allowedContentTypes: [.application],
-            allowsMultipleSelection: false,
-            onCompletion: handleApplicationPicker
-        )
-    }
-
-    private func addManualBundleID() {
-        let bundleID = manualBundleID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !bundleID.isEmpty else { return }
-        preferences.addExclusion(bundleID)
-        manualBundleID = ""
-    }
-
-    private func handleApplicationPicker(_ result: Result<[URL], any Error>) {
-        switch result {
-        case let .success(urls):
-            guard let url = urls.first else { return }
-            let accessed = url.startAccessingSecurityScopedResource()
-            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-            guard let bundleID = Bundle(url: url)?.bundleIdentifier else {
-                applicationPickerMessage = "The selected application does not provide a readable bundle identifier."
-                return
-            }
-            preferences.addExclusion(bundleID)
-            applicationPickerMessage = nil
-        case let .failure(error):
-            if (error as NSError).code == NSUserCancelledError { return }
-            applicationPickerMessage = "Keeptide could not read the selected application. No app was added."
         }
     }
 }

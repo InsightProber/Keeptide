@@ -849,38 +849,82 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(asked, [rows[4].id])
     }
 
-    func testDoubleClickNeverExecutes() throws {
+    func testADoubleClickActsOnTheFirstClicksClipOnceTheButtonIsUp() throws {
         let strip = makeStrip()
         let rows = makeRows(20)
         var asked: [QuickAccessRow.ID] = []
+        var activated: [Activation] = []
         var commands: [QuickAccessCommand] = []
         strip.onSelect = { asked.append($0) }
+        strip.onActivate = { activated.append(Activation(row: $0, plainText: $1)) }
         strip.onCommand = { commands.append($0) }
         strip.show(rows, selection: rows[6].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
 
-        let click = { (point: NSPoint, count: Int) in
-            strip.mouseDown(with: try self.mouse(.leftMouseDown, at: point, clickCount: count, in: strip))
-            strip.mouseUp(with: try self.mouse(.leftMouseUp, at: point, clickCount: count, in: strip))
-        }
-
         // A double click on a neighbour. The panel takes the first click and brings that clip to the middle,
-        // so the next older frame now lies under the pointer; the second click is one more on the same clip.
+        // so the next older frame now lies under the pointer; the second click is still on the first one's clip.
         let target = try rect(titled: "Row 7", in: strip)
         let point = NSPoint(x: target.midX, y: target.midY)
-        try click(point, 1)
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: point, in: strip))
+        strip.mouseUp(with: try mouse(.leftMouseUp, at: point, in: strip))
         strip.show(rows, selection: rows[7].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
         XCTAssertEqual(try midX(of: "Row 8", in: strip), point.x, accuracy: 0.5)
-        try click(point, 2)
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: point, clickCount: 2, in: strip))
+        // Nothing acts while the button is down: hiding the panel now would leave the release to the app beneath.
+        XCTAssertEqual(activated, [])
+        strip.mouseUp(with: try mouse(.leftMouseUp, at: point, clickCount: 2, in: strip))
+
         XCTAssertEqual(asked, [rows[7].id, rows[7].id])
-
-        // A double click on the clip in the middle is no different.
-        let middle = NSPoint(x: centre, y: target.midY)
-        try click(middle, 1)
-        try click(middle, 2)
-
-        XCTAssertFalse(commands.contains(.primary))
+        XCTAssertEqual(activated, [Activation(row: rows[7].id, plainText: false)])
         XCTAssertEqual(commands, [])
-        XCTAssertEqual(asked, Array(repeating: rows[7].id, count: 4))
+    }
+
+    func testAShiftDoubleClickActsAsShiftReturnAndATripleClickActsOnce() throws {
+        let strip = makeStrip()
+        let rows = makeRows(20)
+        var activated: [Activation] = []
+        strip.onActivate = { activated.append(Activation(row: $0, plainText: $1)) }
+        strip.show(rows, selection: rows[6].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let middle = NSPoint(x: centre, y: try rect(titled: "Row 6", in: strip).midY)
+
+        for count in 1...3 {
+            let modifiers: NSEvent.ModifierFlags = count == 1 ? [] : .shift
+            strip.mouseDown(with: try mouse(.leftMouseDown, at: middle, clickCount: count, modifiers: modifiers,
+                                            in: strip))
+            strip.mouseUp(with: try mouse(.leftMouseUp, at: middle, clickCount: count, modifiers: modifiers,
+                                          in: strip))
+        }
+
+        XCTAssertEqual(activated, [Activation(row: rows[6].id, plainText: true)])
+    }
+
+    func testADoubleClickWhoseFirstClickWentElsewhereDoesNothing() throws {
+        let strip = makeStrip()
+        let rows = makeRows(20)
+        var asked: [QuickAccessRow.ID] = []
+        var activated: [Activation] = []
+        strip.onSelect = { asked.append($0) }
+        strip.onActivate = { activated.append(Activation(row: $0, plainText: $1)) }
+        strip.show(rows, selection: rows[6].id, details: [:], metrics: metrics, applicationNames: ApplicationNames())
+        let middle = NSPoint(x: centre, y: try rect(titled: "Row 6", in: strip).midY)
+
+        // The first click of the run closed the preview, so only the second reaches the strip.
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: middle, clickCount: 2, in: strip))
+        strip.mouseUp(with: try mouse(.leftMouseUp, at: middle, clickCount: 2, in: strip))
+        // A click on the strip long before the run began is not its first click either.
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: middle, timestamp: 100, in: strip))
+        strip.mouseUp(with: try mouse(.leftMouseUp, at: middle, timestamp: 100, in: strip))
+        let late = 100 + NSEvent.doubleClickInterval + 1
+        strip.mouseDown(with: try mouse(.leftMouseDown, at: middle, clickCount: 2, timestamp: late, in: strip))
+        strip.mouseUp(with: try mouse(.leftMouseUp, at: middle, clickCount: 2, timestamp: late, in: strip))
+
+        // Each of those clicks is the strip's first, so it only selects the clip under the pointer.
+        XCTAssertEqual(activated, [])
+        XCTAssertEqual(asked, Array(repeating: rows[6].id, count: 3))
+    }
+
+    private struct Activation: Equatable {
+        let row: QuickAccessRow.ID
+        let plainText: Bool
     }
 
     func testScrollMovesTicksAndRespectsTheSwitch() throws {
@@ -1013,6 +1057,25 @@ final class QuickAccessStripViewTests: XCTestCase {
                                   .cycleFocus(forward: false)])
     }
 
+    func testVoiceOverNamesASnippetByWhereItIsFiled() throws {
+        let strip = makeStrip()
+        let prompts = CollectionSummary(id: CollectionID(), name: "Prompts", color: "blue", sortOrder: 0)
+        let rows = [
+            makeRow(facet: .memo, title: "Release checklist", collectionID: prompts.id, isFavorite: true),
+            makeRow(facet: .memo, title: "Loose note"),
+        ]
+        let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
+
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   collections: [prompts.id: prompts])
+
+        let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        guard children.count == 2 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        // A memo is a snippet, said with where it is filed and that it is a favorite, before the time and the title.
+        XCTAssertEqual(children[0].accessibilityLabel(), "Snippet in Prompts, favorite, \(time(rows[0])): Release checklist")
+        XCTAssertEqual(children[1].accessibilityLabel(), "Snippet, \(time(rows[1])): Loose note")
+    }
+
     func testAccessibilityLabelsAndInfoValues() throws {
         let strip = makeStrip()
         let names = ApplicationNames()
@@ -1051,7 +1114,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         // Without a known source app the label leaves out where it came from, and without details what the footer
         // would say; the marks follow the title.
         XCTAssertEqual(memo.accessibilityLabel(),
-                       "Text, \(time(rows[1])): Standup notes, Saved as Memo, Partially indexed, Text unavailable")
+                       "Text, \(time(rows[1])): Standup notes, Saved as Snippet, Partially indexed, Text unavailable")
         XCTAssertNil(memo.accessibilityValue())
         XCTAssertFalse(memo.isAccessibilitySelected())
         XCTAssertEqual(link.accessibilityLabel(), "Link, \(time(rows[2])): Clipboard Item")
@@ -2589,9 +2652,10 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     private func mouse(_ type: NSEvent.EventType, at point: NSPoint, clickCount: Int = 1,
+                       modifiers: NSEvent.ModifierFlags = [], timestamp: TimeInterval = 0,
                        in strip: NSView) throws -> NSEvent {
         try XCTUnwrap(NSEvent.mouseEvent(
-            with: type, location: strip.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+            with: type, location: strip.convert(point, to: nil), modifierFlags: modifiers, timestamp: timestamp,
             windowNumber: strip.window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: clickCount,
             pressure: type == .leftMouseUp ? 0 : 1
         ))
@@ -2657,13 +2721,16 @@ final class QuickAccessStripViewTests: XCTestCase {
         return copy
     }
 
-    private func makeRow(kind: ContentKind = .text, title: String, sourceApp: String? = nil, savedAsMemo: Bool = false,
-                         isPartiallyIndexed: Bool = false, isTextUnavailable: Bool = false) -> QuickAccessRow {
+    private func makeRow(kind: ContentKind = .text, facet: ContentFacet = .history, title: String,
+                         sourceApp: String? = nil, savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false,
+                         isTextUnavailable: Bool = false, collectionID: CollectionID? = nil,
+                         isFavorite: Bool = false) -> QuickAccessRow {
         QuickAccessRow(
-            ref: ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(),
+            ref: ContentRef(itemID: ItemID(), facet: facet, version: ContentVersion(),
                             digest: Data(repeating: 7, count: 32)),
             title: title, snippet: nil, kind: kind, sourceApp: sourceApp, date: Date(timeIntervalSince1970: 1_000),
-            savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable
+            savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
+            collectionID: collectionID, isFavorite: isFavorite
         )
     }
 }

@@ -23,6 +23,8 @@ final class QuickAccessStateTests: XCTestCase {
 
         XCTAssertEqual(state.selection.rows.map(\.title), ["newest", "middle", "oldest"])
         XCTAssertEqual(state.selection.executableSelection, state.selection.rows.first?.ref)
+        XCTAssertEqual(state.list, .all)
+        XCTAssertFalse(state.favoritesOnly)
     }
 
     func testWhitespaceOnlyQueryShowsRecentClips() async throws {
@@ -83,6 +85,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
         state.setQuery("alpha")
         state.toggleKind(.text)
+        state.setList(.snippets)
         try await settled(state)
 
         state.clearQueryAndFilters()
@@ -90,6 +93,7 @@ final class QuickAccessStateTests: XCTestCase {
 
         XCTAssertEqual(state.query, "")
         XCTAssertEqual(state.kinds, [])
+        XCTAssertEqual(state.list, .all)
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 
@@ -902,6 +906,328 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(QuickAccessStatus.empty(phase: .libraryUnavailable, notice: nil),
                        QuickAccessStatus.Message(text: "Library unavailable",
                                                  detail: "Recent clips appear here once the library opens."))
+
+        // Each list says what is missing in its own words, and points the way.
+        let prompts = QuickAccessList.collection(CollectionID())
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noContent, notice: nil, list: .snippets).text,
+                       "No snippets yet. Save a clip with ⌘S.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noContent, notice: nil, list: .snippets, favoritesOnly: true).text,
+                       "No favorites yet. Mark a snippet with ⌘D.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noContent, notice: nil, list: prompts, favoritesOnly: true,
+                                               collectionName: "Prompts").text,
+                       "No favorites in Prompts yet.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noContent, notice: nil, list: prompts, collectionName: "Prompts").text,
+                       "Nothing in Prompts yet. Switch to All (⌘[), pick a clip and press ⇧⌘M.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: nil, list: .snippets),
+                       QuickAccessStatus.Message(text: "No results in Snippets", detail: "Switch to All to search everything."))
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: nil, list: prompts, collectionName: "Prompts"),
+                       QuickAccessStatus.Message(text: "No results in Prompts", detail: "Switch to All to search everything."))
+        // Without the index a memo list beyond Snippets cannot be told, and the message says so rather than showing nothing.
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .rebuilding, list: .snippets, favoritesOnly: true).text,
+                       "Index is rebuilding — favorites are unavailable for a moment.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .searchUnavailable, list: .snippets,
+                                               favoritesOnly: true).text,
+                       "Search is unavailable — favorites need the index.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .rebuilding, list: prompts, collectionName: "Prompts").text,
+                       "Index is rebuilding — this list is unavailable for a moment.")
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .searchUnavailable, list: prompts,
+                                               collectionName: "Prompts").text,
+                       "Search is unavailable — this list needs the index.")
+        // Snippets searched while the index rebuilds show what the index has, and say it may be incomplete.
+        XCTAssertEqual(QuickAccessStatus.empty(phase: .noResults, notice: .rebuilding, list: .snippets),
+                       QuickAccessStatus.Message(text: "No results in Snippets", detail: QuickAccessStatus.rebuilding))
+    }
+
+    // MARK: Lists
+
+    func testSwitchingToSnippetsBrowsesMemoFacetsByLastUse() async throws {
+        let fixture = try makeFixture()
+        var clips: [ItemValue] = []
+        for index in 0..<4 { clips.append(try await insert("c\(index)", at: Double(index), into: fixture)) }
+        try await use(clips[0], times: 3, lastAt: Date(), in: fixture)
+        let library = LibraryService(controller: fixture.harness.controller)
+        let olderMemo = try await library.saveAsMemo(clips[1].id).ref
+        let newerMemo = try await library.saveAsMemo(clips[2].id).ref
+        try await LocalUsageStore(controller: fixture.harness.controller).record(
+            UseReceipt(ref: olderMemo, occurredAt: Date(timeIntervalSince1970: 5_000), outcome: .success),
+            now: Date(timeIntervalSince1970: 5_000)
+        )
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open(frequentWingFirstScreen: 1)
+        try await settled(state)
+        XCTAssertEqual(wing(state), ["c0"])
+
+        state.setList(.snippets)
+        try await settled(state)
+
+        XCTAssertEqual(state.list, .snippets)
+        XCTAssertFalse(state.showsRecentClips)
+        // Memos by their last use, the used one first though it was copied earlier; no frequent wing, and nothing of
+        // the clip that was never saved.
+        XCTAssertEqual(state.selection.rows.map(\.ref), [olderMemo, newerMemo])
+        XCTAssertEqual(state.selection.rows.map(\.facet), [.memo, .memo])
+        XCTAssertEqual(state.selection.frequentCount, 0)
+        XCTAssertEqual(state.selection.selectedRow?.ref, olderMemo)
+        XCTAssertFalse(state.hasMoreRows)
+    }
+
+    func testFavoritesOnlyUnderAllSwitchesToSnippets() async throws {
+        let fixture = try makeFixture()
+        let plain = try await insert("plain snippet", at: 1, into: fixture)
+        let starred = try await insert("starred snippet", at: 2, into: fixture)
+        let library = LibraryService(controller: fixture.harness.controller)
+        _ = try await library.saveAsMemo(plain.id)
+        let starredMemo = try await library.saveAsMemo(starred.id, isFavorite: true).ref
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.toggleFavoritesOnly()
+        try await settled(state)
+
+        XCTAssertEqual(state.list, .snippets)
+        XCTAssertTrue(state.favoritesOnly)
+        XCTAssertTrue(state.hasFiltersOrQuery)
+        XCTAssertEqual(state.selection.rows.map(\.ref), [starredMemo])
+        XCTAssertEqual(state.selection.rows.first?.isFavorite, true)
+    }
+
+    func testGoingToAllClearsFavoritesOnly() async throws {
+        let fixture = try makeFixture()
+        let clip = try await insert("clip", at: 1, into: fixture)
+        _ = try await LibraryService(controller: fixture.harness.controller).saveAsMemo(clip.id, isFavorite: true)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.toggleFavoritesOnly()
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.facet), [.memo])
+
+        state.setList(.all)
+        try await settled(state)
+
+        XCTAssertEqual(state.list, .all)
+        XCTAssertFalse(state.favoritesOnly)
+        XCTAssertTrue(state.showsRecentClips)
+        XCTAssertEqual(state.selection.rows.map(\.facet), [.history])
+        XCTAssertEqual(state.selection.rows.first?.savedAsMemo, true)
+    }
+
+    func testCollectionListScopesSearch() async throws {
+        let fixture = try makeFixture()
+        let prompts = try await CollectionService(controller: fixture.harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let filed = try await insert("filed prompt", at: 1, into: fixture)
+        let unfiled = try await insert("unfiled prompt", at: 2, into: fixture)
+        let library = LibraryService(controller: fixture.harness.controller)
+        let filedMemo = try await library.saveAsMemo(filed.id, collectionID: prompts.value.id).ref
+        _ = try await library.saveAsMemo(unfiled.id)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        try await SearchTestSupport.waitUntil { state.collections.map(\.name) == ["Prompts"] }
+
+        state.setList(.collection(prompts.value.id))
+        try await settled(state)
+        XCTAssertEqual(state.collectionName, "Prompts")
+        XCTAssertEqual(state.selection.rows.map(\.ref), [filedMemo])
+        XCTAssertEqual(state.selection.rows.first?.collectionID, prompts.value.id)
+
+        // A query searches within the collection.
+        state.setQuery("prompt")
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows.map(\.ref), [filedMemo])
+        state.setQuery("unfiled")
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.phase, .noResults)
+    }
+
+    func testListResetsOnReopen() async throws {
+        let fixture = try makeFixture()
+        try await insert("clip", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.setList(.snippets)
+        state.toggleFavoritesOnly()
+        try await settled(state)
+        XCTAssertEqual(state.list, .snippets)
+        XCTAssertTrue(state.favoritesOnly)
+
+        state.close()
+        state.open()
+        try await settled(state)
+
+        XCTAssertEqual(state.list, .all)
+        XCTAssertFalse(state.favoritesOnly)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["clip"])
+    }
+
+    func testIndexRebuildFallsBackForSnippetsOnly() async throws {
+        let fixture = try makeFixture()
+        let prompts = try await CollectionService(controller: fixture.harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        _ = try await insert("clip", at: 1, into: fixture)
+        let saved = try await insert("saved", at: 2, into: fixture)
+        let savedMemo = try await LibraryService(controller: fixture.harness.controller)
+            .saveAsMemo(saved.id, collectionID: prompts.value.id).ref
+        try await fixture.harness.consumer.synchronize()
+        let rebuilding = QuickAccessServices(
+            repository: fixture.services.repository,
+            search: SearchService(index: fixture.harness.index, status: SearchIndexStatus(.rebuilding)),
+            paste: fixture.services.paste, preview: fixture.services.preview, usage: fixture.services.usage,
+            collections: fixture.services.collections
+        )
+        let state = QuickAccessState(services: { rebuilding })
+        state.open()
+        try await settled(state)
+        XCTAssertNil(state.indexNotice)
+        XCTAssertEqual(state.selection.rows.map(\.title), ["saved", "clip"])
+
+        state.setList(.snippets)
+        try await settled(state)
+        // Memos are read from the store while the index rebuilds, and the toolbar says so.
+        XCTAssertEqual(state.selection.rows.map(\.ref), [savedMemo])
+        XCTAssertEqual(state.phase, .results)
+        XCTAssertEqual(state.indexNotice, .rebuilding)
+
+        state.setList(.collection(prompts.value.id))
+        try await settled(state)
+        // A collection cannot be told apart without the index: an empty list that says why, not a wrong one.
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.phase, .noResults)
+        XCTAssertEqual(state.indexNotice, .rebuilding)
+    }
+
+    func testIndexUnavailableFallsBackForSnippetsOnly() async throws {
+        let fixture = try makeFixture()
+        let prompts = try await CollectionService(controller: fixture.harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        _ = try await insert("clip", at: 1, into: fixture)
+        let saved = try await insert("saved", at: 2, into: fixture)
+        let savedMemo = try await LibraryService(controller: fixture.harness.controller)
+            .saveAsMemo(saved.id, collectionID: prompts.value.id).ref
+        let unavailable = QuickAccessServices(
+            repository: fixture.services.repository,
+            search: SearchService(index: nil, status: SearchIndexStatus(.unavailable)),
+            paste: fixture.services.paste, preview: fixture.services.preview, usage: fixture.services.usage,
+            collections: fixture.services.collections
+        )
+        let state = QuickAccessState(services: { unavailable })
+        state.open()
+        try await settled(state)
+        XCTAssertNil(state.indexNotice)
+
+        state.setList(.snippets)
+        try await settled(state)
+        // Memos come from the store while the index is unavailable: not a false "no snippets yet".
+        XCTAssertEqual(state.selection.rows.map(\.ref), [savedMemo])
+        XCTAssertEqual(state.phase, .results)
+        XCTAssertEqual(state.indexNotice, .searchUnavailable)
+
+        state.setList(.collection(prompts.value.id))
+        try await settled(state)
+        XCTAssertEqual(state.selection.rows, [])
+        XCTAssertEqual(state.phase, .noResults)
+        XCTAssertEqual(state.indexNotice, .searchUnavailable)
+    }
+
+    func testAFailedCollectionsReadKeepsTheListAndSaysNothing() async throws {
+        let fixture = try makeFixture()
+        try await insert("clip", at: 1, into: fixture)
+        let prompts = CollectionID()
+        let failing = FailingCollections()
+        var services = fixture.services
+        services.collections = failing
+        let state = QuickAccessState(services: { services })
+        let announced = Announcements()
+        state.announce = { announced.messages.append($0) }
+        state.open()
+        try await settled(state)
+        try await SearchTestSupport.waitUntil { state.collectionsUnavailable }
+        state.setList(.collection(prompts))
+        try await settled(state)
+
+        state.collectionsDidChange()
+        try await SearchTestSupport.waitUntil { await failing.calls == 2 }
+        try await Task.sleep(for: .milliseconds(50))
+        try await settled(state)
+
+        // A read that fails says nothing about the collection: the list stays, and nothing is announced.
+        XCTAssertEqual(state.list, .collection(prompts))
+        XCTAssertTrue(state.collectionsUnavailable)
+        XCTAssertEqual(announced.messages, [])
+    }
+
+    /// Switching lists cancels the previous list's load, so its stream ends before a page reaches the state; the
+    /// generation guard covers a page already on its way. What is checked is the end state: the list chosen last.
+    func testLateResultsFromPreviousListAreDropped() async throws {
+        let fixture = try makeFixture()
+        let clip = try await insert("clip", at: 1, into: fixture)
+        _ = try await LibraryService(controller: fixture.harness.controller).saveAsMemo(clip.id)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.setList(.snippets)
+        state.setList(.all)
+        try await settled(state)
+        try await searchesFinished(in: fixture)
+
+        XCTAssertEqual(state.list, .all)
+        XCTAssertEqual(state.selection.rows.map(\.facet), [.history])
+    }
+
+    func testUpdateRowMarksSavedCard() async throws {
+        let fixture = try makeFixture()
+        try await insert("keep", at: 1, into: fixture)
+        var services = fixture.services
+        services.library = LibraryService(controller: fixture.harness.controller)
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        XCTAssertEqual(state.selection.selectedRow?.savedAsMemo, false)
+
+        await state.saveSelection(try XCTUnwrap(state.copyTarget))
+
+        // The card says it was saved at once, without waiting for the next opening.
+        XCTAssertEqual(state.saveMessage, "Saved to Snippets")
+        XCTAssertEqual(state.selection.selectedRow?.savedAsMemo, true)
+        XCTAssertEqual(state.selection.rows.count, 1)
+
+        await state.undoSaveSelection()
+
+        XCTAssertEqual(state.saveMessage, "Save undone")
+        XCTAssertEqual(state.selection.selectedRow?.savedAsMemo, false)
+    }
+
+    func testRemovedCollectionFallsBackToSnippets() async throws {
+        let fixture = try makeFixture()
+        let collections = CollectionService(controller: fixture.harness.controller)
+        let prompts = try await collections.create(CollectionDraft(name: "Prompts", color: "blue"))
+        try await insert("clip", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        let announced = Announcements()
+        state.announce = { announced.messages.append($0) }
+        state.open()
+        try await settled(state)
+        try await SearchTestSupport.waitUntil { state.collections.map(\.name) == ["Prompts"] }
+        state.setList(.collection(prompts.value.id))
+        try await settled(state)
+
+        _ = try await collections.delete(prompts)
+        state.collectionsDidChange()
+        try await SearchTestSupport.waitUntil { state.collections.isEmpty }
+        try await settled(state)
+
+        XCTAssertEqual(state.list, .snippets)
+        XCTAssertEqual(announced.messages, ["Collection removed"])
     }
 
     // MARK: The frequent wing
@@ -1735,7 +2061,7 @@ final class QuickAccessStateTests: XCTestCase {
         state.open()
         try await settled(state)
         XCTAssertEqual(state.directPaste, .copy(.notPermitted))
-        XCTAssertNil(state.actions.hint)
+        XCTAssertEqual(state.actions.hint, "Direct paste is off")
 
         // Access is granted in System Settings, which this run of Keeptide cannot see yet.
         state.requestDirectPasteAccess()
@@ -1834,7 +2160,8 @@ final class QuickAccessStateTests: XCTestCase {
         let services = QuickAccessServices(repository: repository,
                                            search: withoutSearch ? nil : search ?? scanning ?? harness.service,
                                            paste: paste, preview: withoutPreview ? nil : preview,
-                                           usage: standIn ?? usage)
+                                           usage: standIn ?? usage,
+                                           collections: CollectionService(controller: harness.controller))
         return Fixture(harness: harness, board: board, services: services)
     }
 
@@ -1929,6 +2256,21 @@ private extension QuickAccessState {
 @MainActor
 private final class ServicesBox {
     var services: QuickAccessServices?
+}
+
+@MainActor
+private final class Announcements {
+    var messages: [String] = []
+}
+
+/// A read of the collections that always fails, and counts how often it was asked.
+private actor FailingCollections: QuickAccessCollections {
+    private(set) var calls = 0
+
+    func collections() async throws -> [CollectionSummary] {
+        calls += 1
+        throw StoreError.closed
+    }
 }
 
 @MainActor

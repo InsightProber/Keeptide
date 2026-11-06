@@ -7,7 +7,9 @@ import XCTest
 /// with.
 ///
 /// Whether Keeptide may send ⌘V depends on whether this build has Accessibility access, which no test can grant. The
-/// two paste tests skip when it has not, and the copy test skips when it has.
+/// two paste tests skip when it has not, and the copy test skips when it has. Access cannot change during a run, so once
+/// one test has opened the panel and seen which case this is, a later test that covers the other case skips before it
+/// launches anything: opening the panel over the host takes some fifty seconds on CI.
 ///
 /// Every key goes through the host, which stays in front, and no Keeptide element is clicked: that would activate
 /// Keeptide. The panel takes the keys without activating Keeptide, so the host never sees them, and XCUITest waits
@@ -18,6 +20,8 @@ final class DirectPasteHostUITests: XCTestCase {
     private static let notAuthorized = "Direct paste is not authorized for this build. "
         + "Grant Keeptide in System Settings › Privacy & Security › Accessibility, then run again."
     private static let authorized = "Direct paste is authorized on this Mac; this test covers builds without it."
+    /// Whether this build may paste directly, as the first test to open the panel found it; nil until one has.
+    private static var directPasteAuthorized: Bool?
 
     private var sessionID: UUID?
     private var application: XCUIApplication?
@@ -33,6 +37,7 @@ final class DirectPasteHostUITests: XCTestCase {
     }
 
     func testReturnPastesOnceIntoTheHostWhenAuthorized() throws {
+        if Self.directPasteAuthorized == false { throw XCTSkip(Self.notAuthorized) }
         let (app, host, primaryAction) = openPanelOverHost()
         guard primaryAction.hasPrefix("Paste into") else { throw XCTSkip(Self.notAuthorized) }
 
@@ -44,6 +49,7 @@ final class DirectPasteHostUITests: XCTestCase {
     }
 
     func testShiftReturnStillSendsOnlyCommandV() throws {
+        if Self.directPasteAuthorized == false { throw XCTSkip(Self.notAuthorized) }
         let (app, host, primaryAction) = openPanelOverHost()
         guard primaryAction.hasPrefix("Paste into") else { throw XCTSkip(Self.notAuthorized) }
 
@@ -56,6 +62,7 @@ final class DirectPasteHostUITests: XCTestCase {
     }
 
     func testWithoutAuthorizationReturnCopiesAndSendsNothing() throws {
+        if Self.directPasteAuthorized == true { throw XCTSkip(Self.authorized) }
         let (app, host, primaryAction) = openPanelOverHost()
         guard primaryAction == "Copy" else { throw XCTSkip(Self.authorized) }
 
@@ -124,6 +131,11 @@ final class DirectPasteHostUITests: XCTestCase {
         XCTAssertTrue(primaryAction.waitForExistence(timeout: 5), app.debugDescription)
         let label = primaryAction.label
         XCTContext.runActivity(named: "Return does: \(label)") { _ in }
+        if label.hasPrefix("Paste into") {
+            Self.directPasteAuthorized = true
+        } else if label == "Copy" {
+            Self.directPasteAuthorized = false
+        }
         return (app, host, label)
     }
 

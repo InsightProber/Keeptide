@@ -386,8 +386,9 @@ final class QuickAccessBandTests: XCTestCase {
             let icons = try ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"].map {
                 try sectionLabel($0, of: strip)
             }
-            // Each icon's ink, in its own coordinates; it is the same wherever the icon stands.
-            let inks = try icons.map { try inkPoints(of: $0) }
+            // Each icon's ink, in its own coordinates; it is the same wherever the icon stands. Only the ink's edge can
+            // be nearest a corner: from a pixel with ink all round it, a neighbour lies closer to anything outside.
+            let inks = try icons.map { try inkEdgePoints(of: $0) }
             let divider = try XCTUnwrap(dividerView(in: strip), name)
             let rows = makeWing(frequent: 20, recent: 30)
             var nearAnEnd = 0
@@ -411,9 +412,20 @@ final class QuickAccessBandTests: XCTestCase {
                     // Only an icon this close to an end comes anywhere near its corner.
                     let corner = frame.midX < band.midX ? corners.left : corners.right
                     guard frame.minX - band.minX < 70 || band.maxX - frame.maxX < 70 else { continue }
-                    let nearest = ink.map { icon.convert($0, to: nil) }.map { pixel in
-                        corner.map { hypot($0.x - pixel.x, $0.y - pixel.y) }.min() ?? 0
-                    }.min() ?? 0
+                    // Three conversions give the icon's place in the window, which then places every pixel of its ink.
+                    let origin = icon.convert(NSPoint.zero, to: nil)
+                    let across = icon.convert(NSPoint(x: 1, y: 0), to: nil)
+                    let up = icon.convert(NSPoint(x: 0, y: 1), to: nil)
+                    var nearestSquared = CGFloat.infinity
+                    for point in ink {
+                        let x = origin.x + point.x * (across.x - origin.x) + point.y * (up.x - origin.x)
+                        let y = origin.y + point.x * (across.y - origin.y) + point.y * (up.y - origin.y)
+                        for outline in corner {
+                            let dx = outline.x - x, dy = outline.y - y
+                            nearestSquared = min(nearestSquared, dx * dx + dy * dy)
+                        }
+                    }
+                    let nearest = nearestSquared.isFinite ? nearestSquared.squareRoot() : 0
                     // From the nearest pixel's edge rather than its middle.
                     XCTAssertGreaterThanOrEqual(nearest - 0.5 / Picture.scale, 8, rest)
                 }
@@ -586,12 +598,12 @@ final class QuickAccessBandTests: XCTestCase {
                                                             width: rect.width, height: rect.height), to: nil)
     }
 
-    /// The middle of each pixel a section icon inks, as SwiftUI draws the icon's view in a frame as large as the icon,
-    /// in the icon's own coordinates.
-    private func inkPoints(of label: NSHostingView<StripSectionLabel>) throws -> [NSPoint] {
+    /// The middle of each pixel on the edge of a section icon's ink, as SwiftUI draws the icon's view in a frame as large
+    /// as the icon, in the icon's own coordinates.
+    private func inkEdgePoints(of label: NSHostingView<StripSectionLabel>) throws -> [NSPoint] {
         let size = label.bounds.size
         let picture = try Picture(label.rootView.frame(width: size.width, height: size.height))
-        return picture.inkPixels.map { pixel in
+        return picture.inkEdgePixels.map { pixel in
             let x = (CGFloat(pixel.x) + 0.5) / Picture.scale, y = (CGFloat(pixel.y) + 0.5) / Picture.scale
             return NSPoint(x: x, y: label.isFlipped ? y : size.height - y)
         }
@@ -721,6 +733,18 @@ private struct Picture {
     /// Every pixel with ink in it, by its column from the left and its row from the top.
     var inkPixels: [(x: Int, y: Int)] {
         (0..<height).flatMap { y in (0..<width).filter { hasInk($0, y) }.map { (x: $0, y: y) } }
+    }
+
+    /// The pixels of `inkPixels` with no ink in at least one of their eight neighbours, or on the picture's border.
+    var inkEdgePixels: [(x: Int, y: Int)] {
+        inkPixels.filter { pixel in
+            (-1...1).contains { dy in
+                (-1...1).contains { dx in
+                    let x = pixel.x + dx, y = pixel.y + dy
+                    return !(0..<width).contains(x) || !(0..<height).contains(y) || !hasInk(x, y)
+                }
+            }
+        }
     }
 
     /// How much the ink covers, in square points, as if it were drawn opaque: each pixel's alpha over the strongest

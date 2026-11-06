@@ -234,7 +234,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(service.registerCalls, 0)
     }
 
-    func testSettingsIgnoredApplicationsActionOpensTheExistingLibrarySheet() throws {
+    func testManagingIgnoredAppsFromSettingsDoesNotOpenTheLibrary() throws {
         let suiteName = "AppLaunchTests.ignoredApplications.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
         addTeardownBlock { defaults.removePersistentDomain(forName: suiteName) }
@@ -252,12 +252,12 @@ final class AppLaunchTests: XCTestCase {
         )
         let library = environment.libraryWindowController
         addTeardownBlock { library.close() }
-        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 0)
+        XCTAssertFalse(environment.settingsModel.showsIgnoredApplications)
 
-        environment.settingsModel.actions.manageIgnoredApplications()
+        environment.settingsModel.presentIgnoredApplications()
 
-        XCTAssertEqual(library.commands.ignoredApplicationsRequest, 1)
-        XCTAssertTrue(library.window?.isVisible == true)
+        XCTAssertTrue(environment.settingsModel.showsIgnoredApplications)
+        XCTAssertNotEqual(library.window?.isVisible, true)
     }
 
     func testQuickAccessDoesNotActivateTheApplicationOrHideAnUnfinishedSession() throws {
@@ -2162,6 +2162,36 @@ final class AppLaunchTests: XCTestCase {
         controller.state.close()
     }
 
+    func testDoubleClickingTheOlderClipPastesItLikeReturn() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true,
+                                                               system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        _ = try await toolbarSaying(.action(title: "Paste into TextEdit", enabled: true, hint: nil), in: controller)
+        let strip = try await clipStrip(in: window)
+        let older = try frame(of: "older", in: strip)
+        let point = strip.convert(NSPoint(x: older.midX, y: older.midY), to: nil)
+        let click = { (type: NSEvent.EventType, count: Int) in
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                             windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                             clickCount: count, pressure: type == .leftMouseUp ? 0 : 1))
+        }
+
+        // The first click selects the older clip; the second, once released, pastes it into TextEdit.
+        strip.mouseDown(with: try click(.leftMouseDown, 1))
+        strip.mouseUp(with: try click(.leftMouseUp, 1))
+        strip.mouseDown(with: try click(.leftMouseDown, 2))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(pasting.sent, [], "Nothing is sent while the button is down")
+        XCTAssertTrue(window.isVisible)
+        strip.mouseUp(with: try click(.leftMouseUp, 2))
+
+        try await SearchTestSupport.waitUntil { pasting.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "older")
+        XCTAssertFalse(window.isVisible)
+    }
+
     func testRightClickingTheOlderClipCopiesItOrNothing() async throws {
         let (controller, board) = try await makePanelWithClips(["older", "newer"])
         let window = try XCTUnwrap(controller.window)
@@ -3154,6 +3184,36 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil(timeout: .seconds(3)) { !controller.toast.isVisible }
     }
 
+    func testEscapeClearsAChosenListBeforeFoldingTheSearch() {
+        // A list other than All narrows the panel as a filter does: Escape takes it along with the query and filters,
+        // after the preview and before folding the search.
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasQuery: false, hasFilters: false,
+                                                      hasList: true, isSearchExpanded: true),
+                       .clearQuery)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasQuery: false, hasFilters: false,
+                                                      hasList: false, isSearchExpanded: true),
+                       .foldSearch)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, isPreviewExpanded: true, hasQuery: false,
+                                                      hasList: true),
+                       .collapsePreview)
+    }
+
+    func testEscapeFromTheCardsClearsAChosenListBeforeClosing() async throws {
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        _ = try searchEditor(in: controller)
+        controller.state.setList(.snippets)
+        try await SearchTestSupport.waitUntil { controller.state.phase != .loading }
+        XCTAssertEqual(controller.state.list, .snippets)
+
+        // From the cards, Escape peels the list as it peels a filter, and the panel stays open with the clips back.
+        controller.perform(.escape)
+        try await SearchTestSupport.waitUntil { controller.state.phase != .loading }
+
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["newer", "older"])
+    }
+
     func testEscapeCancelsTheReviewBeforeThePreview() {
         // The card lies in the preview's place, over it: Escape takes the card first, whatever else is open.
         XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: true, isPreviewExpanded: true,
@@ -3948,6 +4008,41 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(newSnippets, 2)
     }
 
+    func testSettingsSaysWhetherDirectPasteIsOnAndReadsItAgainWhenKeeptideIsActive() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["copy me"], into: harness)
+        let fake = FakeDirectPasteSystem()
+        fake.permitted = false
+        let panel = try makePanel(over: harness, pasteboard: board, system: fake.system)
+        let environment = AppEnvironment(makePanel: { panel })
+        addTeardownBlock { panel.close() }
+        var alerts = 0
+        environment.runDirectPasteAlert = { _ in
+            alerts += 1
+            return .alertFirstButtonReturn
+        }
+        environment.activateApp = {}
+        XCTAssertTrue(environment.panelController === panel)
+        let directPaste = environment.settingsModel.directPaste
+
+        // Coming to Keeptide reads the state: off, as nothing allowed it yet.
+        environment.applicationDidBecomeActive()
+        XCTAssertEqual(directPaste.state, .off)
+
+        // Settings turns it on as the panel's Enable Direct Paste… does, and the grant waits for Keeptide to reopen.
+        directPaste.turnOn()
+        XCTAssertEqual(alerts, 1)
+        XCTAssertEqual(fake.accessRequests, 1)
+        XCTAssertEqual(directPaste.state, .awaitsReopen)
+
+        // Reopened with access, Keeptide reads it again when it becomes active.
+        fake.permitted = true
+        environment.applicationDidBecomeActive()
+        XCTAssertEqual(directPaste.state, .on)
+    }
+
     func testEnableDirectPasteExplainsWhatItTakesBeforeAskingForAccess() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -4454,13 +4549,20 @@ final class AppLaunchTests: XCTestCase {
     /// the ones VoiceOver reads, are looked at; of a clip shown in both wings, the leftmost.
     private func frame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
         let frames = framesOnScreen(in: strip)
-        let frame = try XCTUnwrap(frames.first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true }, title)
+        let frame = try XCTUnwrap(frames.first { Self.labels($0, title) }, title)
         return strip.convert(frame.bounds, from: frame)
+    }
+
+    /// Whether a frame's VoiceOver label names the clip `title`: the title ends the label, or its marks follow it, as
+    /// "Saved as Snippet" does on a clip just saved.
+    private static func labels(_ frame: NSView, _ title: String) -> Bool {
+        guard let label = frame.accessibilityLabel() else { return false }
+        return label.hasSuffix(": \(title)") || label.contains(": \(title), ")
     }
 
     /// The resting drawn face, including the host layer's centered scale but no running film spring.
     private func drawnFrame(of title: String, in strip: QuickAccessStripView) throws -> NSRect {
-        let host = try XCTUnwrap(framesOnScreen(in: strip).first { $0.accessibilityLabel()?.hasSuffix(": \(title)") == true })
+        let host = try XCTUnwrap(framesOnScreen(in: strip).first { Self.labels($0, title) })
         let scale = host.layer?.transform.m11 ?? 1
         return StripLayout.scaled(try frame(of: title, in: strip), by: scale)
     }

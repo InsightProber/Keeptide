@@ -42,10 +42,10 @@ snippets in a native library.
 - **Fast local search.** Start typing to search your clipboard history,
   including one- and two-character Chinese queries. Filter by text, links,
   images or files.
-- **Paste where you were.** Return pastes the clip into the window you came
-  from, or copies it when direct paste is off. ⇧Return uses plain text. When
-  that window changed, or anything is uncertain, Keeptide copies instead and
-  says so.
+- **Paste where you were.** Return, or a double click, pastes the clip into
+  the window you came from, or copies it when direct paste is off. ⇧Return uses
+  plain text. When that window changed, or anything is uncertain, Keeptide
+  copies instead and says so.
 - **Careful with terminals.** Text pasted into a terminal is plain text without
   its trailing newline. A multi-line command, or one with control or invisible
   characters, is confirmed first. Keeptide never runs commands.
@@ -81,12 +81,15 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 3. **Press ⇧⌘V** to open quick access, or choose **Open Quick Access** from the
    menu-bar menu.
 4. **Pick a clip.** Press ← or →, swipe on the trackpad, or type to search.
-5. **Press Return** to paste the clip into the app you came from. Without
-   direct paste, Return copies the clip; press ⌘V to paste it yourself.
+5. **Press Return**, or double-click the clip, to paste it into the app you
+   came from. Without direct paste, Return copies the clip; press ⌘V to paste
+   it yourself.
 6. **Optional: turn on direct paste.** Choose **Enable Direct Paste…** from the
-   actions menu (⌘K), then allow Keeptide in **System Settings › Privacy &
-   Security › Accessibility**. Keeptide sends the paste; it cannot confirm that
-   the app received it.
+   actions menu (⌘K), or **Turn On Direct Paste…** in **Settings › General**,
+   then allow Keeptide in **System Settings › Privacy & Security ›
+   Accessibility** and reopen Keeptide. **Settings › General** shows whether
+   direct paste is on. Keeptide sends the paste; it cannot confirm that the app
+   received it.
 
 ### Quick access keys
 
@@ -96,6 +99,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ← → | Move to the previous or next clip |
 | Typing | Search your clipboard history |
 | Return | Paste into the app you came from, or copy |
+| Double-click | Do what Return does with the clip you double-click |
 | ⇧Return | Paste or copy as plain text |
 | Space or ⌘Y | Show or hide a larger preview |
 | ⌘K or right-click | Show every action for the selected clip |
@@ -131,7 +135,7 @@ Choose **Settings…** from the menu-bar menu.
 
 | Tab | What you can change |
 | --- | --- |
-| General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, opening at login, the welcome window and library export |
+| General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, whether direct paste is on, opening at login, the welcome window and library export |
 | Shortcuts | The quick access shortcut: ⇧⌘V, ⌥⌘V, ⌃⌘V or off |
 | Privacy | Ignored apps, how long to keep clipboard history (from one day to forever) and storage warnings |
 | iCloud | Shows that iCloud saving is not available in this build |
@@ -211,7 +215,11 @@ python3 scripts/package_dmg.py --version 0.1.0-rc.1 --build-number 1 --output .l
 The output folder must not exist yet. The disk image holds the app, an
 Applications shortcut, installation notes, and the project license and
 notices. **These are ad-hoc-signed test builds, not Developer ID-signed or
-notarized releases.** Packaging does not enable iCloud.
+notarized releases.** Packaging does not enable iCloud. macOS treats each newly
+installed test build as a different app, so an earlier build's Accessibility
+access does not carry over: if **Settings › General** says direct paste is off
+although Keeptide is listed in Accessibility, remove it from the list, add it
+again and reopen Keeptide.
 
 - Publishing a GitHub Release, tagged like `v0.1.0` or `v0.1.0-rc.1` on a
   commit already in `main`, makes the **Release DMG** workflow attach the disk
