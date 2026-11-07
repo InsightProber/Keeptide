@@ -364,16 +364,14 @@ struct StripFrameView: View {
     /// card and as much taller or shorter as the card is. None without an accent: the header stays neutral.
     @ViewBuilder
     private var wash: some View {
-        if let accent {
-            let opacity = Self.washOpacity(dark: isDark, increasedContrast: increasedContrast)
-            LinearGradient(stops: [.init(color: accent.color.opacity(opacity.top), location: 0),
-                                   .init(color: accent.color.opacity(opacity.middle), location: 0.58),
-                                   .init(color: accent.color.opacity(0), location: 1)],
-                           startPoint: .top, endPoint: .bottom)
-                .frame(height: Self.washHeight(metrics))
-                .frame(maxHeight: .infinity, alignment: .top)
-                .allowsHitTesting(false)
-        }
+        if let accent { CardWash(accent: accent, height: Self.washHeight(metrics)) }
+    }
+
+    /// The card's own colour, and the line inside its edge, for a picture of a card drawn elsewhere, such as the
+    /// Settings window's miniature of the strip.
+    nonisolated static func paper(dark: Bool) -> Color { Palette.paper(dark) }
+    nonisolated static func edge(dark: Bool, increasedContrast: Bool) -> Color {
+        Palette.edge(dark, increasedContrast: increasedContrast)
     }
 
     /// The wash's strength at the card's top, and 58 percent of the way down it: 30 and 13 percent in dark mode, 22
@@ -687,6 +685,28 @@ struct StripFrameView: View {
                     .fill(Palette.separator(isDark))
                     .frame(height: 1)
             }
+    }
+}
+
+/// A card's accent washing in from its top: `height` tall from the top of the room it is given, from the strength
+/// `StripFrameView.washOpacity` gives at the top, through its middle strength 58 percent of the way down, to nothing at
+/// the bottom.
+struct CardWash: View {
+    let accent: CardAccent
+    let height: CGFloat
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        let opacity = StripFrameView.washOpacity(dark: colorScheme == .dark, increasedContrast: contrast == .increased)
+        LinearGradient(stops: [.init(color: accent.color.opacity(opacity.top), location: 0),
+                               .init(color: accent.color.opacity(opacity.middle), location: 0.58),
+                               .init(color: accent.color.opacity(0), location: 1)],
+                       startPoint: .top, endPoint: .bottom)
+            .frame(height: height)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .allowsHitTesting(false)
     }
 }
 

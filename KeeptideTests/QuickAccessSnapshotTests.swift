@@ -553,7 +553,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
     }
 
     /// Frequent clips, each saying how often it was used where the time would be: a checklist used 12 times, three files
-    /// saved as a memo and used 1,234 times, whose marks and count leave a small card's colour band too little room,
+    /// saved as a memo and used 1,234 times, whose marks and count leave a small card's header too little room,
     /// and a page used 3 times.
     private func frequentRow(now: Date) -> [Card] {
         let checklist = "Rebase checklist: fetch, rebase onto main, run tests, push with lease."

@@ -427,38 +427,54 @@ extension CardSize {
     }
 }
 
-/// A small, inert picture of the strip as it opens: the newest card selected at the band's left end, which is hard,
-/// the next one beside it, and a third cut off by the right edge. Each card has its colour band, as the strip's cards
-/// take theirs from their apps' icons. It is the same for every card size.
+/// A small, inert picture of the strip as it opens, on the band's opaque tray: the newest card selected at the band's
+/// left end, which is hard, the next one beside it, and a third cut off by the right edge. Each card's accent washes in
+/// from its top, as the strip's cards take theirs from their collections or their apps, and the light in the selected
+/// card's accent lies behind it. It is the same for every card size.
 private struct StripPreview: View {
     private static let card = CGSize(width: 52, height: 57)
     /// The medium card the miniature is drawn after, and how much smaller the miniature is.
     private static let medium = StripLayout.cardDimensions(for: .medium)
     private static let scale = card.width / medium.frame.width
-    /// A card's colour band and its corners, in proportion to the medium card's.
-    private static let colourBand = (medium.header * scale).rounded()
+    /// A card's corners, its wash and the light behind the selected card, in proportion to a medium card's.
     private static let cornerRadius = medium.radius * scale
-    /// Bands of an orange app, a yellow one and a blue one, which show on the band in either appearance.
-    private static let tints: [UInt32] = [0xB85410, 0xE3B528, 0x2563C9]
+    private static let wash = (70 * scale).rounded()
+    private static let light = CGSize(width: QuickAccessGlow.mediumSize.width * scale,
+                                      height: QuickAccessGlow.mediumSize.height * scale)
+    /// The accents of an orange app, a yellow one and a blue one.
+    private static let accents: [HeaderTint.RGB] = [0xB85410, 0xE3B528, 0x2563C9].map { HeaderTint.RGB(hex: $0) }
     private static let gap: CGFloat = 8
     /// How far in from the band's edges the first card rests.
     private static let inset: CGFloat = 10
     /// The band shows two cards and half of a third.
     private static let band = CGSize(width: inset + 2 * (card.width + gap) + card.width / 2,
                                      height: card.height + 2 * inset)
+    private static let bandRadius: CGFloat = 12
 
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    private var isDark: Bool { colorScheme == .dark }
+    private var increasedContrast: Bool { contrast == .increased }
 
     var body: some View {
         HStack(spacing: Self.gap) {
             ForEach(0..<3, id: \.self) { index in
-                VStack(spacing: 0) {
-                    HeaderTint.RGB(hex: Self.tints[index]).color
-                        .frame(height: Self.colourBand)
-                    HeaderTint.RGB(hex: colorScheme == .dark ? 0x2C2C2E : 0xFFFFFF).color
+                ZStack {
+                    StripFrameView.paper(dark: isDark)
+                    CardWash(accent: .app(Self.accents[index]), height: Self.wash)
                 }
                 .frame(width: Self.card.width, height: Self.card.height)
                 .clipShape(.rect(cornerRadius: Self.cornerRadius, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+                        .strokeBorder(StripFrameView.edge(dark: isDark, increasedContrast: increasedContrast),
+                                      lineWidth: 0.5)
+                }
+                // A light card stands on the light tray by a faint shadow, as in the strip.
+                .shadow(color: isDark ? .clear : Color(.sRGB, red: 20 / 255, green: 24 / 255, blue: 40 / 255,
+                                                       opacity: 0.07),
+                        radius: 2.5, y: 1.5)
                 .overlay {
                     // The ring keeps to the card's corners, 4 pt out.
                     if index == 0 {
@@ -471,9 +487,29 @@ private struct StripPreview: View {
         }
         .padding(.leading, Self.inset)
         .frame(width: Self.band.width, height: Self.band.height, alignment: .leading)
-        .background(.quaternary, in: .rect(cornerRadius: 12))
-        .clipShape(.rect(cornerRadius: 12))
+        .background { light }
+        .background(Color(nsColor: QuickAccessBandSurface.fill(dark: isDark)))
+        .clipShape(.rect(cornerRadius: Self.bandRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Self.bandRadius, style: .continuous)
+                .strokeBorder(Color(nsColor: QuickAccessBandSurface.edge(dark: isDark,
+                                                                         increasedContrast: increasedContrast)),
+                              lineWidth: 1)
+        }
         .frame(maxWidth: .infinity)
         .accessibilityHidden(true)
+    }
+
+    /// The light behind the selected card, in its accent and as strong as the strip draws it, centred on the card.
+    private var light: some View {
+        let color = Self.accents[0]
+        let peak = QuickAccessGlow.peakOpacity(of: color, dark: isDark, increasedContrast: increasedContrast)
+        let stops = (0...12).map { step in
+            let t = CGFloat(step) / 12
+            return Gradient.Stop(color: color.color.opacity(peak * QuickAccessGlow.falloff(t)), location: t)
+        }
+        return EllipticalGradient(stops: stops, center: .center, startRadiusFraction: 0, endRadiusFraction: 0.5)
+            .frame(width: Self.light.width, height: Self.light.height)
+            .position(x: Self.inset + Self.card.width / 2, y: Self.band.height / 2)
     }
 }
