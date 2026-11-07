@@ -14,11 +14,11 @@ final class QuickAccessBandTests: XCTestCase {
         // no material. Inside its edge a 1 pt hairline, white at 7 percent in dark mode and black at 6 in light mode;
         // along its top, under the hairline, a 1 pt highlight, white at 9 percent in dark mode and white in light mode.
         // So the top edge reads lighter than the sides in either appearance.
+        let darkTray = rgb(0x121316), lightTray = rgb(0xF3F3F1), white: [CGFloat] = [1, 1, 1]
+        let darkTop = over(over(darkTray, 1, alpha: 0.09), 1, alpha: 0.07)
         let cases: [(dark: Bool, tray: [CGFloat], side: [CGFloat], top: [CGFloat])] = [
-            (true, [0x12, 0x13, 0x16].map { $0 / 255 }, [0x12, 0x13, 0x16].map { $0 / 255 * 0.93 + 0.07 },
-             [0x12, 0x13, 0x16].map { ($0 / 255 * 0.91 + 0.09) * 0.93 + 0.07 }),
-            (false, [0xF3, 0xF3, 0xF1].map { $0 / 255 }, [0xF3, 0xF3, 0xF1].map { $0 / 255 * 0.94 },
-             [0.94, 0.94, 0.94]),
+            (true, darkTray, over(darkTray, 1, alpha: 0.07), darkTop),
+            (false, lightTray, over(lightTray, 0, alpha: 0.06), over(white, 0, alpha: 0.06)),
         ]
         for (dark, tray, side, top) in cases {
             let name = dark ? "dark" : "light"
@@ -62,7 +62,8 @@ final class QuickAccessBandTests: XCTestCase {
             }
             assertColor(contrast(middle), plain(middle), "\(name) tray with Increase Contrast", accuracy: 0.001)
             let tray = plain(middle)
-            assertColor(contrast(edge), tray.map { dark ? $0 * 0.8 + 0.2 : $0 * 0.82 }, "\(name) edge with Increase Contrast")
+            let stronger = dark ? over(tray, 1, alpha: 0.2) : over(tray, 0, alpha: 0.18)
+            assertColor(contrast(edge), stronger, "\(name) edge with Increase Contrast")
         }
         XCTAssertEqual(QuickAccessBandSurface.edge(dark: true, increasedContrast: false).alphaComponent, 0.07, accuracy: 0.001)
         XCTAssertEqual(QuickAccessBandSurface.edge(dark: false, increasedContrast: false).alphaComponent, 0.06, accuracy: 0.001)
@@ -143,7 +144,8 @@ final class QuickAccessBandTests: XCTestCase {
             let label = "\(name) \(dark ? "dark" : "light")"
             let peak = QuickAccessGlow.peakOpacity(of: colour, dark: dark, increasedContrast: false)
             XCTAssertEqual(peak, expected, accuracy: 0.005, label)
-            XCTAssertTrue((dark ? 0.40...0.46 : 0.24...0.34).contains(peak), label)
+            let allowed: ClosedRange<CGFloat> = dark ? 0.40...0.46 : 0.24...0.34
+            XCTAssertTrue(allowed.contains(peak), label)
             XCTAssertEqual(QuickAccessGlow.peakOpacity(of: colour, dark: dark, increasedContrast: true), peak / 2,
                            accuracy: 0.0001, label)
         }
@@ -246,7 +248,7 @@ final class QuickAccessBandTests: XCTestCase {
         }
         for dark in [true, false] {
             let name = dark ? "dark" : "light"
-            let paper: [CGFloat] = dark ? [0x1D, 0x1E, 0x22].map { $0 / 255 } : [1, 1, 1]
+            let paper: [CGFloat] = dark ? rgb(0x1D1E22) : [1, 1, 1]
             let (top, middle) = StripFrameView.washOpacity(dark: dark, increasedContrast: false)
             XCTAssertEqual(top, dark ? 0.30 : 0.22, accuracy: 0.0001, name)
             XCTAssertEqual(middle, dark ? 0.13 : 0.09, accuracy: 0.0001, name)
@@ -254,9 +256,8 @@ final class QuickAccessBandTests: XCTestCase {
             let plain = try picture(nil, dark: dark)
             // 3 pt below the card's top, beside the header's text: the accent laid over the card, at the strength the
             // gradient has 3 pt into its first 40.6 pt, 96 percent of the top's.
-            let near = [blue.red, blue.green, blue.blue].map { CGFloat($0) }
             let strength = CGFloat(top) * 0.957
-            let expected = zip(paper, near).map { $0 * (1 - strength) + $1 * strength }
+            let expected = zip(paper, rgb(0x1F5FBF)).map { over([$0], $1, alpha: strength)[0] }
             assertColor(washed.color(at: CGPoint(x: 100, y: 3)), expected, "\(name) washed", accuracy: 0.02)
             assertColor(plain.color(at: CGPoint(x: 100, y: 3)), paper, "\(name) neutral", accuracy: 0.01)
             // Past the wash, at 80 pt, the card's own colour on both.
@@ -796,6 +797,17 @@ final class QuickAccessBandTests: XCTestCase {
             let pixel = (y * width + x) * 4
             return (0..<3).map { CGFloat(bytes[pixel + $0]) / 255 }
         }
+    }
+
+    /// A colour written as 0xRRGGBB, as red, green and blue from 0 to 1.
+    private func rgb(_ hex: UInt32) -> [CGFloat] {
+        let red = CGFloat((hex >> 16) & 0xFF), green = CGFloat((hex >> 8) & 0xFF), blue = CGFloat(hex & 0xFF)
+        return [red / 255, green / 255, blue / 255]
+    }
+
+    /// `base` with a grey `value` laid over it at `alpha`, as each component blends.
+    private func over(_ base: [CGFloat], _ value: CGFloat, alpha: CGFloat) -> [CGFloat] {
+        base.map { component in component * (1 - alpha) + value * alpha }
     }
 
     private func assertColor(_ actual: [CGFloat], _ expected: [CGFloat], _ name: String, accuracy: CGFloat = 0.012,
