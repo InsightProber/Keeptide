@@ -4,13 +4,6 @@ import XCTest
 @testable import Keeptide
 
 final class StripFrameContentTests: XCTestCase {
-    func testFramesGetAHairlineOnlyWhenTransparencyIsReduced() {
-        // With Reduce Transparency the band is solid and can be the paper's very color, so a frame draws its edge.
-        XCTAssertEqual(StripFrameView.paperStroke(reduceTransparency: true), 1)
-        // Otherwise the glass behind the frames sets them apart, and they have no line.
-        XCTAssertNil(StripFrameView.paperStroke(reduceTransparency: false))
-    }
-
     func testFrameContentBeforeDetailsIsTitleAndSymbol() {
         let apple = makeRow(kind: .url, title: "Apple docs", savedAsMemo: true, isPartiallyIndexed: true, isTextUnavailable: true)
 
@@ -51,7 +44,8 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertEqual(content.headerLine, [
             .time(content.time), .marker(.savedAsMemo), .marker(.partiallyIndexed), .extraItems(2),
         ])
-        // The band takes its colour from the app the clip came from.
+        // The header shows the icon of the app the clip came from, and the light behind the selected card takes its
+        // colour from that icon.
         XCTAssertEqual(content.sourceApp, "com.apple.Notes")
 
         // Without marks the time is alone on its line.
@@ -84,24 +78,23 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertEqual(recentContent.headerLine.first, .time(QuickAccessRowContent.time(of: row.date, relativeTo: now)))
     }
 
-    func testTextFramesUseTheExcerptAndSizeByLength() {
+    func testTextFramesUseTheExcerptAtTheCardSizesStyle() {
         let color = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "#E2462A", characterCount: 7),
                                            cardSize: .medium)
 
-        XCTAssertEqual(color.body, .text(AttributedString("#E2462A"), style: StripTextStyle(size: 20, lineHeight: 27)))
+        XCTAssertEqual(color.body, .text(AttributedString("#E2462A"), style: StripTextStyle(size: 14, lineHeight: 19)))
         XCTAssertEqual(color.info, "7 characters")
         XCTAssertNil(color.memoTitle)
         XCTAssertEqual(color.extraItems, 0)
 
-        // The steps are read for the card size, and longer text is set smaller.
+        // The style is the card size's, and a long text is set as a short one is.
         let larger = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: "#E2462A", characterCount: 7),
                                             cardSize: .large)
-        XCTAssertEqual(larger.body, .text(AttributedString("#E2462A"),
-                                          style: StripTypography.bodyStyle(for: "#E2462A", cardSize: .large)))
+        XCTAssertEqual(larger.body, .text(AttributedString("#E2462A"), style: StripTextStyle(size: 15, lineHeight: 20)))
         let paragraph = String(repeating: "word ", count: 40)
         let long = StripFrameContent.make(row: makeRow(), detail: ClipDetail(excerpt: paragraph, characterCount: 300),
                                           cardSize: .medium)
-        XCTAssertEqual(long.body, .text(AttributedString(paragraph), style: StripTextStyle(size: 14, lineHeight: 21)))
+        XCTAssertEqual(long.body, .text(AttributedString(paragraph), style: StripTextStyle(size: 14, lineHeight: 19)))
         XCTAssertEqual(long.info, "300 characters")
 
         // A text that is only blank has nothing to show, but its length is still told.
@@ -120,7 +113,7 @@ final class StripFrameContentTests: XCTestCase {
 
         guard case .text(let text, let style) = content.body else { return XCTFail("Expected a text body") }
         XCTAssertEqual(String(text.characters), "…😀 quick brown fox")
-        XCTAssertEqual(style, StripTextStyle(size: 20, lineHeight: 27))
+        XCTAssertEqual(style, StripTextStyle(size: 14, lineHeight: 19))
         XCTAssertEqual(emphasised(text), ["quick"])
         XCTAssertEqual(content.info, "35 characters")
 
@@ -153,7 +146,7 @@ final class StripFrameContentTests: XCTestCase {
         // The snippet came with the search result, so it is shown at once and only the caption waits.
         guard case .text(let text, let style) = before.body else { return XCTFail("Expected a text body") }
         XCTAssertEqual(String(text.characters), "…😀 quick brown fox")
-        XCTAssertEqual(style, StripTextStyle(size: 20, lineHeight: 27))
+        XCTAssertEqual(style, StripTextStyle(size: 14, lineHeight: 19))
         XCTAssertEqual(emphasised(text), ["quick"])
         XCTAssertNil(before.info)
         XCTAssertEqual(before.extraItems, 0)
@@ -171,7 +164,7 @@ final class StripFrameContentTests: XCTestCase {
                          savedAsMemo: true),
             detail: nil, cardSize: .medium)
         XCTAssertEqual(memo.memoTitle, "Release checklist")
-        XCTAssertEqual(memo.body, .text(AttributedString("…notarize and ship"), style: StripTextStyle(size: 20, lineHeight: 27)))
+        XCTAssertEqual(memo.body, .text(AttributedString("…notarize and ship"), style: StripTextStyle(size: 14, lineHeight: 19)))
 
         // Every other row without details keeps the placeholder, snippet or not.
         let others: [(kind: ContentKind, symbol: String)] = [(.url, "link"), (.image, "photo"), (.file, "doc"), (.other, "square.dashed")]
@@ -187,17 +180,17 @@ final class StripFrameContentTests: XCTestCase {
     func testMemoTitleShowsOnlyWhenItIsNotTheStartOfTheBody() {
         let memo = makeRow(title: "Release checklist", savedAsMemo: true)
 
-        // The body does not begin with the title, so the title takes the first line. The body keeps the size of its
-        // own length.
+        // The body does not begin with the title, so the title takes the first line. The body keeps the card size's
+        // style, whatever its length.
         let apart = StripFrameContent.make(
             row: memo, detail: ClipDetail(excerpt: "Tag, notarize, ship", characterCount: 19), cardSize: .medium)
         XCTAssertEqual(apart.memoTitle, "Release checklist")
-        XCTAssertEqual(apart.body, .text(AttributedString("Tag, notarize, ship"), style: StripTextStyle(size: 20, lineHeight: 27)))
+        XCTAssertEqual(apart.body, .text(AttributedString("Tag, notarize, ship"), style: StripTextStyle(size: 14, lineHeight: 19)))
         let longBody = String(repeating: "word ", count: 40)
         let small = StripFrameContent.make(
             row: memo, detail: ClipDetail(excerpt: longBody, characterCount: 200), cardSize: .medium)
         XCTAssertEqual(small.memoTitle, "Release checklist")
-        XCTAssertEqual(small.body, .text(AttributedString(longBody), style: StripTextStyle(size: 14, lineHeight: 21)))
+        XCTAssertEqual(small.body, .text(AttributedString(longBody), style: StripTextStyle(size: 14, lineHeight: 19)))
 
         // The body begins with the title: it would only repeat the first line.
         let repeated = StripFrameContent.make(
@@ -205,7 +198,7 @@ final class StripFrameContentTests: XCTestCase {
             cardSize: .medium)
         XCTAssertNil(repeated.memoTitle)
         XCTAssertEqual(repeated.body, .text(AttributedString("Release checklist\n1. Tag the build"),
-                                            style: StripTextStyle(size: 18, lineHeight: 26)))
+                                            style: StripTextStyle(size: 14, lineHeight: 19)))
 
         // A clip that is not a saved memo has no memo title, whatever its title is.
         let plain = StripFrameContent.make(
@@ -305,7 +298,7 @@ final class StripFrameContentTests: XCTestCase {
             row: makeRow(kind: .url), detail: ClipDetail(excerpt: "mailto:someone@example.com", characterCount: 26),
             cardSize: .medium)
         XCTAssertEqual(mail.body, .text(AttributedString("mailto:someone@example.com"),
-                                        style: StripTextStyle(size: 18, lineHeight: 26)))
+                                        style: StripTextStyle(size: 14, lineHeight: 19)))
         XCTAssertEqual(mail.info, "26 characters")
         // A link whose address could not be read has nothing to split.
         let unread = StripFrameContent.make(row: makeRow(kind: .url, title: "Apple docs"), detail: ClipDetail(),
@@ -376,7 +369,7 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertEqual(other.extraItems, 1)
         let texts = StripFrameContent.make(
             row: makeRow(), detail: ClipDetail(excerpt: "First", characterCount: 5, itemCount: 3), cardSize: .medium)
-        XCTAssertEqual(texts.body, .text(AttributedString("First"), style: StripTextStyle(size: 20, lineHeight: 27)))
+        XCTAssertEqual(texts.body, .text(AttributedString("First"), style: StripTextStyle(size: 14, lineHeight: 19)))
         XCTAssertEqual(texts.info, "3 items")
         XCTAssertEqual(texts.extraItems, 2)
         let links = StripFrameContent.make(

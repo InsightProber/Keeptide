@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: a translucent band of large snippet cards, including a review prompt, Swift code, a landscape image, a Git command and an email reply, with the newest selected. Along the top are the All | Snippets switch with Snippets chosen, chips for six collections, and the filter button and the folded search at the right">
+  <img src="docs/images/quick-access.jpg" alt="Keeptide quick access: an opaque dark band of snippet cards, including a review prompt, Swift code, a landscape image, a Git command, a link and an email reply, each washed in its collection's colour from the top, with the newest selected and a soft yellow light behind it. Along the top are the All | Snippets switch with Snippets chosen, chips for six collections, and the filter button and the folded search at the right">
 </p>
 
 Keeptide remembers what you copy, such as commands, code, links, images and
@@ -37,7 +37,7 @@ snippets in a native library.
   references, in their original formats. Copying exactly the same content
   again does not create a duplicate. There is no pause switch; quitting
   Keeptide stops it.
-- **One shortcut away.** ⇧⌘V opens quick access, a band of large cards with the
+- **One shortcut away.** ⇧⌘V opens quick access, a band of cards with the
   newest first. Clips you reuse often sit to the left of the newest one. Click
   **Snippets** at the band's top left to use what you keep on purpose; your
   collections appear beside it.

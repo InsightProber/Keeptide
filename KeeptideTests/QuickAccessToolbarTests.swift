@@ -8,27 +8,27 @@ import XCTest
 @MainActor
 final class QuickAccessToolbarTests: XCTestCase {
     func testTheRowIsLaidOutAsTheDesignHasIt() throws {
-        let toolbar = makeToolbar(width: 1376)
+        let toolbar = makeToolbar(width: 1240)
         let paste = QuickAccessToolbar.Note.action(title: "Paste into TextEdit", enabled: true, hint: nil)
         toolbar.reservedNotes = [paste]
         toolbar.note = paste
         toolbar.layoutSubtreeIfNeeded()
         let row = toolbar.rowFrame
-        XCTAssertEqual(row.height, 32)
+        XCTAssertEqual(row.height, 30)
 
-        // The list switch at the left inset, level with the row: two 24 pt segments in a 28 pt capsule.
+        // The list switch at the left inset, level with the row: two 24 pt segments in a 30 pt capsule.
         let segments = toolbar.lists.convert(toolbar.lists.segments.frame, to: toolbar)
         XCTAssertEqual(segments.minX, 16)
-        XCTAssertEqual(segments.height, 28)
+        XCTAssertEqual(segments.height, 30)
         XCTAssertEqual(segments.midY, row.midY, accuracy: 0.5)
         XCTAssertEqual(toolbar.lists.segments.buttons.map(\.title), ["All", "Snippets"])
         XCTAssertTrue(toolbar.lists.segments.buttons.allSatisfy { $0.frame.height == 24 })
         XCTAssertEqual(toolbar.lists.segments.buttons.map(\.state), [.on, .off])
 
-        // At the right end, 16 in, the ⋯ button, and 12 left of it Return's hint: a key cap at least 22 × 20, 7 pt
-        // before its word. Then, 12 apart, the folded search and the filter button, both 32 pt circles.
+        // At the right end, 16 in, the ⋯ button, and 12 left of it Return's hint: a key cap at least 20 × 18, 6 pt
+        // before its word. Then, 12 apart, the folded search and the filter button, both 28 pt circles.
         let more = toolbar.moreButton.frame
-        XCTAssertEqual(more.size, NSSize(width: 28, height: 28))
+        XCTAssertEqual(more.size, NSSize(width: 26, height: 26))
         XCTAssertEqual(toolbar.bounds.width - more.maxX, 16)
         XCTAssertEqual(more.midY, row.midY, accuracy: 0.5)
         let hint = toolbar.copyHint.frame
@@ -37,26 +37,26 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertTrue(toolbar.copyHint.showsTitle)
         XCTAssertEqual(hint.width, toolbar.copyHint.fullWidth)
         let keycap = toolbar.copyHint.keycap.frame
-        XCTAssertGreaterThanOrEqual(keycap.width, 22)
-        XCTAssertEqual(keycap.height, 20)
+        XCTAssertGreaterThanOrEqual(keycap.width, 20)
+        XCTAssertEqual(keycap.height, 18)
         XCTAssertEqual(keycap.minX, 0)
         XCTAssertEqual(toolbar.copyHint.keycap.symbol, "⏎")
         let search = toolbar.search.frame
-        XCTAssertEqual(search.size, NSSize(width: 32, height: 32))
-        XCTAssertEqual(search.minY, row.minY)
+        XCTAssertEqual(search.size, NSSize(width: 28, height: 28))
+        XCTAssertEqual(search.midY, row.midY, accuracy: 0.5)
         XCTAssertEqual(hint.minX - search.maxX, 12)
         let filter = toolbar.filterButton.frame
-        XCTAssertEqual(filter.size, NSSize(width: 32, height: 32))
+        XCTAssertEqual(filter.size, NSSize(width: 28, height: 28))
         XCTAssertEqual(search.minX - filter.maxX, 12)
         XCTAssertEqual(filter.midY, row.midY, accuracy: 0.5)
 
         // Open, the search is a 300 pt pill grown to the left: it pushes the filter button and nothing else. The
-        // magnifier is 11 in, the field 8 after it, and the clear button 8 from the right end, 18 across.
+        // magnifier is 11 in, the field 8 after it, and the clear button 8 from the right end, 16 across.
         toolbar.setSearchExpanded(true)
         toolbar.search.hasText = true
         toolbar.layoutSubtreeIfNeeded()
         let pill = toolbar.search.frame
-        XCTAssertEqual(pill.size, NSSize(width: 300, height: 32))
+        XCTAssertEqual(pill.size, NSSize(width: 300, height: 28))
         XCTAssertEqual(pill.maxX, search.maxX)
         XCTAssertEqual(pill.minX - toolbar.filterButton.frame.maxX, 12)
         XCTAssertEqual(toolbar.lists.convert(toolbar.lists.segments.frame, to: toolbar), segments)
@@ -64,10 +64,10 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(toolbar.moreButton.frame, more)
         let magnifier = toolbar.search.magnifier.frame
         XCTAssertEqual(magnifier.minX, 11)
-        XCTAssertEqual(magnifier.size, NSSize(width: 15, height: 15))
+        XCTAssertEqual(magnifier.size, NSSize(width: 14, height: 14))
         XCTAssertEqual(toolbar.search.field.frame.minX - magnifier.maxX, 8)
         let clear = toolbar.search.clearButton.frame
-        XCTAssertEqual(clear.size, NSSize(width: 18, height: 18))
+        XCTAssertEqual(clear.size, NSSize(width: 16, height: 16))
         XCTAssertEqual(pill.width - clear.maxX, 8)
         XCTAssertEqual(clear.minX - toolbar.search.field.frame.maxX, 8)
         XCTAssertFalse(toolbar.search.clearButton.isHidden)
@@ -453,7 +453,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         toolbar.reducesMotion = { true }
         toolbar.setSearchExpanded(false)
         XCTAssertEqual(toolbar.search.layer?.animationKeys() ?? [], [])
-        XCTAssertEqual(toolbar.search.frame.width, 32)
+        XCTAssertEqual(toolbar.search.frame.width, 28)
 
         // So it does off screen, as when the panel opens again with the search open from before.
         toolbar.reducesMotion = { false }
@@ -479,7 +479,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(halo.frame, toolbar.search.frame.insetBy(dx: -3, dy: -3))
         XCTAssertTrue(toolbar.bounds.contains(halo.frame))
         XCTAssertEqual(halo.layer?.borderWidth, 3)
-        XCTAssertEqual(halo.layer?.cornerRadius, 19)
+        XCTAssertEqual(halo.layer?.cornerRadius, 17)
         // Without the keys it goes, and folding takes it too.
         toolbar.showsSearchFocus = false
         XCTAssertTrue(halo.isHidden)
@@ -491,10 +491,10 @@ final class QuickAccessToolbarTests: XCTestCase {
     func testTheFilterButtonShowsWhichFiltersAreOn() throws {
         let toolbar = makeToolbar(width: 1376)
         let button = toolbar.filterButton
-        // With no filter, a 32 pt circle that says "Filter" to the pointer and to VoiceOver.
+        // With no filter, a 28 pt circle that says "Filter" to the pointer and to VoiceOver.
         button.show(favoritesOnly: false, kinds: [])
         XCTAssertNil(button.title)
-        XCTAssertEqual(button.intrinsicContentSize, NSSize(width: 32, height: 32))
+        XCTAssertEqual(button.intrinsicContentSize, NSSize(width: 28, height: 28))
         // The face, a real button, is what VoiceOver reads and what is clicked; the view around it takes Tab.
         XCTAssertFalse(button.isAccessibilityElement())
         XCTAssertTrue(button.face.isAccessibilityEnabled())
@@ -506,7 +506,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(button.face.accessibilityIdentifier(), "QuickAccessFilterButton")
         XCTAssertEqual(button.face.accessibilityValue() as? String, "None")
         XCTAssertEqual(button.face.toolTip, "Filter")
-        // With filters on, a 32 pt high capsule that names them: one by its name, more by their number.
+        // With filters on, a 28 pt high capsule that names them: one by its name, more by their number.
         let cases: [(favorites: Bool, kinds: Set<ContentKind>, title: String, value: String)] = [
             (true, [], "Favorites", "Favorites"),
             (false, [.image], "Images", "Images"),
@@ -516,8 +516,8 @@ final class QuickAccessToolbarTests: XCTestCase {
         for item in cases {
             button.show(favoritesOnly: item.favorites, kinds: item.kinds)
             XCTAssertEqual(button.title, item.title)
-            XCTAssertEqual(button.intrinsicContentSize.height, 32, item.title)
-            XCTAssertGreaterThan(button.intrinsicContentSize.width, 32, item.title)
+            XCTAssertEqual(button.intrinsicContentSize.height, 28, item.title)
+            XCTAssertGreaterThan(button.intrinsicContentSize.width, 28, item.title)
             XCTAssertLessThanOrEqual(button.intrinsicContentSize.width, button.maximumWidth, item.title)
             XCTAssertEqual(button.face.accessibilityValue() as? String, item.value)
             XCTAssertEqual(button.face.accessibilityHelp(), item.value)
@@ -559,7 +559,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         toolbar.filterButton.show(favoritesOnly: true, kinds: [])
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertEqual(toolbar.filterButton.frame.width, toolbar.filterButton.intrinsicContentSize.width)
-        XCTAssertGreaterThan(toolbar.filterButton.frame.width, 32)
+        XCTAssertGreaterThan(toolbar.filterButton.frame.width, 28)
         XCTAssertEqual(toolbar.filterButton.frame.maxX + 12, toolbar.search.frame.minX)
     }
 
@@ -606,7 +606,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         XCTAssertEqual(lists.segments.buttons.map(\.state), [.on, .off])
         XCTAssertEqual(lists.frame.width, lists.segments.frame.width)
 
-        // Under Snippets, the collections in order, 12 pt after the switch, 28 pt high, 6 apart, each a dot and a name.
+        // Under Snippets, the collections in order, 12 pt after the switch, 24 pt high, 6 apart, each a dot and a name.
         lists.show(list: .snippets, collections: two, unavailable: false)
         toolbar.layoutSubtreeIfNeeded()
         XCTAssertFalse(lists.chipsView.isHidden)
@@ -616,7 +616,7 @@ final class QuickAccessToolbarTests: XCTestCase {
         let frames = chipFrames(toolbar)
         XCTAssertEqual(frames.count, 2)
         XCTAssertEqual(frames[0].minX - toolbar.lists.convert(lists.segments.frame, to: toolbar).maxX, 12)
-        XCTAssertTrue(frames.allSatisfy { $0.height == 28 })
+        XCTAssertTrue(frames.allSatisfy { $0.height == 24 })
         XCTAssertEqual(frames[1].minX - frames[0].maxX, 6, accuracy: 0.5)
         XCTAssertTrue(lists.chips.allSatisfy { $0.state == .off })
         XCTAssertTrue(lists.moreChip.isHidden)

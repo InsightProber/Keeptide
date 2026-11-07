@@ -98,6 +98,8 @@ final class QuickAccessStripView: NSView {
     private var applicationNames: ApplicationNames?
     /// The collections a memo's card may name.
     private var collections: [CollectionID: CollectionSummary] = [:]
+    /// Every collection's colour, which a snippet's card takes as its accent.
+    private var collectionColors: [CollectionID: String] = [:]
     /// Holds the frames and moves them as one: it follows the fingers and carries each slide.
     private let film = NSView()
     private var frames: [QuickAccessRow.ID: StripFrameHost] = [:]
@@ -178,7 +180,8 @@ final class QuickAccessStripView: NSView {
     /// `oldestIsLoaded` is false while more rows may follow the last one, so the film does not stop there.
     func show(_ rows: [QuickAccessRow], selection: QuickAccessRow.ID?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true,
-              collections: [CollectionID: CollectionSummary] = [:], slides: Bool = true) {
+              collections: [CollectionID: CollectionSummary] = [:], collectionColors: [CollectionID: String] = [:],
+              slides: Bool = true) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
         // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
@@ -204,6 +207,7 @@ final class QuickAccessStripView: NSView {
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
         self.collections = collections
+        self.collectionColors = collectionColors
         let index = selection.flatMap { selected in rows.firstIndex { $0.id == selected } } ?? -1
         if index != previousIndex {
             // The fingers carried the clip selected before; their next event measures from this one.
@@ -419,13 +423,14 @@ final class QuickAccessStripView: NSView {
         for index in indices {
             let row = rows[index]
             let icon = applicationNames.icon(for: row.sourceApp)
+            // A card in no collection takes its accent from the very icon it shows, worked out with the app's first
+            // card.
+            let accent = CardAccent(row: row, collectionColors: collectionColors,
+                                    tint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) })
             let view = StripFrameView(
                 content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize,
                                                 collections: collections),
-                applicationIcon: icon, metrics: metrics,
-                // The band takes its colour from the very icon the frame shows, worked out with the app's first frame.
-                headerTint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
-                isSelected: row.id == selection
+                applicationIcon: icon, metrics: metrics, accent: accent, isSelected: row.id == selection
             )
             let retained = frames[row.id] != nil
             let host: StripFrameHost
@@ -1086,7 +1091,7 @@ private final class StripFrameHost: NSView {
         // A new root view redraws the frame, so an unchanged one is kept.
         let shown = drawing.rootView
         if view.content != shown.content || view.isSelected != shown.isSelected || view.metrics != shown.metrics
-            || view.headerTint != shown.headerTint || view.applicationIcon !== shown.applicationIcon {
+            || view.accent != shown.accent || view.applicationIcon !== shown.applicationIcon {
             drawing.rootView = view
         }
     }
@@ -1176,15 +1181,19 @@ private final class StripSectionLabelsView: NSView {
     override func accessibilityChildren() -> [Any]? { [] }
 }
 
-/// A section icon below the strip: the wing's symbol alone, 12 pt semibold in the toolbar's secondary colour. No name
+/// A section icon below the strip: the wing's symbol alone, 11 pt semibold in the toolbar's secondary colour. No name
 /// is drawn beside it; its help tag and its accessibility label give the name. The tests measure the ink it draws, so
 /// it is not private.
 struct StripSectionLabel: View {
+    /// The symbol's size: a step under the toolbar's 12 pt type, and small enough that its 12 pt of ink keeps 4 pt
+    /// from the band's bottom edge and from the ring around the selected card above it.
+    static let pointSize: CGFloat = 11
+
     let symbol: String
 
     var body: some View {
         Image(systemName: symbol)
-            .font(.system(size: 12, weight: .semibold))
+            .font(.system(size: Self.pointSize, weight: .semibold))
             .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
             .fixedSize()
             // The hosting view carries the wing's name; the symbol itself is for the eye alone.

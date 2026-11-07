@@ -3,60 +3,305 @@ import SwiftUI
 import XCTest
 @testable import Keeptide
 
-/// What the band stands on, as the band view sets it up from SwiftUI's environment: the material in each appearance,
-/// and what Reduce Transparency and Increase Contrast make of it. And the strip's section icons below the cards,
-/// measured by the ink SwiftUI draws for them.
+/// What the band stands on, as the band view sets it up from SwiftUI's environment: the tray, its edge and its
+/// highlight in each appearance, and what Increase Contrast makes of them. The light behind the selected card: its
+/// colour, place and strength, and how one light gives way to the next. And the strip's section icons below the
+/// cards, measured by the ink SwiftUI draws for them.
 @MainActor
 final class QuickAccessBandTests: XCTestCase {
-    func testTheBackdropTakesTheSwitchersMaterialInEachAppearance() throws {
-        let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false)
-        // Dark: a HUD's material behind the window, with a hairline edge and no solid fill.
-        window.appearance = NSAppearance(named: .darkAqua)
-        settle(window)
-        XCTAssertEqual(backdrop.material.material, .hudWindow)
-        XCTAssertEqual(backdrop.material.blendingMode, .behindWindow)
-        XCTAssertEqual(backdrop.material.state, .active)
-        XCTAssertFalse(backdrop.material.isHidden)
-        XCTAssertFalse(backdrop.surface.isSolid)
-        XCTAssertEqual(backdrop.surface.edgeWidth, 0.5)
-        XCTAssertNotNil(backdrop.material.maskImage, "The material is cut to the band's rounded shape")
-
-        // A change of appearance restyles it: light takes a popover's light material.
-        window.appearance = NSAppearance(named: .aqua)
-        settle(window)
-        XCTAssertEqual(backdrop.material.material, .popover)
-        XCTAssertFalse(backdrop.material.isHidden)
+    func testTheBandIsAnOpaqueTrayWithAHairlineEdgeAndAHighlightAlongItsTop() throws {
+        // The tray is #121316 in dark mode and #F3F3F1 in light mode, with nothing behind the window showing through:
+        // no material. Inside its edge a 1 pt hairline, white at 7 percent in dark mode and black at 6 in light mode;
+        // along its top, under the hairline, a 1 pt highlight, white at 9 percent in dark mode and white in light mode.
+        // So the top edge reads lighter than the sides in either appearance.
+        let darkTray = rgb(0x121316), lightTray = rgb(0xF3F3F1), white: [CGFloat] = [1, 1, 1]
+        let darkTop = over(over(darkTray, 1, alpha: 0.09), 1, alpha: 0.07)
+        let cases: [(dark: Bool, tray: [CGFloat], side: [CGFloat], top: [CGFloat])] = [
+            (true, darkTray, over(darkTray, 1, alpha: 0.07), darkTop),
+            (false, lightTray, over(lightTray, 0, alpha: 0.06), over(white, 0, alpha: 0.06)),
+        ]
+        for (dark, tray, side, top) in cases {
+            let name = dark ? "dark" : "light"
+            let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false)
+            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            settle(window)
+            XCTAssertFalse(views(NSVisualEffectView.self, in: window.contentView).contains { !$0.isHidden }, name)
+            let pixel = try surfacePixels(of: backdrop)
+            let band = backdrop.surface.bounds
+            assertColor(pixel(NSPoint(x: band.midX, y: band.midY)), tray, name + " tray")
+            assertColor(pixel(NSPoint(x: band.minX + 0.25, y: band.midY)), side, name + " left edge")
+            assertColor(pixel(NSPoint(x: band.maxX - 0.25, y: band.midY)), side, name + " right edge")
+            assertColor(pixel(NSPoint(x: band.midX, y: band.minY + 0.25)), side, name + " bottom edge")
+            assertColor(pixel(NSPoint(x: band.midX, y: band.maxY - 0.25)), top, name + " top edge")
+            // Just inside the edge the tray is plain again.
+            assertColor(pixel(NSPoint(x: band.midX, y: band.maxY - 1.25)), tray, name + " under the top edge")
+        }
     }
 
-    func testReduceTransparencyMakesTheBandSolid() throws {
-        let (window, backdrop) = try host(reducesTransparency: true, increasedContrast: false)
-        window.appearance = NSAppearance(named: .darkAqua)
-        settle(window)
-        XCTAssertTrue(backdrop.material.isHidden)
-        XCTAssertTrue(backdrop.surface.isSolid)
-        XCTAssertEqual(backdrop.surface.edgeWidth, 0.5)
+    func testReduceTransparencyChangesNothingAndIncreaseContrastStrengthensTheEdge() throws {
+        // The tray is opaque, so Reduce Transparency leaves every pixel as it was. Increase Contrast draws the hairline
+        // in white at 20 percent in dark mode and black at 18 in light mode, and leaves the tray itself alone.
+        for dark in [true, false] {
+            let name = dark ? "dark" : "light"
+            func pixels(reducesTransparency: Bool, increasedContrast: Bool) throws -> (NSPoint) -> [CGFloat] {
+                let (window, backdrop) = try host(reducesTransparency: reducesTransparency,
+                                                  increasedContrast: increasedContrast)
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                settle(window)
+                XCTAssertEqual(backdrop.increasesContrast, increasedContrast, name)
+                return try surfacePixels(of: backdrop)
+            }
+            let plain = try pixels(reducesTransparency: false, increasedContrast: false)
+            let reduced = try pixels(reducesTransparency: true, increasedContrast: false)
+            let contrast = try pixels(reducesTransparency: false, increasedContrast: true)
+            let size = StripLayout.metrics(for: .medium, visibleWidth: 1440)
+            let middle = NSPoint(x: size.bandWidth / 2, y: StripLayout.bandHeight(size) / 2)
+            let edge = NSPoint(x: 0.25, y: StripLayout.bandHeight(size) / 2)
+            for point in [middle, edge, NSPoint(x: size.bandWidth / 2, y: StripLayout.bandHeight(size) - 0.25)] {
+                assertColor(reduced(point), plain(point), "\(name) Reduce Transparency at \(point)", accuracy: 0.001)
+            }
+            assertColor(contrast(middle), plain(middle), "\(name) tray with Increase Contrast", accuracy: 0.001)
+            let tray = plain(middle)
+            let stronger = dark ? over(tray, 1, alpha: 0.2) : over(tray, 0, alpha: 0.18)
+            assertColor(contrast(edge), stronger, "\(name) edge with Increase Contrast")
+        }
+        XCTAssertEqual(QuickAccessBandSurface.edge(dark: true, increasedContrast: false).alphaComponent, 0.07, accuracy: 0.001)
+        XCTAssertEqual(QuickAccessBandSurface.edge(dark: false, increasedContrast: false).alphaComponent, 0.06, accuracy: 0.001)
+        XCTAssertEqual(QuickAccessBandSurface.edge(dark: true, increasedContrast: true).alphaComponent, 0.2, accuracy: 0.001)
+        XCTAssertEqual(QuickAccessBandSurface.edge(dark: false, increasedContrast: true).alphaComponent, 0.18, accuracy: 0.001)
     }
 
-    func testIncreaseContrastWidensTheEdge() throws {
-        let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: true)
-        window.appearance = NSAppearance(named: .aqua)
+    // MARK: The light behind the selected card
+
+    func testACardsAccentIsItsCollectionsColourThenItsAppsThenNone() {
+        // One colour per card washes its header and lights the band behind it, so the two always match.
+        let prompts = CollectionID(), archive = CollectionID()
+        let colors = [prompts: "yellow", archive: "gray"]
+        let blue = HeaderTint(background: HeaderTint.RGB(hex: 0x1F5FBF), usesDarkText: false)
+        let grey = HeaderTint.neutral(dark: true)
+        var filed = makeRow()
+        filed.collectionID = prompts
+        var gone = makeRow()
+        gone.collectionID = CollectionID()
+        var greyCollection = makeRow()
+        greyCollection.collectionID = archive
+        let cases: [(String, QuickAccessRow, HeaderTint?, CardAccent?)] = [
+            // A snippet in a collection takes the collection's colour, whatever its app gives.
+            ("filed", filed, blue, .collection("yellow")),
+            ("filed, no app", filed, nil, .collection("yellow")),
+            // A collection the person coloured grey glows grey: that is the colour they chose.
+            ("grey collection", greyCollection, nil, .collection("gray")),
+            // A collection that is no longer listed gives no colour, and the app's is taken instead.
+            ("collection gone", gone, blue, .app(blue.background)),
+            // An unfiled snippet, or a clip, takes the colour its app's icon gives.
+            ("clip", makeRow(), blue, .app(blue.background)),
+            // An icon with no colour to speak of gives the grey band, which gives no light; nor does a clip without an
+            // app.
+            ("grey icon", makeRow(), grey, nil),
+            ("no app", makeRow(), nil, nil),
+        ]
+        for (name, row, tint, expected) in cases {
+            XCTAssertEqual(CardAccent(row: row, collectionColors: colors, tint: tint), expected, name)
+        }
+        XCTAssertTrue(HeaderTint.neutral(dark: false).isNeutral)
+        XCTAssertFalse(blue.isNeutral)
+    }
+
+    func testTheLightSitsBehindTheSelectedCardAndGrowsWithIt() throws {
+        // Its middle is the card's: as far into the band as the card rests, and halfway down the cards, 67 + 112 =
+        // 179 pt below the band's top edge with medium cards at the standard enlargement. It is 460 by 500 behind a
+        // medium card, and as much smaller or larger as the card is.
+        let row = makeRow()
+        let tint = HeaderTint(background: HeaderTint.RGB(hex: 0x1F5FBF), usesDarkText: false)
+        let medium = StripLayout.metrics(for: .medium, visibleWidth: 1440)
+        let glow = try XCTUnwrap(QuickAccessGlow.make(row: row, accent: .app(tint.background), cardMidX: 500,
+                                                       metrics: medium))
+        XCTAssertEqual(glow.row, row.id)
+        XCTAssertEqual(glow.accent, .app(tint.background))
+        XCTAssertEqual(glow.center, CGPoint(x: 500, y: 179))
+        XCTAssertEqual(glow.size, CGSize(width: 460, height: 500))
+        for (size, expected) in [(CardSize.small, CGSize(width: 413, height: 449)),
+                                 (.large, CGSize(width: 516, height: 561))] {
+            let metrics = StripLayout.metrics(for: size, visibleWidth: 1440)
+            let sized = try XCTUnwrap(QuickAccessGlow.make(row: row, accent: .app(tint.background), cardMidX: 500,
+                                                            metrics: metrics))
+            XCTAssertEqual(sized.size, expected, "\(size)")
+            XCTAssertEqual(sized.center.y, StripLayout.cardTop(metrics) + metrics.frameSize.height / 2, "\(size)")
+        }
+        // A card without an accent has no light behind it.
+        XCTAssertNil(QuickAccessGlow.make(row: row, accent: nil, cardMidX: 500, metrics: medium))
+    }
+
+    func testTheLightsStrengthFollowsItsColourAndAppearance() {
+        // At its middle: 0.40 to 0.46 in dark mode, the most for a deep colour; 0.24 to 0.34 in light mode, the most for
+        // a light one, which the light tray would otherwise swallow. Increase Contrast halves it.
+        let colours: [(String, HeaderTint.RGB, dark: Bool, CGFloat)] = [
+            ("blue", .init(hex: 0x0A84FF), true, 0.454), ("yellow", .init(hex: 0xFFD60A), true, 0.40),
+            ("green", .init(hex: 0x30D158), true, 0.42),
+            ("blue", .init(hex: 0x007AFF), false, 0.243), ("yellow", .init(hex: 0xFFCC00), false, 0.34),
+        ]
+        for (name, colour, dark, expected) in colours {
+            let label = "\(name) \(dark ? "dark" : "light")"
+            let peak = QuickAccessGlow.peakOpacity(of: colour, dark: dark, increasedContrast: false)
+            XCTAssertEqual(peak, expected, accuracy: 0.005, label)
+            let allowed: ClosedRange<CGFloat> = dark ? 0.40...0.46 : 0.24...0.34
+            XCTAssertTrue(allowed.contains(peak), label)
+            XCTAssertEqual(QuickAccessGlow.peakOpacity(of: colour, dark: dark, increasedContrast: true), peak / 2,
+                           accuracy: 0.0001, label)
+        }
+        // Level at the middle, nothing at the edge, half of it halfway, and never stronger further out.
+        XCTAssertEqual(QuickAccessGlow.falloff(0), 1)
+        XCTAssertEqual(QuickAccessGlow.falloff(0.5), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(QuickAccessGlow.falloff(1), 0, accuracy: 0.0001)
+        let steps = (0...20).map { QuickAccessGlow.falloff(CGFloat($0) / 20) }
+        XCTAssertTrue(zip(steps, steps.dropFirst()).allSatisfy { $0 >= $1 })
+    }
+
+    func testTheGlowViewCrossfadesToAnotherCardAndMovesWithTheSameOne() throws {
+        let tint = HeaderTint(background: HeaderTint.RGB(hex: 0x1F5FBF), usesDarkText: false)
+        let medium = StripLayout.metrics(for: .medium, visibleWidth: 1440)
+        let (first, second) = (makeRow(), makeRow())
+        func glow(_ row: QuickAccessRow, at x: CGFloat) throws -> QuickAccessGlow {
+            try XCTUnwrap(QuickAccessGlow.make(row: row, accent: .app(tint.background), cardMidX: x, metrics: medium))
+        }
+        let size = NSSize(width: medium.bandWidth, height: StripLayout.bandHeight(medium))
+        let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .darkAqua)
+        addTeardownBlock { window.close() }
+        let view = QuickAccessGlowView(frame: NSRect(origin: .zero, size: size))
+        window.contentView = view
+        // It takes no clicks, VoiceOver reads none of it, and nothing of it lies beyond the band.
+        XCTAssertNil(view.hitTest(NSPoint(x: size.width / 2, y: size.height / 2)))
+        XCTAssertFalse(view.isAccessibilityElement())
+        XCTAssertTrue(view.clipsToBounds)
+        let mask = try XCTUnwrap(view.layer?.mask as? CAShapeLayer)
+        XCTAssertEqual(mask.path, QuickAccessBandBackdrop.outline(in: view.bounds))
+        XCTAssertNil(view.shownLight)
+
+        // Shown behind the first card: its middle at the card's, 179 below the band's top, coloured from the middle out.
+        view.show(try glow(first, at: 300))
+        let light = try XCTUnwrap(view.shownLight)
+        XCTAssertFalse(light.isHidden)
+        XCTAssertEqual(light.frame, NSRect(x: 300 - 230, y: size.height - 179 - 250, width: 460, height: 500))
+        let peak = QuickAccessGlow.peakOpacity(of: tint.background, dark: true, increasedContrast: false)
+        XCTAssertEqual(light.colors.first?.alpha ?? 0, peak, accuracy: 0.0001)
+        XCTAssertEqual(light.colors.last?.alpha ?? 1, 0, accuracy: 0.0001)
+        // The same card resting elsewhere: the same light moves there.
+        view.show(try glow(first, at: 620))
+        XCTAssertTrue(view.shownLight === light)
+        XCTAssertEqual(light.frame.midX, 620)
+        // Another card: another light, and the first goes. In a window that is not shown nothing fades.
+        view.show(try glow(second, at: 620))
+        let next = try XCTUnwrap(view.shownLight)
+        XCTAssertFalse(next === light)
+        XCTAssertFalse(next.isHidden)
+        XCTAssertTrue(light.isHidden)
+        XCTAssertNil(next.layer?.animation(forKey: "glow.fade"))
+        // No selection, or none with a colour: no light at all.
+        view.show(nil)
+        XCTAssertNil(view.shownLight)
+        XCTAssertTrue(next.isHidden && light.isHidden)
+
+        // On screen, one light fades in as the other fades out over a fifth of a second; with Reduce Motion, at once.
+        window.orderFront(nil)
+        view.reducesMotion = { false }
+        view.show(try glow(first, at: 300))
+        // Halfway into its fade, the next card is chosen: the light goes from where it is drawn then.
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: QuickAccessGlowView.fadeDuration / 2))
+        view.show(try glow(second, at: 620))
+        let fading = [light, next].compactMap { $0.layer?.animation(forKey: "glow.fade") as? CABasicAnimation }
+        XCTAssertEqual(fading.count, 2)
+        XCTAssertTrue(fading.allSatisfy { $0.duration == QuickAccessGlowView.fadeDuration })
+        view.reducesMotion = { true }
+        view.show(try glow(first, at: 300))
+        XCTAssertTrue([light, next].allSatisfy { $0.layer?.animation(forKey: "glow.fade") == nil })
+        XCTAssertEqual(view.shownLight?.isHidden, false)
+        XCTAssertEqual([light, next].filter(\.isHidden).count, 1)
+        window.orderOut(nil)
+
+        // Increase Contrast halves it.
+        view.increasesContrast = { true }
+        view.show(nil)
+        view.show(try glow(second, at: 300))
+        XCTAssertEqual(view.shownLight?.colors.first?.alpha ?? 0, peak / 2, accuracy: 0.0001)
+    }
+
+    func testTheAccentWashesInFromTheCardsTopAndACardWithoutOneStaysNeutral() throws {
+        // Behind the header, the card's accent at 30 percent at its top in dark mode and 22 in light mode, fading to
+        // nothing 70 pt down a medium card; below that, and on a card without an accent, the card's own colour. The
+        // header's text is the card's usual text, never white on colour. With Increase Contrast the wash is a third
+        // weaker, and a line runs under the header.
+        let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
+        XCTAssertEqual(StripFrameView.washHeight(metrics), 70)
+        XCTAssertEqual(StripFrameView.washHeight(StripLayout.metrics(for: .small, visibleWidth: 1440)), 63)
+        XCTAssertEqual(StripFrameView.washHeight(StripLayout.metrics(for: .large, visibleWidth: 1440)), 79)
+        let blue = HeaderTint.RGB(hex: 0x1F5FBF)
+        let content = StripFrameContent.make(row: makeRow(), detail: nil, cardSize: .medium)
+        let icon = ApplicationNames().icon(for: nil)
+        func picture(_ accent: CardAccent?, dark: Bool, contrast: ColorSchemeContrast = .standard) throws -> Picture {
+            try Picture(StripFrameView(content: content, applicationIcon: icon, metrics: metrics, accent: accent,
+                                       isSelected: false)
+                .environment(\.colorScheme, dark ? .dark : .light)
+                .environment(\._colorSchemeContrast, contrast))
+        }
+        for dark in [true, false] {
+            let name = dark ? "dark" : "light"
+            let paper: [CGFloat] = dark ? rgb(0x1D1E22) : [1, 1, 1]
+            let (top, middle) = StripFrameView.washOpacity(dark: dark, increasedContrast: false)
+            XCTAssertEqual(top, dark ? 0.30 : 0.22, accuracy: 0.0001, name)
+            XCTAssertEqual(middle, dark ? 0.13 : 0.09, accuracy: 0.0001, name)
+            let washed = try picture(.app(blue), dark: dark)
+            let plain = try picture(nil, dark: dark)
+            // 3 pt below the card's top, beside the header's text: the accent laid over the card, at the strength the
+            // gradient has 3 pt into its first 40.6 pt, 96 percent of the top's.
+            let strength = CGFloat(top) * 0.957
+            let expected = zip(paper, rgb(0x1F5FBF)).map { over([$0], $1, alpha: strength)[0] }
+            assertColor(washed.color(at: CGPoint(x: 100, y: 3)), expected, "\(name) washed", accuracy: 0.02)
+            assertColor(plain.color(at: CGPoint(x: 100, y: 3)), paper, "\(name) neutral", accuracy: 0.01)
+            // Past the wash, at 80 pt, the card's own colour on both.
+            assertColor(washed.color(at: CGPoint(x: 100, y: 80)), paper, "\(name) below the wash", accuracy: 0.01)
+            // With Increase Contrast the wash is a third weaker, and a line lies under the header.
+            let weaker = StripFrameView.washOpacity(dark: dark, increasedContrast: true)
+            XCTAssertEqual(weaker.top, top * 2 / 3, accuracy: 0.0001, name)
+            XCTAssertEqual(weaker.middle, middle * 2 / 3, accuracy: 0.0001, name)
+            let contrasted = try picture(.app(blue), dark: dark, contrast: .increased)
+            // How far a pixel lies from the card's own colour.
+            let departure = { (pixel: [CGFloat]) in zip(pixel, paper).map { abs($0 - $1) }.max() ?? 0 }
+            XCTAssertLessThan(departure(contrasted.color(at: CGPoint(x: 100, y: 3))),
+                              departure(washed.color(at: CGPoint(x: 100, y: 3))), name)
+            let line = contrasted.color(at: CGPoint(x: 100, y: metrics.headerHeight - 0.5))
+            let noLine = washed.color(at: CGPoint(x: 100, y: metrics.headerHeight - 0.5))
+            XCTAssertGreaterThan(zip(line, noLine).map { abs($0 - $1) }.max() ?? 0, 0.05, "\(name) line")
+        }
+    }
+
+    func testTheBandHostsTheLightOverItsWholeShape() throws {
+        // The band gives the light the band's own size and place, under the toolbar and the strip.
+        let glow = QuickAccessGlowView()
+        let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, glow: glow)
         settle(window)
-        XCTAssertEqual(backdrop.surface.edgeWidth, 1)
-        XCTAssertFalse(backdrop.material.isHidden)
-        XCTAssertFalse(backdrop.surface.isSolid)
+        let band = backdrop.convert(backdrop.bandRect, to: nil)
+        let hosted = glow.convert(glow.bounds, to: nil)
+        XCTAssertEqual(hosted.minX, band.minX, accuracy: 0.5)
+        XCTAssertEqual(hosted.minY, band.minY, accuracy: 0.5)
+        XCTAssertEqual(hosted.width, band.width, accuracy: 0.5)
+        XCTAssertEqual(hosted.height, band.height, accuracy: 0.5)
+        XCTAssertFalse(window.contentView?.hitTest(NSPoint(x: band.midX, y: band.midY)) === glow)
     }
 
     // MARK: Room for the enlarged card
 
     func testTheBandGivesTheEnlargedCardRoomAboveAndBelow() throws {
         // Medium cards at each enlargement, without the frequent wing and with it. The band is as tall as the toolbar,
-        // the cards and the room around them. The selected card's unscaled layout frame starts 68 pt
+        // the cards and the room around them. The selected card's unscaled layout frame starts 60 pt
         // below the band's top edge and the growth further down, the distance the enlarged card reaches past it, and
         // the room below it is the metrics' own. The strip reaches the growth and 8 pt more for the ring above the
         // cards and below them, and the section icons' view fills the room below the cards.
         let cases: [(scale: CGFloat, wing: Bool, height: CGFloat)] = [
-            (1, false, 340), (1, true, 346), (1.12, false, 370), (1.12, true, 376), (1.25, false, 404),
-            (1.25, true, 410),
+            (1, false, 302), (1, true, 311), (1.06, false, 316), (1.06, true, 325), (1.25, false, 358),
+            (1.25, true, 367),
         ]
         for (scale, wing, height) in cases {
             let name = "\(scale), wing \(wing)"
@@ -75,7 +320,7 @@ final class QuickAccessBandTests: XCTestCase {
             let band = backdrop.convert(backdrop.bandRect, to: nil)
             let card = try selectedCard(in: strip)
             XCTAssertEqual(band.height, height, name)
-            XCTAssertEqual(band.maxY - card.maxY, 68 + growth, accuracy: 0.5, name)
+            XCTAssertEqual(band.maxY - card.maxY, 60 + growth, accuracy: 0.5, name)
             XCTAssertEqual(card.minY - band.minY, metrics.bottomPadding, accuracy: 0.5, name)
             // The strip as the band hosts it.
             let hosted = strip.convert(strip.bounds, to: nil)
@@ -89,7 +334,7 @@ final class QuickAccessBandTests: XCTestCase {
 
     func testTheEnlargedCardAndItsRingFitInTheBand() throws {
         for size in CardSize.allCases {
-            for scale in [1.0, 1.12, 1.25] {
+            for scale in [1.0, 1.06, 1.25] {
                 for wing in [false, true] {
                     for contrast in [false, true] {
                         let metrics = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: wing,
@@ -111,8 +356,11 @@ final class QuickAccessBandTests: XCTestCase {
                         let band = backdrop.convert(backdrop.bandRect, to: nil)
                         XCTAssertTrue(hosted.contains(ring))
                         XCTAssertTrue(hosted.contains(card))
-                        XCTAssertGreaterThanOrEqual(band.maxY - 48 - ring.maxY, 13)
-                        XCTAssertGreaterThanOrEqual(ring.minY - band.minY, wing ? 21 : 15)
+                        // The toolbar's row ends 44 below the band's top edge, and the ring keeps 9 pt from it, 10
+                        // without Increase Contrast; below the cards it keeps 11 from the band's bottom edge, or 20
+                        // with the frequent wing's room for its icons.
+                        XCTAssertGreaterThanOrEqual(band.maxY - 44 - ring.maxY, 9)
+                        XCTAssertGreaterThanOrEqual(ring.minY - band.minY, wing ? 20 : 11)
                         let outline = QuickAccessBandBackdrop.outline(in: band)
                         let radius = try XCTUnwrap(ringView.layer).cornerRadius
                         let ringPath = RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: ring).cgPath
@@ -207,10 +455,10 @@ final class QuickAccessBandTests: XCTestCase {
     // MARK: Section icons
 
     func testTheSectionIconsLieBelowTheCards() throws {
-        // With the standard enlargement and without the frequent wing the band is 370 tall with 37 below the cards;
-        // with the wing, 376 with 43 below them. Either way the cards start 83 below the band's top edge: 20 below the
-        // toolbar's row, and 15 more for the selected card enlarged.
-        for (wing, room, height) in [(false, 37, 370), (true, 43, 376)] as [(Bool, CGFloat, CGFloat)] {
+        // With the standard enlargement and without the frequent wing the band is 316 tall with 25 below the cards;
+        // with the wing, 325 with 34 below them. Either way the cards start 67 below the band's top edge: 16 below the
+        // toolbar's row, and 7 more for the selected card enlarged.
+        for (wing, room, height) in [(false, 25, 316), (true, 34, 325)] as [(Bool, CGFloat, CGFloat)] {
             let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: wing)
             let strip = QuickAccessStripView()
             let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,
@@ -223,7 +471,7 @@ final class QuickAccessBandTests: XCTestCase {
             let band = backdrop.convert(backdrop.bandRect, to: nil)
             let card = try selectedCard(in: strip)
             XCTAssertEqual(band.height, height, "wing \(wing)")
-            XCTAssertEqual(band.maxY - card.maxY, 83, accuracy: 0.5, "wing \(wing)")
+            XCTAssertEqual(band.maxY - card.maxY, 67, accuracy: 0.5, "wing \(wing)")
             XCTAssertEqual(card.minY - band.minY, room, accuracy: 0.5, "wing \(wing)")
             // The icons' view is as wide as the band, from the cards' bottom edge down to the band's.
             let icons = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil)
@@ -253,12 +501,12 @@ final class QuickAccessBandTests: XCTestCase {
 
     func testTheSectionIconsStandClearOfTheRingAndTheBandsBottomEdge() throws {
         // The ring around a selected card reaches 6 pt below it, and 7 with Increase Contrast. The selected card
-        // enlarged by the standard 1.12 reaches 15 pt below the others' bottom edges, and its ring that much lower.
+        // enlarged by the standard 1.06 reaches 7 pt below the others' bottom edges, and its ring that much lower.
         // Each icon is centred between the wider ring's lowest reach and the band's bottom edge, and the ink it draws,
         // measured as SwiftUI draws it, keeps at least 3 pt from both, the two gaps differing by less than a point. The
         // icons are the same with Increase Contrast or without.
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
-        XCTAssertEqual(metrics.selectionGrowth, 15)
+        XCTAssertEqual(metrics.selectionGrowth, 7)
         XCTAssertEqual(try ringReach(increasedContrast: false, below: true), 6, accuracy: 0.5)
         let reach = try ringReach(increasedContrast: true, below: true)
         XCTAssertEqual(reach, 7, accuracy: 0.5)
@@ -288,8 +536,8 @@ final class QuickAccessBandTests: XCTestCase {
         }
     }
 
-    func testTheSectionIconsAreTwelvePointSemiboldSymbolsWithoutWords() throws {
-        // Each icon draws the ink of its SF Symbol at 12 pt semibold, as SwiftUI draws the symbol alone, and nothing
+    func testTheSectionIconsAreElevenPointSemiboldSymbolsWithoutWords() throws {
+        // Each icon draws the ink of its SF Symbol at 11 pt semibold, as SwiftUI draws the symbol alone, and nothing
         // else: one run of ink, no gap in it wider than 2 pt, as wide and as tall as the symbol's own, and as heavy. No
         // "Frequent" or "Recent" is drawn beside it. A point more or less makes the symbol at least 0.75 pt wider or
         // narrower, or taller or shorter, which is more than the 0.5 pt the comparison allows; medium or bold strokes
@@ -304,7 +552,7 @@ final class QuickAccessBandTests: XCTestCase {
             XCTAssertNil(zip(columns, columns.dropFirst()).first { $1 - $0 > Int(2 * Picture.scale) },
                          "\(symbol): something is drawn beside the symbol")
             let drawn = try XCTUnwrap(picture.ink(in: nil), symbol)
-            let reference = try Picture(Image(systemName: symbol).font(.system(size: 12, weight: .semibold))
+            let reference = try Picture(Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
                 .fixedSize())
             let alone = try XCTUnwrap(reference.ink(in: nil), symbol)
             XCTAssertEqual(drawn.width, alone.width, accuracy: 0.5, symbol)
@@ -316,9 +564,8 @@ final class QuickAccessBandTests: XCTestCase {
     func testAPinnedIconKeepsEightPointsFromTheBandsRoundedCorner() throws {
         // Once the divider has gone off an end, the icon of the wing still on screen rests at that end, and its ink
         // keeps at least 8 pt from the band's rounded corner there: the outline as the band draws it, where it lies
-        // within the corner's radius, 36 pt, of that end and of the bottom edge. Further along the outline runs within
-        // 0.35 pt of the straight bottom edge, which the icons keep 3 pt from. Resting at the dock inset, 20 pt, the
-        // ink came within 2 pt of the corner.
+        // within the corner's radius, 28 pt, of that end and of the bottom edge. Further along the outline runs close
+        // to the straight bottom edge, which the icons keep 3 pt from.
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
         // Three frequent clips and Row 10 selected: the divider is off the left end, and the clock rests there. Twenty
         // frequent clips and the least used one selected, at the wing's left end: the divider is off the right end, and
@@ -355,19 +602,20 @@ final class QuickAccessBandTests: XCTestCase {
 
     func testEveryIconAtRestKeepsEightPointsFromTheBandsRoundedCorners() throws {
         // Where the film came to rest with the divider 34 to 66 pt from an end of the band, the icon beside the
-        // divider stood in the band's rounded corner: 2.6 pt from it at 1440 with medium cards. An icon now follows
-        // the divider until it is 42 pt from the end, stays there, and goes once the divider passes it. Every place
-        // the film rests in, with twenty frequent clips and thirty recent ones, on the screens and card sizes where
-        // that happened and on the medium ones named with them: each icon shown keeps 8 pt from the corner, measured
-        // by its ink as in the test above, 42 pt or more from either end, and on its own wing's side of the divider,
-        // so the two never meet. It does so at every enlargement of the selected card: at the slider's two ends and the
-        // standard one between them. The places where the divider came that close to an end were found with the
-        // selected card not enlarged, and that is where the test looks for them.
-        let reported: [(width: CGFloat, size: CardSize)] = [(1440, .medium), (1920, .medium), (1280, .small),
-                                                            (1600, .large), (1710, .small), (2560, .small)]
-        let named: [(width: CGFloat, size: CardSize)] = [(1280, .medium), (1600, .medium), (1710, .medium)]
-        let cases = (reported + named).flatMap { screen in
-            ([1, 1.12, 1.25] as [CGFloat]).map { (width: screen.width, size: screen.size, scale: $0) }
+        // divider stood in the band's rounded corner. An icon now follows the divider until it is 42 pt from the end,
+        // stays there, and goes once the divider passes it. Every place the film rests in, with twenty frequent clips
+        // and thirty recent ones: each icon shown keeps 8 pt from the corner, measured by its ink as in the test above,
+        // 42 pt or more from either end, and on its own wing's side of the divider, so the two never meet. It does so
+        // at every enlargement of the selected card: at the slider's two ends and the standard one between them. With
+        // the selected card not enlarged, the film rests with the divider that close to an end on the `near` screens,
+        // with medium cards on one 1280 wide and small ones on one 1200 wide; the others are where it happened when
+        // the band and its cards were larger.
+        let near: [(width: CGFloat, size: CardSize)] = [(1280, .medium), (1200, .small)]
+        let earlier: [(width: CGFloat, size: CardSize)] = [(1440, .medium), (1920, .medium), (1280, .small),
+                                                           (1600, .large), (1710, .small), (2560, .small),
+                                                           (1600, .medium), (1710, .medium)]
+        let cases = (near + earlier).flatMap { screen in
+            ([1, 1.06, 1.25] as [CGFloat]).map { (width: screen.width, size: screen.size, scale: $0) }
         }
         for (width, size, scale) in cases {
             let name = "\(Int(width)) \(size) \(scale)"
@@ -433,7 +681,7 @@ final class QuickAccessBandTests: XCTestCase {
                 if shown.count == 2 { XCTAssertFalse(shown[0].intersects(shown[1]), rest) }
             }
             // Where it happened, the film does rest with the divider that close to an end.
-            if scale == 1, reported.contains(where: { $0.width == width && $0.size == size }) {
+            if scale == 1, near.contains(where: { $0.width == width && $0.size == size }) {
                 XCTAssertGreaterThan(nearAnEnd, 0, name)
             }
         }
@@ -446,7 +694,7 @@ final class QuickAccessBandTests: XCTestCase {
         let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440)
         let icon = ApplicationNames().icon(for: nil)
         func picture(_ content: StripFrameContent) throws -> Picture {
-            try Picture(StripFrameView(content: content, applicationIcon: icon, metrics: metrics, headerTint: nil,
+            try Picture(StripFrameView(content: content, applicationIcon: icon, metrics: metrics, accent: nil,
                                        isSelected: false))
         }
         func same(_ one: Picture, _ other: Picture) -> Bool {
@@ -476,12 +724,13 @@ final class QuickAccessBandTests: XCTestCase {
         metrics: StripMetrics = StripLayout.metrics(for: .medium, visibleWidth: 1440),
         strip: QuickAccessStripView = QuickAccessStripView(),
         toolbar: QuickAccessToolbar = QuickAccessToolbar(field: QuickAccessSearchField()),
+        glow: QuickAccessGlowView = QuickAccessGlowView(),
         roomBelow: CGFloat = StripLayout.shadowRoom.below
     ) throws -> (NSWindow, QuickAccessBandBackdrop) {
         let band = QuickAccessBandView(
             layout: QuickAccessBandView.Layout(metrics: metrics, previewSize: nil, roomBelow: roomBelow),
             state: QuickAccessState(services: { nil }), toolbar: toolbar,
-            strip: strip, applicationNames: ApplicationNames(),
+            strip: strip, glow: glow, applicationNames: ApplicationNames(),
             actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {})
         )
         let root = band
@@ -522,6 +771,56 @@ final class QuickAccessBandTests: XCTestCase {
             let y = min(max(Int((size.height - point.y) * 2), 0), rep.pixelsHigh - 1)
             return rep.colorAt(x: x, y: y)?.alphaComponent ?? 0
         }
+    }
+
+    /// What the band's surface draws, the tray, its edge and its highlight, drawn in sRGB at twice its size: the colour
+    /// at a point in its coordinates, as red, green and blue.
+    private func surfacePixels(of backdrop: QuickAccessBandBackdrop) throws -> (NSPoint) -> [CGFloat] {
+        let surface = backdrop.surface
+        let size = surface.bounds.size
+        let (width, height) = (Int(size.width * 2), Int(size.height * 2))
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.scaleBy(x: 2, y: 2)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        surface.draw(surface.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        let bytes = try XCTUnwrap(context.data).bindMemory(to: UInt8.self, capacity: width * height * 4)
+        XCTAssertFalse(surface.isFlipped, "The readings below count rows from the top of an unflipped view")
+        return { point in
+            let x = min(max(Int(point.x * 2), 0), width - 1)
+            let y = min(max(Int((size.height - point.y) * 2), 0), height - 1)
+            let pixel = (y * width + x) * 4
+            return (0..<3).map { CGFloat(bytes[pixel + $0]) / 255 }
+        }
+    }
+
+    /// A colour written as 0xRRGGBB, as red, green and blue from 0 to 1.
+    private func rgb(_ hex: UInt32) -> [CGFloat] {
+        let red = CGFloat((hex >> 16) & 0xFF), green = CGFloat((hex >> 8) & 0xFF), blue = CGFloat(hex & 0xFF)
+        return [red / 255, green / 255, blue / 255]
+    }
+
+    /// `base` with a grey `value` laid over it at `alpha`, as each component blends.
+    private func over(_ base: [CGFloat], _ value: CGFloat, alpha: CGFloat) -> [CGFloat] {
+        base.map { component in component * (1 - alpha) + value * alpha }
+    }
+
+    private func assertColor(_ actual: [CGFloat], _ expected: [CGFloat], _ name: String, accuracy: CGFloat = 0.012,
+                             file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.count, 3, name, file: file, line: line)
+        for (component, (value, wanted)) in zip(["red", "green", "blue"], zip(actual, expected)) {
+            XCTAssertEqual(value, wanted, accuracy: accuracy, "\(name), \(component)", file: file, line: line)
+        }
+    }
+
+    private func views<View: NSView>(_ type: View.Type, in view: NSView?) -> [View] {
+        guard let view else { return [] }
+        return ((view as? View).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
     }
 
     private func settle(_ window: NSWindow) {
@@ -708,8 +1007,10 @@ private struct Picture {
         let (width, height) = (image.width, image.height)
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         let drawn = bytes.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
-                                          bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+            // In sRGB, as the colours read from it are given: the display's own space would shift them.
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                          bytesPerRow: width * 4, space: space,
                                           bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
             context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
             return true
@@ -718,6 +1019,15 @@ private struct Picture {
         self.width = width
         self.height = height
         self.bytes = bytes
+    }
+
+    /// The colour at the point `point` points from the picture's left and top, as red, green and blue from 0 to 1, as if
+    /// over black: the pictures here are opaque where they are read.
+    func color(at point: CGPoint) -> [CGFloat] {
+        let x = min(max(Int(point.x * Self.scale), 0), width - 1)
+        let y = min(max(Int(point.y * Self.scale), 0), height - 1)
+        let index = (y * width + x) * 4
+        return (0..<3).map { CGFloat(bytes[index + $0]) / 255 }
     }
 
     /// Whether the pixel `x` from the left and `y` from the top holds any ink at all.

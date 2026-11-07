@@ -15,6 +15,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private var listNavigation: QuickAccessListNavigation { toolbar.lists }
     private var filterButton: QuickAccessFilterButton { toolbar.filterButton }
     private let strip = QuickAccessStripView()
+    /// The light behind the selected card, kept where the card rests.
+    private let glow = QuickAccessGlowView()
     private let applicationNames = ApplicationNames()
     private var hosting: NSHostingView<QuickAccessBandView>?
     private lazy var fieldEditor: QuickAccessFieldEditor = {
@@ -341,9 +343,27 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.queryIsEmpty = state.query.isEmpty
         strip.dimsSideFrames = hasCard
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
+        let colors = collectionColors
         strip.show(state.selection.rows, selection: state.selection.selectedID, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded,
-                   collections: cardCollections, slides: !showsNewList)
+                   collections: cardCollections, collectionColors: colors, slides: !showsNewList)
+        glow.show(selectedCardGlow(collectionColors: colors))
+    }
+
+    /// Every collection's colour, which a snippet's card in it takes as its accent, whatever list is shown.
+    private var collectionColors: [CollectionID: String] {
+        Dictionary(state.collections.map { ($0.id, $0.color) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// The light behind the selected card where the strip rests it, in the card's own accent, as the strip works it
+    /// out for the card: the same collection colours and the same icon. None without a selected card, as in the empty
+    /// state, or for a card without an accent.
+    private func selectedCardGlow(collectionColors: [CollectionID: String]) -> QuickAccessGlow? {
+        guard let row = state.selection.selectedRow, let card = strip.selectionAnchorFrame else { return nil }
+        let tint = row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: applicationNames.icon(for: $0)) }
+        // The strip is as wide as the band and starts at its left end, so the card's middle lies as far into both.
+        return QuickAccessGlow.make(row: row, accent: CardAccent(row: row, collectionColors: collectionColors, tint: tint),
+                                    cardMidX: card.midX, metrics: metrics)
     }
 
     /// The collections the cards may name: every one but the one whose list is shown, which every card there is in.
@@ -407,7 +427,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     private func bandView(_ layout: QuickAccessBandView.Layout) -> QuickAccessBandView {
         QuickAccessBandView(
-            layout: layout, state: state, toolbar: toolbar, strip: strip, applicationNames: applicationNames,
+            layout: layout, state: state, toolbar: toolbar, strip: strip, glow: glow, applicationNames: applicationNames,
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
                                                  confirmCommand: { [weak self] in self?.confirmFromCard() },
                                                  cancelCommandReview: { [weak self] in self?.cancelFromCard() })

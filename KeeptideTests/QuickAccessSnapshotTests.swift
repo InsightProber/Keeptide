@@ -228,7 +228,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
         narrow.state.close()
         harness.status.update(.ready)
         for (name, scale, fades) in [("panel-scale-100", 1.0, true), ("panel-scale-125", 1.25, true),
-                                     ("panel-fades-off", 1.12, false)] {
+                                     ("panel-fades-off", 1.06, false)] {
             preferences.selectedCardScale = scale
             preferences.fadesStripEnds = fades
             // A controller takes its metrics at creation; each setting gets a new session and controller.
@@ -553,7 +553,7 @@ final class QuickAccessSnapshotTests: XCTestCase {
     }
 
     /// Frequent clips, each saying how often it was used where the time would be: a checklist used 12 times, three files
-    /// saved as a memo and used 1,234 times, whose marks and count leave a small card's colour band too little room,
+    /// saved as a memo and used 1,234 times, whose marks and count leave a small card's header too little room,
     /// and a page used 3 times.
     private func frequentRow(now: Date) -> [Card] {
         let checklist = "Rebase checklist: fetch, rebase onto main, run tests, push with lease."
@@ -661,10 +661,8 @@ final class QuickAccessSnapshotTests: XCTestCase {
         }
     }
 
-    /// The window's content in one appearance, over the design's desktop and the window behind the panel. The band's
-    /// material is the window server's work: it blurs what lies behind the window, and AppKit draws a flat grey in its
-    /// place in a picture like this one. So the band is drawn as it is with Reduce Transparency, in the design's own
-    /// colour for it, without the blur.
+    /// The window's content in one appearance, over the design's desktop and the window behind the panel. The band is
+    /// an opaque tray, so it is drawn as it shows on screen.
     private func renderPanel(_ window: NSWindow, dark: Bool) async throws -> Data {
         let appearance = try XCTUnwrap(NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = appearance
@@ -673,11 +671,6 @@ final class QuickAccessSnapshotTests: XCTestCase {
         content.layoutSubtreeIfNeeded()
         // SwiftUI draws on the next turn of the run loop.
         try await Task.sleep(for: .milliseconds(300))
-        let backdrop = try XCTUnwrap(views(QuickAccessBandBackdrop.self, in: content).first)
-        let previousTransparency = backdrop.reducesTransparency
-        defer { backdrop.reducesTransparency = previousTransparency }
-        backdrop.reducesTransparency = true
-        content.layoutSubtreeIfNeeded()
         let size = content.bounds.size
         let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: content).first)
         var panel: NSBitmapImageRep?
@@ -885,19 +878,19 @@ final class QuickAccessSnapshotTests: XCTestCase {
         window.appearance = appearance
         window.colorSpace = .sRGB
         addTeardownBlock { window.close() }
-        // The band's colour where its glass would be: the switcher's tint, opaque.
+        // The band's tray.
         let band = NSView(frame: NSRect(origin: .zero, size: size))
         band.wantsLayer = true
-        band.layer?.backgroundColor = dark ? CGColor(srgbRed: 0x1E / 255, green: 0x1E / 255, blue: 0x20 / 255, alpha: 1)
-            : CGColor(srgbRed: 0xF6 / 255, green: 0xF6 / 255, blue: 0xF8 / 255, alpha: 1)
+        band.layer?.backgroundColor = QuickAccessBandSurface.fill(dark: dark).cgColor
         window.contentView = band
         for (index, card) in cards.enumerated() {
-            // As in the strip, each band takes its colour from the icon its card shows.
+            // As in the strip, each card takes its accent from the icon it shows.
             let icon = names.icon(for: card.row.sourceApp)
             let view = StripFrameView(
                 content: StripFrameContent.make(row: card.row, detail: card.detail, cardSize: cardSize, now: now),
                 applicationIcon: icon, metrics: metrics,
-                headerTint: card.row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) },
+                accent: CardAccent(row: card.row, collectionColors: [:],
+                                   tint: card.row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) }),
                 isSelected: card.isSelected)
             let host = NSHostingView(rootView: view)
             host.sizingOptions = []

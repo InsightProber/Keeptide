@@ -32,7 +32,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         isBordered = false
         drawsBackground = false
         focusRingType = .none
-        font = .systemFont(ofSize: 15)
+        font = .systemFont(ofSize: 13)
         textColor = ToolbarPalette.fieldText
         setPrompt("Search")
         // The field's own magnifier and cancel button stay, for what they do, and are neither drawn nor read: the
@@ -54,7 +54,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
     func setPrompt(_ prompt: String) {
         guard placeholderAttributedString?.string != prompt else { return }
         placeholderAttributedString = NSAttributedString(string: prompt, attributes: [
-            .font: NSFont.systemFont(ofSize: 15), .foregroundColor: ToolbarPalette.placeholder,
+            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: ToolbarPalette.placeholder,
         ])
     }
 

@@ -226,7 +226,7 @@ final class SettingsTests: XCTestCase {
 
     func testEnlargementTextUsesTheNormalizedScaleWithoutAccessibilityPermission() {
         for (scale, expected) in [(1.0, "None"), (1.13, "13% larger"), (0.9, "None"), (1.3, "25% larger"),
-                                  (Double.nan, "12% larger"), (.infinity, "12% larger"), (-.infinity, "12% larger")] {
+                                  (Double.nan, "6% larger"), (.infinity, "6% larger"), (-.infinity, "6% larger")] {
             XCTAssertEqual(SettingsView.enlargement(scale), expected)
         }
     }
@@ -415,15 +415,15 @@ final class SettingsTests: XCTestCase {
 
     func testTheSelectedCardIsEnlargedByDefaultAndTheChoiceStaysInRange() throws {
         let defaults = try makeDefaults()
-        // Absent means 1.12, the standard enlargement, and reading it stores nothing.
-        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, 1.12, accuracy: 0.0001)
+        // Absent means 1.06, the standard enlargement, and reading it stores nothing.
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, 1.06, accuracy: 0.0001)
         XCTAssertEqual(QuickAccessPreferences(defaults: defaults).stripStyle, .standard)
         XCTAssertNil(defaults.object(forKey: "quickAccess.selectedCardScale"))
 
         // Stored values are not trusted: a number is kept between 1.00 and 1.25 and to hundredths, and one that is not
         // finite reads as the default.
         let numbers: [(stored: Double, read: Double)] = [(1.2, 1.2), (1.234, 1.23), (2, 1.25), (0.5, 1.0),
-                                                         (Double.nan, 1.12)]
+                                                         (Double.nan, 1.06)]
         for (stored, read) in numbers {
             defaults.set(stored, forKey: "quickAccess.selectedCardScale")
             XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, read, accuracy: 0.0001,
@@ -432,7 +432,7 @@ final class SettingsTests: XCTestCase {
         // Nor is anything that is not a number: text, data, or a flag, which would otherwise read as 1.
         for stored in ["1.2", true, Data([1])] as [Any] {
             defaults.set(stored, forKey: "quickAccess.selectedCardScale")
-            XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, 1.12, accuracy: 0.0001,
+            XCTAssertEqual(QuickAccessPreferences(defaults: defaults).selectedCardScale, 1.06, accuracy: 0.0001,
                            "\(stored)")
         }
 
@@ -486,7 +486,7 @@ final class SettingsTests: XCTestCase {
         }
 
         // The standard enlargement reads as how much larger the selected card is.
-        XCTAssertEqual(spoken(), "12% larger", "\(described)")
+        XCTAssertEqual(spoken(), "6% larger", "\(described)")
         // The slider's ends are named in the form: None at the left, More at the right.
         let words = accessibilityElements(in: hosting).compactMap { element in
             name(of: element) ?? attribute(of: element, "accessibilityValue") as? String

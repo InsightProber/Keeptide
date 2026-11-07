@@ -107,7 +107,7 @@ final class QuickAccessToolbar: NSView {
         // Layers let the search grow and shrink, and the filters and notice move with it, as one animation.
         wantsLayer = true
         for label in [statusLabel, indexNoticeLabel, captureNoticeLabel, directPasteHint] {
-            label.font = .systemFont(ofSize: 13)
+            label.font = .systemFont(ofSize: 12)
             label.lineBreakMode = .byTruncatingTail
             label.maximumNumberOfLines = 1
             label.isHidden = true
@@ -198,7 +198,10 @@ final class QuickAccessToolbar: NSView {
         let noteWidth = layoutNote(endingAt: noteRight, room: borrows ? max(noteSlot, free) : noteSlot)
         let span = max(noteSlot, noteWidth)
         let searchRight = span > 0 ? noteRight - span - gap : noteRight
-        let searchFrame = NSRect(x: searchRight - searchWidth, y: row.minY, width: searchWidth, height: row.height)
+        // As high as the folded circle, open or folded, and level with the row.
+        let searchHeight = QuickAccessSearchControl.foldedWidth
+        let searchFrame = NSRect(x: searchRight - searchWidth, y: row.midY - searchHeight / 2, width: searchWidth,
+                                 height: searchHeight)
         search.frame = searchFrame
         focusHalo.frame = searchFrame.insetBy(dx: -QuickAccessFocusHalo.width, dy: -QuickAccessFocusHalo.width)
         filterButton.frame = NSRect(x: searchFrame.minX - gap - filterSize.width, y: row.midY - filterSize.height / 2,
@@ -253,7 +256,7 @@ final class QuickAccessToolbar: NSView {
     /// How wide a status label must be to show `text` whole.
     private static func labelWidth(_ text: String) -> CGFloat {
         let probe = NSTextField(labelWithString: text)
-        probe.font = .systemFont(ofSize: 13)
+        probe.font = .systemFont(ofSize: 12)
         return fullWidth(of: probe)
     }
 
@@ -351,10 +354,10 @@ final class QuickAccessToolbar: NSView {
 /// the circle, not drawn, and keeps the keys if it has them.
 @MainActor
 final class QuickAccessSearchControl: NSView {
-    static let foldedWidth: CGFloat = 32
+    static let foldedWidth: CGFloat = 28
     static let openWidth: CGFloat = 300
-    private static let magnifierSide: CGFloat = 15
-    private static let fieldHeight: CGFloat = 20
+    private static let magnifierSide: CGFloat = 14
+    private static let fieldHeight: CGFloat = 18
 
     let field: QuickAccessSearchField
     let magnifier = NSImageView()
@@ -388,7 +391,7 @@ final class QuickAccessSearchControl: NSView {
         wantsLayer = true
         layer?.cornerRadius = Self.foldedWidth / 2
         layer?.cornerCurve = .continuous
-        let glyph = NSImage.SymbolConfiguration(pointSize: 13, weight: .medium)
+        let glyph = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
         magnifier.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)?
             .withSymbolConfiguration(glyph)
         magnifier.imageScaling = .scaleProportionallyUpOrDown
@@ -513,10 +516,10 @@ final class QuickAccessFocusHalo: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-/// The open search's clear button: an 18 pt disc with a cross, as a search field's own.
+/// The open search's clear button: a 16 pt disc with a cross, as a search field's own.
 @MainActor
 final class QuickAccessClearButton: NSButton {
-    static let side: CGFloat = 18
+    static let side: CGFloat = 16
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -550,7 +553,7 @@ final class QuickAccessClearButton: NSButton {
 /// A key drawn as a small cap: Return's, before "Copy".
 @MainActor
 final class QuickAccessKeycap: NSView {
-    static let minimumSize = NSSize(width: 22, height: 20)
+    static let minimumSize = NSSize(width: 20, height: 18)
     let symbol: String
 
     init(symbol: String) {
@@ -562,7 +565,7 @@ final class QuickAccessKeycap: NSView {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     private var attributes: [NSAttributedString.Key: Any] {
-        [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: ToolbarPalette.glyph]
+        [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: ToolbarPalette.glyph]
     }
 
     override var intrinsicContentSize: NSSize {
@@ -572,8 +575,8 @@ final class QuickAccessKeycap: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let line: CGFloat = 0.75
-        let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: line / 2, dy: line / 2), xRadius: 5 - line / 2,
-                                yRadius: 5 - line / 2)
+        let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: line / 2, dy: line / 2), xRadius: 4.5 - line / 2,
+                                yRadius: 4.5 - line / 2)
         edge.lineWidth = line
         ToolbarPalette.keycapEdge.setStroke()
         edge.stroke()
@@ -589,7 +592,7 @@ final class QuickAccessKeycap: NSView {
 @MainActor
 final class QuickAccessCopyHint: NSButton {
     /// Between the key cap and the word.
-    static let spacing: CGFloat = 7
+    static let spacing: CGFloat = 6
     let keycap = QuickAccessKeycap(symbol: "⏎")
     var showsTitle = true {
         didSet { if showsTitle != oldValue { needsDisplay = true } }
@@ -620,12 +623,12 @@ final class QuickAccessCopyHint: NSButton {
     }
 
     private var titleAttributes: [NSAttributedString.Key: Any] {
-        [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: ToolbarPalette.secondary]
+        [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: ToolbarPalette.secondary]
     }
 
     /// How wide `title` is in the hint's type.
     static func titleWidth(_ title: String) -> CGFloat {
-        ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width)
+        ceil((title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12)]).width)
     }
 
     /// With its word, and with its key cap alone.
@@ -656,7 +659,7 @@ final class QuickAccessCopyHint: NSButton {
 /// The ⋯ at the toolbar's right end, which opens a menu with Open Library and Settings….
 @MainActor
 final class QuickAccessMoreButton: NSButton {
-    static let side: CGFloat = 28
+    static let side: CGFloat = 26
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)

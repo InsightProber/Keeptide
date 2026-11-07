@@ -5,11 +5,14 @@ currently save new copies whenever Keeptide is open, with no pause switch, while
 ignored applications and privacy filters decide what is skipped. They include
 exact capture deduplication, a recent-clips list, original-format and plain-text
 copying, and a quick-access panel that says why when new copies cannot be saved.
-The panel shows clips as a row of large cards in a wide band, in small, medium
-or large sizes as set in a minimal Settings window, which also sets how much
-larger the selected card is drawn and whether the band's ends fade where more
-cards continue. The panel steps through them with the arrow keys or a trackpad
-swipe, one clip per detent with a haptic tick on a Force Touch trackpad. Clips
+The panel shows clips as a row of cards on an opaque band, in small, medium or
+large sizes as set in a minimal Settings window, which also sets how much larger
+the selected card is drawn and whether the band's ends fade where more cards
+continue. Each card's header is washed in its accent, the colour of its
+collection or of the app it came from, and a soft light in the same colour lies
+behind the selected card. The panel steps through them with
+the arrow keys or a trackpad swipe, one clip per detent with a haptic tick on a
+Force Touch trackpad. Clips
 copied or pasted from Keeptide more than once, and used in the last 90 days,
 appear to the left of the newest one, apart from the recent clips; Settings can
 turn this off. The panel switches between all content, snippets and each
