@@ -300,8 +300,8 @@ final class QuickAccessBandTests: XCTestCase {
         // the room below it is the metrics' own. The strip reaches the growth and 8 pt more for the ring above the
         // cards and below them, and the section icons' view fills the room below the cards.
         let cases: [(scale: CGFloat, wing: Bool, height: CGFloat)] = [
-            (1, false, 302), (1, true, 310), (1.06, false, 316), (1.06, true, 324), (1.25, false, 358),
-            (1.25, true, 366),
+            (1, false, 302), (1, true, 311), (1.06, false, 316), (1.06, true, 325), (1.25, false, 358),
+            (1.25, true, 367),
         ]
         for (scale, wing, height) in cases {
             let name = "\(scale), wing \(wing)"
@@ -357,10 +357,10 @@ final class QuickAccessBandTests: XCTestCase {
                         XCTAssertTrue(hosted.contains(ring))
                         XCTAssertTrue(hosted.contains(card))
                         // The toolbar's row ends 44 below the band's top edge, and the ring keeps 9 pt from it, 10
-                        // without Increase Contrast; below the cards it keeps 11 from the band's bottom edge, or 19
+                        // without Increase Contrast; below the cards it keeps 11 from the band's bottom edge, or 20
                         // with the frequent wing's room for its icons.
                         XCTAssertGreaterThanOrEqual(band.maxY - 44 - ring.maxY, 9)
-                        XCTAssertGreaterThanOrEqual(ring.minY - band.minY, wing ? 19 : 11)
+                        XCTAssertGreaterThanOrEqual(ring.minY - band.minY, wing ? 20 : 11)
                         let outline = QuickAccessBandBackdrop.outline(in: band)
                         let radius = try XCTUnwrap(ringView.layer).cornerRadius
                         let ringPath = RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: ring).cgPath
@@ -456,9 +456,9 @@ final class QuickAccessBandTests: XCTestCase {
 
     func testTheSectionIconsLieBelowTheCards() throws {
         // With the standard enlargement and without the frequent wing the band is 316 tall with 25 below the cards;
-        // with the wing, 324 with 33 below them. Either way the cards start 67 below the band's top edge: 16 below the
+        // with the wing, 325 with 34 below them. Either way the cards start 67 below the band's top edge: 16 below the
         // toolbar's row, and 7 more for the selected card enlarged.
-        for (wing, room, height) in [(false, 25, 316), (true, 33, 324)] as [(Bool, CGFloat, CGFloat)] {
+        for (wing, room, height) in [(false, 25, 316), (true, 34, 325)] as [(Bool, CGFloat, CGFloat)] {
             let metrics = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: wing)
             let strip = QuickAccessStripView()
             let (window, backdrop) = try host(reducesTransparency: false, increasedContrast: false, metrics: metrics,

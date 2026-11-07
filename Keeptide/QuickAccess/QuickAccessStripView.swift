@@ -1185,7 +1185,7 @@ private final class StripSectionLabelsView: NSView {
 /// is drawn beside it; its help tag and its accessibility label give the name. The tests measure the ink it draws, so
 /// it is not private.
 struct StripSectionLabel: View {
-    /// The symbol's size: a step under the toolbar's 12 pt type, and small enough that its 12 pt of ink keeps 3.5 pt
+    /// The symbol's size: a step under the toolbar's 12 pt type, and small enough that its 12 pt of ink keeps 4 pt
     /// from the band's bottom edge and from the ring around the selected card above it.
     static let pointSize: CGFloat = 11
 

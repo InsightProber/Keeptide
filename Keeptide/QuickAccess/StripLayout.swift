@@ -41,9 +41,9 @@ struct StripMetrics: Equatable {
     /// From the toolbar's bottom edge to the cards: 16 pt, and the distance the enlarged selected card reaches above
     /// the others.
     let toolbarGap: CGFloat
-    /// From the cards to the band's bottom edge: 18 pt, or 26 with the frequent wing turned on, so that its section
-    /// icons have room there below the ring around a selected card; and the distance the enlarged selected card reaches
-    /// below the others.
+    /// From the cards to the band's bottom edge: 18 pt, or 27 with the frequent wing turned on, so that its section
+    /// icons have room there below the ring around a selected card, on whole points; and the distance the enlarged
+    /// selected card reaches below the others.
     let bottomPadding: CGFloat
     /// How much larger the selected card is drawn than the others. Metrics made up for a test leave it at 1, and the
     /// push at 0, so that the strip lies as it did before the selected card was enlarged.
@@ -162,7 +162,7 @@ enum StripLayout {
     /// The frames are as large on every screen as the card size makes them; a narrow screen shows fewer of them.
     /// The band is `bandWidth(visibleWidth:)` wide. Above and below the cards it has room for the selected card as
     /// `style` enlarges it: the 16 pt between the toolbar and the cards, and the 18 pt below them, each grow by
-    /// `selectionGrowth`. With the frequent wing turned on, the room below the cards is 8 pt more, for the section icons
+    /// `selectionGrowth`. With the frequent wing turned on, the room below the cards is 9 pt more, for the section icons
     /// in it, and the band is that much taller. It stays so while the strip shows no wing, as for a search, so the band
     /// keeps its height while it is open.
     static func metrics(for size: CardSize, visibleWidth: CGFloat, showsFrequentClips: Bool = false,
@@ -173,7 +173,7 @@ enum StripLayout {
         return StripMetrics(
             cardSize: size, bandWidth: bandWidth(visibleWidth: visibleWidth), frameSize: card.frame, gap: gap,
             cornerRadius: card.radius, dockInset: 20, headerHeight: card.header, footerHeight: card.footer,
-            iconSize: card.icon, toolbarGap: 16 + growth, bottomPadding: (showsFrequentClips ? 26 : 18) + growth,
+            iconSize: card.icon, toolbarGap: 16 + growth, bottomPadding: (showsFrequentClips ? 27 : 18) + growth,
             selectedScale: style.selectedScale,
             neighbourPush: neighbourPush(scale: style.selectedScale, cardWidth: card.frame.width, gap: gap),
             fadesEnds: style.fadesEnds
@@ -236,16 +236,17 @@ enum StripLayout {
         toolbarTop + toolbarHeight + m.toolbarGap
     }
 
-    /// The toolbar, the cards and the room around them: 316 with medium cards at the standard enlargement, 324 with
-    /// the frequent wing; 302 and 310 with the selected card not enlarged.
+    /// The toolbar, the cards and the room around them: 316 with medium cards at the standard enlargement, 325 with
+    /// the frequent wing; 302 and 311 with the selected card not enlarged.
     static func bandHeight(_ m: StripMetrics) -> CGFloat {
         cardTop(m) + m.frameSize.height + m.bottomPadding
     }
 
     /// How far above the band's bottom edge a section icon `height` tall starts: centred between that edge and the
     /// lowest reach of the ring around the enlarged selected card, its growth and then `selectionRingReach` below the
-    /// cards. A 14 pt icon starts 2.5 above the edge in the frequent wing's room below the cards, at every enlargement,
-    /// and the 12 pt of ink in it 3.5 above.
+    /// cards. A 14 pt icon starts 3 above the edge in the frequent wing's room below the cards, at every enlargement,
+    /// and the 12 pt of ink in it 4 above, 4 below the ring. On whole points, it lies where it is meant to on a screen of
+    /// any resolution; at 2.5 a screen of one pixel to the point moved it half a point.
     static func sectionLabelBottom(_ m: StripMetrics, height: CGFloat) -> CGFloat {
         (m.bottomPadding - m.selectionGrowth - selectionRingReach - height) / 2
     }

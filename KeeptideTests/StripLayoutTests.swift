@@ -197,19 +197,19 @@ final class StripLayoutTests: XCTestCase {
     }
 
     func testTheFrequentWingMakesRoomForItsIconsBelowTheCards() {
-        // With the frequent wing, the section icons lie below the cards, so the room there is 26 instead of 18 and the
-        // band is 8 taller. The gap between the toolbar and the cards stays 16, so the cards start 60 below the band's
+        // With the frequent wing, the section icons lie below the cards, so the room there is 27 instead of 18 and the
+        // band is 9 taller. The gap between the toolbar and the cards stays 16, so the cards start 60 below the band's
         // top edge, as without the wing. The cards and the band's width are the same.
         let unscaled = StripStyle(selectedScale: 1)
-        for (size, height) in [(CardSize.small, 286), (.medium, 310), (.large, 338)] as [(CardSize, CGFloat)] {
+        for (size, height) in [(CardSize.small, 287), (.medium, 311), (.large, 339)] as [(CardSize, CGFloat)] {
             let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true, style: unscaled)
             let plain = StripLayout.metrics(for: size, visibleWidth: 1440, style: unscaled)
             XCTAssertEqual(m.toolbarGap, 16, "\(size)")
-            XCTAssertEqual(m.bottomPadding, 26, "\(size)")
+            XCTAssertEqual(m.bottomPadding, 27, "\(size)")
             XCTAssertEqual(StripLayout.bandHeight(m), height, "\(size)")
             XCTAssertEqual(StripLayout.cardTop(m), 60, "\(size)")
-            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 26, "\(size)")
-            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.bandHeight(plain), 8, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.cardTop(m) - m.frameSize.height, 27, "\(size)")
+            XCTAssertEqual(StripLayout.bandHeight(m) - StripLayout.bandHeight(plain), 9, "\(size)")
             XCTAssertEqual(m.frameSize, plain.frameSize, "\(size)")
             XCTAssertEqual(m.bandWidth, plain.bandWidth, "\(size)")
         }
@@ -221,12 +221,12 @@ final class StripLayoutTests: XCTestCase {
         // makes that much more room above the cards and below them. Its neighbours stand aside by the push; not at all
         // at 1.00. At the standard 1.06 they stand 9 aside, as in the design.
         let cases: [(CardSize, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat, CGFloat)] = [
-            (.small, 1.00, 0, 0, 16, 18, 278, 286), (.small, 1.06, 9, 6, 22, 24, 290, 298),
-            (.small, 1.12, 18, 12, 28, 30, 302, 310), (.small, 1.25, 18, 25, 41, 43, 328, 336),
-            (.medium, 1.00, 0, 0, 16, 18, 302, 310), (.medium, 1.06, 9, 7, 23, 25, 316, 324),
-            (.medium, 1.12, 18, 14, 30, 32, 330, 338), (.medium, 1.25, 21, 28, 44, 46, 358, 366),
-            (.large, 1.00, 0, 0, 16, 18, 330, 338), (.large, 1.06, 9, 8, 24, 26, 346, 354),
-            (.large, 1.12, 18, 16, 32, 34, 362, 370), (.large, 1.25, 24, 32, 48, 50, 394, 402),
+            (.small, 1.00, 0, 0, 16, 18, 278, 287), (.small, 1.06, 9, 6, 22, 24, 290, 299),
+            (.small, 1.12, 18, 12, 28, 30, 302, 311), (.small, 1.25, 18, 25, 41, 43, 328, 337),
+            (.medium, 1.00, 0, 0, 16, 18, 302, 311), (.medium, 1.06, 9, 7, 23, 25, 316, 325),
+            (.medium, 1.12, 18, 14, 30, 32, 330, 339), (.medium, 1.25, 21, 28, 44, 46, 358, 367),
+            (.large, 1.00, 0, 0, 16, 18, 330, 339), (.large, 1.06, 9, 8, 24, 26, 346, 355),
+            (.large, 1.12, 18, 16, 32, 34, 362, 371), (.large, 1.25, 24, 32, 48, 50, 394, 403),
         ]
         for (size, scale, push, growth, toolbarGap, bottomPadding, band, wingBand) in cases {
             let name = "\(size) \(scale)"
@@ -240,7 +240,7 @@ final class StripLayoutTests: XCTestCase {
             XCTAssertEqual(StripLayout.bandHeight(m), band, name)
             XCTAssertEqual(StripLayout.cardTop(m), 60 + growth, name)
             let wing = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true, style: style)
-            XCTAssertEqual(wing.bottomPadding, bottomPadding + 8, name)
+            XCTAssertEqual(wing.bottomPadding, bottomPadding + 9, name)
             XCTAssertEqual(StripLayout.bandHeight(wing), wingBand, name)
             // The cards themselves, their gaps and the band's width are the same at every scale.
             let plain = StripLayout.metrics(for: size, visibleWidth: 1440, style: StripStyle(selectedScale: 1))
@@ -278,13 +278,13 @@ final class StripLayoutTests: XCTestCase {
     func testTheSectionIconsStayClearOfTheBandsEdge() {
         // Below the cards, a section icon is centred between the band's bottom edge and the lowest reach of the ring
         // around the enlarged selected card: the growth, then 7 pt with Increase Contrast. The room there grows with
-        // the card, so a 14 pt icon starts 2.5 pt above the edge at every scale and card size, and the 12 pt of ink in
-        // it 3.5 pt above.
+        // the card, so a 14 pt icon starts 3 pt above the edge at every scale and card size, on a whole point, and the
+        // 12 pt of ink in it 4 pt above the edge and 4 below the ring.
         for size in CardSize.allCases {
             for scale in [1.0, 1.06, 1.25] as [CGFloat] {
                 let m = StripLayout.metrics(for: size, visibleWidth: 1440, showsFrequentClips: true,
                                             style: StripStyle(selectedScale: scale))
-                XCTAssertEqual(StripLayout.sectionLabelBottom(m, height: 14), 2.5, "\(size) \(scale)")
+                XCTAssertEqual(StripLayout.sectionLabelBottom(m, height: 14), 3, "\(size) \(scale)")
             }
         }
     }
@@ -579,11 +579,11 @@ final class StripLayoutTests: XCTestCase {
         // 1440 × 875 is what a 1440 × 900 laptop screen leaves under the menu bar. Above the band, the preview card
         // keeps as much of its 760 × 470 as the screen leaves it, the two centred together. At the standard
         // enlargement small and medium cards leave the whole card, with the frequent wing's room below the cards as
-        // well; large ones 465 pt of its height, and 457 with the wing. Enlarged by 1.25, large cards leave 417.
+        // well; large ones 465 pt of its height, and 456 with the wing. Enlarged by 1.25, large cards leave 417.
         let laptop = NSRect(x: 0, y: 0, width: 1440, height: 875)
         let cases: [(size: CardSize, wing: Bool, scale: CGFloat, height: CGFloat)] = [
             (.small, false, 1.06, 470), (.medium, false, 1.06, 470), (.medium, true, 1.06, 470),
-            (.large, false, 1.06, 465), (.large, true, 1.06, 457), (.large, false, 1.25, 417),
+            (.large, false, 1.06, 465), (.large, true, 1.06, 456), (.large, false, 1.25, 417),
         ]
         for (size, wing, scale, height) in cases {
             let name = "\(size), wing \(wing), \(scale)"

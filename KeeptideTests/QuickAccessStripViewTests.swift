@@ -2402,32 +2402,32 @@ final class QuickAccessStripViewTests: XCTestCase {
     }
 
     func testTheSectionIconsSitBelowTheCardsAndStayWhenTheBandResizesTheirView() throws {
-        // With the frequent wing and the standard enlargement there are 33 pt below the cards. The selected card
+        // With the frequent wing and the standard enlargement there are 34 pt below the cards. The selected card
         // enlarged reaches 7 pt into them, the ring around it 7 pt more with Increase Contrast, and each icon is
-        // centred in the 19 pt left between the ring and the band's bottom edge: a 14 pt icon starts 2.5 above that
-        // edge and ends 2.5 short of the ring. QuickAccessBandTests measures the ink the icons draw.
+        // centred in the 20 pt left between the ring and the band's bottom edge: a 14 pt icon starts 3 above that
+        // edge and ends 3 short of the ring. QuickAccessBandTests measures the ink the icons draw.
         let wing = StripLayout.metrics(for: .medium, visibleWidth: 1440, showsFrequentClips: true)
         let strip = makeStrip(wing)
         let rows = makeWing(frequent: 3, recent: 20)
         strip.show(rows, selection: rows[3].id, details: [:], metrics: wing, applicationNames: ApplicationNames())
         let cardBottom = strip.convert(try rect(titled: "Row 0", in: strip), to: nil).minY
         let bandBottom = strip.sectionLabels.convert(strip.sectionLabels.bounds, to: nil).minY
-        XCTAssertEqual(cardBottom - bandBottom, 33, accuracy: 0.01)
+        XCTAssertEqual(cardBottom - bandBottom, 34, accuracy: 0.01)
         var places: [String: CGFloat] = [:]
         for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
             let icon = try sectionLabel(identifier, of: strip)
             XCTAssertFalse(icon.isHidden, identifier)
             let frame = icon.convert(icon.bounds, to: nil)
             // Centred to the pixel: as far above the band's bottom edge as short of the ring.
-            XCTAssertEqual(frame.minY - bandBottom, (19 - frame.height) / 2, accuracy: 0.5, identifier)
+            XCTAssertEqual(frame.minY - bandBottom, (20 - frame.height) / 2, accuracy: 0.5, identifier)
             XCTAssertLessThanOrEqual(frame.maxY, cardBottom - 7 - 7, identifier)
             places[identifier] = frame.minY - bandBottom
         }
 
-        // The band gives the icons' view the room below the cards, 33 pt with the frequent wing turned on and 25
+        // The band gives the icons' view the room below the cards, 34 pt with the frequent wing turned on and 25
         // without, and may do so after the strip has placed them. Its bottom stays at the band's bottom edge, and so
         // do the icons' places.
-        for height in [25, 33] as [CGFloat] {
+        for height in [25, 34] as [CGFloat] {
             strip.sectionLabels.setFrameSize(NSSize(width: wing.bandWidth, height: height))
             for identifier in ["QuickAccessFrequentLabel", "QuickAccessRecentLabel"] {
                 let icon = try sectionLabel(identifier, of: strip)
