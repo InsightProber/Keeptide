@@ -49,6 +49,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNotNil(session.previewService)
         XCTAssertNotNil(session.contentRepository)
         XCTAssertNotNil(session.usageStore)
+        XCTAssertNotNil(session.derivedText)
         XCTAssertEqual(changes.count, 1)
 
         await session.shutdown()
@@ -56,7 +57,32 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNil(session.previewService)
         XCTAssertNil(session.contentRepository)
         XCTAssertNil(session.usageStore)
+        XCTAssertNil(session.derivedText)
         XCTAssertEqual(changes.count, 2)
+    }
+
+    func testTextIsRecognizedInTheStoredImageItself() async throws {
+        let configuration = try makeIsolatedSession()
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id, seedSyntheticClips: true)
+        let derivedText = try XCTUnwrap(session.derivedText)
+        let image = try XCTUnwrap(session.recent.first { $0.kind == .image }?.history)
+        let text = try XCTUnwrap(session.recent.first { $0.title == "echo synthetic-beta" }?.history)
+
+        derivedText.extractText(from: image, keepingLineBreaks: true)
+        derivedText.extractText(from: text, keepingLineBreaks: true)
+
+        // Vision's first run in a process loads its model.
+        await waitUntil("both have ended", timeout: .seconds(120)) {
+            derivedText.outcome(for: image, operation: .extractText) != nil
+                && derivedText.outcome(for: text, operation: .extractText) != nil
+        }
+        XCTAssertEqual(derivedText.outcome(for: image, operation: .extractText), .noText,
+                       "The seeded image is a single pixel")
+        XCTAssertEqual(derivedText.outcome(for: text, operation: .extractText),
+                       .failed(GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")),
+                       "A text clip has no image to read")
+        await session.shutdown()
     }
 
     func testQuickAccessServicesReadUsesFromTheSessionsStore() async throws {
