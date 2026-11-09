@@ -342,12 +342,14 @@ final class QuickAccessUITests: XCTestCase {
         images.click()
         XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
 
-        app.searchFields["Quick access query"].typeKey("t", modifierFlags: [.command, .shift])
+        // To the panel, wherever its keys are after the filter menu.
+        app.typeKey("t", modifierFlags: [.command, .shift])
 
         let column = app.descendants(matching: .any)["QuickAccessTextInImage"]
         XCTAssertTrue(column.waitForExistence(timeout: 8), app.debugDescription)
-        let text = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "value CONTAINS %@", "Synthetic text in image")).firstMatch
+        // Text views alone: elements such as scrollers and radio buttons have numbers for values.
+        let text = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Synthetic text in image"))
+            .firstMatch
         XCTAssertTrue(text.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(app.buttons["QuickAccessKeepLineBreaks"].exists, app.debugDescription)
 

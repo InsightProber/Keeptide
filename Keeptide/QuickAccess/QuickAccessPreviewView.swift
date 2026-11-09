@@ -133,23 +133,34 @@ struct PreviewText: NSViewRepresentable {
     }
 }
 
-/// The preview's text takes the keys once it is clicked. Space and Escape close the preview, Return copies
-/// and Tab moves on, as they do anywhere in the panel, and a key that types goes to the search field, since
-/// this text cannot be edited; the arrows and the rest stay with the text.
+/// What the keys do in text in the preview, which can't be edited: Space and Escape close the preview, Return copies
+/// and Tab moves on, as they do anywhere in the panel, and a key that types goes to the search field. The arrows and
+/// the rest stay with the text.
+@MainActor
+enum PreviewTextKeys {
+    /// True when the panel took the key, or it was a held key that has acted already.
+    static func handle(_ event: NSEvent, hasMarkedText: Bool, onCommand: (QuickAccessCommand) -> Void) -> Bool {
+        let key = QuickAccessStripView.key(for: event)
+        // A held Space, Return or Escape has acted already.
+        guard !(event.isARepeat && key.actsOnceWhenHeld) else { return true }
+        // What these keys do in the preview does not depend on the query.
+        let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
+            key: key, shift: event.modifierFlags.contains(.shift), focus: .preview,
+            eventBeganWithMarkedText: hasMarkedText, queryIsEmpty: true
+        ))
+        guard command != .passThrough else { return false }
+        onCommand(command)
+        return true
+    }
+}
+
+/// The preview's text takes the keys once it is clicked, as `PreviewTextKeys` says.
 private final class PreviewTextView: NSTextView {
     var onCommand: (QuickAccessCommand) -> Void = { _ in }
 
     override func keyDown(with event: NSEvent) {
-        let key = QuickAccessStripView.key(for: event)
-        // A held Space, Return or Escape has acted already.
-        guard !(event.isARepeat && key.actsOnceWhenHeld) else { return }
-        // What these keys do in the preview does not depend on the query.
-        let command = QuickAccessKeyRouter.command(for: QuickAccessKeyInput(
-            key: key, shift: event.modifierFlags.contains(.shift), focus: .preview,
-            eventBeganWithMarkedText: hasMarkedText(), queryIsEmpty: true
-        ))
-        guard command != .passThrough else { return super.keyDown(with: event) }
-        onCommand(command)
+        if PreviewTextKeys.handle(event, hasMarkedText: hasMarkedText(), onCommand: onCommand) { return }
+        super.keyDown(with: event)
     }
 
     /// Escape leaves the preview through the panel's layers instead of text completion.

@@ -13,18 +13,33 @@ struct QuickAccessSplitPreview: View {
     let applicationName: String?
     let column: TextColumn
     let ref: ContentRef
+    /// Whether the text in the column is what the latest recognition just made.
+    let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
+    /// Says something to VoiceOver from the panel.
+    let announce: (String) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Whether the text has faded in beside the image: the one movement as the preview splits.
+    @State private var showsText = false
 
     var body: some View {
         GeometryReader { geometry in
             let sideBySide = geometry.size.width >= Self.sideBySideWidth
             let layout = sideBySide ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             layout {
-                ImageColumn(preview: preview, applicationName: applicationName,
-                            isRecognizing: column.isRecognizing)
-                ColumnDivider(vertical: sideBySide)
-                TextInImageColumn(column: column, ref: ref, pixelSize: preview?.pixelSize, onCommand: onCommand)
+                ImageColumn(preview: preview, applicationName: applicationName, isScanning: column.isScanning)
+                Group {
+                    ColumnDivider(vertical: sideBySide)
+                    // A column of its own for each image: the text and its selection never carry over.
+                    TextInImageColumn(column: column, pixelSize: preview?.pixelSize, isJustMade: isJustMade,
+                                      onCommand: onCommand, announce: announce)
+                        .id(ref)
+                }
+                .opacity(showsText || reduceMotion ? 1 : 0)
             }
+        }
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { showsText = true }
         }
     }
 }
@@ -36,32 +51,56 @@ enum TextColumnWords {
     static let noText = "No text found in this image."
     static let notSaved = "The text couldn't be saved."
     static let tryAgain = "Try Again"
+    static let unreadableImage = "This image couldn't be read."
 
     static func subtitle(for column: TextColumn) -> String {
         switch column {
+        case .recognizing(let snapshot) where snapshot.phase == .queued: "Waiting to recognize on this Mac…"
         case .recognizing: "Recognizing on this Mac…"
-        case .text(let text, _), .unsaved(let text): "Recognized on this Mac, \(lines(in: text))"
+        case .text(let text, let keepsLineBreaks, _), .unsaved(let text, let keepsLineBreaks):
+            "Recognized on this Mac, \(amount(of: text, keepingLineBreaks: keepsLineBreaks))"
         case .noText: "Recognized on this Mac"
         case .loading, .notStarted, .failed: "On this Mac"
         }
     }
 
-    /// "Recognizing text in a 2,880 × 1,800 image…", or without the size when it isn't known.
+    /// "Recognizing text in a 2,880 × 1,800 image…", or without the size when it isn't one an image could have.
     static func recognizing(pixelSize: CGSize?) -> String {
-        guard let pixelSize, pixelSize.width >= 1, pixelSize.height >= 1 else { return "Recognizing text in the image…" }
-        return "Recognizing text in a \(Int(pixelSize.width).formatted()) × \(Int(pixelSize.height).formatted()) image…"
+        guard let pixelSize, let width = wholePixels(pixelSize.width), let height = wholePixels(pixelSize.height) else {
+            return "Recognizing text in the image…"
+        }
+        return "Recognizing text in a \(width.formatted()) × \(height.formatted()) image…"
     }
 
-    /// "1 line", "5 lines": the lines with text in them.
-    static func lines(in text: String) -> String {
+    /// "1 line", "5 lines", or with the lines joined, "1 paragraph", "3 paragraphs": the lines with text in them.
+    static func amount(of text: String, keepingLineBreaks: Bool) -> String {
         let count = text.split(whereSeparator: \.isNewline).filter { !$0.allSatisfy(\.isWhitespace) }.count
-        return count == 1 ? "1 line" : "\(count.formatted()) lines"
+        let noun = switch (keepingLineBreaks, count == 1) {
+        case (true, true): "line"
+        case (true, false): "lines"
+        case (false, true): "paragraph"
+        case (false, false): "paragraphs"
+        }
+        return "\(count.formatted()) \(noun)"
+    }
+
+    /// A side of an image in whole pixels, or nil where it is none an image could have.
+    static func wholePixels(_ side: CGFloat) -> Int? {
+        guard side.isFinite, side >= 1, side <= CGFloat(Int32.max) else { return nil }
+        return Int(side.rounded())
     }
 }
 
 extension TextColumn {
+    /// Recognition is waiting or under way: it can be stopped.
     var isRecognizing: Bool {
         if case .recognizing = self { return true }
+        return false
+    }
+
+    /// Recognition is under way, not waiting for its turn.
+    var isScanning: Bool {
+        if case .recognizing(let snapshot) = self { return snapshot.phase != .queued }
         return false
     }
 }
@@ -75,16 +114,19 @@ extension PreviewContent {
 }
 
 /// The image on the tray, under its title and where it came from. While its text is recognized, a thin line in the
-/// accent colour passes down over it, and holds still with Reduce Motion.
+/// accent colour passes down over it, and holds still with Reduce Motion. In place of an image that can't be shown, the
+/// column says why.
 private struct ImageColumn: View {
     let preview: PreviewContent?
     let applicationName: String?
-    let isRecognizing: Bool
+    let isScanning: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Image").font(.system(size: 12, weight: .bold))
-            Text(subtitle).font(.system(size: 11)).foregroundStyle(.secondary)
+            // Its line keeps its place, read by VoiceOver only when it says something.
+            Text(subtitle ?? " ").font(.system(size: 11)).foregroundStyle(.secondary)
+                .accessibilityHidden(subtitle == nil)
             Group {
                 if case .image(let image, _)? = preview {
                     Image(decorative: image, scale: 1)
@@ -92,10 +134,14 @@ private struct ImageColumn: View {
                         .interpolation(.high)
                         .aspectRatio(contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .overlay { if isRecognizing { ScanLine().clipShape(RoundedRectangle(cornerRadius: 8)) } }
+                        .overlay { if isScanning { ScanLine().clipShape(RoundedRectangle(cornerRadius: 8)) } }
                         .accessibilityLabel(applicationName.map { "Image, from \($0)" } ?? "Image")
-                } else {
+                } else if case .failed(let refusal)? = preview {
+                    message(refusal.message)
+                } else if preview == nil {
                     ProgressView().controlSize(.small)
+                } else {
+                    message(TextColumnWords.unreadableImage)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -107,14 +153,22 @@ private struct ImageColumn: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// "From Preview, 2,880 × 1,800".
-    private var subtitle: String {
+    /// Why the image isn't shown, where it would be.
+    private func message(_ text: String) -> some View {
+        Text(text).font(.system(size: 14)).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// "From Preview, 2,880 × 1,800", or nil when neither is known.
+    private var subtitle: String? {
         var parts: [String] = []
         if let applicationName { parts.append("From \(applicationName)") }
-        if let size = preview?.pixelSize, size.width >= 1, size.height >= 1 {
-            parts.append("\(Int(size.width).formatted()) × \(Int(size.height).formatted())")
+        if let size = preview?.pixelSize, let width = TextColumnWords.wholePixels(size.width),
+           let height = TextColumnWords.wholePixels(size.height) {
+            parts.append("\(width.formatted()) × \(height.formatted())")
         }
-        return parts.isEmpty ? " " : parts.joined(separator: ", ")
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
 }
 
@@ -160,15 +214,17 @@ private struct ColumnDivider: View {
 }
 
 /// The text recognized in the image, under its title and how it was made, or what stands for it: an offer to extract
-/// it, the recognition under way, or why there is none.
+/// it, the recognition under way, or why there is none. One display shows the text from the moment recognition starts
+/// until it is made, so the text is typed out as it comes and VoiceOver hears the recognition start and end; text kept
+/// from before, or brought back by stopping a recognition, shows at once. Why a recognition found no text, or none
+/// could be made or kept, is said as it ends. The column is the image's own: another image has another column.
 private struct TextInImageColumn: View {
     let column: TextColumn
-    let ref: ContentRef
     let pixelSize: CGSize?
+    /// Whether what the column shows is how the latest recognition of its image just ended.
+    let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
-    /// The image whose text this column watched being recognized: its text is typed out once, and text kept from
-    /// before shows whole.
-    @State private var watched: ContentRef?
+    let announce: (String) -> Void
     /// Whether the recognition has run long enough to say what it is doing.
     @State private var saysWhatItDoes = false
 
@@ -187,71 +243,81 @@ private struct TextInImageColumn: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(TextColumnWords.title), on this Mac")
         .accessibilityIdentifier("QuickAccessTextInImage")
-        .onChange(of: column, initial: true) { old, column in
-            if column.isRecognizing { watched = ref }
-            // VoiceOver hears why there is no text, as it comes; the text itself announces its start and end.
-            guard old != column else { return }
+        // An ending shown again, for an image looked at earlier, says nothing.
+        .onChange(of: column) { _, column in
+            guard isJustMade else { return }
             switch column {
-            case .noText: AccessibilityNotification.Announcement(TextColumnWords.noText).post()
-            case .failed(let error): AccessibilityNotification.Announcement(error.message).post()
-            default: break
+            case .noText: announce(TextColumnWords.noText)
+            case .failed(let error): announce(error.message)
+            case .loading, .notStarted, .recognizing, .text, .unsaved: break
             }
         }
-        .task(id: column.isRecognizing ? ref : nil) {
+        .task(id: column.isScanning) {
             saysWhatItDoes = false
-            guard column.isRecognizing else { return }
+            guard column.isScanning else { return }
             try? await Task.sleep(for: .milliseconds(500))
             if !Task.isCancelled { saysWhatItDoes = true }
         }
     }
 
-    @ViewBuilder private var content: some View {
-        switch column {
-        case .loading:
-            ProgressView().controlSize(.small)
-        case .notStarted:
-            Button { onCommand(.extractText) } label: {
-                HStack(spacing: 8) {
-                    Text(TextColumnWords.extract)
-                    ReviewKeycap(symbol: "⇧⌘T")
-                }
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if saysWhatItDoes, case .recognizing(let snapshot) = column, !snapshot.hasText {
+                Text(TextColumnWords.recognizing(pixelSize: pixelSize))
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
             }
-            .buttonStyle(TrayCapsuleButtonStyle())
-            .accessibilityLabel(TextColumnWords.extract)
-            .accessibilityIdentifier("QuickAccessExtractText")
-        case .recognizing(let snapshot):
-            VStack(alignment: .leading, spacing: 8) {
-                if saysWhatItDoes, !snapshot.hasText {
-                    Text(TextColumnWords.recognizing(pixelSize: pixelSize))
-                        .font(.system(size: 13)).foregroundStyle(.secondary)
-                }
-                text(snapshot.text(), mode: .writing)
+            // The one display, in the same place while the recognition runs and once its text is made.
+            if let shown {
+                StreamingTextView(text: shown.text, mode: shown.mode,
+                                  announcements: .init(start: "Recognizing text", finish: "Text recognized"),
+                                  allowsCopyingAll: shown.mode != .writing,
+                                  onKeyDown: { [onCommand] event in
+                                      PreviewTextKeys.handle(event, hasMarkedText: false, onCommand: onCommand)
+                                  })
             }
-        case .text(let made, _):
-            text(made, mode: watched == ref ? .finishing : .still)
-        case .unsaved(let made):
-            VStack(alignment: .leading, spacing: 8) {
-                text(made, mode: .still)
+            switch column {
+            case .loading:
+                ProgressView().controlSize(.small)
+            case .notStarted:
+                Button { onCommand(.extractText) } label: {
+                    HStack(spacing: 8) {
+                        Text(TextColumnWords.extract)
+                        ReviewKeycap(symbol: "⇧⌘T")
+                    }
+                }
+                .buttonStyle(TrayCapsuleButtonStyle())
+                .accessibilityLabel(TextColumnWords.extract)
+                .accessibilityIdentifier("QuickAccessExtractText")
+                .help("\(TextColumnWords.extract) (⇧⌘T)")
+            case .unsaved:
                 Text(TextColumnWords.notSaved).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-        case .noText:
-            Text(TextColumnWords.noText).font(.system(size: 14)).foregroundStyle(.secondary)
-        case .failed(let error):
-            VStack(alignment: .leading, spacing: 12) {
+            case .noText:
+                Text(TextColumnWords.noText).font(.system(size: 14)).foregroundStyle(.secondary)
+            case .failed(let error):
                 Text(error.message).font(.system(size: 14)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if error.kind != .contentUnavailable {
-                    Button(TextColumnWords.tryAgain) { onCommand(.extractText) }
-                        .buttonStyle(TrayCapsuleButtonStyle())
-                }
+                // The column shows only for an image listed now, so it may have come back since.
+                Button(TextColumnWords.tryAgain) { onCommand(.extractText) }
+                    .buttonStyle(TrayCapsuleButtonStyle())
+                    .help("\(TextColumnWords.tryAgain) (⇧⌘T)")
+            case .recognizing, .text:
+                EmptyView()
             }
         }
     }
 
-    private func text(_ text: String, mode: StreamingTextDisplay.Mode) -> some View {
-        StreamingTextView(text: text, mode: mode,
-                          announcements: .init(start: "Recognizing text", finish: "Text recognized"),
-                          allowsCopyingAll: mode != .writing)
+    /// The text the display shows, and how: typed out while it is made, then finished, or at once.
+    private var shown: (text: String, mode: StreamingTextDisplay.Mode)? {
+        switch column {
+        case .recognizing(let snapshot):
+            let mode = StreamingTextDisplay.Mode(snapshot.phase)
+            // A recognition that found nothing has nothing to finish; why there is no text is said instead.
+            return (snapshot.text(), mode == .finishing && !snapshot.hasText ? .still : mode)
+        case .text(let text, _, _), .unsaved(let text, _):
+            return (text, isJustMade ? .finishing : .still)
+        case .loading, .notStarted, .noText, .failed:
+            return nil
+        }
     }
 }
 
@@ -281,6 +347,9 @@ struct TraySegments: View {
         let id: String
         let title: String
         let isChosen: Bool
+        var isEnabled = true
+        /// The segment's help tag, with its key.
+        var help: String?
         let action: () -> Void
     }
 
@@ -304,6 +373,9 @@ struct TraySegments: View {
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .disabled(!segment.isEnabled)
+                .opacity(segment.isEnabled ? 1 : 0.5)
+                .help(segment.help ?? "")
                 .accessibilityAddTraits(segment.isChosen ? .isSelected : [])
                 .accessibilityIdentifier("QuickAccessPreviewSegment.\(segment.id)")
             }

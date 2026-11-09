@@ -59,6 +59,12 @@ final class StreamingTextDisplay: NSView {
         set { textView.copiesWholeText = newValue }
     }
 
+    /// Keys the surface takes before the text does, such as a panel's own: true when it took the key.
+    var onKeyDown: (@MainActor (NSEvent) -> Bool)? {
+        get { textView.keyHandler }
+        set { textView.keyHandler = newValue }
+    }
+
     var pacerTuning: TypewriterPacer.Tuning {
         get { pacer.tuning }
         set { pacer.tuning = newValue }
@@ -395,11 +401,19 @@ final class StreamingTextDisplay: NSView {
     }
 }
 
-/// The text view inside `StreamingTextDisplay`. Copying goes to `copyHandler`; without one there is no Copy.
+/// The text view inside `StreamingTextDisplay`. Copying goes to `copyHandler`; without one there is no Copy. Keys go to
+/// `keyHandler` first.
 final class GeneratedTextView: NSTextView {
     var copyHandler: (@MainActor (String) -> Void)?
     /// Whether Copy with nothing selected takes the whole text.
     var copiesWholeText = false
+    /// Takes a key before the text does: true when it took it.
+    var keyHandler: (@MainActor (NSEvent) -> Bool)?
+
+    override func keyDown(with event: NSEvent) {
+        if keyHandler?(event) == true { return }
+        super.keyDown(with: event)
+    }
 
     /// What Copy takes: every selected range, or with nothing selected, the whole text when that is allowed.
     var textToCopy: String? {
@@ -435,12 +449,14 @@ struct StreamingTextView: NSViewRepresentable {
     var announcements: StreamingTextDisplay.Announcements
     var allowsCopyingAll: Bool
     var onCopy: (@MainActor (String) -> Void)?
+    var onKeyDown: (@MainActor (NSEvent) -> Bool)?
 
-    /// Shows `text`. Pass `allowsCopyingAll` only for a whole result, such as one saved earlier.
+    /// Shows `text`. Pass `allowsCopyingAll` only for a whole result, such as one saved earlier. `onKeyDown` takes keys
+    /// before the text does.
     init(
         text: String, mode: StreamingTextDisplay.Mode, style: StreamingTextDisplay.Style = .init(),
         announcements: StreamingTextDisplay.Announcements = .init(), allowsCopyingAll: Bool = false,
-        onCopy: (@MainActor (String) -> Void)? = nil
+        onCopy: (@MainActor (String) -> Void)? = nil, onKeyDown: (@MainActor (NSEvent) -> Bool)? = nil
     ) {
         self.text = text
         self.mode = mode
@@ -448,6 +464,7 @@ struct StreamingTextView: NSViewRepresentable {
         self.announcements = announcements
         self.allowsCopyingAll = allowsCopyingAll
         self.onCopy = onCopy
+        self.onKeyDown = onKeyDown
     }
 
     /// Shows one channel of a job's snapshot. Copying all of it, and the finish announcement, need a whole result.
@@ -472,6 +489,7 @@ struct StreamingTextView: NSViewRepresentable {
         display.announcements = announcements
         display.allowsCopyingAll = allowsCopyingAll
         display.onCopy = onCopy
+        display.onKeyDown = onKeyDown
         display.update(text: text, mode: mode)
     }
 }

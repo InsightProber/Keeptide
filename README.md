@@ -57,8 +57,8 @@ snippets in a native library.
   and mark favorites. Editing a snippet never changes the original copy.
 - **Text in images.** ⇧⌘T shows the text in a copied image beside its
   preview, recognized on this Mac with Apple's Vision, line by line or joined
-  into paragraphs. Long screenshots are read whole. Nothing is recognized until
-  you ask.
+  into paragraphs. Tall screenshots are read in strips, so their small text is
+  found. Nothing is recognized until you ask.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
@@ -181,9 +181,10 @@ Choose **Settings…** from the menu-bar menu.
 ## Status
 
 Development builds include local capture, quick access with lists for
-snippets, favorites and collections, search, direct paste, the snippet library
-with collections (a snippet can be in several), favorites, list counts and
-filters, history retention, Recently Deleted and local export.
+snippets, favorites and collections, search, direct paste, text in images
+recognized on this Mac, the snippet library with collections (a snippet can be
+in several), favorites, list counts and filters, history retention, Recently
+Deleted and local export.
 
 Planned:
 

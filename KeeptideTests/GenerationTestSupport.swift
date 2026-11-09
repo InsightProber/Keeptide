@@ -149,7 +149,6 @@ final class ScriptedRecognizer: TextRecognitionEngine, @unchecked Sendable {
     }
 }
 
-
 /// The recognizer's `index`th source, once its job has started reading it.
 @MainActor
 func startedSource(_ recognizer: ScriptedRecognizer, _ index: Int, file: StaticString = #filePath,

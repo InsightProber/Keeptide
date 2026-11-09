@@ -166,7 +166,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         panel.onKeyEvent = { [weak self] in self?.followReturnKey($0) }
         panel.onPreviewKeyDown = { [weak self] in self?.handlePreviewKeyDown($0) ?? false }
         panel.onContentMouseDown = { [weak self] point in
-            guard let self, state.isPreviewExpanded, state.commandReview == nil,
+            // Over the band, a click closes the preview that lies over it. Below the split card or a command's review,
+            // which stand above the band, it goes to the band, as it does with no card at all.
+            guard let self, state.isPreviewExpanded, state.commandReview == nil, !state.isPreviewSplit,
                   let previewFrameInWindow, !previewFrameInWindow.contains(point),
                   contentFrames.first?.contains(point) == true else { return false }
             // Dismissal owns this click: it must not also select a clip or activate the copy button beneath it.
@@ -203,7 +205,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
-            state.keepsLineBreaks = preferences.keepsLineBreaks
+            state.restoreKeepsLineBreaks(preferences.keepsLineBreaks)
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics
@@ -416,8 +418,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     private var hasCard: Bool { state.isPreviewExpanded || state.commandReview != nil }
 
-    /// The preview overlays the stationary band; only a command review uses the separate card above it.
-    /// The transparent host expands to fit the content without animating or moving the band's screen coordinates.
+    /// The preview overlays the stationary band. A command review, and the preview split for a column beside it, stand
+    /// above the band instead, which moves down where they need the room. The transparent host expands to fit the
+    /// content without animating.
     private func layoutPanel() {
         guard let window, let hosting else { return }
         var band = StripLayout.bandFrame(metrics, in: visibleFrame)
@@ -426,7 +429,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
-        } else if state.textColumnRef != nil {
+        } else if state.isPreviewSplit {
             let placed = StripLayout.splitLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
@@ -456,7 +459,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             layout: layout, state: state, toolbar: toolbar, strip: strip, glow: glow, applicationNames: applicationNames,
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
                                                  confirmCommand: { [weak self] in self?.confirmFromCard() },
-                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() })
+                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() },
+                                                 announce: { [weak self] in self?.announce($0) })
         )
     }
 
@@ -523,8 +527,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .stopTextRecognition:
             state.stopTextRecognition()
         case .toggleKeepLineBreaks:
-            preferences.keepsLineBreaks.toggle()
-            state.setKeepsLineBreaks(preferences.keepsLineBreaks)
+            preferences.keepsLineBreaks = state.toggleKeepLineBreaks()
         }
     }
 
@@ -743,7 +746,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if responder === filterButton { return .filterButton }
         guard let editor = responder as? NSTextView else { return nil }
         if editor.isFieldEditor { return editor.delegate === searchField ? .searchField : nil }
-        // Besides the field's editor, the preview's text is the panel's only text view.
+        // Besides the field's editor, the panel's text views are the preview's: its own text, a review's command, or
+        // the text recognized in an image.
         return .preview
     }
 
@@ -1281,7 +1285,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// What Escape has to peel, the same for the search field and for the strip, the preview and the review card.
     private var escapeContext: QuickAccessEscapeContext {
         QuickAccessEscapeContext(hasCommandReview: state.commandReview != nil,
-                                 hasResultColumn: state.textColumnRef != nil,
+                                 hasResultColumn: state.isPreviewSplit,
                                  isPreviewExpanded: state.isPreviewExpanded,
                                  hasFilters: !state.kinds.isEmpty || state.favoritesOnly,
                                  hasList: state.hasList,
@@ -1336,7 +1340,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
         let isShiftCommandT = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "t"
-        guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT else { return false }
+        // ⌘. comes with Shift where "." needs it.
+        let isCommandPeriod = event.charactersIgnoringModifiers == "."
+            && (modifiers == .command || modifiers == [.command, .shift])
+        guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT || isCommandPeriod else {
+            return false
+        }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
         // review card, and nothing else: a preview is not a review, and while an input method composes in the search
         // field the key is the composition's.
@@ -1382,10 +1391,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if !isComposing, !event.isARepeat, state.offersTextInImage { perform(.showTextInImage) }
             return true
         }
-        // ⌘. stops the recognition shown beside the preview. It is taken here, before it becomes Escape, only while
-        // there is a recognition to stop.
-        if key == ".", modifiers == .command, !isComposing, state.textColumn?.isRecognizing == true {
-            if !event.isARepeat { perform(.stopTextRecognition) }
+        // ⌘. stops the recognition beside the preview. While the preview is split, every ⌘. is taken here, so that one
+        // pressed just as the recognition ends never becomes Escape. Elsewhere it becomes Escape, once: held down, ⌘.
+        // has acted already, as Escape or as Stop, and its repeats peel nothing.
+        if isCommandPeriod, !isComposing {
+            if event.isARepeat { return true }
+            guard state.isPreviewSplit else { return false }
+            if state.canStopTextRecognition { perform(.stopTextRecognition) }
             return true
         }
         // ⌘Z undoes a move to Recently Deleted or the search field's typing, whichever `undoFromKeyboard` finds; a

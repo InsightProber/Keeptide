@@ -24,6 +24,8 @@ struct QuickAccessBandView: View {
         /// The review card's buttons.
         let confirmCommand: () -> Void
         let cancelCommandReview: () -> Void
+        /// Says something to VoiceOver from the panel.
+        let announce: (String) -> Void
     }
 
     let layout: Layout
@@ -123,7 +125,9 @@ struct QuickAccessBandView: View {
 
     // MARK: Card
 
-    /// An opaque card over the band: a command's review while one waits, otherwise the selected clip in full.
+    /// An opaque card over the band: a command's review while one waits, otherwise the selected clip in full. The
+    /// preview is one card, plain or split, whose bar and content change inside it as the column opens and closes and
+    /// the selection moves, so it never appears again and its controls keep VoiceOver's focus.
     private var card: some View {
         Group {
             if let review = state.commandReview {
@@ -131,64 +135,101 @@ struct QuickAccessBandView: View {
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
                     .clipShape(RoundedRectangle(cornerRadius: CommandReviewView.cornerRadius, style: .continuous))
-            } else if let ref = state.textColumnRef, let column = state.textColumn {
-                QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
-                    previewSegments(textChosen: true)
-                    Spacer()
-                    if column.isRecognizing {
-                        Button { actions.previewCommand(.stopTextRecognition) } label: {
-                            HStack(spacing: 6) {
-                                Text("Stop")
-                                ReviewKeycap(symbol: "⌘.")
-                            }
-                        }
-                        .buttonStyle(TrayCapsuleButtonStyle())
-                        .accessibilityLabel("Stop")
-                        .accessibilityIdentifier("QuickAccessStopTextRecognition")
-                    } else {
-                        Button("Keep Line Breaks") { actions.previewCommand(.toggleKeepLineBreaks) }
-                            .buttonStyle(TrayCapsuleButtonStyle(isOn: state.keepsLineBreaks))
-                            .accessibilityAddTraits(state.keepsLineBreaks ? .isSelected : [])
-                            .accessibilityIdentifier("QuickAccessKeepLineBreaks")
-                    }
-                } content: {
-                    QuickAccessSplitPreview(preview: state.preview,
-                                            applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
-                                            column: column, ref: ref, onCommand: actions.previewCommand)
-                }
             } else {
-                QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
-                    if state.offersTextInImage {
-                        previewSegments(textChosen: false)
-                    } else {
-                        Text("Preview")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
-                    }
-                    Spacer()
+                // Escape closes the split preview's column before the preview.
+                QuickAccessPreviewCard(closeHelp: state.isPreviewSplit ? "Close Preview" : "Close Preview (Esc)",
+                                       onClose: { actions.previewCommand(.togglePreview) }) {
+                    previewBar
                 } content: {
-                    QuickAccessPreviewView(preview: state.preview,
-                                       applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
-                                       onCommand: actions.previewCommand,
-                                       fileAccessStore: state.fileAccessStore,
-                                       fileAccessIdentity: state.fileAccessIdentity,
-                                       isLoadingOriginal: state.isLoadingOriginalPreview,
-                                       previewMessage: state.previewMessage,
-                                       onRequestOriginal: state.loadOriginalPreview,
-                                       isOnTray: true)
+                    previewContent
                 }
             }
         }
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 
-    /// Preview | Text, for an image: Text shows the text in the image beside it.
-    private func previewSegments(textChosen: Bool) -> some View {
+    /// What the preview's bar holds after the close button: Preview | Text for an image, and while its text shows,
+    /// Stop or Keep Line Breaks at the end. While the preview is split, the segments stay for a clip without text in
+    /// an image too, with Text chosen and dimmed, and Preview leaves the split.
+    @ViewBuilder
+    private var previewBar: some View {
+        if state.offersTextInImage || state.isPreviewSplit {
+            previewSegments(textChosen: state.isPreviewSplit, textEnabled: state.offersTextInImage)
+        } else {
+            Text("Preview")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+        }
+        Spacer()
+        if let column = state.textColumn {
+            if column.isRecognizing {
+                Button { actions.previewCommand(.stopTextRecognition) } label: {
+                    HStack(spacing: 6) {
+                        Text("Stop")
+                        ReviewKeycap(symbol: "⌘.")
+                    }
+                }
+                .buttonStyle(TrayCapsuleButtonStyle())
+                .accessibilityLabel("Stop")
+                .accessibilityIdentifier("QuickAccessStopTextRecognition")
+                .help("Stop Recognizing (⌘.)")
+            } else {
+                keepLineBreaks
+            }
+        }
+    }
+
+    /// On, with a check mark, while the text shown keeps the image's line breaks; without text, as the person chose.
+    private var keepLineBreaks: some View {
+        let isOn = state.isKeepLineBreaksOn
+        return Button { actions.previewCommand(.toggleKeepLineBreaks) } label: {
+            HStack(spacing: 5) {
+                if isOn {
+                    Image(systemName: "checkmark").font(.system(size: 10, weight: .semibold))
+                        .accessibilityHidden(true)
+                }
+                Text("Keep Line Breaks")
+            }
+        }
+        .buttonStyle(TrayCapsuleButtonStyle(isOn: isOn))
+        .accessibilityLabel("Keep Line Breaks")
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+        .accessibilityIdentifier("QuickAccessKeepLineBreaks")
+        .help(isOn ? "Join the Lines into Paragraphs" : "Keep the Image's Line Breaks")
+    }
+
+    /// The selected clip in full, with the text in an image beside it while the preview is split.
+    @ViewBuilder
+    private var previewContent: some View {
+        let applicationName = selectedRow?.sourceApp.flatMap(applicationNames.name(for:))
+        if let ref = state.textColumnRef, let column = state.textColumn {
+            QuickAccessSplitPreview(preview: state.preview, applicationName: applicationName, column: column, ref: ref,
+                                    isJustMade: state.isTextColumnJustMade, onCommand: actions.previewCommand,
+                                    announce: actions.announce)
+        } else {
+            QuickAccessPreviewView(preview: state.preview,
+                                   applicationName: applicationName,
+                                   onCommand: actions.previewCommand,
+                                   fileAccessStore: state.fileAccessStore,
+                                   fileAccessIdentity: state.fileAccessIdentity,
+                                   isLoadingOriginal: state.isLoadingOriginalPreview,
+                                   previewMessage: state.previewMessage,
+                                   onRequestOriginal: state.loadOriginalPreview,
+                                   isOnTray: true)
+                // In the split card, no wider than the plain preview, so text keeps lines it can be read in.
+                .frame(maxWidth: state.isPreviewSplit ? StripLayout.previewMaximum.width : .infinity)
+        }
+    }
+
+    /// Preview | Text: Text shows the text in an image beside it, and Preview leaves the split.
+    private func previewSegments(textChosen: Bool, textEnabled: Bool) -> some View {
         TraySegments(segments: [
-            .init(id: "Preview", title: "Preview", isChosen: !textChosen) {
+            .init(id: "Preview", title: "Preview", isChosen: !textChosen,
+                  help: textChosen ? "Preview Alone (Esc)" : nil) {
                 if textChosen { actions.previewCommand(.closeResultColumn) }
             },
-            .init(id: "Text", title: "Text", isChosen: textChosen) {
+            .init(id: "Text", title: "Text", isChosen: textChosen, isEnabled: textEnabled,
+                  help: textEnabled ? "\(TextColumnWords.title) (⇧⌘T)" : "\(TextColumnWords.title), for an image") {
                 if !textChosen { actions.previewCommand(.showTextInImage) }
             },
         ])
@@ -199,6 +240,8 @@ struct QuickAccessBandView: View {
 /// on a tray like the band's, in one piece with no surface of its own for the content, under a bar laid out like the
 /// band's toolbar.
 private struct QuickAccessPreviewCard<Bar: View, Content: View>: View {
+    /// The close button's help tag.
+    let closeHelp: String
     let onClose: () -> Void
     /// What the bar holds after the close button.
     @ViewBuilder let bar: () -> Bar
@@ -221,7 +264,7 @@ private struct QuickAccessPreviewCard<Bar: View, Content: View>: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close Preview")
                 .accessibilityIdentifier("CloseQuickAccessPreview")
-                .help("Close Preview (Esc)")
+                .help(closeHelp)
                 bar()
             }
             .frame(height: StripLayout.toolbarHeight)

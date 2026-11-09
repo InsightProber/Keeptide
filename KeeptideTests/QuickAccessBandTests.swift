@@ -714,6 +714,43 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertFalse(same(try picture(frequent), try picture(recent)))
     }
 
+    // MARK: Text in an image
+
+    func testTheTextColumnSaysWhyWhenARecognitionEndsWithoutText() throws {
+        var announced: [String] = []
+        let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let failure = GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")
+        func split(_ column: TextColumn, justMade: Bool, ref: ContentRef = image) -> QuickAccessSplitPreview {
+            QuickAccessSplitPreview(preview: nil, applicationName: nil, column: column, ref: ref, isJustMade: justMade,
+                                    onCommand: { _ in }, announce: { announced.append($0) })
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { window.close() }
+        let hosting = NSHostingView(rootView: split(.loading, justMade: false))
+        window.contentView = hosting
+        settle(window)
+
+        // A recognition that fails at once, before it was seen under way, says why as it ends.
+        hosting.rootView = split(.failed(failure), justMade: true)
+        settle(window)
+        XCTAssertEqual(announced, [failure.message])
+
+        // Text that was made, then couldn't be kept, says why too.
+        hosting.rootView = split(.text("Synthetic", keepsLineBreaks: true, status: .complete), justMade: true)
+        settle(window)
+        hosting.rootView = split(.failed(.contentUnavailable), justMade: true)
+        settle(window)
+        XCTAssertEqual(announced, [failure.message, GenerationError.contentUnavailable.message])
+
+        // An ending from before, shown for another image, says nothing again.
+        let other = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        hosting.rootView = split(.noText, justMade: true, ref: other)
+        settle(window)
+        XCTAssertEqual(announced.count, 2)
+    }
+
     // MARK: Helpers
 
     /// The band view with `metrics`, medium cards unless given others, and nothing in its state, in a window that is
@@ -731,7 +768,8 @@ final class QuickAccessBandTests: XCTestCase {
             layout: QuickAccessBandView.Layout(metrics: metrics, previewSize: nil, roomBelow: roomBelow),
             state: QuickAccessState(services: { nil }), toolbar: toolbar,
             strip: strip, glow: glow, applicationNames: ApplicationNames(),
-            actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {})
+            actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {},
+                                                 announce: { _ in })
         )
         let root = band
             .environment(\._accessibilityReduceTransparency, reducesTransparency)
