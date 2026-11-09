@@ -22,7 +22,10 @@ chosen list otherwise, with a local full-text index, from a search that folds
 into an icon at the band's right end until you type; a filter button beside it
 narrows the list to favorites or to types. It previews text and images, and can
 paste the selected clip, with Return or a double click, directly into the app
-window it was opened from; Settings shows whether direct paste is on. The native
+window it was opened from; Settings shows whether direct paste is on. Its
+actions menu, or ⌘⌫, moves the selected clip or snippet to Recently Deleted, and
+⌘Z puts it back while the panel stays open; in a collection's list the menu can
+also take a snippet out of that collection. The native
 library supports editable snippets; iCloud saving remains planned. There is no
 application release yet.
 

@@ -16,6 +16,28 @@ protocol QuickAccessUsage: Sendable {
 
 extension LocalUsageStore: QuickAccessUsage {}
 
+/// Where quick access moves a clip or snippet to Recently Deleted and back: the library's maintenance, which keeps one
+/// library's lifetime and takes one action at a time, or a stand-in in tests.
+@MainActor
+protocol QuickAccessLifecycle: AnyObject, Sendable {
+    /// Moves exactly this facet generation to Recently Deleted; nil when it could not.
+    func moveToRecentlyDeleted(_ ref: ContentRef) async -> DeletedFacetIdentity?
+    /// Puts back what a move took; false when it could not.
+    func recover(_ target: DeletedFacetIdentity) async -> Bool
+}
+
+/// What one Move to Recently Deleted from quick access took off the strip, for its undo.
+struct QuickAccessDeletion: Sendable {
+    /// What went to Recently Deleted.
+    let moved: DeletedFacetIdentity
+    let ref: ContentRef
+    let title: String
+    let rows: SelectionCoordinator.RemovedRows
+    /// The library it was moved in, held so that it is told apart from any library opened since: an undo puts back
+    /// only what this one moved.
+    let lifecycle: any QuickAccessLifecycle
+}
+
 /// The store-backed services quick access reads and acts through; nil while the
 /// library is not open.
 @MainActor
@@ -37,6 +59,8 @@ struct QuickAccessServices {
     var collections: (any QuickAccessCollections)? = nil
     /// Moving snippets between collections and marking them as favorites; without it a saved clip can only be saved.
     var collectionChanges: (any QuickAccessCollectionChanges)? = nil
+    /// Moving clips and snippets to Recently Deleted and back; without it nothing can be moved there from the panel.
+    var lifecycle: (any QuickAccessLifecycle)? = nil
 }
 
 enum QuickAccessPhase: Equatable {
@@ -192,6 +216,23 @@ final class QuickAccessState {
     @ObservationIgnored private var collectionsRead: Task<Void, Never>?
     /// The list was changed, and VoiceOver is to hear which once its first page is in.
     @ObservationIgnored private var announcesList = false
+    /// The clips and snippets moved to Recently Deleted from this showing, or on their way there. Every page leaves
+    /// them out: a refresh that read the store before a move, the frequent wing read as the panel opened and an index
+    /// that has not caught up yet would otherwise list them again.
+    @ObservationIgnored private var hiddenFacets: Set<HiddenFacet> = []
+    /// The snippets taken out of a collection in this showing, by collection: that collection's list leaves them out,
+    /// for an index that has not caught up yet.
+    @ObservationIgnored private var leftCollections: [CollectionID: Set<HiddenFacet>] = [:]
+
+    private struct HiddenFacet: Hashable {
+        let itemID: ItemID
+        let facet: ContentFacet
+
+        init(_ ref: ContentRef) {
+            itemID = ref.itemID
+            facet = ref.facet
+        }
+    }
 
     init(services: @escaping @MainActor () -> QuickAccessServices?) {
         self.services = services
@@ -246,6 +287,8 @@ final class QuickAccessState {
     /// without the clips the band shows whole; nil lists no wing.
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
+        hiddenFacets = []
+        leftCollections = [:]
         isOpen = true
         frequentWingFirstScreen = firstScreen
         query = ""
@@ -725,11 +768,19 @@ final class QuickAccessState {
             if onSnippet, wasIn.contains(collection.id) {
                 _ = try await changes.removeSnippets(refs, from: collection.id, expecting: identity)
                 guard stillAsked() else { return }
-                saveMessage = "Removed from \(place)"
                 for ref in refs { updateRow(ref: ref) { $0.collectionIDs.removeAll { $0 == collection.id } } }
+                leftCollections[collection.id, default: []].formUnion(refs.map(HiddenFacet.init))
+                // In that collection's own list its card leaves with it, as the library's row does.
+                if list == .collection(collection.id) {
+                    for ref in refs {
+                        if let removed = selection.removeRows(of: ref) { rowsWereTakenOff(removed) }
+                    }
+                }
+                saveMessage = "Removed from \(place)"
                 return
             }
             let added = try await changes.addSnippets(refs, to: collection.id, expecting: identity)
+            leftCollections[collection.id]?.subtract(refs.map(HiddenFacet.init))
             guard stillAsked() else { return }
             saveMessage = added ? "\(prefix)Added to \(place)" : "Already in \(place)"
             if onSnippet {
@@ -796,6 +847,143 @@ final class QuickAccessState {
         }
     }
 
+    // MARK: Recently Deleted
+
+    /// Whether the selected row can go to Recently Deleted: there is a library to move it in, and it can be acted on.
+    var canMoveToRecentlyDeleted: Bool { services()?.lifecycle != nil && selection.executableSelection != nil }
+
+    /// The collection the list shows, while the selected row is a snippet in it.
+    var listedCollectionOfSelection: CollectionSummary? { listedCollection(of: selection.selectedRow) }
+
+    /// The collection the list shows, while `row` is a snippet in it: Remove from “Prompts” takes it out.
+    func listedCollection(of row: QuickAccessRow?) -> CollectionSummary? {
+        guard case .collection(let id) = list, let row, row.facet == .memo, row.collectionIDs.contains(id) else {
+            return nil
+        }
+        return collections.first { $0.id == id }
+    }
+
+    /// ⌘⌫ and the actions menu's Move to Recently Deleted: the clip or snippet selected when asked goes to Recently
+    /// Deleted, a manual deletion the library keeps recoverable for a while. Its card leaves the strip at once, so that
+    /// ⌘⌫ pressed again acts on the clip that took its place, and the task returned moves it in the library, after any
+    /// move still under way there. A clip's snippet stays, as does a snippet's clip: each is a facet of its own.
+    ///
+    /// A move the library refuses puts the card back and says so, and VoiceOver hears it. The card is selected again
+    /// only while the selection is still where the move left it: a person who stepped on meanwhile keeps the clip they
+    /// chose, so Return never acts on one they moved away from. A move that succeeds says so, and VoiceOver hears what
+    /// went; the task gives what an undo needs. A showing closed meanwhile gets no undo: the move stands, in Recently
+    /// Deleted.
+    func moveToRecentlyDeleted(_ target: CopyTarget) -> Task<QuickAccessDeletion?, Never>? {
+        guard isOpen, copyTarget == target, let currentSession = session,
+              let lifecycle = services()?.lifecycle else { return nil }
+        let title = selection.rows.first { $0.ref == target.ref }?.title ?? ""
+        guard let removed = selection.removeRows(of: target.ref) else { return nil }
+        let hidden = HiddenFacet(target.ref)
+        hiddenFacets.insert(hidden)
+        rowsWereTakenOff(removed)
+        return Task {
+            let moved = await lifecycle.moveToRecentlyDeleted(target.ref)
+            guard let moved else {
+                // A refused move takes nothing away, from this list or any other.
+                hiddenFacets.remove(hidden)
+                guard isOpen, session === currentSession else { return nil }
+                putRowsBackInOrder(removed, reselectingWhileSelectionIs: removed.successorID)
+                saveMessage = "This item could not be moved to Recently Deleted."
+                announce?("“\(title)” could not be moved to Recently Deleted")
+                return nil
+            }
+            guard isOpen, session === currentSession else { return nil }
+            saveMessage = "Moved to Recently Deleted"
+            announce?("Moved “\(title)” to Recently Deleted")
+            return QuickAccessDeletion(moved: moved, ref: target.ref, title: title, rows: removed, lifecycle: lifecycle)
+        }
+    }
+
+    /// Undo Move to Recently Deleted, as ⌘Z or the actions menu asks: what the move took comes back from Recently
+    /// Deleted, to where it was in the strip while the strip lists what it listed then, or with the list read again
+    /// otherwise. It is selected again only while the selection is where it was when the undo was asked for. Nothing
+    /// comes back from a library other than the one it was moved in, nor into a closed showing.
+    func undoMoveToRecentlyDeleted(_ deletion: QuickAccessDeletion) async -> Bool {
+        guard isOpen, let currentSession = session else { return false }
+        guard let lifecycle = services()?.lifecycle, lifecycle === deletion.lifecycle else {
+            saveMessage = "The library changed. This item is still in Recently Deleted there."
+            announce?("“\(deletion.title)” could not be recovered here")
+            return false
+        }
+        failure = nil
+        let askedFrom = selection.selectedID
+        let recovered = await lifecycle.recover(deletion.moved)
+        guard isOpen, session === currentSession else { return recovered }
+        guard recovered else {
+            saveMessage = "This item could not be recovered. It is still in Recently Deleted."
+            announce?("“\(deletion.title)” could not be recovered")
+            return false
+        }
+        hiddenFacets.remove(HiddenFacet(deletion.ref))
+        putRowsBackInOrder(deletion.rows, reselectingWhileSelectionIs: askedFrom)
+        saveMessage = "Recovered from Recently Deleted"
+        announce?("Recovered “\(deletion.title)”")
+        return true
+    }
+
+    /// The actions menu's Remove from “Prompts”, in that collection's list: the snippet selected when asked leaves the
+    /// collection, keeping its others and staying in Snippets, and its card leaves the list. Nothing is deleted.
+    func removeFromListedCollection(_ target: CopyTarget) async {
+        guard let collection = listedCollection(of: selection.rows.first { $0.ref == target.ref }) else { return }
+        await save(target, placing: .collection(collection))
+    }
+
+    /// After rows left the list: a selection that moved takes the save status and its undo along; an emptied list
+    /// says why it is empty; a preview follows the selection, and closes with nothing left to select.
+    private func rowsWereTakenOff(_ removed: SelectionCoordinator.RemovedRows) {
+        if removed.selectedID != nil {
+            failure = nil
+            clearSaveStatus()
+        }
+        if !showsRecentClips { totalMatches = max(0, totalMatches - removed.entries.filter { !$0.row.isFrequent }.count) }
+        if selection.rows.isEmpty { phase = showsRecentClips ? .noContent : emptyPhase }
+        dropDetailsOfUnlistedRows()
+        if isPreviewExpanded, selection.selection == nil {
+            isPreviewExpanded = false
+            loadPreview()
+            onPreviewCollapsed?()
+        } else {
+            followSelection()
+        }
+    }
+
+    /// Rows a move took, back where they were while the list is the one they left; false when it is another, which
+    /// lists them, if they belong there, once it is read again. The one that was selected is selected again only while
+    /// the selection is still `expected`.
+    @discardableResult
+    private func putRowsBack(_ removed: SelectionCoordinator.RemovedRows,
+                             reselectingWhileSelectionIs expected: QuickAccessRow.ID?) -> Bool {
+        let selected = selection.selectedID
+        guard selection.restore(removed, reselectingWhileSelectionIs: expected) else { return false }
+        if !showsRecentClips { totalMatches += removed.entries.filter { !$0.row.isFrequent }.count }
+        if !selection.rows.isEmpty, phase == .noContent || phase == .noResults { phase = .results }
+        if selection.selectedID != selected {
+            failure = nil
+            clearSaveStatus()
+        }
+        followSelection()
+        return true
+    }
+
+    /// The list read again, for a clip that came back to a list read without it: the recent clips without moving the
+    /// selection, any other list from its start.
+    private func relist() {
+        if showsRecentClips { recentClipsChanged() } else { reload() }
+    }
+
+    /// Rows put back where they were, and then, for the recent clips, read again from the store: a place remembered
+    /// can be out of date by then, after other moves or a refresh, and the store holds their order.
+    private func putRowsBackInOrder(_ removed: SelectionCoordinator.RemovedRows,
+                                    reselectingWhileSelectionIs expected: QuickAccessRow.ID?) {
+        guard putRowsBack(removed, reselectingWhileSelectionIs: expected) else { return relist() }
+        if showsRecentClips { recentClipsChanged() }
+    }
+
     func loadMoreIfNeeded(visibleRow index: Int) {
         guard hasMoreRows, loadingMore == nil, phase == .results, index >= selection.rows.count - 10,
               let search = services()?.search, let generation = currentGeneration else { return }
@@ -808,7 +996,8 @@ final class QuickAccessState {
                     guard self.isCurrent(generation) else { return }
                     let listed = self.selection.rows.count
                     let order = self.collections.map(\.id)
-                    self.selection.append(page.results.map { Self.row(from: $0, order: order) }, generation: generation)
+                    self.selection.append(self.listable(page.results.map { Self.row(from: $0, order: order) }),
+                                          generation: generation)
                     self.totalMatches = page.totalMatches
                     // A page whose rows are all listed already, as when a clip copied again moved up into the
                     // list, would come back the same however often it is asked for.
@@ -952,7 +1141,8 @@ final class QuickAccessState {
         guard isCurrent(generation) else { return }
         // A refresh that fails keeps the clips already listed.
         if summaries == nil, isRefresh { return }
-        let rows = ledByFrequentWing((summaries ?? []).compactMap { Self.row(from: $0) }, candidates: candidates)
+        let rows = ledByFrequentWing(listable((summaries ?? []).compactMap { Self.row(from: $0) }),
+                                     candidates: candidates)
         applyRows(rows, generation: generation, isComplete: true)
         phase = summaries == nil ? .libraryUnavailable : (rows.isEmpty ? .noContent : .results)
         announceListIfNeeded()
@@ -973,9 +1163,12 @@ final class QuickAccessState {
                     return
                 }
                 let order = collections.map(\.id)
-                let rows = ledByFrequentWing(page.results.map { Self.row(from: $0, order: order) }, candidates: candidates)
+                let found = page.results.map { Self.row(from: $0, order: order) }
+                let listed = listable(found)
+                let rows = ledByFrequentWing(listed, candidates: candidates)
                 applyRows(rows, generation: generation, isComplete: page.isComplete, keepsChosenRow: true)
-                totalMatches = page.totalMatches
+                // What an index that has not caught up still finds is no match any more.
+                totalMatches = max(0, page.totalMatches - (found.count - listed.count))
                 indexNotice = Self.notice(for: page.indexState)
                 phase = !rows.isEmpty ? .results : (page.isComplete ? emptyPhase : .loading)
                 if page.isComplete { announceListIfNeeded() }
@@ -993,7 +1186,7 @@ final class QuickAccessState {
             let summaries = try? await repository.recent(limit: Self.recentLimit)
             guard isCurrent(generation) else { return }
             if let summaries {
-                let rows = summaries.compactMap(Self.memoRow(from:))
+                let rows = listable(summaries.compactMap(Self.memoRow(from:)))
                 applyRows(rows, generation: generation, isComplete: true)
                 totalMatches = rows.count
                 indexNotice = notice
@@ -1045,7 +1238,7 @@ final class QuickAccessState {
     private func ledByFrequentWing(_ rows: [QuickAccessRow], candidates: [QuickAccessRow?]?) -> [QuickAccessRow] {
         guard let candidates, let shownWhole = frequentWingFirstScreen, !rows.isEmpty else { return rows }
         let pool = kinds.isEmpty ? Array(candidates.prefix(Self.frequentLimit)) : candidates
-        let ranked = pool.compactMap { $0 }.filter { kinds.isEmpty || kinds.contains($0.kind) }
+        let ranked = pool.compactMap { $0 }.filter { isListable($0) && (kinds.isEmpty || kinds.contains($0.kind)) }
             .prefix(Self.frequentLimit)
         // How many of the newest clips the band shows whole depends on the wing before them: a wing that reaches the
         // middle puts the newest clip there, and a shorter one leaves it further left, with more of them whole. So the
@@ -1070,12 +1263,25 @@ final class QuickAccessState {
     private func applyRows(_ rows: [QuickAccessRow], generation: UInt64, isComplete: Bool,
                            keepsChosenRow: Bool = false) {
         let selected = selection.selectedID
-        selection.apply(rows, generation: generation, isComplete: isComplete, keepsChosenRow: keepsChosenRow)
+        selection.apply(listable(rows), generation: generation, isComplete: isComplete, keepsChosenRow: keepsChosenRow)
         // A page that moves the selection to another row, or loses it, as a refresh without the clip does, takes the
         // save of the row that was selected along.
         if selection.selectedID != selected { clearSaveStatus() }
         dropDetailsOfUnlistedRows()
         followSelection()
+    }
+
+    /// `rows` without those moved to Recently Deleted from this showing, nor, in a collection's list, the snippets taken
+    /// out of it.
+    private func listable(_ rows: [QuickAccessRow]) -> [QuickAccessRow] {
+        hiddenFacets.isEmpty && leftCollections.isEmpty ? rows : rows.filter(isListable)
+    }
+
+    private func isListable(_ row: QuickAccessRow) -> Bool {
+        let facet = HiddenFacet(row.ref)
+        if hiddenFacets.contains(facet) { return false }
+        guard case .collection(let id) = list else { return true }
+        return leftCollections[id]?.contains(facet) != true
     }
 
     /// A clip that left the list takes its detail, and any read of it, along.

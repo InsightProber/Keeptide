@@ -6,24 +6,35 @@ enum ActionMenuCommand: Equatable {
     /// Save to Collection or Add to Collection: the collection chosen. On a snippet's card, choosing one it is in takes
     /// it out.
     case saveToCollection(CollectionID)
+    case undoMoveToRecentlyDeleted, moveToRecentlyDeleted
+    /// Remove from “Prompts”: out of the collection the list shows.
+    case removeFromCollection(CollectionID)
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
 /// and the copy that never pastes, where the panel offers them; then the preview; then what keeps the clip: Save as
 /// Snippet, Save to Collection (Add to Collection on a snippet), Undo Save as Snippet while the save can still be
 /// undone, and the favorite mark; then the library's actions; then Enable Direct Paste… when the panel only copies for
-/// want of access. Other unavailable actions are disabled rather than hidden, so the menu's shape stays predictable:
-/// Return's and ⇧Return's are disabled while a command waits on the review card, which alone confirms it, and the
-/// collections without any to choose.
+/// want of access; last what takes the clip away: Undo Move to Recently Deleted right after a move, Remove from the
+/// collection a collection's list shows, and Move to Recently Deleted, named as the library names them. Other
+/// unavailable actions are disabled rather than hidden, so the menu's shape stays predictable: Return's and ⇧Return's
+/// are disabled while a command waits on the review card, which alone confirms it, the collections without any to
+/// choose, and Move to Recently Deleted without a library to move it in.
 ///
-/// The undo has no key of its own: ⌘Z belongs to the search field's text while it has the keys. The menu is how both
-/// the keyboard, with ⌘K, and the pointer reach it.
+/// Undo Save as Snippet has no key of its own: ⌘Z belongs to the search field's text while it has the keys. The menu is
+/// how both the keyboard, with ⌘K, and the pointer reach it. Moves to Recently Deleted are on the panel's undo stack:
+/// ⌘Z undoes the last one unless something was typed in the search field since, and the menu offers it while it is the
+/// panel's last undoable change.
 @MainActor
 enum ActionMenu {
     static let noCollectionsHelp = "Create a collection first."
+    /// The undo's action name, which Undo Move to Recently Deleted names.
+    static let moveToRecentlyDeletedName = "Move to Recently Deleted"
 
     static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isReviewing: Bool = false,
                      isPreviewExpanded: Bool, canUndoSave: Bool = false, collections: [CollectionSummary] = [],
+                     canMoveToRecentlyDeleted: Bool = false, listedCollection: CollectionSummary? = nil,
+                     canUndoMoveToRecentlyDeleted: Bool = false,
                      perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
@@ -88,6 +99,29 @@ enum ActionMenu {
             menu.addItem(.separator())
             menu.addItem(ActionMenuItem("Enable Direct Paste…", key: "", modifiers: []) { perform(.enableDirectPaste) })
         }
+        menu.addItem(.separator())
+        // Each has an identifier of its own: the menu bar's Item menu has a Move to Recently Deleted too.
+        if canUndoMoveToRecentlyDeleted {
+            let undo = ActionMenuItem("Undo \(moveToRecentlyDeletedName)", key: "z", modifiers: .command) {
+                perform(.undoMoveToRecentlyDeleted)
+            }
+            undo.identifier = NSUserInterfaceItemIdentifier("QuickAccessUndoMoveToRecentlyDeleted")
+            menu.addItem(undo)
+        }
+        if let listedCollection {
+            let remove = ActionMenuItem("Remove from “\(listedCollection.name)”", key: "", modifiers: []) {
+                perform(.removeFromCollection(listedCollection.id))
+            }
+            remove.identifier = NSUserInterfaceItemIdentifier("QuickAccessRemoveFromCollection")
+            remove.isEnabled = canAct
+            menu.addItem(remove)
+        }
+        let delete = ActionMenuItem(moveToRecentlyDeletedName, key: "\u{8}", modifiers: .command) {
+            perform(.moveToRecentlyDeleted)
+        }
+        delete.identifier = NSUserInterfaceItemIdentifier("QuickAccessMoveToRecentlyDeleted")
+        delete.isEnabled = canMoveToRecentlyDeleted && row != nil
+        menu.addItem(delete)
         return menu
     }
 

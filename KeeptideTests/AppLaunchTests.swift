@@ -2098,18 +2098,24 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(commandK.menu.items.map(\.title), [
             "Copy", "Copy as Plain Text", "", "Show Preview", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
+            "", "Move to Recently Deleted",
         ])
         // Save to Collection has its submenu instead of a key: AppKit keeps none on such an item, and ⇧⌘M is the
         // panel's own.
         XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent),
-                       ["\r", "\r", "", " ", "", "s", "", "d", "", "e", "n"])
+                       ["\r", "\r", "", " ", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
         XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem && !$0.hasSubmenu }
-            .map(\.keyEquivalentModifierMask), [[], .shift, [], .command, .command, .command, .command])
-        // Everything is available but Save to Collection, which needs a collection first and says so.
+            .map(\.keyEquivalentModifierMask), [[], .shift, [], .command, .command, .command, .command, .command])
+        // Everything is available but Save to Collection, which needs a collection first and says so, and Move to
+        // Recently Deleted, which needs a library to move the clip in: this panel has none.
         let saveTo = try XCTUnwrap(commandK.menu.items.first { $0.title == "Save to Collection" })
         XCTAssertFalse(saveTo.isEnabled)
         XCTAssertEqual(saveTo.toolTip, "Create a collection first.")
-        XCTAssertTrue(commandK.menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled || $0 === saveTo })
+        let delete = try XCTUnwrap(commandK.menu.items.last)
+        XCTAssertFalse(delete.isEnabled)
+        XCTAssertTrue(commandK.menu.items.allSatisfy {
+            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete
+        })
         // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
             with: .rightMouseDown, location: strip.convert(NSPoint(x: selected.midX, y: selected.midY), to: nil),
@@ -2180,6 +2186,176 @@ final class AppLaunchTests: XCTestCase {
         guard case .item(let value) = item.value else { return XCTFail("Missing history") }
         XCTAssertNil(value.memoID, "The undo removed the snippet the panel saved")
         XCTAssertFalse(try actionMenu(of: controller).items.contains { $0.title == "Undo Save as Snippet" })
+    }
+
+    func testCommandDeleteMovesTheSelectedClipToRecentlyDeletedAndCommandZPutsItBack() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["oldest", "older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        XCTAssertEqual(field.stringValue, "")
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        let newer = try XCTUnwrap(controller.state.copyTarget?.ref)
+        let delete = try key(kVK_Delete, "\u{7F}", modifiers: .command)
+
+        // The empty search field holds the keys, as the panel opens: ⌘⌫ takes the selected clip off the strip at once,
+        // and the older clip beside it is selected.
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["older", "oldest"])
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "older")
+        _ = try await toolbarSaying(.status("Moved to Recently Deleted"), in: controller)
+        try await SearchTestSupport.waitUntil { announced == ["Moved “newer” to Recently Deleted"] }
+        let item = try await ContentRepository(controller: harness.controller).recordState(.item(newer.itemID))
+        guard case .item(let moved) = item.value else { return XCTFail("Missing history") }
+        XCTAssertFalse(moved.historyEligible)
+        XCTAssertNotNil(moved.historyDeletedAt)
+        XCTAssertTrue(window.firstResponder === field.currentEditor(), "The keys stay in the search field")
+
+        // Held down, ⌘⌫ has acted already: its repeats take nothing more.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_Delete, "\u{7F}", modifiers: .command,
+                                                                isARepeat: true)))
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["older", "oldest"])
+
+        // While the move is the panel's last change, ⌘K offers to undo it with ⌘Z, first in the last group.
+        try await SearchTestSupport.waitUntil { window.undoManager?.canUndo == true }
+        let menu = try actionMenu(of: controller)
+        let undo = try XCTUnwrap(menu.items.firstIndex { $0.title == "Undo Move to Recently Deleted" })
+        XCTAssertTrue(menu.items[undo - 1].isSeparatorItem)
+        XCTAssertEqual(menu.items[undo].keyEquivalent, "z")
+        XCTAssertEqual(menu.items[undo].keyEquivalentModifierMask, .command)
+        XCTAssertEqual(menu.items[undo + 1].title, "Move to Recently Deleted")
+        XCTAssertTrue(menu.items[undo + 1].isEnabled)
+
+        // ⌘Z puts it back where it was, selected again.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Z, "z", modifiers: .command)))
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.map(\.title) == ["newer", "older", "oldest"]
+        }
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "newer")
+        _ = try await toolbarSaying(.status("Recovered from Recently Deleted"), in: controller)
+        try await SearchTestSupport.waitUntil { announced.last == "Recovered “newer”" }
+        let recovered = try await ContentRepository(controller: harness.controller).recordState(.item(newer.itemID))
+        guard case .item(let back) = recovered.value else { return XCTFail("Missing history") }
+        XCTAssertTrue(back.historyEligible)
+        XCTAssertFalse(try actionMenu(of: controller).items.contains { $0.title == "Undo Move to Recently Deleted" })
+    }
+
+    func testCommandDeleteWithTextInTheSearchFieldDeletesTheTextAndThenTheStripsClips() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["older", "newer", "newest"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let delete = try key(kVK_Delete, "\u{7F}", modifiers: .command)
+
+        // With text in the search field, ⌘⌫ is the text's: it deletes to the start of the line, and goes nowhere else,
+        // not to the menu bar's Item › Move to Recently Deleted, which acts on the library window.
+        editor.insertText("ne", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil {
+            controller.state.query == "ne" && controller.state.phase == .results
+                && controller.state.selection.isComplete
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        XCTAssertEqual(editor.string, "")
+        try await SearchTestSupport.waitUntil {
+            controller.state.query == "" && controller.state.selection.rows.count == 3
+                && controller.state.copyTarget != nil
+        }
+        // Pressed again at once, in the field it emptied, it still means the text: no clip goes.
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["newest", "newer", "older"])
+
+        // From the strip, ⌘⌫ takes the selected clip.
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.firstResponder is QuickAccessStripView)
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["newer", "older"])
+
+        // The menu's Move to Recently Deleted takes the next one, and the last clip gone leaves the keys to the field.
+        let menu = try actionMenu(of: controller)
+        let move = try XCTUnwrap(menu.items.lastIndex { $0.title == "Move to Recently Deleted" })
+        XCTAssertEqual(menu.items[move].identifier?.rawValue, "QuickAccessMoveToRecentlyDeleted")
+        XCTAssertEqual(menu.items[move].keyEquivalent, "\u{8}")
+        menu.performActionForItem(at: move)
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["older"])
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.isEmpty && controller.state.saveMessage == "Moved to Recently Deleted"
+        }
+        let editing = try XCTUnwrap(window.firstResponder as? NSTextView)
+        XCTAssertTrue(editing.isFieldEditor)
+        try await SearchTestSupport.waitUntil { (try? await self.trashTitles(in: harness)) == ["newer", "newest", "older"] }
+    }
+
+    func testCommandZUndoesMovesInTheOrderTheyWereAskedFor() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["older", "newer", "newest"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let delete = try key(kVK_Delete, "\u{7F}", modifiers: .command)
+        let undo = try key(kVK_ANSI_Z, "z", modifiers: .command)
+
+        // Two moves asked for one after the other, each a change of its own on the undo stack; the second may still be
+        // under way when ⌘Z comes.
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        XCTAssertTrue(window.performKeyEquivalent(with: delete))
+        XCTAssertEqual(window.undoManager?.groupingLevel, 0)
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["older"])
+        XCTAssertEqual(window.undoManager?.undoActionName, "Move to Recently Deleted")
+
+        // ⌘Z undoes the last asked for first.
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.map(\.title) == ["newer", "older"]
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.map(\.title) == ["newest", "newer", "older"]
+        }
+        try await SearchTestSupport.waitUntil { (try? await self.trashTitles(in: harness)) == [] }
+        // Nothing is left to undo, and ⌘Z still stays in the panel.
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        XCTAssertEqual(window.undoManager?.canUndo, false)
+    }
+
+    func testCommandZUndoesTheSearchFieldsTypingWhenNothingWasMoved() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        editor.insertText("plain input", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "plain input" }
+
+        // The field keeps its typing on an undo stack of its own; ⌘Z reaches it, as Edit › Undo does.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Z, "z", modifiers: .command)))
+
+        XCTAssertEqual(editor.string, "")
+        try await SearchTestSupport.waitUntil { controller.state.query == "" }
+        XCTAssertEqual(window.undoManager?.canUndo, false)
+        let trash = try await trashTitles(in: harness)
+        XCTAssertEqual(trash, [])
+    }
+
+    func testCommandZUndoesTypingDoneAfterAMoveBeforeTheMove() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let undo = try key(kVK_ANSI_Z, "z", modifiers: .command)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_Delete, "\u{7F}", modifiers: .command)))
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["older"])
+        try await SearchTestSupport.waitUntil { (try? await self.trashTitles(in: harness)) == ["newer"] }
+
+        // Typing after the move comes last: ⌘Z undoes it first, and the clip stays in Recently Deleted.
+        editor.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "x" }
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        XCTAssertEqual(editor.string, "")
+        try await SearchTestSupport.waitUntil { controller.state.query == "" && controller.state.phase == .results }
+        let stillMoved = try await trashTitles(in: harness)
+        XCTAssertEqual(stillMoved, ["newer"])
+
+        // With the field's edits undone, ⌘Z reaches the move.
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.map(\.title) == ["newer", "older"]
+        }
+        try await SearchTestSupport.waitUntil { (try? await self.trashTitles(in: harness)) == [] }
     }
 
     func testTheSaveStatusIsTheToolbarsAndNothingLiesOverTheCards() throws {
@@ -3400,12 +3576,15 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview",
                         "Save as Snippet", "Save to Collection", "Add to Favorites", "Show in Library", "New Snippet",
-                        "Enable Direct Paste…"])
+                        "Enable Direct Paste…", "Move to Recently Deleted"])
         XCTAssertEqual(menu.items.map(\.isSeparatorItem),
-                       [false, false, true, false, true, false, false, false, true, false, false, true, false])
+                       [false, false, true, false, true, false, false, false, true, false, false, true, false, true,
+                        false])
         XCTAssertEqual(menu.items[0].keyEquivalent, "\r")
         XCTAssertEqual(menu.items[0].keyEquivalentModifierMask, [])
-        XCTAssertTrue(menu.items.allSatisfy { $0.isSeparatorItem || $0.isEnabled || $0.title == "Save to Collection" })
+        XCTAssertTrue(menu.items.allSatisfy {
+            $0.isSeparatorItem || $0.isEnabled || ["Save to Collection", "Move to Recently Deleted"].contains($0.title)
+        })
 
         // Copy As-Is copies the clip as captured, its trailing line break too, and sends nothing.
         menu.performActionForItem(at: 1)
@@ -3422,6 +3601,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(pasteMenu.items.map(\.title), [
             "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
+            "", "Move to Recently Deleted",
         ])
         XCTAssertEqual(pasteMenu.items[1].keyEquivalentModifierMask, .shift)
         pasteMenu.performActionForItem(at: 2)
@@ -3461,6 +3641,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(menu.items.map(\.title), [
             "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
+            "", "Move to Recently Deleted",
         ])
         XCTAssertEqual(fake.sent, [])
     }
@@ -4160,7 +4341,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(try actionMenu(of: controller).items.map(\.title),
                        ["Copy", "Copy as Plain Text", "", "Show Preview", "",
                         "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
-                        "New Snippet"])
+                        "New Snippet", "", "Move to Recently Deleted"])
 
         controller.perform(.primary)
         try await SearchTestSupport.waitUntil { !controller.isSessionOpen }
@@ -4315,6 +4496,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(menu.items.map(\.title), [
             "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
+            "", "Move to Recently Deleted",
         ])
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[1].isEnabled)
@@ -4848,11 +5030,66 @@ final class AppLaunchTests: XCTestCase {
     /// clipboard into the app in front. The panel reads how often clips were used from `usage`, and without it lists no
     /// frequent wing. `preferences` are medium cards with the frequent clips turned off unless given. The panel saves
     /// clips as snippets through `library`, and without it saves nothing.
+    /// What Recently Deleted holds, by title, in alphabetical order.
+    private func trashTitles(in harness: SearchHarness) async throws -> [String] {
+        try await LifecycleService(controller: harness.controller)
+            .trash(policy: .permanent, at: Date(), expecting: try await harness.controller.identity())
+            .map(\.title).sorted()
+    }
+
+    /// Reaches a panel from what is made before it.
+    @MainActor
+    private final class PanelRelay {
+        weak var controller: PanelController?
+    }
+
+    /// A shown panel over a real temporary store holding one text clip per title, newest last, that moves clips to
+    /// Recently Deleted through the library's own maintenance. The maintenance reports a change as the app's does, by
+    /// having the panel read its recent clips again. It returns once the clips are listed and the newest can be acted on.
+    private func makeDeletingPanel(_ titles: [String], shown: Bool = false) async throws
+        -> (PanelController, SearchHarness) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(titles, into: harness)
+        try await harness.consumer.synchronize()
+        let suite = "Keeptide-PanelDelete-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        // The clips are dated long ago; a history kept forever still recovers them from Recently Deleted.
+        let preferences = LifecyclePreferences(defaults: defaults)
+        try preferences.commit(try preferences.stageHistoryRetention(.permanent), confirmingShortening: true)
+        let relay = PanelRelay()
+        let maintenance = LibraryMaintenance(controller: harness.controller,
+                                             identity: try await harness.controller.identity(),
+                                             directory: harness.directory,
+                                             preferences: preferences,
+                                             didChange: { relay.controller?.state.recentClipsChanged() })
+        addTeardownBlock {
+            await maintenance.stopAndDrain()
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       library: LibraryService(controller: harness.controller),
+                                       lifecycle: maintenance)
+        relay.controller = controller
+        if shown {
+            controller.show()
+            addTeardownBlock { controller.close() }
+        } else {
+            controller.state.open()
+        }
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.count == titles.count && controller.state.copyTarget != nil
+        }
+        return (controller, harness)
+    }
+
     private func makePanel(over harness: SearchHarness, pasteboard: NSPasteboard, search: SearchService? = nil,
                            visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
                            usage: (any QuickAccessUsage)? = nil, library: LibraryService? = nil,
                            collections: (any QuickAccessCollections)? = nil,
-                           preferences: QuickAccessPreferences? = nil) throws -> PanelController {
+                           preferences: QuickAccessPreferences? = nil,
+                           lifecycle: (any QuickAccessLifecycle)? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in }, system: system)
@@ -4860,7 +5097,8 @@ final class AppLaunchTests: XCTestCase {
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
                                            usage: usage, library: library, collections: collections,
-                                           collectionChanges: collections as? any QuickAccessCollectionChanges)
+                                           collectionChanges: collections as? any QuickAccessCollectionChanges,
+                                           lifecycle: lifecycle)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }

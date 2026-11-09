@@ -88,12 +88,54 @@ final class LibraryMaintenance {
 
     @discardableResult
     func remove(_ ref: ContentRef) async -> Bool {
+        await moveToRecentlyDeleted(ref, waitingForTurn: false) != nil
+    }
+
+    /// Quick access's Move to Recently Deleted: exactly this facet generation, waiting for an action already under way
+    /// rather than being refused for it, as when ⌘⌫ is pressed again before the last move is done. What it moved, for
+    /// an undo; nil when it could not move it.
+    func moveToRecentlyDeleted(_ ref: ContentRef) async -> DeletedFacetIdentity? {
+        await moveToRecentlyDeleted(ref, waitingForTurn: true)
+    }
+
+    /// Quick access's undo of a move: puts back what `moveToRecentlyDeleted` moved, after any action under way. True
+    /// once it is back, even when Recently Deleted could not be read again after it.
+    func recover(_ target: DeletedFacetIdentity) async -> Bool {
+        await waitForTurn()
+        var restored = false
         await perform { permit in
-            _ = try await LifecycleService(controller: self.controller).remove(
-                ref: ref, at: Date(), expecting: self.identity, permit: permit
+            _ = try await LifecycleService(controller: self.controller).restore(
+                target, policy: self.policy, at: Date(), expecting: self.identity, permit: permit
             )
+            restored = true
             await self.didChange()
             try await self.loadTrash()
+        }
+        return restored
+    }
+
+    /// Quick access (`waitingForTurn`) gets what was moved once it is moved, even when Recently Deleted could not be
+    /// read again after it: the move stands, and its undo needs it. The library's own delete keeps `perform`'s answer
+    /// of whether everything succeeded.
+    private func moveToRecentlyDeleted(_ ref: ContentRef, waitingForTurn: Bool) async -> DeletedFacetIdentity? {
+        if waitingForTurn { await waitForTurn() }
+        var moved: DeletedFacetIdentity?
+        let done = await perform { permit in
+            moved = try await LifecycleService(controller: self.controller).remove(
+                ref: ref, at: Date(), expecting: self.identity, permit: permit
+            ).target
+            await self.didChange()
+            try await self.loadTrash()
+        }
+        if waitingForTurn { return moved }
+        return done ? moved : nil
+    }
+
+    /// Returns once no action is under way. Waiters resume together when one ends, and the first to act takes the next
+    /// turn; the others wait again.
+    private func waitForTurn() async {
+        while isWorking, !isClosed {
+            await withCheckedContinuation { completionWaiters.append($0) }
         }
     }
 
@@ -232,3 +274,6 @@ final class LibraryMaintenance {
         }
     }
 }
+
+/// Quick access moves clips to Recently Deleted, and back, through the library's maintenance.
+extension LibraryMaintenance: QuickAccessLifecycle {}
