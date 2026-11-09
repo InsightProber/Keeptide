@@ -22,8 +22,9 @@ enum ActionMenuCommand: Equatable {
 /// choose, and Move to Recently Deleted without a library to move it in.
 ///
 /// Undo Save as Snippet has no key of its own: ⌘Z belongs to the search field's text while it has the keys. The menu is
-/// how both the keyboard, with ⌘K, and the pointer reach it. A move to Recently Deleted joins the panel's undo, the
-/// field's typing included, so ⌘Z undoes the last of either, and the menu offers it while it is the last.
+/// how both the keyboard, with ⌘K, and the pointer reach it. Moves to Recently Deleted are on the panel's undo stack:
+/// ⌘Z undoes the last one unless something was typed in the search field since, and the menu offers it while it is the
+/// panel's last undoable change.
 @MainActor
 enum ActionMenu {
     static let noCollectionsHelp = "Create a collection first."

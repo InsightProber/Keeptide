@@ -67,8 +67,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// still means the text.
     private var lastTextCommandDelete: TimeInterval?
     private static let textCommandDeleteGrace: TimeInterval = 1
-    /// The moves on the undo stack, which holds them only weakly.
+    /// The moves on the window's undo stack, oldest first: the stack holds them only weakly.
     private var undoableMoves: [MoveUndo] = []
+    /// Counts the panel's changes, so ⌘Z can tell whether a move or typing came last: `lastTyping` is the count when
+    /// the search field's text last changed other than by its own undo.
+    private var changeCount = 0
+    private var lastTyping = 0
+    private var undoingTyping = false
     /// Whether the keys came to the search field with Tab, ⇧Tab or ↑, so that its circle is ringed even while it is
     /// folded. Keys the field has from the start, as the panel opens, leave the circle as it is.
     private var searchReachedByKeyboard = false
@@ -234,6 +239,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         window?.undoManager?.removeAllActions()
         undoableMoves = []
         lastTextCommandDelete = nil
+        changeCount = 0
+        lastTyping = 0
     }
 
     func toggle() { isSessionOpen || closingOnceReturnIsUp != nil ? close() : show() }
@@ -270,6 +277,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     private func connect() {
         searchField.onQueryChange = { [weak self] in
+            if let self, !self.undoingTyping {
+                self.changeCount += 1
+                self.lastTyping = self.changeCount
+            }
             self?.state.setQuery($0)
             self?.update()
         }
@@ -968,7 +979,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .showInLibrary: openSelectedInLibraryFromMenu()
             case .newSnippet: newSnippetFromMenu()
             case .enableDirectPaste: enableDirectPaste()
-            case .undoMoveToRecentlyDeleted: undoLastChange()
+            case .undoMoveToRecentlyDeleted: undoLastMove()
             case .removeFromCollection: removeSelectedFromListedCollection()
             case .moveToRecentlyDeleted: moveSelectedToRecentlyDeleted()
             }
@@ -986,7 +997,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let focus = currentFocus
         update()
         keepFocus(focus)
-        let move = MoveUndo(moving)
+        changeCount += 1
+        let move = MoveUndo(moving, change: changeCount)
         registerUndo(of: move)
         Task {
             guard await moving.value == nil else { return }
@@ -995,9 +1007,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// Undo Move to Recently Deleted, on the window's undo stack with the search field's typing, so that ⌘Z undoes
-    /// whichever came last. The undo manager holds its targets weakly, so the panel keeps the moves until the stack
-    /// goes with the showing.
+    /// Undo Move to Recently Deleted, on the panel window's undo stack. The search field keeps its typing on an undo stack
+    /// of its own, so `undoFromKeyboard` decides which ⌘Z undoes. The undo manager holds its targets weakly, so the panel
+    /// keeps the moves until the stack goes with the showing.
     private func registerUndo(of move: MoveUndo) {
         guard let undoManager = window?.undoManager else { return }
         undoableMoves.append(move)
@@ -1037,12 +1049,25 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         return undoManager.canUndo && undoManager.undoActionName == ActionMenu.moveToRecentlyDeletedName
     }
 
-    /// ⌘Z and the actions menu's undo: the last change undone, a move to Recently Deleted or the search field's typing.
-    @discardableResult
-    private func undoLastChange() -> Bool {
-        guard let undoManager = window?.undoManager, undoManager.canUndo else { return false }
+    /// The actions menu's Undo Move to Recently Deleted, and ⌘Z when it means the move: the last move undone.
+    private func undoLastMove() {
+        guard let undoManager = window?.undoManager, undoManager.canUndo, !undoableMoves.isEmpty else { return }
         undoManager.undo()
-        return true
+    }
+
+    /// ⌘Z. The search field's typing and the moves to Recently Deleted are on two undo stacks, the field's own and the
+    /// window's. While nothing has been typed in the field since the last move, or while the keys are away from it,
+    /// ⌘Z undoes the move; after typing it undoes the field's edits, as Edit › Undo does, until there are none left, and
+    /// then the moves.
+    private func undoFromKeyboard() {
+        let fieldCanUndo = currentFocus == .searchField && window?.firstResponder?.undoManager?.canUndo == true
+        if let move = undoableMoves.last, !fieldCanUndo || move.change > lastTyping {
+            undoLastMove()
+        } else if fieldCanUndo {
+            undoingTyping = true
+            NSApp.sendAction(Selector(("undo:")), to: nil, from: self)
+            undoingTyping = false
+        }
     }
 
     /// The actions menu's Remove from “Prompts”, in that collection's list. The toolbar says it, and VoiceOver reads it.
@@ -1321,10 +1346,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return true
         }
         let key = event.charactersIgnoringModifiers?.lowercased()
-        // ⌘Z undoes the panel's last change, the search field's typing or a move to Recently Deleted; a composition
-        // has it as a key.
+        // ⌘Z undoes a move to Recently Deleted or the search field's typing, whichever `undoFromKeyboard` finds; a
+        // composition has it as a key.
         if key == "z", modifiers == .command {
-            if isComposing { window?.firstResponder?.keyDown(with: event) } else { undoLastChange() }
+            if isComposing { window?.firstResponder?.keyDown(with: event) } else { undoFromKeyboard() }
             return true
         }
         // Library commands must not interrupt composition. Existing panel
@@ -1385,9 +1410,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 @MainActor
 private final class MoveUndo {
     let moving: Task<QuickAccessDeletion?, Never>
+    /// The panel's change count as the move was asked for.
+    let change: Int
 
-    init(_ moving: Task<QuickAccessDeletion?, Never>) {
+    init(_ moving: Task<QuickAccessDeletion?, Never>, change: Int) {
         self.moving = moving
+        self.change = change
     }
 }
 

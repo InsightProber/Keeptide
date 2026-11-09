@@ -2315,6 +2315,49 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(window.undoManager?.canUndo, false)
     }
 
+    func testCommandZUndoesTheSearchFieldsTypingWhenNothingWasMoved() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        editor.insertText("plain input", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "plain input" }
+
+        // The field keeps its typing on an undo stack of its own; ⌘Z reaches it, as Edit › Undo does.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Z, "z", modifiers: .command)))
+
+        XCTAssertEqual(editor.string, "")
+        try await SearchTestSupport.waitUntil { controller.state.query == "" }
+        XCTAssertEqual(window.undoManager?.canUndo, false)
+        let trash = try await trashTitles(in: harness)
+        XCTAssertEqual(trash, [])
+    }
+
+    func testCommandZUndoesTypingDoneAfterAMoveBeforeTheMove() async throws {
+        let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        let undo = try key(kVK_ANSI_Z, "z", modifiers: .command)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_Delete, "\u{7F}", modifiers: .command)))
+        XCTAssertEqual(controller.state.selection.rows.map(\.title), ["older"])
+        try await SearchTestSupport.waitUntil { (try? await self.trashTitles(in: harness)) == ["newer"] }
+
+        // Typing after the move comes last: ⌘Z undoes it first, and the clip stays in Recently Deleted.
+        editor.insertText("x", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "x" }
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        XCTAssertEqual(editor.string, "")
+        try await SearchTestSupport.waitUntil { controller.state.query == "" && controller.state.phase == .results }
+        let stillMoved = try await trashTitles(in: harness)
+        XCTAssertEqual(stillMoved, ["newer"])
+
+        // With the field's edits undone, ⌘Z reaches the move.
+        XCTAssertTrue(window.performKeyEquivalent(with: undo))
+        try await SearchTestSupport.waitUntil {
+            controller.state.selection.rows.map(\.title) == ["newer", "older"]
+        }
+        try await SearchTestSupport.waitUntil { (try? await self.trashTitles(in: harness)) == [] }
+    }
+
     func testTheSaveStatusIsTheToolbarsAndNothingLiesOverTheCards() throws {
         addTeardownBlock { self.panelUnderTest = nil }
         // The panel is set up and saves in a task, and the test waits for it. What follows asks accessibility for
