@@ -193,7 +193,7 @@ final class QuickAccessActionsTests: XCTestCase {
         let ref = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(),
                              digest: Data(repeating: 0, count: 32))
         return CommandReview(
-            confirmation: CommandConfirmation(id: UUID(), sessionGeneration: 1, ref: ref, mode: .original,
+            confirmation: CommandConfirmation(id: UUID(), sessionGeneration: 1, subject: .content(ref), mode: .original,
                                               delivery: delivery),
             command: TerminalCommand(plainText: command), targetName: targetName, isRenewal: false)
     }

@@ -125,6 +125,16 @@ struct PasteRequest {
     var returnIsDown: (@MainActor () -> Bool)? = nil
     /// The confirmation from the review of this command, once the user confirms it.
     var confirmation: CommandConfirmation? = nil
+    /// A result saved beside the item, written in the item's place, as the result column asks.
+    var derivedText: DerivedTextPaste? = nil
+}
+
+/// Which saved result a request writes for its item. The service reads it again as the action runs and writes it only
+/// while it is still that whole result: one replaced, cut short or gone meanwhile is refused.
+struct DerivedTextPaste: Equatable, Sendable {
+    let id: UUID
+    let operation: DerivedTextOperation
+    let textDigest: Data
 }
 
 /// The one path from a selected row to the clipboard. It re-reads the content,
@@ -146,6 +156,8 @@ final class PasteService {
     private let read: @Sendable (ContentRef) async throws -> ResolvedContent
     private let recordUse: @Sendable (UseReceipt) async throws -> Void
     private let didWrite: @MainActor (OwnWriteToken) -> Void
+    /// The saved result of an operation for an item's content, while that content is current.
+    private let readDerivedText: @Sendable (ContentRef, DerivedTextOperation) async throws -> DerivedText?
     private let system: DirectPasteSystem
     /// The one bundle identifier a test session may paste into: other apps read the general clipboard, not
     /// the session's.
@@ -162,11 +174,15 @@ final class PasteService {
          recordUse: @escaping @Sendable (UseReceipt) async throws -> Void,
          didWrite: @escaping @MainActor (OwnWriteToken) -> Void,
          system: DirectPasteSystem = .unavailable,
-         directPasteOnlyTo: String? = nil) {
+         directPasteOnlyTo: String? = nil,
+         readDerivedText: @escaping @Sendable (ContentRef, DerivedTextOperation) async throws -> DerivedText? = {
+             _, _ in nil
+         }) {
         self.pasteboard = pasteboard
         self.read = read
         self.recordUse = recordUse
         self.didWrite = didWrite
+        self.readDerivedText = readDerivedText
         self.system = system
         self.directPasteOnlyTo = directPasteOnlyTo
     }
@@ -215,6 +231,7 @@ final class PasteService {
         let session = request.session
         let generation = request.queryGeneration
         guard session.accepts(generation) else { return .refused(.stale) }
+        if let derivedText = request.derivedText { return await execute(derivedText, for: request) }
 
         let content: ResolvedContent
         do {
@@ -253,16 +270,57 @@ final class PasteService {
             }
         }
         guard session.accepts(generation) else { return .refused(.stale) }
-        return deliver(prepared.content, command: prepared.command, of: content.ref, for: request)
+        return deliver(prepared.content, command: prepared.command, of: .content(content.ref), for: request)
+    }
+
+    /// A saved result written in its item's place. It is read again first, and written only while it is the whole
+    /// result that was asked for and its item is unchanged: a result is plain text, so it is that text for any app and
+    /// a command for a terminal, reviewed like any other. Taking a result counts no use of its item.
+    private func execute(_ wanted: DerivedTextPaste, for request: PasteRequest) async -> PasteOutcome {
+        let session = request.session
+        let generation = request.queryGeneration
+        let result: DerivedText?
+        do {
+            result = try await readDerivedText(request.ref, wanted.operation)
+        } catch {
+            return .refused(session.accepts(generation) ? .contentUnavailable : .stale)
+        }
+        guard session.accepts(generation) else { return .refused(.stale) }
+        guard let result, result.id == wanted.id, result.textDigest == wanted.textDigest,
+              result.status == .complete else { return .refused(.contentUnavailable) }
+        let format = PasteFormat.resolve(mode: request.mode, target: session.target, kind: .text)
+        let text = result.text
+        let maximumCommandByteCount = Self.maximumCommandByteCount
+        let prepared: (content: PreparedPasteboardContent, command: TerminalCommand?)
+        do {
+            prepared = try await Task.detached(priority: .userInitiated) {
+                if format == .command {
+                    return try PasteboardWriter.prepareCommand(text: text, maximumByteCount: maximumCommandByteCount)
+                }
+                return (try PasteboardWriter.preparePlainText(text), nil)
+            }.value
+        } catch {
+            guard session.accepts(generation) else { return .refused(.stale) }
+            switch error as? PasteboardWriterError {
+            case .noPlainText?: return .refused(.noPlainText)
+            case .commandTooLong?: return .refused(.commandTooLong)
+            default: return .refused(.contentUnavailable)
+            }
+        }
+        guard session.accepts(generation) else { return .refused(.stale) }
+        return deliver(prepared.content, command: prepared.command,
+                       of: .derivedText(id: result.id, source: result.source, textDigest: result.textDigest),
+                       for: request)
     }
 
     /// Writes the clip and, for a paste whose checks all pass before the write and again after the panel hides,
     /// posts one ⌘V. With Return or keypad Enter down just before the panel would hide, the clip is only copied. A
     /// command that needs a review is written only with the session's pending confirmation for exactly this content,
-    /// mode and delivery. `ref` is the content read: the confirmation and the use receipt both name it. It is
+    /// mode and delivery. `subject` is what was read: the confirmation names it, and so does the use receipt of an
+    /// item's own content; a result counts no use. It is
     /// synchronous so that the compiler rejects any suspension here: nothing else on the main actor runs between the
     /// checks, the confirmation, the write, hiding the panel and the keystroke, so no key event either.
-    private func deliver(_ prepared: PreparedPasteboardContent, command: TerminalCommand?, of ref: ContentRef,
+    private func deliver(_ prepared: PreparedPasteboardContent, command: TerminalCommand?, of subject: PasteSubject,
                          for request: PasteRequest) -> PasteOutcome {
         let session = request.session
         let check: DirectPasteAvailability?
@@ -281,13 +339,13 @@ final class PasteService {
             // The delivery is part of what was confirmed, so a command confirmed for a copy is never pasted.
             let delivery: PasteDelivery = if case .paste? = check { .paste } else { .copy }
             if let presented = request.confirmation, presented == session.pendingConfirmation,
-               presented.sessionGeneration == session.sessionGeneration, presented.ref == ref,
+               presented.sessionGeneration == session.sessionGeneration, presented.subject == subject,
                presented.mode == request.mode, presented.delivery == delivery {
                 session.pendingConfirmation = nil
             } else {
                 // Nothing is written, hidden, sent or counted until the user confirms this review.
                 let confirmation = CommandConfirmation(id: UUID(), sessionGeneration: session.sessionGeneration,
-                                                       ref: ref, mode: request.mode, delivery: delivery)
+                                                       subject: subject, mode: request.mode, delivery: delivery)
                 session.pendingConfirmation = confirmation
                 return .needsConfirmation(CommandReview(confirmation: confirmation, command: command,
                                                         targetName: session.target?.name,
@@ -303,9 +361,11 @@ final class PasteService {
         didWrite(token)
         // The copy is done once the clipboard is written, whatever happens to the paste: one receipt per
         // action, stored without holding up the caller. One that cannot be stored never undoes the copy.
-        let recordUse = recordUse
-        let receipt = UseReceipt(ref: ref, outcome: .success)
-        Task { try? await recordUse(receipt) }
+        if case .content(let ref) = subject {
+            let recordUse = recordUse
+            let receipt = UseReceipt(ref: ref, outcome: .success)
+            Task { try? await recordUse(receipt) }
+        }
         switch check {
         case nil: return .copied
         case .copy(let fallback)?: return .copiedInstead(fallback)

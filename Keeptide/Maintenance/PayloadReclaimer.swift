@@ -494,6 +494,12 @@ private extension PayloadReclaimer {
                 } catch StoreError.corruptStore {
                     throw CleanupError.evidenceMismatch
                 }
+                // Text recognized in or translated from the facets that go, kept beside them on this Mac, goes with them.
+                _ = try DerivedTextStore.stageExactCleanup(
+                    itemID: intent.payload.target.itemID,
+                    facets: Set(intent.payload.usageFacets),
+                    in: context
+                )
                 try CleanupIntentStore.stagePhase(
                     id: intent.id,
                     identity: intent.identity,
