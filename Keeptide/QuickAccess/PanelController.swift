@@ -63,6 +63,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// The key last posted again for the search field. Posting copies an event, so the copy is known by when
     /// it was pressed and which key it is; no two presses share a time.
     private var repostedKey: (timestamp: TimeInterval, keyCode: UInt16)?
+    /// When ⌘⌫ last went to text rather than to the selection, and how long after it ⌘⌫ in the emptied search field
+    /// still means the text.
+    private var lastTextCommandDelete: TimeInterval?
+    private static let textCommandDeleteGrace: TimeInterval = 1
+    /// The moves on the undo stack, which holds them only weakly.
+    private var undoableMoves: [MoveUndo] = []
     /// Whether the keys came to the search field with Tab, ⇧Tab or ↑, so that its circle is ringed even while it is
     /// folded. Keys the field has from the start, as the panel opens, leave the circle as it is.
     private var searchReachedByKeyboard = false
@@ -224,6 +230,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         isHiddenForPaste = false
         searchReachedByKeyboard = false
         state.close()
+        // The undo stack is the showing's: a move stays in Recently Deleted, where the library recovers it.
+        window?.undoManager?.removeAllActions()
+        undoableMoves = []
+        lastTextCommandDelete = nil
     }
 
     func toggle() { isSessionOpen || closingOnceReturnIsUp != nil ? close() : show() }
@@ -935,7 +945,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded,
-                               canUndoSave: canUndoSave, collections: state.collections) { [weak self] command in
+                               canUndoSave: canUndoSave, collections: state.collections,
+                               canMoveToRecentlyDeleted: state.canMoveToRecentlyDeleted,
+                               listedCollection: state.listedCollection(of: row),
+                               canUndoMoveToRecentlyDeleted: canUndoMoveToRecentlyDeleted) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -955,7 +968,93 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .showInLibrary: openSelectedInLibraryFromMenu()
             case .newSnippet: newSnippetFromMenu()
             case .enableDirectPaste: enableDirectPaste()
+            case .undoMoveToRecentlyDeleted: undoLastChange()
+            case .removeFromCollection: removeSelectedFromListedCollection()
+            case .moveToRecentlyDeleted: moveSelectedToRecentlyDeleted()
             }
+        }
+    }
+
+    // MARK: Recently Deleted
+
+    /// ⌘⌫ and the actions menu's Move to Recently Deleted. The card leaves the strip at once and the keys stay where
+    /// they were, or go to the search field once no card is left. The move joins the panel's undo as it is asked for,
+    /// so ⌘Z undoes moves in the order they were asked for, one still under way included; one the library refuses
+    /// leaves the undo again.
+    private func moveSelectedToRecentlyDeleted() {
+        guard let target = state.copyTarget, let moving = state.moveToRecentlyDeleted(target) else { return }
+        let focus = currentFocus
+        update()
+        keepFocus(focus)
+        let move = MoveUndo(moving)
+        registerUndo(of: move)
+        Task {
+            guard await moving.value == nil else { return }
+            window?.undoManager?.removeAllActions(withTarget: move)
+            undoableMoves.removeAll { $0 === move }
+        }
+    }
+
+    /// Undo Move to Recently Deleted, on the window's undo stack with the search field's typing, so that ⌘Z undoes
+    /// whichever came last. The undo manager holds its targets weakly, so the panel keeps the moves until the stack
+    /// goes with the showing.
+    private func registerUndo(of move: MoveUndo) {
+        guard let undoManager = window?.undoManager else { return }
+        undoableMoves.append(move)
+        // A top-level group of its own, so each move is undone by itself however quickly the next key comes. Grouping
+        // by event stays off while it is made: on, beginning a group would first open the event's group around it, and
+        // the next move would join that one.
+        let ownsGroup = undoManager.groupingLevel == 0
+        let groupsByEvent = undoManager.groupsByEvent
+        if ownsGroup {
+            undoManager.groupsByEvent = false
+            undoManager.beginUndoGrouping()
+        }
+        undoManager.registerUndo(withTarget: move) { [weak self] move in self?.undo(move) }
+        undoManager.setActionName(ActionMenu.moveToRecentlyDeletedName)
+        if ownsGroup {
+            undoManager.endUndoGrouping()
+            undoManager.groupsByEvent = groupsByEvent
+        }
+    }
+
+    /// Waits for the move, which may still be under way, and puts back what it took.
+    private func undo(_ move: MoveUndo) {
+        undoableMoves.removeAll { $0 === move }
+        Task {
+            guard let deletion = await move.moving.value, isSessionOpen,
+                  await state.undoMoveToRecentlyDeleted(deletion), isSessionOpen else { return }
+            let focus = currentFocus
+            update()
+            keepFocus(focus)
+        }
+    }
+
+    /// Whether the panel's last undoable change is a move to Recently Deleted, which the actions menu then offers to
+    /// undo.
+    private var canUndoMoveToRecentlyDeleted: Bool {
+        guard let undoManager = window?.undoManager else { return false }
+        return undoManager.canUndo && undoManager.undoActionName == ActionMenu.moveToRecentlyDeletedName
+    }
+
+    /// ⌘Z and the actions menu's undo: the last change undone, a move to Recently Deleted or the search field's typing.
+    @discardableResult
+    private func undoLastChange() -> Bool {
+        guard let undoManager = window?.undoManager, undoManager.canUndo else { return false }
+        undoManager.undo()
+        return true
+    }
+
+    /// The actions menu's Remove from “Prompts”, in that collection's list. The toolbar says it, and VoiceOver reads it.
+    private func removeSelectedFromListedCollection() {
+        guard let target = state.copyTarget else { return }
+        let focus = currentFocus
+        Task {
+            await state.removeFromListedCollection(target)
+            guard isSessionOpen else { return }
+            update()
+            keepFocus(focus)
+            announceSaveMessage()
         }
     }
 
@@ -1196,7 +1295,38 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             confirmCommand()
             return true
         }
+        let isComposing = (window?.firstResponder as? NSTextView)?.hasMarkedText() == true
+        // ⌘⌫ and ⌘Z never go on to the menu bar: its Item › Move to Recently Deleted and Edit › Undo would act on the
+        // library window behind the panel. What the panel leaves to text goes to that text as a key.
+        //
+        // ⌘⌫, known by the key, moves the selected clip to Recently Deleted. Text in the search field, and a
+        // composition, keep it: it deletes to the start of the line there. Pressed again just after it emptied the
+        // field, it still means the text, so a query cleared with two presses never takes a clip.
+        if Int(event.keyCode) == kVK_Delete, modifiers == .command {
+            // Held down, it has acted already: its repeats would take one clip after another.
+            guard !event.isARepeat else { return true }
+            let focus = currentFocus
+            let clearedTextJustNow = lastTextCommandDelete.map { event.timestamp - $0 < Self.textCommandDeleteGrace }
+                == true
+            if QuickAccessKeyRouter.commandDeleteTakesSelection(focus: focus,
+                                                                queryIsEmpty: searchField.stringValue.isEmpty,
+                                                                hasMarkedText: isComposing),
+               !(focus == .searchField && clearedTextJustNow) {
+                lastTextCommandDelete = nil
+                moveSelectedToRecentlyDeleted()
+            } else {
+                lastTextCommandDelete = event.timestamp
+                window?.firstResponder?.keyDown(with: event)
+            }
+            return true
+        }
         let key = event.charactersIgnoringModifiers?.lowercased()
+        // ⌘Z undoes the panel's last change, the search field's typing or a move to Recently Deleted; a composition
+        // has it as a key.
+        if key == "z", modifiers == .command {
+            if isComposing { window?.firstResponder?.keyDown(with: event) } else { undoLastChange() }
+            return true
+        }
         // Library commands must not interrupt composition. Existing panel
         // commands keep their own composition behavior; in particular, Command-F
         // in the active search editor leaves its marked text and caret intact.
@@ -1248,6 +1378,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         default:
             return false
         }
+    }
+}
+
+/// One move to Recently Deleted on the panel's undo stack: its undo waits for the move, and undoes it if it went.
+@MainActor
+private final class MoveUndo {
+    let moving: Task<QuickAccessDeletion?, Never>
+
+    init(_ moving: Task<QuickAccessDeletion?, Never>) {
+        self.moving = moving
     }
 }
 

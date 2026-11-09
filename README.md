@@ -113,6 +113,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ⌘S | Save the clip as a snippet |
 | ⇧⌘M | Save the clip into a collection, or add a snippet to one; choosing a checked collection takes the snippet out |
 | ⌘D | Mark a snippet as a favorite, or unmark it; a clip is saved as a snippet first |
+| ⌘⌫ | Move the clip or snippet to Recently Deleted; ⌘Z puts it back. With text in the search field, ⌘⌫ edits the text |
 | ⌘E | Show the clip, or its snippet, in the library |
 | ⌘N | Write a new snippet, in the collection you are browsing |
 | Esc | Step back: close the preview, clear the search and return to All, then close quick access |

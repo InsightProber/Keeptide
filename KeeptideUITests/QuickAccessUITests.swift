@@ -378,6 +378,34 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(clip("Summarize meeting notes", in: frames).exists, app.debugDescription)
     }
 
+    func testMoveToRecentlyDeletedAndItsUndoFromTheMenuAndTheKeyboard() throws {
+        let app = launchKeeptide()
+        let frames = try openPanel(app)
+        let query = app.searchFields["Quick access query"]
+        let newest = clip("Synthetic alpha note", in: frames)
+        let older = clip("echo synthetic-beta", in: frames)
+        XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
+
+        // ⌘K › Move to Recently Deleted takes the selected clip, the newest, off the strip. The menu bar's Item menu
+        // has an item of the same name, so the panel's is found by its identifier.
+        query.typeKey("k", modifierFlags: .command)
+        let move = app.menuItems["QuickAccessMoveToRecentlyDeleted"]
+        XCTAssertTrue(move.waitForExistence(timeout: 5), app.debugDescription)
+        move.click()
+        XCTAssertTrue(newest.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["QuickAccessStatus"].waitForExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(older.exists, app.debugDescription)
+
+        // ⌘Z puts it back.
+        query.typeKey("z", modifierFlags: .command)
+        XCTAssertTrue(newest.waitForExistence(timeout: 5), app.debugDescription)
+
+        // ⌘⌫ from the empty search field takes it again, and only it.
+        query.typeKey(.delete, modifierFlags: .command)
+        XCTAssertTrue(newest.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(older.exists, app.debugDescription)
+    }
+
     // MARK: - Helpers
 
     /// Launches the test host first, so the panel opens last and keeps keyboard focus.
