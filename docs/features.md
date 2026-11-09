@@ -36,8 +36,10 @@ plain text, prompt, code and Markdown content, preserving originals during edits
 recoverable local drafts, and independent conflict copies. The native library
 provides text editing, document-local find, explicit capture saving and safe
 undo of a newly saved capture, saving a capture straight into a collection,
-flat collections and favorites, library-wide search from the list, and a
-details panel for a snippet's type, collection, favorite and note. Markdown
+flat collections and favorites, library-wide search from the list, a
+details panel for a snippet's type, collection, favorite and note, sidebar
+counts from the search index, and a filter for favorites, content kinds and
+source apps. Markdown
 reading mode keeps source editing separate from rendering and never fetches
 embedded images. Typed previews show stored URLs, bounded image resolutions and locally
 authorized files. Full input-method and accessibility acceptance remains a

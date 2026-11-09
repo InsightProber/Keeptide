@@ -16,10 +16,10 @@ describe capability outcomes, not released features or delivery dates.
 The repository currently contains a native menu-bar application, quick access
 with lists for snippets and collections, clipboard recording, validated local
 persistence, a rebuildable search index, editable text and Markdown snippets,
-collections, favorites, typed previews, local retention and Recently Deleted,
-settings, and independently verifiable local archive export. Deterministic
-native tests exercise these application and storage boundaries with synthetic
-temporary data.
+collections, favorites, library list counts and filters, typed previews, local
+retention and Recently Deleted, settings, and independently verifiable local
+archive export. Deterministic native tests exercise these application and
+storage boundaries with synthetic temporary data.
 
 Search benchmark tooling records a fixed synthetic dataset, seed, configuration,
 Git SHA, toolchain, and machine. Its performance gate applies to the first batch
