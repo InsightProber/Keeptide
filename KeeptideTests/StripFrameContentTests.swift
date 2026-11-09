@@ -437,6 +437,14 @@ final class StripFrameContentTests: XCTestCase {
                                              cardSize: .medium, collections: [prompts.id: prompts])
         XCTAssertEqual(unfiled.bandName, "Snippet")
         XCTAssertEqual(unfiled.headerLine, [.time(unfiled.time)])
+        // A memo in several collections names the first, in the order its row lists them, and counts the rest.
+        let shell = CollectionSummary(id: CollectionID(), name: "Shell", color: "green", sortOrder: 1)
+        let twice = makeRow(facet: .memo, title: "Deploy", collectionIDs: [prompts.id, shell.id])
+        let both = StripFrameContent.make(row: twice, detail: nil, cardSize: .medium,
+                                          collections: [prompts.id: prompts, shell.id: shell])
+        XCTAssertEqual(both.headerLine, [.time(both.time), .collection(name: "Prompts +1", color: "blue")])
+        XCTAssertEqual(CardAccent(row: twice, collectionColors: [shell.id: "green", prompts.id: "blue"], tint: nil),
+                       .collection("blue"))
         // A clip's card keeps the kind's name and its saved mark, and says nothing of collections.
         let clip = StripFrameContent.make(row: makeRow(title: "Plain", savedAsMemo: true), detail: nil,
                                           cardSize: .medium, collections: [prompts.id: prompts])
@@ -473,13 +481,13 @@ private func makeRow(
     kind: ContentKind = .text, facet: ContentFacet = .history, title: String = "Synthetic title",
     snippet: SearchSnippet? = nil, sourceApp: String? = nil, date: Date = Date(timeIntervalSince1970: 1_000),
     savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false, isTextUnavailable: Bool = false,
-    collectionID: CollectionID? = nil, isFavorite: Bool = false
+    collectionID: CollectionID? = nil, collectionIDs: [CollectionID] = [], isFavorite: Bool = false
 ) -> QuickAccessRow {
     QuickAccessRow(
         ref: ContentRef(itemID: ItemID(), facet: facet, version: ContentVersion(), digest: Data(repeating: 3, count: 32)),
         title: title, snippet: snippet, kind: kind, sourceApp: sourceApp, date: date,
         savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
-        collectionID: collectionID, isFavorite: isFavorite
+        collectionIDs: (collectionID.map { [$0] } ?? []) + collectionIDs, isFavorite: isFavorite
     )
 }
 

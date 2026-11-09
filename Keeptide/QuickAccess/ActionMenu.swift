@@ -3,13 +3,14 @@ import AppKit
 enum ActionMenuCommand: Equatable {
     case primary, plainText, copyOnly, togglePreview
     case saveSnippet, undoSave, toggleFavorite, showInLibrary, newSnippet, enableDirectPaste
-    /// Save to Collection or Move to Collection: a collection, or Unfiled with nil.
-    case saveToCollection(CollectionID?)
+    /// Save to Collection or Add to Collection: the collection chosen. On a snippet's card, choosing one it is in takes
+    /// it out.
+    case saveToCollection(CollectionID)
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
 /// and the copy that never pastes, where the panel offers them; then the preview; then what keeps the clip: Save as
-/// Snippet, Save to Collection (Move to Collection on a snippet), Undo Save as Snippet while the save can still be
+/// Snippet, Save to Collection (Add to Collection on a snippet), Undo Save as Snippet while the save can still be
 /// undone, and the favorite mark; then the library's actions; then Enable Direct Paste… when the panel only copies for
 /// want of access. Other unavailable actions are disabled rather than hidden, so the menu's shape stays predictable:
 /// Return's and ⇧Return's are disabled while a command waits on the review card, which alone confirms it, and the
@@ -53,7 +54,7 @@ enum ActionMenu {
         // A snippet is in Snippets already: the item stays, disabled.
         save.isEnabled = canAct && !isSnippet
         menu.addItem(save)
-        let place = NSMenuItem(title: isSnippet ? "Move to Collection" : "Save to Collection", action: nil,
+        let place = NSMenuItem(title: isSnippet ? "Add to Collection" : "Save to Collection", action: nil,
                                keyEquivalent: "")
         let choices = NSMenu(title: place.title)
         choices.autoenablesItems = false
@@ -90,21 +91,23 @@ enum ActionMenu {
         return menu
     }
 
-    /// Where a clip or snippet can go: Unfiled, then each collection in the sidebar's order, with a dot in its colour.
-    /// A snippet's own place is checked; a clip's card does not know its snippet's, so nothing is checked there.
+    /// The collections a clip or snippet can go in, in the sidebar's order, each with a dot in its colour. A
+    /// snippet's own collections are checked, and choosing one takes it out; a clip's card does not know its
+    /// snippet's, so nothing is checked there.
     static func collectionItems(collections: [CollectionSummary], row: QuickAccessRow?,
-                                perform: @escaping (CollectionID?) -> Void) -> [NSMenuItem] {
+                                perform: @escaping (CollectionID) -> Void) -> [NSMenuItem] {
         let values = collections.map {
             CollectionValue(id: $0.id, name: $0.name, color: $0.color, sortOrder: $0.sortOrder)
         }
-        let current: Set<CollectionID?> = row.map { $0.facet == .memo ? [$0.collectionID] : [] } ?? []
-        return CollectionMenu.make(collections: values, current: current, includesNewCollection: false).map { entry in
-            if entry.isSeparator { return .separator() }
-            let item = ActionMenuItem(entry.title, key: "", modifiers: []) { perform(entry.collectionID) }
-            item.state = entry.isChecked ? .on : .off
-            if let color = entry.color { item.image = dot(color) }
-            return item
-        }
+        let memberships: [Set<CollectionID>] = row.map { [$0.facet == .memo ? Set($0.collectionIDs) : []] } ?? []
+        return CollectionMenu.make(collections: values, memberships: memberships, includesNewCollection: false)
+            .compactMap { entry in
+                guard let id = entry.collectionID else { return nil }
+                let item = ActionMenuItem(entry.title, key: "", modifiers: []) { perform(id) }
+                item.state = entry.isChecked ? .on : .off
+                if let color = entry.color { item.image = dot(color) }
+                return item
+            }
     }
 
     /// A collection's dot, for a menu item.

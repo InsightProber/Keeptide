@@ -157,8 +157,8 @@ struct LibraryEntry: Identifiable, Equatable, Sendable {
     var isMemo: Bool
     var isFavorite = false
     var sourceApp: String? = nil
-    /// The memo's collection; nil for an unfiled memo and for every clip.
-    var collectionID: CollectionID? = nil
+    /// The memo's collections, in the order of their ids; empty for an unfiled memo and for every clip.
+    var collectionIDs: [CollectionID] = []
     /// A memo's note; empty for none and for every clip.
     var note = ""
     /// When the row's facet was last copied or pasted from Keeptide; nil if never.
@@ -690,10 +690,16 @@ final class LibraryWorkspace {
         if ref.facet == .memo {
             target = .allSnippets
             if case .item(let item)? = try? await repository.recordState(.item(ref.itemID)).value,
-               let id = item.collectionIDs.first {
-                // The sidebar lists the collection before it is chosen: one not known yet is read first.
-                if !collections.contains(where: { $0.value.id == id }) { await refreshCollections() }
-                if collections.contains(where: { $0.value.id == id }) { target = .collection(id) }
+               !item.collectionIDs.isEmpty {
+                // The sidebar lists a collection before it is chosen: one not known yet is read first. A snippet in
+                // the collection being browsed stays there; otherwise it shows in the first of its collections.
+                let ids = Set(item.collectionIDs)
+                if !ids.isSubset(of: collections.map(\.value.id)) { await refreshCollections() }
+                if let current = scope.collectionID, ids.contains(current) {
+                    target = .collection(current)
+                } else if let first = collections.first(where: { ids.contains($0.value.id) }) {
+                    target = .collection(first.value.id)
+                }
             }
         }
         guard !isClosing, !isClosed else { return }
@@ -758,7 +764,7 @@ final class LibraryWorkspace {
         guard navigation == navigationGeneration else { return }
         let session = MemoEditorSession(
             itemID: ItemID(), ref: nil, isReadOnly: false, title: "", body: "", note: "",
-            kind: .plainText, storeIdentity: storeIdentity, collectionID: scope.collectionID
+            kind: .plainText, storeIdentity: storeIdentity, collectionIDs: scope.collectionID.map { [$0] } ?? []
         )
         install(session)
         selectedEntryID = nil
@@ -1054,21 +1060,41 @@ final class LibraryWorkspace {
     }
 
     /// Puts the selection in `collection`, or in no collection. A clip that is not a snippet yet is saved into it.
-    func file(_ refs: [ContentRef], into collection: CollectionSnapshot?) async {
-        let place = collection.map { "“\($0.value.name)”" } ?? "Unfiled"
+    /// Adds the selection to `collection`: a clip not yet saved is saved straight into it, and every snippet, a
+    /// saved clip's included, joins it and stays in its other collections.
+    func add(_ refs: [ContentRef], to collection: CollectionSnapshot) async {
+        let place = "“\(collection.value.name)”"
         let clips = refs.filter { $0.facet == .history }
         var snippets = refs.filter { $0.facet == .memo }
         var saved = 0
         if !clips.isEmpty {
-            guard let resolved = await snippetRefs(for: clips, saving: true, collectionID: collection?.value.id)
+            guard let resolved = await snippetRefs(for: clips, saving: true, collectionID: collection.value.id)
             else { return }
             saved = resolved.saved
             snippets += resolved.existing
         }
         if !snippets.isEmpty {
-            guard await moveItems(snippets, to: collection) else { return }
+            guard await changeCollection({
+                try await self.collectionService.add(snippets, to: collection, expecting: self.storeIdentity)
+            }) else { return }
         }
-        actionMessage = saved > 0 && snippets.isEmpty ? "Saved to \(place)" : "Moved to \(place)"
+        actionMessage = saved > 0 && snippets.isEmpty ? "Saved to \(place)" : "Added to \(place)"
+        await refreshEditorDetails()
+    }
+
+    /// Takes the selected snippets, and the snippets of selected clips, out of `collection` alone. Nothing is
+    /// deleted; a snippet in no other collection is then unfiled.
+    func remove(_ refs: [ContentRef], from collection: CollectionSnapshot) async {
+        let clips = refs.filter { $0.facet == .history }
+        var snippets = refs.filter { $0.facet == .memo }
+        if !clips.isEmpty {
+            guard let resolved = await snippetRefs(for: clips, saving: false, collectionID: nil) else { return }
+            snippets += resolved.existing
+        }
+        guard !snippets.isEmpty, await changeCollection({
+            try await self.collectionService.remove(snippets, from: collection.value.id, expecting: self.storeIdentity)
+        }) else { return }
+        actionMessage = "Removed from “\(collection.value.name)”"
         await refreshEditorDetails()
     }
 
@@ -1077,12 +1103,7 @@ final class LibraryWorkspace {
         guard let id = scope.collectionID, let collection = collections.first(where: { $0.value.id == id }) else {
             return
         }
-        let snippets = refs.filter { $0.facet == .memo }
-        guard !snippets.isEmpty, await changeCollection({
-            try await self.collectionService.remove(snippets, from: id, expecting: self.storeIdentity)
-        }) else { return }
-        actionMessage = "Removed from “\(collection.value.name)”"
-        await refreshEditorDetails()
+        await remove(refs.filter { $0.facet == .memo }, from: collection)
     }
 
     /// The snippets of `clips`: saved now when `saving`, into `collectionID` and as a favorite as asked, and the
@@ -1194,7 +1215,7 @@ final class LibraryWorkspace {
             isComposing: false, revision: draft.revision + 1,
             conflictItemID: draft.conflictItemID, storeIdentity: draft.storeIdentity,
             baseMemoFingerprint: draft.baseMemoFingerprint, languageHint: draft.languageHint,
-            collectionID: draft.collectionID
+            collectionIDs: draft.collectionIDs
         )
         install(session)
         editorDidChange(session)
@@ -1266,15 +1287,16 @@ final class LibraryWorkspace {
     }
 
     private func recoverableDraft(from session: MemoEditorSession) -> RecoverableDraft {
-        RecoverableDraft(
+        var draft = RecoverableDraft(
             draftID: session.draftID, sessionID: session.sessionID, itemID: session.itemID,
             conflictItemID: session.conflictItemID, storeIdentity: session.storeIdentity,
             base: session.ref, baseMemoFingerprint: session.baseMemoFingerprint,
             title: session.title, body: session.body, kind: session.kind,
             languageHint: session.languageHint, note: session.note,
-            isComposing: session.isComposing, revision: session.revision, savedAt: Date(),
-            collectionID: session.collectionID
+            isComposing: session.isComposing, revision: session.revision, savedAt: Date()
         )
+        draft.collectionIDs = session.collectionIDs
+        return draft
     }
 
     private func makeSession(_ ref: ContentRef) async throws -> MemoEditorSession {
@@ -1319,12 +1341,10 @@ final class LibraryWorkspace {
                 details.byteCount = content.representations.reduce(0) { $0 + $1.byteCount }
             }
             if let memo = current?.memo {
-                details.savedSnippet = .init(
-                    ref: memo, collectionID: item.collectionIDs.first, isFavorite: item.isFavorite
-                )
+                details.savedSnippet = .init(ref: memo, collectionIDs: item.collectionIDs, isFavorite: item.isFavorite)
             }
         } else {
-            details.collectionID = item.collectionIDs.first
+            details.collectionIDs = item.collectionIDs
             details.isFavorite = item.isFavorite
             if item.captureID != nil {
                 if let history = current?.history {
@@ -1468,7 +1488,7 @@ final class LibraryWorkspace {
             id: result.ref.itemID, ref: result.ref, title: result.title,
             snippet: result.snippet?.text, lastCopiedAt: result.lastCopiedAt,
             kind: result.kind, isMemo: result.ref.facet == .memo || result.savedAsMemo,
-            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionIDs.first,
+            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionIDs: result.collectionIDs,
             note: result.note, lastUsedAt: result.lastUsedAt
         )
     }

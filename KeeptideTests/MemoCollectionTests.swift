@@ -241,16 +241,35 @@ final class MemoCollectionTests: XCTestCase {
         XCTAssertEqual(restored?.collectionID, collectionID)
     }
 
+    func testADraftKeepsEveryCollectionAcrossARestartAndAnOldDraftReadsItsOne() async throws {
+        let directory = temporaryDirectory()
+        let identity = StoreIdentity(storeID: UUID(), generation: UUID())
+        let ids = CollectionID.sorted([CollectionID(), CollectionID(), CollectionID()])
+        var draft = makeRecoverableDraft(identity: identity, collectionID: nil)
+        draft.collectionIDs = ids.reversed()
+        try await DraftStore(directory: directory, identity: identity).write(draft)
+
+        let restored = try await DraftStore(directory: directory, identity: identity).load(draft.draftID)
+        XCTAssertEqual(restored?.collectionIDs, ids)
+
+        // A draft written when a snippet could be in one collection has that collection alone, under its old key.
+        let one = CollectionID()
+        let old = makeRecoverableDraft(identity: identity, collectionID: one)
+        let encoded = try JSONSerialization.jsonObject(with: try JSONEncoder().encode(old)) as? [String: Any]
+        XCTAssertNil(encoded?["additionalCollectionIDs"])
+        XCTAssertEqual(old.collectionIDs, [one])
+    }
+
     func testNewEditorSessionCarriesInitialCollectionContext() {
         let collectionID = CollectionID()
         let session = MemoEditorSession(
             itemID: ItemID(), ref: nil, isReadOnly: false,
             title: "", body: "", note: "", kind: .plainText,
             storeIdentity: StoreIdentity(storeID: UUID(), generation: UUID()),
-            collectionID: collectionID
+            collectionIDs: [collectionID]
         )
 
-        XCTAssertEqual(session.collectionID, collectionID)
+        XCTAssertEqual(session.collectionIDs, [collectionID])
     }
 
     private func withStore<T: Sendable>(

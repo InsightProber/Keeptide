@@ -53,8 +53,8 @@ snippets in a native library.
   its trailing newline. A multi-line command, or one with control or invisible
   characters, is confirmed first. Keeptide never runs commands.
 - **Snippets you keep.** Save any clip as a snippet or write a new one, edit
-  text and Markdown natively, and organize snippets with collections and
-  favorites. Editing a snippet never changes the original copy.
+  text and Markdown natively, add a snippet to as many collections as you like,
+  and mark favorites. Editing a snippet never changes the original copy.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
@@ -111,7 +111,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | Space or ⌘Y | Show or hide a larger preview |
 | ⌘K or right-click | Show every action for the selected clip |
 | ⌘S | Save the clip as a snippet |
-| ⇧⌘M | Save the clip into a collection, or move a snippet |
+| ⇧⌘M | Save the clip into a collection, or add a snippet to one; choosing a checked collection takes the snippet out |
 | ⌘D | Mark a snippet as a favorite, or unmark it; a clip is saved as a snippet first |
 | ⌘E | Show the clip, or its snippet, in the library |
 | ⌘N | Write a new snippet, in the collection you are browsing |
@@ -124,13 +124,14 @@ show the selected clip, or its snippet, there.
 
 - **Recent Clips** lists everything Keeptide kept. The toolbar copies the
   selected clip or saves it as a snippet, straight into a collection if you
-  like; the Info button shows a snippet's type, collection, favorite and note.
+  like; the Info button shows a snippet's type, collections, favorite and note.
   Images open fitted or at actual size, links open only when you ask, and files
   use Quick Look.
 - **All Snippets** and **Favorites** hold what you keep on purpose; your
-  **collections** sort them, and **Unfiled** shows snippets that are in no
-  collection. Snippets have native text editing, find, a Markdown reading
-  mode, and drafts that survive a restart.
+  **collections** sort them, a snippet can be in several at once, and
+  **Unfiled** shows snippets that are in no collection. In a collection, ⌫
+  takes a snippet out of it and nothing is deleted. Snippets have native text
+  editing, find, a Markdown reading mode, and drafts that survive a restart.
 - **Recently Deleted** keeps deleted items for seven days before they are
   removed for good, and you can restore them until then.
 - The sidebar shows how many items each list holds. The **Filter** button over
@@ -172,8 +173,8 @@ Choose **Settings…** from the menu-bar menu.
 
 Development builds include local capture, quick access with lists for
 snippets, favorites and collections, search, direct paste, the snippet library
-with collections, favorites, list counts and filters, history retention,
-Recently Deleted and local export.
+with collections (a snippet can be in several), favorites, list counts and
+filters, history retention, Recently Deleted and local export.
 
 Planned:
 

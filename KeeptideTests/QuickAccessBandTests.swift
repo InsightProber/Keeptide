@@ -80,11 +80,11 @@ final class QuickAccessBandTests: XCTestCase {
         let blue = HeaderTint(background: HeaderTint.RGB(hex: 0x1F5FBF), usesDarkText: false)
         let grey = HeaderTint.neutral(dark: true)
         var filed = makeRow()
-        filed.collectionID = prompts
+        filed.collectionIDs = [prompts]
         var gone = makeRow()
-        gone.collectionID = CollectionID()
+        gone.collectionIDs = [CollectionID()]
         var greyCollection = makeRow()
-        greyCollection.collectionID = archive
+        greyCollection.collectionIDs = [archive]
         let cases: [(String, QuickAccessRow, HeaderTint?, CardAccent?)] = [
             // A snippet in a collection takes the collection's colour, whatever its app gives.
             ("filed", filed, blue, .collection("yellow")),

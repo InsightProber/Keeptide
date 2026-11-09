@@ -16,7 +16,8 @@ describe capability outcomes, not released features or delivery dates.
 The repository currently contains a native menu-bar application, quick access
 with lists for snippets and collections, clipboard recording, validated local
 persistence, a rebuildable search index, editable text and Markdown snippets,
-collections, favorites, library list counts and filters, typed previews, local
+collections that a snippet can share, favorites, library list counts and
+filters, typed previews, local
 retention and Recently Deleted, settings, and independently verifiable local
 archive export. Deterministic native tests exercise these application and
 storage boundaries with synthetic temporary data.

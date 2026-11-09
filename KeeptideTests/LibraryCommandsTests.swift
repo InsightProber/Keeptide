@@ -171,9 +171,11 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(favorite.keyEquivalent, "d")
         XCTAssertEqual(favorite.keyEquivalentModifierMask, .command)
         // ⇧⌘M, not ⇧⌘S, which a Mac reserves for Save As or Duplicate.
-        let collection = try command(#selector(LibraryWindowController.moveToCollection(_:)))
+        let collection = try command(#selector(LibraryWindowController.chooseCollection(_:)))
         XCTAssertEqual(collection.keyEquivalent, "m")
         XCTAssertEqual(collection.keyEquivalentModifierMask, [.shift, .command])
+        let removeFromCollection = try command(#selector(LibraryWindowController.removeFromCollection(_:)))
+        XCTAssertEqual(removeFromCollection.identifier?.rawValue, "ItemMenu-RemoveFromCollection")
         let types = try XCTUnwrap(item.items.first { $0.title == "Type" }?.submenu)
         XCTAssertEqual(types.items.map(\.title), ["Text", "Prompt", "Code", "Markdown"])
         XCTAssertEqual(types.items.map(\.tag), [0, 1, 2, 3])
@@ -218,7 +220,8 @@ final class LibraryCommandsTests: XCTestCase {
             return item
         }
         let favorite = item(#selector(LibraryWindowController.toggleFavorite(_:)))
-        let collection = item(#selector(LibraryWindowController.moveToCollection(_:)))
+        let collection = item(#selector(LibraryWindowController.chooseCollection(_:)))
+        let removeFromCollection = item(#selector(LibraryWindowController.removeFromCollection(_:)))
         let markdown = item(#selector(LibraryWindowController.setSnippetKind(_:)), tag: 3)
         let code = item(#selector(LibraryWindowController.setSnippetKind(_:)), tag: 2)
         let linked = item(#selector(LibraryWindowController.showLinkedItem(_:)))
@@ -227,6 +230,8 @@ final class LibraryCommandsTests: XCTestCase {
         // Nothing selected: nothing to act on.
         XCTAssertFalse(controller.validateMenuItem(favorite))
         XCTAssertFalse(controller.validateMenuItem(collection))
+        XCTAssertFalse(controller.validateMenuItem(removeFromCollection))
+        XCTAssertTrue(removeFromCollection.isHidden)
         XCTAssertFalse(controller.validateMenuItem(markdown))
         XCTAssertFalse(controller.validateMenuItem(linked))
         XCTAssertTrue(controller.validateMenuItem(inspector))
@@ -248,7 +253,10 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertTrue(controller.validateMenuItem(favorite))
         XCTAssertEqual(favorite.title, "Remove from Favorites")
         XCTAssertTrue(controller.validateMenuItem(collection))
-        XCTAssertEqual(collection.title, "Move to Collection…")
+        XCTAssertEqual(collection.title, "Add to Collection…")
+        // Outside a collection there is no collection to remove it from.
+        XCTAssertFalse(controller.validateMenuItem(removeFromCollection))
+        XCTAssertTrue(removeFromCollection.isHidden)
         XCTAssertTrue(controller.validateMenuItem(markdown))
         XCTAssertEqual(markdown.state, .on)
         XCTAssertTrue(controller.validateMenuItem(code))
@@ -257,6 +265,18 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(linked.title, "Show in Recent Clips")
         XCTAssertTrue(controller.validateMenuItem(inspector))
         XCTAssertEqual(inspector.title, "Hide Inspector")
+
+        // In a collection the snippet is in, the Item menu can take it out.
+        let prompts = CollectionValue(name: "Prompts", color: "blue")
+        controller.commands.updateItemContext(LibraryItemContext(
+            selection: .make(entries: [snippet], open: open, hasCollections: true, canDelete: true),
+            removableCollection: prompts
+        ))
+        XCTAssertTrue(controller.validateMenuItem(removeFromCollection))
+        XCTAssertFalse(removeFromCollection.isHidden)
+        XCTAssertEqual(removeFromCollection.title, "Remove from “Prompts”")
+        controller.removeFromCollection(removeFromCollection)
+        XCTAssertEqual(controller.commands.removeFromCollectionRequest, 1)
     }
 
     func testRecentlyDeletedCommandsActOnTheSelectedFacet() {
@@ -318,8 +338,9 @@ final class LibraryCommandsTests: XCTestCase {
     func testItemCommandsAreForwardedAsRequests() throws {
         let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         let prompts = CollectionID()
+        let shell = CollectionID()
         controller.commands.updateItemContext(LibraryItemContext(collectionEntries: [
-            CollectionMenuEntry(id: "unfiled", role: .unfiled, title: "Unfiled", color: nil, isChecked: false),
+            CollectionMenuEntry(id: "s", role: .collection(shell), title: "Shell", color: "green", isChecked: false),
             CollectionMenuEntry(id: "p", role: .collection(prompts), title: "Prompts", color: "blue", isChecked: true),
             CollectionMenuEntry(id: "new", role: .newCollection, title: "New Collection…", color: nil, isChecked: false),
         ]))
@@ -336,9 +357,10 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(controller.commands.showLinkedRequest, 1)
         XCTAssertEqual(controller.commands.kindRequest?.kind, .code)
 
-        // ⇧⌘M's menu lists the same places as the toolbar's, the current one checked; choosing one files there.
+        // ⇧⌘M's menu lists the same collections as the toolbar's, those the selection is in checked; choosing one
+        // adds the selection to it, or takes it out of a checked one.
         let menu = controller.makeCollectionMenu()
-        XCTAssertEqual(menu.items.map(\.title), ["Unfiled", "Prompts", "New Collection…"])
+        XCTAssertEqual(menu.items.map(\.title), ["Shell", "Prompts", "New Collection…"])
         XCTAssertEqual(menu.items.map(\.state), [.off, .on, .off])
         XCTAssertEqual(Set(menu.items.compactMap(\.identifier)).count, 3)
         menu.performActionForItem(at: 1)
@@ -364,6 +386,7 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertTrue(state.canSave)
         XCTAssertEqual(state.favoriteTitle, "Add to Favorites")
         XCTAssertEqual(state.collectionTitle, "Save to Collection")
+        XCTAssertEqual(state.memberships, [[]])
         XCTAssertTrue(state.canFile)
         XCTAssertNil(state.linked)
         XCTAssertNil(state.kind)
@@ -371,13 +394,13 @@ final class LibraryCommandsTests: XCTestCase {
         // Saved already: its snippet's star and collection, and the way to it.
         let prompts = CollectionID()
         let snippet = Self.ref(.memo)
-        details.savedSnippet = .init(ref: snippet, collectionID: prompts, isFavorite: true)
+        details.savedSnippet = .init(ref: snippet, collectionIDs: [prompts], isFavorite: true)
         state = .make(entries: [clip], open: open(details), hasCollections: true, canDelete: true)
         XCTAssertFalse(state.canSave)
         XCTAssertEqual(state.saveHelp, "Already in Snippets")
         XCTAssertEqual(state.favoriteTitle, "Remove from Favorites")
-        XCTAssertEqual(state.collectionTitle, "Move to Collection")
-        XCTAssertEqual(state.currentCollections, [prompts])
+        XCTAssertEqual(state.collectionTitle, "Add to Collection")
+        XCTAssertEqual(state.memberships, [[prompts]])
         XCTAssertEqual(state.linked, snippet)
         XCTAssertEqual(state.linkedTitle, "Show Snippet")
 

@@ -27,8 +27,22 @@ struct RecoverableDraft: Codable, Equatable, Sendable {
     var storageRevision: UInt64 = 1
     var revision: UInt64
     var savedAt: Date
-    /// Captured when a new-draft session opens; nil means uncategorized.
+    /// The first collection a new snippet is created in, under the key a draft had when a snippet could be in one;
+    /// nil means unfiled. Read and write `collectionIDs`.
     var collectionID: CollectionID? = nil
+    /// The draft's other collections; nil, and so not written, when there are none. A draft saved before a snippet
+    /// could be in several has only `collectionID` and reads as it did.
+    var additionalCollectionIDs: [CollectionID]? = nil
+
+    /// The collections a new snippet is created in, in the order of their ids.
+    var collectionIDs: [CollectionID] {
+        get { (collectionID.map { [$0] } ?? []) + (additionalCollectionIDs ?? []) }
+        set {
+            let sorted = CollectionID.sorted(newValue)
+            collectionID = sorted.first
+            additionalCollectionIDs = sorted.count > 1 ? Array(sorted.dropFirst()) : nil
+        }
+    }
 }
 
 struct DraftRestoreResult: Equatable, Sendable {

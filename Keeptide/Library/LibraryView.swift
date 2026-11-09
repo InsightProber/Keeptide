@@ -138,7 +138,7 @@ struct LibraryView: View {
             }
             Button("Cancel", role: .cancel) { collectionPendingDeletion = nil }
         } message: { _ in
-            Text("Snippets in it will become unfiled. Nothing is deleted.")
+            Text("Its snippets stay in the library. Snippets that are in no other collection appear in Unfiled.")
         }
         .confirmationDialog(
             pendingPermanentDeletion.map(RecentlyDeletedPresentation.permanentConfirmationTitle)
@@ -250,9 +250,13 @@ struct LibraryView: View {
             guard let request else { return }
             if request.createsCollection {
                 collectionEditorMode = .create
-            } else {
-                file(into: request.collectionID)
+            } else if let id = request.collectionID {
+                toggleCollection(id)
             }
+        }
+        .onChange(of: commands.removeFromCollectionRequest) { _, _ in
+            guard let workspace = session.libraryWorkspace, !selectionState.refs.isEmpty else { return }
+            Task { await workspace.removeFromCollection(selectionState.refs) }
         }
         .onChange(of: commands.kindRequest) { _, request in
             guard let request else { return }
@@ -593,7 +597,8 @@ struct LibraryView: View {
     private var inspector: some View {
         if let workspace = session.libraryWorkspace, selectedScope != .recentlyDeleted {
             LibraryInspector(workspace: workspace, selectionCount: selectedEntryIDs.count,
-                             applicationNames: applicationNames, onShow: { show($0) })
+                             applicationNames: applicationNames, onShow: { show($0) },
+                             onNewCollection: { collectionEditorMode = .create })
         } else if let row = selectedDeletedRow {
             Form {
                 Section("Deleted") {
@@ -750,7 +755,7 @@ struct LibraryView: View {
             .disabled(!state.canFavorite)
 
             Menu {
-                collectionMenu(current: state.currentCollections)
+                collectionMenu(memberships: state.memberships)
             } label: {
                 Label(state.collectionTitle, systemImage: "folder")
             }
@@ -760,22 +765,19 @@ struct LibraryView: View {
         }
     }
 
-    /// Unfiled, the collections and New Collection…, the place of the selection checked. Choosing files it there;
-    /// a clip not yet saved is saved into it.
+    /// The collections and New Collection…, each collection checked when all of the selection is in it. Choosing
+    /// one adds the selection to it, saving a clip not yet saved, or takes it out when all of it is in it already.
     @ViewBuilder
-    private func collectionMenu(current: Set<CollectionID?>) -> some View {
+    private func collectionMenu(memberships: [Set<CollectionID>]) -> some View {
         let collections = session.libraryWorkspace?.collections.map(\.value) ?? []
-        ForEach(CollectionMenu.make(collections: collections, current: current)) { entry in
+        ForEach(CollectionMenu.make(collections: collections, memberships: memberships)) { entry in
             switch entry.role {
             case .separator:
                 Divider()
             case .newCollection:
                 Button(entry.title) { collectionEditorMode = .create }
-            case .unfiled, .collection:
-                Toggle(entry.title, isOn: Binding(
-                    get: { entry.isChecked },
-                    set: { _ in if !entry.isChecked { file(into: entry.collectionID) } }
-                ))
+            case .collection(let id):
+                Toggle(entry.title, isOn: Binding(get: { entry.isChecked }, set: { _ in toggleCollection(id) }))
             }
         }
     }
@@ -953,8 +955,9 @@ struct LibraryView: View {
             selection: state,
             collectionEntries: CollectionMenu.make(
                 collections: session.libraryWorkspace?.collections.map(\.value) ?? [],
-                current: state.currentCollections
+                memberships: state.memberships
             ),
+            removableCollection: removableCollection(for: state),
             inspectorIsPresented: inspectorPresented,
             isRecentlyDeleted: selectedScope == .recentlyDeleted,
             deleted: selectedDeletedRow
@@ -979,12 +982,28 @@ struct LibraryView: View {
         Task { await workspace.setFavorite(of: state.refs, to: !state.isFavorite) }
     }
 
-    private func file(into collectionID: CollectionID?) {
-        guard let workspace = session.libraryWorkspace else { return }
-        let refs = selectionState.refs
-        let collection = collectionID.flatMap { id in workspace.collections.first { $0.value.id == id } }
-        guard !refs.isEmpty, collectionID == nil || collection != nil else { return }
-        Task { await workspace.file(refs, into: collection) }
+    /// Choosing a collection in a collection menu: the selection joins it, or leaves it when all of it is in it.
+    private func toggleCollection(_ id: CollectionID) {
+        let state = selectionState
+        toggle(id, refs: state.refs, memberships: state.memberships)
+    }
+
+    private func toggle(_ id: CollectionID, refs: [ContentRef], memberships: [Set<CollectionID>]) {
+        guard let workspace = session.libraryWorkspace, !refs.isEmpty,
+              let collection = workspace.collections.first(where: { $0.value.id == id }) else { return }
+        if CollectionMenu.isEveryOne(of: memberships, in: id) {
+            Task { await workspace.remove(refs, from: collection) }
+        } else {
+            Task { await workspace.add(refs, to: collection) }
+        }
+    }
+
+    /// The collection being browsed, while the selection has a snippet in it: Remove from “Prompts” takes it out.
+    private func removableCollection(for state: LibrarySelectionState) -> CollectionValue? {
+        guard let id = selectedScope?.collectionID,
+              let collection = session.libraryWorkspace?.collections.first(where: { $0.value.id == id })?.value,
+              state.memberships.contains(where: { $0.contains(id) }) else { return nil }
+        return collection
     }
 
     /// Show Snippet and Show in Recent Clips: the list that holds `ref`, with it selected and open.
@@ -1204,8 +1223,8 @@ struct LibraryView: View {
         LibraryEntryRow(
             entry: entry,
             sourceAppName: entry.sourceApp.flatMap { applicationNames.name(for: $0) },
-            collection: showsCollections(workspace)
-                ? workspace.collections.first { $0.value.id == entry.collectionID }?.value : nil
+            collections: showsCollections(workspace)
+                ? CollectionBadge.collections(entry.collectionIDs, in: workspace.collections.map(\.value)) : []
         )
         .tag(entry.id)
         .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
@@ -1303,24 +1322,25 @@ struct LibraryView: View {
         }
         Menu(state.collectionTitle) {
             ForEach(CollectionMenu.make(collections: workspace.collections.map(\.value),
-                                        current: state.currentCollections)) { entry in
+                                        memberships: state.memberships)) { entry in
                 switch entry.role {
                 case .separator:
                     Divider()
                 case .newCollection:
                     Button(entry.title) { collectionEditorMode = .create }
-                case .unfiled, .collection:
+                case .collection(let id):
                     Toggle(entry.title, isOn: Binding(get: { entry.isChecked }, set: { _ in
-                        guard !entry.isChecked else { return }
-                        let collection = entry.collectionID.flatMap { id in
-                            workspace.collections.first { $0.value.id == id }
-                        }
-                        Task { await workspace.file(refs, into: collection) }
+                        toggle(id, refs: refs, memberships: state.memberships)
                     }))
                 }
             }
         }
         .disabled(entries.isEmpty)
+        if let collection = removableCollection(for: state) {
+            Button("Remove from “\(collection.name)”") {
+                Task { await workspace.removeFromCollection(refs) }
+            }
+        }
         Button(state.favoriteTitle) {
             Task { await workspace.setFavorite(of: refs, to: !state.isFavorite) }
         }
@@ -1390,8 +1410,8 @@ struct LibraryView: View {
 private struct LibraryEntryRow: View {
     let entry: LibraryEntry
     let sourceAppName: String?
-    /// The snippet's collection, where the list shows it.
-    let collection: CollectionValue?
+    /// The snippet's collections, in the sidebar's order, where the list shows them.
+    let collections: [CollectionValue]
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -1413,7 +1433,8 @@ private struct LibraryEntryRow: View {
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
-                    .help(collection?.name ?? "")
+                    .help(CollectionBadge.names(of: collections))
+                    .accessibilityLabel(spokenMetadata)
             }
             Spacer(minLength: 4)
             marker
@@ -1425,12 +1446,15 @@ private struct LibraryEntryRow: View {
     private var metadata: AttributedString {
         var line = AttributedString(LibraryRowText.time(for: entry))
         if let sourceAppName { line += AttributedString(" · \(sourceAppName)") }
-        if let collection {
-            var dot = AttributedString(" · ● ")
-            dot.foregroundColor = Color.collection(collection.color)
-            line += dot + AttributedString(collection.name)
-        }
-        return line
+        return line + CollectionBadge.attributed(collections)
+    }
+
+    /// The dots say nothing to VoiceOver; the collections are named instead.
+    private var spokenMetadata: String {
+        var parts = [LibraryRowText.time(for: entry)]
+        if let sourceAppName { parts.append(sourceAppName) }
+        if !collections.isEmpty { parts.append("In \(CollectionBadge.names(of: collections))") }
+        return parts.joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -1456,6 +1480,23 @@ private struct LibraryEntryRow: View {
         case .file: "doc"
         case .other: "square.dashed"
         }
+    }
+}
+
+extension CollectionBadge {
+    /// " · ● Prompts" for one collection; for several, up to three dots and "+N" for the rest. Each dot is drawn in
+    /// its collection's colour. Empty for a snippet in none.
+    static func attributed(_ collections: [CollectionValue]) -> AttributedString {
+        guard !collections.isEmpty else { return AttributedString() }
+        var line = AttributedString(" · ")
+        for collection in dots(for: collections).shown {
+            var dot = AttributedString("●")
+            dot.foregroundColor = Color.collection(collection.color)
+            line += dot
+        }
+        let caption = caption(for: collections)
+        if !caption.isEmpty { line += AttributedString(" \(caption)") }
+        return line
     }
 }
 
@@ -1651,12 +1692,8 @@ private struct MemoEditorView: View {
     private var snippetMetadata: AttributedString {
         let details = editor.details
         var line = AttributedString((details?.isFavorite == true ? "★ " : "") + LibraryItemText.snippetName(editor.kind))
-        let collectionID = editor.ref == nil ? editor.collectionID : details?.collectionID
-        if let collection = workspace.collections.first(where: { $0.value.id == collectionID })?.value {
-            var dot = AttributedString(" · ● ")
-            dot.foregroundColor = Color.collection(collection.color)
-            line += dot + AttributedString(collection.name)
-        }
+        let ids = editor.ref == nil ? editor.collectionIDs : details?.collectionIDs ?? []
+        line += CollectionBadge.attributed(CollectionBadge.collections(ids, in: workspace.collections.map(\.value)))
         if let created = details?.createdAt {
             line += AttributedString(" · Created \(created.formatted(.relative(presentation: .named)))")
         }
@@ -1754,6 +1791,7 @@ private struct LibraryInspector: View {
     let selectionCount: Int
     let applicationNames: ApplicationNames
     let onShow: (ContentRef) -> Void
+    let onNewCollection: () -> Void
 
     var body: some View {
         Form {
@@ -1782,13 +1820,26 @@ private struct LibraryInspector: View {
             }
             .accessibilityIdentifier("SnippetKindPicker")
 
-            Picker("Collection", selection: collectionBinding(editor)) {
-                Text(CollectionMenu.unfiledTitle).tag(CollectionID?.none)
-                ForEach(workspace.collections, id: \.value.id) { collection in
-                    Text(collection.value.name).tag(CollectionID?.some(collection.value.id))
+            LabeledContent("Collections") {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(workspace.collections, id: \.value.id) { collection in
+                        Toggle(isOn: membership(editor, in: collection.value.id)) {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(Color.collection(collection.value.color))
+                                    .frame(width: 8, height: 8)
+                                    .accessibilityHidden(true)
+                                Text(collection.value.name)
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .accessibilityIdentifier("CollectionToggle-\(collection.value.id.rawValue.uuidString)")
+                    }
+                    Button(CollectionMenu.newCollectionTitle, action: onNewCollection)
+                        .buttonStyle(.link)
                 }
             }
-            .accessibilityIdentifier("CollectionPicker")
+            .accessibilityIdentifier("CollectionChecklist")
 
             // A new snippet is marked once it is saved.
             Toggle("Favorite", isOn: Binding(
@@ -1816,17 +1867,24 @@ private struct LibraryInspector: View {
         }
     }
 
-    /// A new snippet is created in the collection chosen; a saved one moves there.
-    private func collectionBinding(_ editor: MemoEditorSession) -> Binding<CollectionID?> {
+    /// A new snippet is created in the collections checked; a saved one joins or leaves each as it is checked.
+    private func membership(_ editor: MemoEditorSession, in id: CollectionID) -> Binding<Bool> {
         Binding(
-            get: { editor.ref == nil ? editor.collectionID : editor.details?.collectionID },
-            set: { id in
+            get: { (editor.ref == nil ? editor.collectionIDs : editor.details?.collectionIDs ?? []).contains(id) },
+            set: { isMember in
                 guard let ref = editor.ref else {
-                    editor.setCollectionID(id)
+                    let others = editor.collectionIDs.filter { $0 != id }
+                    editor.setCollectionIDs(isMember ? others + [id] : others)
                     return
                 }
-                let collection = id.flatMap { id in workspace.collections.first { $0.value.id == id } }
-                Task { await workspace.file([ref], into: collection) }
+                guard let collection = workspace.collections.first(where: { $0.value.id == id }) else { return }
+                Task {
+                    if isMember {
+                        await workspace.add([ref], to: collection)
+                    } else {
+                        await workspace.remove([ref], from: collection)
+                    }
+                }
             }
         )
     }
@@ -1956,8 +2014,9 @@ struct LibrarySelectionState: Equatable {
     var canFile = false
     /// A clip not yet saved is saved into the collection chosen.
     var savesIntoCollection = false
-    /// Where the selected snippets are, nil for unfiled: one place is checked in the collection menus.
-    var currentCollections: Set<CollectionID?> = []
+    /// The collections of each selected item, empty for one in none: a collection the selection is all in is
+    /// checked in the collection menus, and choosing it takes the selection out.
+    var memberships: [Set<CollectionID>] = []
     /// The open snippet's type; nil when no type can be chosen.
     var kind: MemoKind?
     /// The open clip's snippet, or the open snippet's clip while it is in Recent Clips.
@@ -1965,7 +2024,7 @@ struct LibrarySelectionState: Equatable {
     var canDelete = false
 
     var favoriteTitle: String { isFavorite ? "Remove from Favorites" : "Add to Favorites" }
-    var collectionTitle: String { savesIntoCollection ? "Save to Collection" : "Move to Collection" }
+    var collectionTitle: String { savesIntoCollection ? "Save to Collection" : "Add to Collection" }
     var linkedTitle: String { linked?.facet == .history ? "Show in Recent Clips" : "Show Snippet" }
 
     static func make(
@@ -2000,18 +2059,21 @@ struct LibrarySelectionState: Equatable {
             case .history:
                 state.isFavorite = details?.savedSnippet?.isFavorite == true
                 if let snippet = details?.savedSnippet {
-                    state.currentCollections = [snippet.collectionID]
+                    state.memberships = [Set(snippet.collectionIDs)]
                     state.linked = snippet.ref
+                } else {
+                    state.memberships = [[]]
                 }
             case .memo:
                 state.isFavorite = details?.isFavorite == true
-                state.currentCollections = [details?.collectionID]
+                state.memberships = [Set(details?.collectionIDs ?? [])]
                 if !open.isReadOnly { state.kind = open.kind }
                 if case .available(let clip)? = details?.originalClip { state.linked = clip }
             }
         } else {
             state.isFavorite = entries.allSatisfy { $0.ref.facet == .memo && $0.isFavorite }
-            state.currentCollections = Set(entries.filter { $0.ref.facet == .memo }.map(\.collectionID))
+            // A clip's row does not know its snippet's collections; it counts as in none.
+            state.memberships = entries.map { $0.ref.facet == .memo ? Set($0.collectionIDs) : [] }
         }
         return state
     }

@@ -29,27 +29,31 @@ extension CollectionService: QuickAccessCollections {
     }
 }
 
-/// How quick access places snippets: in a collection, or none, and marked as a favorite or not. Only snippets are
-/// placed; a clip is saved as one first.
+/// How quick access places snippets: in collections, or out of them, and marked as a favorite or not. Only snippets
+/// are placed; a clip is saved as one first.
 protocol QuickAccessCollectionChanges: Sendable {
-    /// Moves the snippets into `collection`, or out of any with nil. False when all were there already, and nothing
-    /// was written. A collection that is no longer there throws `CollectionServiceError.deletedCollection`.
-    func moveSnippets(_ refs: [ContentRef], into collection: CollectionID?, expecting identity: StoreIdentity?)
+    /// Adds the snippets to `collection`, each keeping its other collections. False when all were in it already, and
+    /// nothing was written. A collection that is no longer there throws `CollectionServiceError.deletedCollection`.
+    func addSnippets(_ refs: [ContentRef], to collection: CollectionID, expecting identity: StoreIdentity?)
+        async throws -> Bool
+    /// Takes the snippets out of `collection`, each keeping its others. False when none was in it.
+    func removeSnippets(_ refs: [ContentRef], from collection: CollectionID, expecting identity: StoreIdentity?)
         async throws -> Bool
     func markSnippets(_ refs: [ContentRef], favorite: Bool, expecting identity: StoreIdentity?) async throws
 }
 
 extension CollectionService: QuickAccessCollectionChanges {
-    func moveSnippets(_ refs: [ContentRef], into collection: CollectionID?, expecting identity: StoreIdentity?)
+    func addSnippets(_ refs: [ContentRef], to collection: CollectionID, expecting identity: StoreIdentity?)
         async throws -> Bool {
-        var target: CollectionSnapshot?
-        if let collection {
-            guard let snapshot = try await list(expecting: identity).first(where: { $0.value.id == collection }) else {
-                throw CollectionServiceError.deletedCollection
-            }
-            target = snapshot
+        guard let snapshot = try await list(expecting: identity).first(where: { $0.value.id == collection }) else {
+            throw CollectionServiceError.deletedCollection
         }
-        return try await move(refs, to: target, expecting: identity).affectedItems.isEmpty == false
+        return try await add(refs, to: snapshot, expecting: identity).affectedItems.isEmpty == false
+    }
+
+    func removeSnippets(_ refs: [ContentRef], from collection: CollectionID, expecting identity: StoreIdentity?)
+        async throws -> Bool {
+        try await remove(refs, from: collection, expecting: identity).affectedItems.isEmpty == false
     }
 
     func markSnippets(_ refs: [ContentRef], favorite: Bool, expecting identity: StoreIdentity?) async throws {

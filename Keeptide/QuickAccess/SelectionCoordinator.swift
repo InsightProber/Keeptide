@@ -13,8 +13,9 @@ struct QuickAccessRow: Identifiable, Equatable, Sendable {
     var savedAsMemo: Bool
     let isPartiallyIndexed: Bool
     let isTextUnavailable: Bool
-    /// A memo's collection; nil for an unfiled memo and for every clip.
-    var collectionID: CollectionID? = nil
+    /// A memo's collections, in the sidebar's order as quick access last read it; empty for an unfiled memo and for
+    /// every clip. The first gives the card its colour.
+    var collectionIDs: [CollectionID] = []
     /// Whether a memo is a favorite; never true for a clip.
     var isFavorite = false
     /// How many times the clip was used, for a row of the frequent wing; nil for recent clips and search results.

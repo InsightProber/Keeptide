@@ -204,24 +204,26 @@ final class QuickAccessSaveTests: XCTestCase {
         XCTAssertEqual(value.collectionIDs, [])
     }
 
-    func testASavedClipMovesIntoTheCollectionChosenAndOnlyOnce() async throws {
+    func testASavedClipsSnippetJoinsEachCollectionChosenAndOnlyOnce() async throws {
         let (state, harness, ref) = try await fixture()
-        let prompts = try await CollectionService(controller: harness.controller)
-            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let service = CollectionService(controller: harness.controller)
+        let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
+        let shell = try await service.create(CollectionDraft(name: "Shell", color: "green"))
         _ = try await LibraryService(controller: harness.controller).saveAsMemo(ref.itemID)
         let target = try XCTUnwrap(state.copyTarget)
         await state.saveSelection(target, into: summary(prompts))
-        XCTAssertEqual(state.saveMessage, "Already in Snippets · Moved to “Prompts”")
+        XCTAssertEqual(state.saveMessage, "Already in Snippets · Added to “Prompts”")
         XCTAssertFalse(state.canUndoSave)
         let stored1 = try await item(ref, in: harness)
         XCTAssertEqual(stored1.collectionIDs, [prompts.value.id])
-        // Chosen again, it is there already, and nothing is written.
+        // Chosen again, it is there already, and nothing is written: a clip's card only adds.
         await state.saveSelection(target, into: summary(prompts))
         XCTAssertEqual(state.saveMessage, "Already in “Prompts”")
-        await state.saveSelection(target, into: nil)
-        XCTAssertEqual(state.saveMessage, "Already in Snippets · Moved to Unfiled")
+        // Another collection is added beside the first.
+        await state.saveSelection(target, into: summary(shell))
+        XCTAssertEqual(state.saveMessage, "Already in Snippets · Added to “Shell”")
         let stored2 = try await item(ref, in: harness)
-        XCTAssertEqual(stored2.collectionIDs, [])
+        XCTAssertEqual(stored2.collectionIDs, CollectionID.sorted([prompts.value.id, shell.value.id]))
     }
 
     func testAFavoriteSavesTheClipFirst() async throws {
@@ -263,7 +265,7 @@ final class QuickAccessSaveTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.collections.isEmpty }
     }
 
-    func testASnippetMovesBetweenCollectionsAndTurnsItsFavoriteOver() async throws {
+    func testASnippetJoinsAndLeavesACollectionAndTurnsItsFavoriteOver() async throws {
         let (state, harness, ref) = try await fixture()
         let prompts = try await CollectionService(controller: harness.controller)
             .create(CollectionDraft(name: "Prompts", color: "blue"))
@@ -272,12 +274,16 @@ final class QuickAccessSaveTests: XCTestCase {
         state.setList(.snippets)
         try await SearchTestSupport.waitUntil { state.phase == .results && state.copyTarget?.ref.facet == .memo }
         await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
-        XCTAssertEqual(state.saveMessage, "Moved to “Prompts”")
-        XCTAssertEqual(state.selection.selectedRow?.collectionID, prompts.value.id)
+        XCTAssertEqual(state.saveMessage, "Added to “Prompts”")
+        XCTAssertEqual(state.selection.selectedRow?.collectionIDs, [prompts.value.id])
         let stored6 = try await item(ref, in: harness)
         XCTAssertEqual(stored6.collectionIDs, [prompts.value.id])
+        // Its card shows it in Prompts: chosen again, Prompts lets it go.
         await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
-        XCTAssertEqual(state.saveMessage, "Already in “Prompts”")
+        XCTAssertEqual(state.saveMessage, "Removed from “Prompts”")
+        XCTAssertEqual(state.selection.selectedRow?.collectionIDs, [])
+        let stored6b = try await item(ref, in: harness)
+        XCTAssertEqual(stored6b.collectionIDs, [])
 
         await state.toggleFavoriteSelection(try XCTUnwrap(state.copyTarget))
         XCTAssertEqual(state.saveMessage, "Added to Favorites")

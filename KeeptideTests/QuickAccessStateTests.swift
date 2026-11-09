@@ -1071,7 +1071,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await settled(state)
         XCTAssertEqual(state.collectionName, "Prompts")
         XCTAssertEqual(state.selection.rows.map(\.ref), [filedMemo])
-        XCTAssertEqual(state.selection.rows.first?.collectionID, prompts.value.id)
+        XCTAssertEqual(state.selection.rows.first?.collectionIDs, [prompts.value.id])
 
         // A query searches within the collection.
         state.setQuery("prompt")

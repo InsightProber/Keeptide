@@ -140,7 +140,7 @@ final class CollectionUITests: XCTestCase {
                       app.debugDescription)
     }
 
-    func testMultiSelectionCanMoveAndFavoriteOnlySelectedRows() {
+    func testMultiSelectionCanBeAddedToACollectionAndMarkedOnlyForSelectedRows() {
         let app = launchKeeptide()
         let library = requireLibrary(in: app)
         createCollection(named: "Prompts", in: app)
@@ -157,7 +157,7 @@ final class CollectionUITests: XCTestCase {
         alpha.click()
         XCUIElement.perform(withKeyModifiers: [.command]) { beta.click() }
 
-        // The toolbar acts on both: the star marks them, and the collection menu files them.
+        // The toolbar acts on both: the star marks them, and the collection menu adds them to a collection.
         let favorite = library.buttons["SnippetFavoriteToggle"]
         XCTAssertTrue(favorite.waitForExistence(timeout: 5), app.debugDescription)
         expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: favorite)
@@ -215,6 +215,46 @@ final class CollectionUITests: XCTestCase {
         app.typeKey("s", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["Saved"].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
         XCTAssertTrue(snippetRow(containing: "Short status", in: app).waitForExistence(timeout: 8),
+                      app.debugDescription)
+    }
+
+    func testASnippetCanBeInTwoCollectionsAndLeaveOneOfThem() {
+        let app = launchKeeptide()
+        let library = requireLibrary(in: app)
+        createCollection(named: "Prompts", in: app)
+        createCollection(named: "Shell", in: app)
+        collectionRow(named: "Prompts", in: library).click()
+        waitForScope("Prompts", in: app)
+        createSnippet(title: "Twice Filed", body: "twice body", in: app)
+        let row = snippetRow(containing: "Twice Filed", in: app)
+        XCTAssertTrue(row.waitForExistence(timeout: 8), app.debugDescription)
+        row.click()
+
+        // Add to Collection › Shell keeps it in Prompts as well.
+        let collection = library.descendants(matching: .menuButton)["CollectionMenu"]
+        XCTAssertTrue(collection.waitForExistence(timeout: 5), app.debugDescription)
+        collection.click()
+        let shell = app.menuItems["Shell"]
+        XCTAssertTrue(shell.waitForExistence(timeout: 5), app.debugDescription)
+        shell.click()
+        XCTAssertTrue(app.staticTexts["Added to “Shell”"].firstMatch.waitForExistence(timeout: 5),
+                      app.debugDescription)
+        XCTAssertTrue(snippetRow(containing: "Twice Filed", in: app).waitForExistence(timeout: 8))
+        collectionRow(named: "Shell", in: library).click()
+        waitForScope("Shell", in: app)
+        let inShell = snippetRow(containing: "Twice Filed", in: app)
+        XCTAssertTrue(inShell.waitForExistence(timeout: 8), app.debugDescription)
+        attachScreenshot(of: library, named: "A snippet in two collections")
+
+        // Shell is checked now; choosing it again takes the snippet out of Shell alone.
+        inShell.click()
+        collection.click()
+        XCTAssertTrue(shell.waitForExistence(timeout: 5), app.debugDescription)
+        shell.click()
+        XCTAssertTrue(inShell.waitForNonExistence(timeout: 8), app.debugDescription)
+        collectionRow(named: "Prompts", in: library).click()
+        waitForScope("Prompts", in: app)
+        XCTAssertTrue(snippetRow(containing: "Twice Filed", in: app).waitForExistence(timeout: 8),
                       app.debugDescription)
     }
 
