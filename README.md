@@ -58,7 +58,8 @@ snippets in a native library.
 - **Text in images.** ⇧⌘T shows the text in a copied image beside its
   preview, recognized on this Mac with Apple's Vision, line by line or joined
   into paragraphs. Tall screenshots are read in strips, so their small text is
-  found. Nothing is recognized until you ask.
+  found. Nothing is recognized until you ask, and an image's card shows when
+  its text is being recognized or has been found.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content

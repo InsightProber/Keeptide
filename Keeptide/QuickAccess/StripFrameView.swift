@@ -9,6 +9,38 @@ enum StripMarker: Equatable {
     case favorite
 }
 
+/// What a card says of the text in its image, as a mark beside the app's icon drawn like the band's key caps.
+enum StripTextMark: Equatable {
+    /// A recognition the person asked for is under way: an outlined mark, and a line moving under the header.
+    case recognizing
+    /// It waits its turn behind another image's: an outlined mark.
+    case waiting
+    /// Text was made of the image, now or earlier: a solid mark.
+    case hasText
+    /// Making it failed, for this reason: an orange mark.
+    case failed(String)
+
+    /// The mark's help tag.
+    var help: String {
+        switch self {
+        case .recognizing: "Recognizing text…"
+        case .waiting: "Waiting to recognize text"
+        case .hasText: "Has text. Press ⇧⌘T to show."
+        case .failed(let reason): reason
+        }
+    }
+
+    /// What VoiceOver hears at the end of the card's label: the state, and why for a failure.
+    var spoken: String {
+        switch self {
+        case .recognizing: "recognizing text"
+        case .waiting: "waiting to recognize text"
+        case .hasText: "has text"
+        case .failed(let reason): "text recognition failed: \(reason)"
+        }
+    }
+}
+
 /// One piece of the line under a card's kind, in its header.
 enum StripHeaderItem: Equatable {
     case time(String)
@@ -70,6 +102,8 @@ struct StripFrameContent: Equatable {
     var extraItems: Int
     var markers: [StripMarker]
     var isTextUnavailable: Bool
+    /// What is known of the text in the clip's image.
+    var textMark: StripTextMark?
     /// Width over height of a picture, from its header. ImageIO rounds the thumbnail's size, which
     /// for a hairline of a picture makes a very different shape, so a picture shown whole takes its
     /// shape from here and not from the thumbnail.
@@ -91,7 +125,8 @@ struct StripFrameContent: Equatable {
     /// moment the time is told from. `collections` holds the collections a memo's card may name; a list of one
     /// collection leaves it out, since every card there is in it.
     static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
-                     now: Date = Date(), collections: [CollectionID: CollectionSummary] = [:]) -> StripFrameContent {
+                     now: Date = Date(), collections: [CollectionID: CollectionSummary] = [:],
+                     textMark: StripTextMark? = nil) -> StripFrameContent {
         let isMemo = row.facet == .memo
         // The row lists its collections in the sidebar's order; the first the card may name leads.
         let named = isMemo ? row.collectionIDs.compactMap { collections[$0] } : []
@@ -106,6 +141,7 @@ struct StripFrameContent: Equatable {
             extraItems: 0, markers: [], isTextUnavailable: row.isTextUnavailable
         )
         content.moreCollections = max(0, named.count - 1)
+        content.textMark = textMark
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
         if content.isFavorite { content.markers.append(.favorite) }
@@ -346,6 +382,17 @@ struct StripFrameView: View {
             middle
                 .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
                 .clipped()
+                // While the text in the image is recognized, a thin line moves along under the header. It lies over
+                // the clip and not in the header, whose time on a small card reaches down to the header's edge.
+                .overlay(alignment: .top) {
+                    if content.textMark == .recognizing {
+                        StripProgressLine(color: accent?.color ?? .accentColor, isDark: isDark,
+                                          increasedContrast: increasedContrast)
+                            .frame(height: 2)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
             footer
                 .frame(height: metrics.footerHeight)
         }
@@ -415,6 +462,10 @@ struct StripFrameView: View {
             }
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
+            if let mark = content.textMark {
+                StripTextMarkView(mark: mark, isDark: isDark, increasedContrast: increasedContrast, scale: scale)
+                    .frame(height: metrics.iconSize)
+            }
             appIcon
         }
         .padding(.top, insets.top)
@@ -715,6 +766,156 @@ struct CardWash: View {
             .frame(height: height)
             .frame(maxHeight: .infinity, alignment: .top)
             .allowsHitTesting(false)
+    }
+}
+
+/// A card's mark for the text in its image: 18 pt tall on a medium card, with rounded corners, outlined while the
+/// text is made or waits, solid once there is text, and orange with "!" when making it failed; with Increase Contrast
+/// every mark is outlined, more strongly. Its help tag says what it means; VoiceOver hears it with the card's label.
+private struct StripTextMarkView: View {
+    let mark: StripTextMark
+    let isDark: Bool
+    let increasedContrast: Bool
+    let scale: CGFloat
+
+    var body: some View {
+        let height = (18 * scale).rounded()
+        let shape = RoundedRectangle(cornerRadius: 5 * scale, style: .continuous)
+        glyph
+            .padding(.horizontal, 4 * scale)
+            .frame(minWidth: height, minHeight: height, maxHeight: height)
+            .background { fill.clipShape(shape) }
+            .overlay {
+                if isOutlined || increasedContrast {
+                    shape.strokeBorder(outline, lineWidth: increasedContrast ? 1 : 0.75)
+                }
+            }
+            .help(mark.help)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        switch mark {
+        case .recognizing, .waiting:
+            Image(systemName: "viewfinder")
+                .font(.system(size: 10 * scale, weight: .semibold))
+                .foregroundStyle(isDark ? Color.white.opacity(0.72) : Color.black.opacity(0.55))
+        case .hasText:
+            Image(systemName: "text.viewfinder")
+                .font(.system(size: 10 * scale, weight: .semibold))
+                .foregroundStyle(isDark ? Color.white : Color.black.opacity(0.78))
+        case .failed:
+            Text("!")
+                .font(.system(size: 12 * scale, weight: .bold))
+                .foregroundStyle(Color(.sRGB, red: 0x1D / 255, green: 0x1D / 255, blue: 0x1F / 255))
+        }
+    }
+
+    private var isOutlined: Bool { mark == .recognizing || mark == .waiting }
+
+    private var outline: Color {
+        increasedContrast ? (isDark ? .white.opacity(0.6) : .black.opacity(0.55))
+            : (isDark ? .white.opacity(0.4) : .black.opacity(0.35))
+    }
+
+    private var fill: Color {
+        switch mark {
+        case .recognizing, .waiting: .clear
+        case .hasText:
+            increasedContrast ? (isDark ? .white.opacity(0.24) : .black.opacity(0.16))
+                : (isDark ? .white.opacity(0.16) : .black.opacity(0.10))
+        case .failed: Color(nsColor: .systemOrange)
+        }
+    }
+}
+
+/// The 2 pt line under a card's header while the text in its image is recognized: a segment that moves across it, and
+/// holds still at its start with Reduce Motion. Core Animation moves it, so the card is never drawn again for it.
+private struct StripProgressLine: NSViewRepresentable {
+    let color: Color
+    let isDark: Bool
+    let increasedContrast: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeNSView(context: Context) -> StripProgressLineView { StripProgressLineView() }
+
+    func updateNSView(_ line: StripProgressLineView, context: Context) {
+        let track = (isDark ? NSColor.white : NSColor.black)
+            .withAlphaComponent(increasedContrast ? (isDark ? 0.12 : 0.10) : (isDark ? 0.07 : 0.06))
+        line.configure(track: track, segment: NSColor(color), moves: !reduceMotion)
+    }
+}
+
+/// The line itself: a track the width of the card, and a segment on it that slides across, over and over.
+final class StripProgressLineView: NSView {
+    /// How long the segment takes to cross the card.
+    static let period: CFTimeInterval = 1.4
+    private let segment = CALayer()
+    private var trackColor = NSColor.clear
+    private var segmentColor = NSColor.clear
+    private var moves = true
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        clipsToBounds = true
+        layer?.masksToBounds = true
+        layer?.addSublayer(segment)
+        setAccessibilityElement(false)
+        needsLayout = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    func configure(track: NSColor, segment: NSColor, moves: Bool) {
+        trackColor = track
+        segmentColor = segment
+        recolor()
+        // Moving or holding still starts the segment over; the same setting leaves it sliding where it is.
+        guard moves != self.moves else { return }
+        self.moves = moves
+        needsLayout = true
+    }
+
+    /// Whether the segment is sliding.
+    var isMoving: Bool { segment.animation(forKey: "slide") != nil }
+
+    /// Where the segment rests, in the line's coordinates.
+    var segmentFrame: CGRect { segment.frame }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        recolor()
+    }
+
+    override func layout() {
+        super.layout()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        let width = (bounds.width * (moves ? 0.4 : 0.3)).rounded()
+        segment.frame = CGRect(x: 0, y: 0, width: width, height: bounds.height)
+        segment.removeAnimation(forKey: "slide")
+        guard moves, bounds.width > 0 else { return }
+        let slide = CABasicAnimation(keyPath: "position.x")
+        slide.fromValue = -width / 2
+        slide.toValue = bounds.width + width / 2
+        slide.duration = Self.period
+        slide.repeatCount = .infinity
+        segment.add(slide, forKey: "slide")
+    }
+
+    private func recolor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = trackColor.cgColor
+            segment.backgroundColor = segmentColor.cgColor
+        }
     }
 }
 

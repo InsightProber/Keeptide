@@ -1274,6 +1274,94 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(again.count, 1)
     }
 
+    func testEachImageCardSaysWhatIsKnownOfItsText() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Notes", at: 1, into: fixture)
+        let kept = try await insert("Kept", types: [("public.png", try png(width: 40, height: 30))], at: 2,
+                                    into: fixture)
+        try await insert("Older", types: [("public.png", try png(width: 30, height: 40))], at: 3, into: fixture)
+        try await insert("Newer", types: [("public.png", try png(width: 20, height: 20))], at: 4, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let rows = state.selection.rows
+        let keptRef = try XCTUnwrap(rows.first { $0.title == "Kept" }?.ref)
+        XCTAssertEqual(keptRef.itemID, kept.id)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Kept from before"]),
+            for: DerivedTextRequest(source: keptRef, operation: .extractText, keepsLineBreaks: true))
+        func mark(_ title: String) -> StripTextMark? {
+            rows.first { $0.title == title }.flatMap { state.textMark(for: $0) }
+        }
+
+        // What was kept from before is read with the cards' details.
+        state.loadDetails(for: rows.map(\.ref), frameSize: CGSize(width: 200, height: 200))
+        try await SearchTestSupport.waitUntil { mark("Kept") == .hasText }
+        XCTAssertNil(mark("Notes"), "Only an image has text in it")
+        XCTAssertNil(mark("Newer"))
+        XCTAssertNil(mark("Older"))
+
+        // The newest recognized, and the older one waiting its turn behind it.
+        state.showTextInImage()
+        let newer = try await startedSource(recognizer, 0)
+        newer.send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil { mark("Newer") == .recognizing }
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Older")
+        state.showTextInImage()
+        try await SearchTestSupport.waitUntil { mark("Older") == .waiting }
+
+        newer.send(.delta("Newer text"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { mark("Newer") == .hasText }
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        let older = try await startedSource(recognizer, 1)
+        older.send(.started(GenerationInfo(engine: "On this Mac")))
+        older.end(throwing: failure)
+        try await SearchTestSupport.waitUntil { mark("Older") == .failed(failure.message) }
+
+        // Recognized again and stopped: the mark it had before.
+        state.extractText()
+        _ = try await startedSource(recognizer, 2)
+        try await SearchTestSupport.waitUntil { mark("Older") == .recognizing }
+        state.stopTextRecognition()
+        try await SearchTestSupport.waitUntil { mark("Older") == .failed(failure.message) }
+
+        // No text found: no mark.
+        state.extractText()
+        try await startedSource(recognizer, 3).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .noText }
+        XCTAssertNil(mark("Older"))
+    }
+
+    func testWhatWasKeptIsReadAgainForEachShowingAndALateReadStaysInItsOwn() async throws {
+        let (fixture, _) = try await makeTextFixture()
+        try await insert("Kept", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.rows.first)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Kept from before"]),
+            for: DerivedTextRequest(source: row.ref, operation: .extractText, keepsLineBreaks: true))
+
+        // Asked in one showing, the answer comes after the panel closed and opened again: it is not this showing's.
+        let busy = try await occupyWriter(of: fixture.harness.controller)
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 200, height: 200))
+        state.close()
+        state.open()
+        try await settled(state)
+        try await busy.value
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(state.textMark(for: try XCTUnwrap(state.selection.rows.first)))
+
+        // This showing asks for itself.
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 200, height: 200))
+        try await SearchTestSupport.waitUntil { state.textMark(for: row) == .hasText }
+    }
+
     func testTheColumnSaysWhatItIsDoingAndHowMuchItFound() {
         let queued = GenerationSnapshot(phase: .queued, info: nil)
         let running = GenerationSnapshot(phase: .waiting, info: GenerationInfo(engine: "On this Mac"))

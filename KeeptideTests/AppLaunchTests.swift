@@ -2629,6 +2629,24 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNotNil(listed.first { $0.title == "Picture" }?.memo, "The image itself is a snippet now")
     }
 
+    func testTheImagesCardSaysItHasTextOnceItIsMade() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        func pictureLabel() -> String? {
+            framesOnScreen(in: strip).compactMap { $0.accessibilityLabel() }.first { $0.contains("Picture") }
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", recognizing text") == true }
+
+        engine.send(.delta("Synthetic text in image"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", has text") == true }
+    }
+
     func testThePreviewIsOneCardWhetherItIsSplitOrNot() async throws {
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)

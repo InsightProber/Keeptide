@@ -149,6 +149,33 @@ final class DerivedTextStore: @unchecked Sendable {
         }
     }
 
+    /// Which of these sources have a whole result of the operation, for exactly their content, in this store
+    /// generation: what the cards say of their items, read for the cards on screen at once. One fetch finds the rows of
+    /// all the items; only an item with a whole result is checked for being current. A row that can't be read, or an
+    /// item that can't be checked, is no result, and the others still count.
+    func sourcesWithWholeResults(_ sources: [ContentRef],
+                                 operation: DerivedTextOperation) async throws -> Set<ContentRef> {
+        let wanted = Set(sources)
+        guard !wanted.isEmpty else { return [] }
+        let itemIDs = Set(wanted.map(\.itemID.rawValue)).map { $0 as NSUUID }
+        let controller = controller
+        return try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            let identity = controller.runtime.identity
+            let request = NSFetchRequest<NSManagedObject>(entityName: "DerivedText")
+            request.predicate = NSPredicate(format: "itemID IN %@ AND operation == %@", itemIDs, operation.rawValue)
+            var found: Set<ContentRef> = []
+            for object in try context.fetch(request) {
+                guard let kept = try? Self.result(from: object), wanted.contains(kept.source),
+                      !found.contains(kept.source), Self.isWholeResult(object, of: kept.source, under: identity),
+                      (try? Self.isCurrent(kept.source, in: context)) == true else { continue }
+                found.insert(kept.source)
+            }
+            return found
+        }
+    }
+
     /// Settings' Clear Saved Results…: every result goes, and the items they came from stay as they are. Returns how
     /// many went.
     @discardableResult

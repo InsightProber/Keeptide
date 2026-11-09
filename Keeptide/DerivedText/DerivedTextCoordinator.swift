@@ -99,6 +99,21 @@ final class DerivedTextCoordinator {
         try? await store.result(for: source, operation: operation)
     }
 
+    /// Which of these items have whole results of the operation kept from earlier jobs, for exactly their content;
+    /// nil when the store couldn't be read.
+    func sourcesWithSavedResults(_ sources: [ContentRef], operation: DerivedTextOperation) async -> Set<ContentRef>? {
+        try? await store.sourcesWithWholeResults(sources, operation: operation)
+    }
+
+    /// The job under way and the outcome shown for exactly this content, as `job(for:operation:)` and
+    /// `outcome(for:operation:)` give them, for an item's card.
+    func cardState(for source: ContentRef, operation: DerivedTextOperation) -> (job: GenerationJob?, outcome: Outcome?) {
+        let key = Self.key(for: source, operation: operation)
+        let job = jobs.job(for: key)
+        let shown = outcomes[key]
+        return (latest[key]?.source == source ? job : nil, shown?.source == source ? shown?.outcome : nil)
+    }
+
     /// Starts recognizing the text in an image item, in place of any recognition under way for it. Nil once the
     /// library has closed.
     @discardableResult

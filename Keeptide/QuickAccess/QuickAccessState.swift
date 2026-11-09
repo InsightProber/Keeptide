@@ -178,6 +178,10 @@ final class QuickAccessState {
     /// Whether text recognized from now on keeps the image's line breaks or joins lines into paragraphs: the person's
     /// choice, which the panel gives as it opens and keeps as Keep Line Breaks changes it.
     private(set) var keepsLineBreaks = true
+    /// The listed images known to have whole text kept from earlier, read with the cards' details.
+    private(set) var keptTextSources: Set<ContentRef> = []
+    /// The images whose kept text has been read for, or is being read for, in this showing.
+    @ObservationIgnored private var keptTextAsked: Set<ContentRef> = []
     /// The image whose text was copied just now: the preview's bar says so for a moment, beside that image's text.
     private var copiedTextRef: ContentRef?
     static let textCopiedNoteDuration: Duration = .seconds(1.5)
@@ -351,6 +355,8 @@ final class QuickAccessState {
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
         savedTexts = []
+        keptTextSources = []
+        keptTextAsked = []
         hiddenFacets = []
         leftCollections = [:]
         isOpen = true
@@ -398,6 +404,9 @@ final class QuickAccessState {
     /// again, from the library it now has.
     func servicesDidChange() {
         guard isOpen else { return }
+        // What another library kept says nothing of this one's.
+        keptTextSources = []
+        keptTextAsked = []
         startSession(recordingTarget: false)
     }
 
@@ -538,6 +547,27 @@ final class QuickAccessState {
         waitingDetails = refs.filter { details[$0] == nil && detailLoads[$0] == nil }
         detailFrameSize = frameSize
         startDetailReads()
+        readKeptText(for: refs)
+    }
+
+    /// Reads, in one go, which of the framed images not asked about yet have text kept from earlier, for their cards.
+    private func readKeptText(for refs: [ContentRef]) {
+        guard let derivedText = services()?.derivedText, let asking = session else { return }
+        let images = Set(selection.rows.lazy.filter { $0.kind == .image }.map(\.ref))
+        let asked = refs.filter { images.contains($0) && !keptTextAsked.contains($0) }
+        guard !asked.isEmpty else { return }
+        keptTextAsked.formUnion(asked)
+        Task { [weak self] in
+            let kept = await derivedText.sourcesWithSavedResults(asked, operation: .extractText)
+            // Another showing, or another library, asks for itself.
+            guard let self, isOpen, session === asking else { return }
+            guard let kept else {
+                // Unread, they are asked about again with the cards' next details.
+                keptTextAsked.subtract(asked)
+                return
+            }
+            keptTextSources.formUnion(kept)
+        }
     }
 
     /// Starts the next waiting reads while fewer than `detailReadLimit` run; each read starts the next as it
@@ -593,6 +623,32 @@ final class QuickAccessState {
     var textColumnRef: ContentRef? {
         guard isPreviewSplit, let row = selection.selectedRow, row.kind == .image else { return nil }
         return row.ref
+    }
+
+    /// What a card says of the text in its image: a recognition under way or waiting its turn, text made or kept,
+    /// or why making it failed. Nothing for a clip that isn't an image, an image whose text was never made, or one
+    /// with none in it.
+    func textMark(for row: QuickAccessRow) -> StripTextMark? {
+        textMarker()(row)
+    }
+
+    /// `textMark(for:)` for many rows at once, as the panel asks for every card, with the library's coordinator
+    /// looked up once. A job is told apart as waiting or running by whether it started, which changes once, so the
+    /// panel doesn't follow every snapshot it publishes.
+    func textMarker() -> (QuickAccessRow) -> StripTextMark? {
+        guard let derivedText = services()?.derivedText else { return { _ in nil } }
+        let kept = keptTextSources
+        return { row in
+            guard row.kind == .image else { return nil }
+            let (job, outcome) = derivedText.cardState(for: row.ref, operation: .extractText)
+            if let job { return job.hasStarted ? .recognizing : .waiting }
+            switch outcome {
+            case .saving?, .saved?, .notSaved?: return .hasText
+            case .failed(let error)?: return .failed(error.message)
+            case .noText?: return nil
+            case nil: return kept.contains(row.ref) ? .hasText : nil
+            }
+        }
     }
 
     /// Whether the selected clip is an image whose text the preview can show beside it.

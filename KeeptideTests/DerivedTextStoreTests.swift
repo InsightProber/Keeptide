@@ -357,6 +357,45 @@ final class DerivedTextStoreTests: XCTestCase {
         XCTAssertEqual(read, saved)
     }
 
+    func testWhichSourcesHaveAWholeResultIsReadForManyAtOnce() async throws {
+        let (controller, store) = try await makeStore()
+        let whole = try await insertClip("Whole", into: controller)
+        let partial = try await insertClip("Partial", into: controller)
+        let none = try await insertClip("None", into: controller)
+        let changed = try await insertClip("Changed", into: controller)
+        let deleted = try await insertClip("Deleted", into: controller)
+        let otherGeneration = try await insertClip("Other generation", into: controller)
+        for (source, phase) in [(whole, GenerationSnapshot.Phase.finished(.completed)), (partial, .stopped(.person)),
+                                (changed, .finished(.completed)), (deleted, .finished(.completed)),
+                                (otherGeneration, .finished(.completed))] {
+            _ = try await store.save(snapshot("Made of \(source.itemID)", phase: phase),
+                                     for: DerivedTextRequest(source: source, operation: .extractText))
+        }
+        var later = changed
+        later.version = ContentVersion()
+        let identity = try await controller.identity()
+        let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+        _ = try await LifecycleService(controller: controller).remove(ref: deleted, at: Date(), expecting: identity,
+                                                                      permit: permit)
+        let otherItemID = otherGeneration.itemID.rawValue
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "DerivedText")
+            request.predicate = NSPredicate(format: "itemID == %@", otherItemID as NSUUID)
+            try context.fetch(request).forEach { $0.setValue(UUID(), forKey: "storeGeneration") }
+            try context.save()
+            context.reset()
+        }
+
+        let found = try await store.sourcesWithWholeResults([whole, partial, none, later, deleted, otherGeneration],
+                                                            operation: .extractText)
+
+        XCTAssertEqual(found, [whole], "Whole, current, and for exactly the content it was made from")
+        let nothingAsked = try await store.sourcesWithWholeResults([], operation: .extractText)
+        XCTAssertEqual(nothingAsked, [])
+        let otherOperation = try await store.sourcesWithWholeResults([whole], operation: .translate)
+        XCTAssertEqual(otherOperation, [])
+    }
+
     // MARK: Helpers
 
     private func makeStore() async throws -> (PersistenceController, DerivedTextStore) {
