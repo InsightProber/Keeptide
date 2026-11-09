@@ -105,11 +105,12 @@ Planned capabilities must stay labelled until implemented and verified.
 - Keep file membership, shared schemes and deployment settings correct when
   adding Xcode files. Check API availability on the minimum supported macOS.
 - Prefer a small, clear implementation over speculative abstractions.
-- Model inference is limited to Apple's on-device frameworks for text
-  recognition, translation and language identification. Planned: Apple
-  Intelligence where the Mac has it, and cloud models a person chooses
+- On-device model inference uses only Apple's frameworks: Vision for text
+  recognition, with Translation and Natural Language planned. Also planned:
+  Apple Intelligence on Macs that have it, and cloud models a person chooses
   explicitly with their own API key, reached only through a dedicated cloud
-  module. Do not add embeddings, vector storage or input monitoring.
+  module. The first release does not include embeddings, vector storage or
+  input monitoring.
 
 ## Storage and privacy invariants
 

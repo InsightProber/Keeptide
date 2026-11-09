@@ -74,16 +74,9 @@ final class VisionTextRecognitionEngineTests: XCTestCase {
         XCTAssertTrue(text.contains("Good morning"), text)
     }
 
-    func testACancelledRecognitionThrowsRatherThanReportingNoText() async throws {
-        // A page that takes Vision about a third of a second here. Each line is its own: Vision finds nothing on a
-        // page of identical lines.
-        let words = ["review", "Thursday", "afternoon", "finance", "numbers", "agenda", "budget", "meeting", "room",
-                     "slides", "region", "percent", "quarter", "report", "schedule", "project", "customer", "invoice",
-                     "delivery", "update"]
-        let lines = (0..<55).map { line in
-            (0..<12).map { words[(line * 7 + $0 * 3) % words.count] }.joined(separator: " ")
-        }
-        let image = Self.render([lines], size: 40, width: 4000, height: 4000)
+    func testACancelledRecognitionThrowsCancellationRatherThanReportingNoText() async throws {
+        // A page that takes Vision about a third of a second here.
+        let image = Self.render([Self.lines(55, words: 12)], size: 40, width: 4000, height: 4000)
         let engine = engine
         let recognition = Task { try await engine.recognizedText(in: image) }
 
@@ -94,15 +87,56 @@ final class VisionTextRecognitionEngineTests: XCTestCase {
             let recognized = try await recognition.value
             XCTFail("A cancelled recognition returned \(recognized.paragraphs.count) paragraphs")
         } catch {
-            // Vision stopped part way, so a stopped job is never taken for an image without text.
+            // Never taken for an image without text, and said the way every cancelled task says it.
+            XCTAssertTrue(error is CancellationError, "\(error)")
         }
+    }
+
+    func testAListWithOrdinaryLeadingHasNoBlankLines() async throws {
+        let items = ["• Milk and eggs", "• Rice", "• Honey from the market", "• Yogurt", "• Bread", "• Cheese",
+                     "• Coffee beans", "• Apples"]
+        let image = Self.render([items], leading: 1.5)
+
+        let kept = try await engine.recognizedText(in: image).text(keepingLineBreaks: true)
+
+        XCTAssertFalse(kept.contains("\n\n"), kept)
+        XCTAssertEqual(kept.components(separatedBy: "\n").count, items.count, kept)
+    }
+
+    func testALongScreenshotIsReadWholeOnce() async throws {
+        // 1,200 by 9,000 pixels in 16-pixel letters: read in one pass, Vision finds none of it.
+        let paragraphs = (0..<100).map { paragraph in
+            Self.lines(3, words: 6, from: paragraph * 3).enumerated().map { "\(paragraph).\($0) \($1)" }
+        }
+        let image = Self.render(paragraphs, size: 16, width: 1200, height: 9000)
+
+        let lines = try await engine.recognizedText(in: image).text(keepingLineBreaks: true)
+            .components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        XCTAssertGreaterThanOrEqual(lines.count, 285, "\(lines.count) of 300 lines")
+        XCTAssertLessThanOrEqual(lines.count, 300, "\(lines.count) of 300 lines")
+        XCTAssertEqual(Set(lines).count, lines.count, "No line is read twice")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("0.0") && $0.contains("review") }, lines.prefix(3).description)
+        XCTAssertTrue(lines.contains { $0.hasPrefix("99.") }, lines.suffix(3).description)
     }
 
     // MARK: Helpers
 
-    /// Draws each paragraph's lines in dark grey on white, with a blank line's space between paragraphs.
+    /// `count` lines of `words` words each, every line its own: Vision finds nothing on a page of identical lines.
+    nonisolated private static func lines(_ count: Int, words: Int, from first: Int = 0) -> [String] {
+        let vocabulary = ["review", "Thursday", "afternoon", "finance", "numbers", "agenda", "budget", "meeting",
+                          "room", "slides", "region", "percent", "quarter", "report", "schedule", "project",
+                          "customer", "invoice", "delivery", "update"]
+        return (first..<first + count).map { line in
+            (0..<words).map { vocabulary[(line * 7 + $0 * 3) % vocabulary.count] }.joined(separator: " ")
+        }
+    }
+
+    /// Draws each paragraph's lines in dark grey on white, `leading` times the letters' size apart, with a little more
+    /// than a line's space between paragraphs.
     nonisolated private static func render(_ paragraphs: [[String]], font: String = "Helvetica", size: CGFloat = 30,
-                                           width: Int = 1400, height: Int = 700) -> CGImage {
+                                           leading: CGFloat = 1.35, width: Int = 1400,
+                                           height: Int = 700) -> CGImage {
         let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                                 space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                 bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
@@ -118,7 +152,7 @@ final class VisionTextRecognitionEngineTests: XCTestCase {
                 ])
                 context.textPosition = CGPoint(x: 40, y: baseline)
                 CTLineDraw(CTLineCreateWithAttributedString(text), context)
-                baseline -= size * 1.35
+                baseline -= size * leading
             }
             baseline -= size * 1.2
         }

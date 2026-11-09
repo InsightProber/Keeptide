@@ -43,6 +43,8 @@ final class TextRecognitionSourceTests: XCTestCase {
         let cases: [(any Error, GenerationError.Kind, String)] = [
             (StoreError.notFound, .contentUnavailable, "This item changed or is no longer available."),
             (StoreError.staleReference, .contentUnavailable, "This item changed or is no longer available."),
+            // Content that is damaged, recovering or waiting for its file.
+            (PasteRefusal.contentUnavailable, .contentUnavailable, "This item changed or is no longer available."),
             (PreviewLoadError.couldNotDecodeImage, .contentUnavailable, "This image couldn't be read."),
             (PreviewLoadError.invalidImageDimensions, .contentUnavailable, "This image couldn't be read."),
             (PreviewLoadError.originalImageTooLarge, .inputTooLarge, "This image is too large to recognize text in."),

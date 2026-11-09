@@ -98,10 +98,71 @@ final class TextInImageTests: XCTestCase {
         XCTAssertEqual(TextInImage(paragraphs: []).text(keepingLineBreaks: false), "")
     }
 
+    func testAListWithOrdinaryLeadingIsOneBlockWhateverItsLetters() {
+        // Each item is a paragraph of its own, and the boxes follow the letters: "• eggs" has no ascenders and
+        // "• milk" no descenders, so the space between two boxes varies far more than the lines' spacing does.
+        let items = ["• milk", "• eggs", "• honey", "• yogurt", "• bread", "• cheese", "• rice"]
+        let recognized = TextInImage(paragraphs: items.enumerated().map { index, item in
+            paragraph(item, glyphLine(item, baseline: 0.9 - CGFloat(index) * 0.03))
+        })
+
+        XCTAssertEqual(recognized.text(keepingLineBreaks: true), items.joined(separator: "\n"))
+        XCTAssertEqual(recognized.text(keepingLineBreaks: false), items.joined(separator: "\n"))
+    }
+
+    func testEvenlySpacedLinesStayOneBlockWhereverParagraphsAreCut() {
+        let lines = ["The quarterly report is due by Friday,", "and finance would like the figures by",
+                     "noon so the board pack can go out on", "Monday. Please flag anything that might",
+                     "change before then, and copy Morgan", "on anything about the budget, which",
+                     "is still being agreed this quarter.", "Thank you all for getting this ready",
+                     "quickly, and enjoy the long weekend."]
+        // Vision cut these evenly spaced lines into paragraphs of three, four and two lines.
+        var baseline: CGFloat = 0.9
+        var paragraphs: [TextInImage.Paragraph] = []
+        for range in [0..<3, 3..<7, 7..<9] {
+            let group = lines[range].map { text -> TextInImage.Line in
+                defer { baseline -= 0.032 }
+                return glyphLine(text, baseline: baseline)
+            }
+            paragraphs.append(TextInImage.Paragraph(lines: group, transcript: lines[range].joined(separator: " ")))
+        }
+        let recognized = TextInImage(paragraphs: paragraphs)
+
+        XCTAssertEqual(recognized.text(keepingLineBreaks: true), lines.joined(separator: "\n"))
+        XCTAssertEqual(recognized.text(keepingLineBreaks: false),
+                       [0..<3, 3..<7, 7..<9].map { lines[$0].joined(separator: " ") }.joined(separator: "\n"))
+    }
+
+    func testTheSpaceBetweenParagraphsStartsABlock() {
+        let first = ["The quarterly report is due by Friday,", "and finance would like the figures by", "noon."]
+        let second = ["Please flag anything that might change", "before then, and copy Morgan on it.", "Thanks."]
+        let recognized = TextInImage(paragraphs: [
+            TextInImage.Paragraph(lines: first.enumerated().map { glyphLine($1, baseline: 0.9 - CGFloat($0) * 0.03) },
+                                  transcript: first.joined(separator: " ")),
+            // A letter's height of space more than the lines' own spacing.
+            TextInImage.Paragraph(lines: second.enumerated().map { glyphLine($1, baseline: 0.79 - CGFloat($0) * 0.03) },
+                                  transcript: second.joined(separator: " ")),
+        ])
+
+        XCTAssertEqual(recognized.text(keepingLineBreaks: true),
+                       first.joined(separator: "\n") + "\n\n" + second.joined(separator: "\n"))
+    }
+
     // MARK: Helpers
 
     private func paragraph(_ transcript: String, _ lines: TextInImage.Line...) -> TextInImage.Paragraph {
         TextInImage.Paragraph(lines: lines, transcript: transcript)
+    }
+
+    /// A line drawn on `baseline` in letters `size` high, boxed as Vision boxes it: from its ascenders, or from the
+    /// height of a small letter when it has none, down to its descenders, or to the baseline when it has none.
+    private func glyphLine(_ text: String, baseline: CGFloat, size: CGFloat = 0.02, x: CGFloat = 0.03,
+                           width: CGFloat = 0.5) -> TextInImage.Line {
+        let ascends = text.contains { "bdfhklt".contains($0) || $0.isUppercase || $0.isNumber }
+        let descends = text.contains { "gjpqy,".contains($0) }
+        let top = baseline + size * (ascends ? 0.75 : 0.52)
+        let bottom = baseline - size * (descends ? 0.22 : 0)
+        return TextInImage.Line(text: text, bounds: CGRect(x: x, y: bottom, width: width, height: top - bottom))
     }
 
     /// A line whose top edge is `top`, in Vision's coordinates: normalized to the image, with the origin at the lower

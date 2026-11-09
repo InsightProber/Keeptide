@@ -29,13 +29,13 @@ struct TextRecognitionSource: GenerationSource {
         return stream
     }
 
-    /// What a result column says when recognition fails: the item is gone or changed, its image can't be read or is
-    /// too large, or the engine failed.
+    /// What a result column says when recognition fails: the item is gone, changed or damaged, its image can't be
+    /// read or is too large, or the engine failed.
     static func failure(for error: any Error) -> GenerationError {
         switch error {
         case let error as GenerationError:
             error
-        case StoreError.notFound, StoreError.staleReference:
+        case StoreError.notFound, StoreError.staleReference, PasteRefusal.contentUnavailable:
             .contentUnavailable
         case PreviewLoadError.couldNotDecodeImage, PreviewLoadError.invalidImageDimensions:
             GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")
