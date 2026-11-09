@@ -129,6 +129,60 @@ struct SelectionCoordinator: Equatable {
         choose(id)
     }
 
+    /// A clip's rows taken out of the list, in both wings, each with the place it had, so that they can be put back.
+    struct RemovedRows: Equatable, Sendable {
+        struct Entry: Equatable, Sendable {
+            let index: Int
+            let row: QuickAccessRow
+        }
+
+        let generation: UInt64
+        /// From left to right.
+        let entries: [Entry]
+        /// The one among them that was selected, if one was.
+        let selectedID: QuickAccessRow.ID?
+        /// Where the selection went as they were taken out: nil when it did not move, or when no row was left.
+        let successorID: QuickAccessRow.ID?
+    }
+
+    /// Takes a clip's rows out of the list, in both wings, as when it moved to Recently Deleted; nil when the list does
+    /// not hold it. A selected row hands the selection to the next row of another clip on its right, an older clip or
+    /// the newest after the frequent wing, or else to the nearest on its left, so the selection stays beside where it
+    /// was and can be acted on at once. With no other row left, nothing is selected; nothing was lost either, since the
+    /// user took the row away.
+    mutating func removeRows(of ref: ContentRef) -> RemovedRows? {
+        let entries = rows.indices.filter { rows[$0].ref == ref }.map { RemovedRows.Entry(index: $0, row: rows[$0]) }
+        guard !entries.isEmpty else { return nil }
+        let selected = selectedID?.ref == ref ? selectedID : nil
+        var successor: QuickAccessRow.ID?
+        if let selected, let index = rows.firstIndex(where: { $0.id == selected }) {
+            successor = rows[(index + 1)...].first { $0.ref != ref }?.id ?? rows[..<index].last { $0.ref != ref }?.id
+        }
+        rows.removeAll { $0.ref == ref }
+        if selected != nil {
+            if let successor { choose(successor) } else { selectedID = nil }
+        }
+        return RemovedRows(generation: generation, entries: entries, selectedID: selected, successorID: successor)
+    }
+
+    /// Puts rows `removeRows` took back where they were; rows a later page listed again are not listed twice. The one
+    /// that was selected is selected again only while the selection is still `expected`, the row it was on when the
+    /// rows were asked back, so it never moves under a person who moved on meanwhile: Return then acts on the clip they
+    /// chose. False, with nothing changed, once another generation holds the list: its own pages list the clip if it
+    /// belongs there.
+    @discardableResult
+    mutating func restore(_ removed: RemovedRows, reselectingWhileSelectionIs expected: QuickAccessRow.ID?) -> Bool {
+        guard removed.generation == generation, hasPage else { return false }
+        let selectionStayed = selectedID == expected
+        for entry in removed.entries where !rows.contains(where: { $0.id == entry.row.id }) {
+            rows.insert(entry.row, at: min(entry.index, rows.count))
+        }
+        if selectionStayed, let selected = removed.selectedID, rows.contains(where: { $0.id == selected }) {
+            choose(selected)
+        }
+        return true
+    }
+
     mutating func move(by offset: Int) -> SelectionMove {
         guard hasPage else { return .unchanged }
         guard !rows.isEmpty else { return offset < 0 ? .atTop : .unchanged }

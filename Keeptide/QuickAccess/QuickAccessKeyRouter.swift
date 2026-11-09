@@ -103,6 +103,16 @@ enum QuickAccessKeyRouter {
         }
     }
 
+    /// Whether ⌘⌫ moves the selected clip to Recently Deleted from where the keys are. A search field with text keeps
+    /// it for that text, deleting to the start of the line, as a composition keeps every key; an empty one has nothing
+    /// to delete, as it has no caret for ← and → to move, so there ⌘⌫ takes the selection as it does from the strip,
+    /// the lists, the filter button and the preview. Keys passing between views leave none holding them, and the
+    /// selection is still there.
+    static func commandDeleteTakesSelection(focus: QuickAccessFocus?, queryIsEmpty: Bool, hasMarkedText: Bool) -> Bool {
+        guard !hasMarkedText else { return false }
+        return focus != .searchField || queryIsEmpty
+    }
+
     /// Where Tab (`forward`) or ⇧Tab takes the keys from `current`: round the search field, the strip, the lists and
     /// the filter button, in that order. The strip is left out while it has no clips. From the preview's text, or from
     /// nowhere in the panel, Tab starts at the search field and ⇧Tab at the end of the round.

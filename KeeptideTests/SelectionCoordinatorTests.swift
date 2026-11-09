@@ -318,6 +318,145 @@ final class SelectionCoordinatorTests: XCTestCase {
         XCTAssertEqual(recentChosen.frequentCount, 3)
         XCTAssertEqual(recentChosen.selectedID, fresh.id)
     }
+
+    // MARK: Taking a clip out, and putting it back
+
+    func testRemovingTheSelectedClipSelectsTheOlderOneBesideIt() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c], generation: 1, isComplete: true)
+        selection.select(b.id)
+
+        let removed = try XCTUnwrap(selection.removeRows(of: b.ref))
+
+        XCTAssertEqual(selection.rows.map(\.id), [a.id, c.id])
+        // Older clips stand right of newer ones: the one after it takes the selection, and can be acted on.
+        XCTAssertEqual(selection.selectedID, c.id)
+        XCTAssertEqual(selection.executableSelection, c.ref)
+        XCTAssertFalse(selection.selectionLost)
+        XCTAssertEqual(removed.entries.map(\.index), [1])
+        XCTAssertEqual(removed.selectedID, b.id)
+        XCTAssertEqual(removed.successorID, c.id)
+    }
+
+    func testRemovingTheOldestClipSelectsTheNewerOneBesideIt() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c], generation: 1, isComplete: true)
+        selection.select(c.id)
+
+        _ = try XCTUnwrap(selection.removeRows(of: c.ref))
+
+        XCTAssertEqual(selection.rows.map(\.id), [a.id, b.id])
+        XCTAssertEqual(selection.selectedID, b.id)
+    }
+
+    func testRemovingAClipInBothWingsTakesBothRowsAndSelectsTheNextOtherClip() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fb = frequent(b, uses: 3), fa = frequent(a, uses: 4)
+        selection.apply([fb, fa, fresh, a, c], generation: 1, isComplete: true)
+        selection.select(fa.id)
+
+        let removed = try XCTUnwrap(selection.removeRows(of: a.ref))
+
+        XCTAssertEqual(selection.rows.map(\.id), [fb.id, fresh.id, c.id])
+        XCTAssertEqual(selection.selectedID, fresh.id)
+        XCTAssertEqual(removed.entries.map(\.index), [1, 3])
+        XCTAssertEqual(removed.entries.map(\.row.id), [fa.id, a.id])
+    }
+
+    func testRemovingAnotherClipKeepsTheSelection() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c], generation: 1, isComplete: true)
+        selection.select(a.id)
+
+        let removed = try XCTUnwrap(selection.removeRows(of: c.ref))
+
+        XCTAssertEqual(selection.rows.map(\.id), [a.id, b.id])
+        XCTAssertEqual(selection.selectedID, a.id)
+        XCTAssertNil(removed.selectedID)
+        XCTAssertNil(selection.removeRows(of: fresh.ref), "A clip that is not listed has no rows to take out")
+    }
+
+    func testRemovingTheLastClipLeavesNothingSelected() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a], generation: 1, isComplete: true)
+
+        _ = try XCTUnwrap(selection.removeRows(of: a.ref))
+
+        XCTAssertEqual(selection.rows, [])
+        XCTAssertNil(selection.selectedID)
+        XCTAssertNil(selection.executableSelection)
+    }
+
+    func testRestoringPutsTheRowsBackWhereTheyWereAndSelectsTheClip() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        let fa = frequent(a, uses: 4)
+        selection.apply([fa, fresh, a, b], generation: 1, isComplete: true)
+        selection.select(a.id)
+        let removed = try XCTUnwrap(selection.removeRows(of: a.ref))
+        XCTAssertEqual(selection.move(by: -1), .moved)
+        // An undo asked for from where the selection is now.
+        let askedFrom = selection.selectedID
+
+        XCTAssertTrue(selection.restore(removed, reselectingWhileSelectionIs: askedFrom))
+
+        XCTAssertEqual(selection.rows.map(\.id), [fa.id, fresh.id, a.id, b.id])
+        XCTAssertEqual(selection.selectedID, a.id)
+        XCTAssertEqual(selection.executableSelection, a.ref)
+    }
+
+    func testRowsPutBackAfterThePersonMovedOnLeaveTheSelectionWhereTheyMovedIt() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c, fresh], generation: 1, isComplete: true)
+        selection.select(b.id)
+        let removed = try XCTUnwrap(selection.removeRows(of: b.ref))
+        XCTAssertEqual(selection.selectedID, c.id)
+        // The move is refused only after the person stepped on to another clip: Return acts on the one they chose.
+        XCTAssertEqual(selection.move(by: 1), .moved)
+
+        XCTAssertTrue(selection.restore(removed, reselectingWhileSelectionIs: removed.successorID))
+
+        XCTAssertEqual(selection.rows.map(\.id), [a.id, b.id, c.id, fresh.id])
+        XCTAssertEqual(selection.selectedID, fresh.id)
+        XCTAssertEqual(selection.executableSelection, fresh.ref)
+    }
+
+    func testRestoringRowsAPageBroughtBackAlreadyDoesNotListThemTwice() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c], generation: 1, isComplete: true)
+        selection.select(b.id)
+        let removed = try XCTUnwrap(selection.removeRows(of: b.ref))
+        // A refresh read the clip back before the undo came to put it there.
+        selection.apply([a, b, c], generation: 1, isComplete: true)
+
+        XCTAssertTrue(selection.restore(removed, reselectingWhileSelectionIs: selection.selectedID))
+
+        XCTAssertEqual(selection.rows.map(\.id), [a.id, b.id, c.id])
+        XCTAssertEqual(selection.selectedID, b.id)
+    }
+
+    func testRestoringAfterANewGenerationLeavesItsRowsAlone() throws {
+        var selection = SelectionCoordinator()
+        selection.beginGeneration(1)
+        selection.apply([a, b, c], generation: 1, isComplete: true)
+        selection.select(b.id)
+        let removed = try XCTUnwrap(selection.removeRows(of: b.ref))
+        // Another query or list took the strip's place: its own read will show the clip if it holds it.
+        selection.beginGeneration(2)
+        selection.apply([c, fresh], generation: 2, isComplete: true)
+
+        XCTAssertFalse(selection.restore(removed, reselectingWhileSelectionIs: selection.selectedID))
+
+        XCTAssertEqual(selection.rows.map(\.id), [c.id, fresh.id])
+        XCTAssertEqual(selection.selectedID, c.id)
+    }
 }
 
 /// A copy of `row` listed in the frequent wing, used `uses` times.

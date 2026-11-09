@@ -159,6 +159,27 @@ final class QuickAccessKeyRouterTests: XCTestCase {
         }
     }
 
+    func testCommandDeleteTakesTheSelectionExceptFromTextInTheSearchField() {
+        // Away from the search field ⌘⌫ has no text to delete, whatever the query holds.
+        for focus in [QuickAccessFocus.lists, .filterButton, .results, .preview] {
+            for queryIsEmpty in [true, false] {
+                XCTAssertTrue(deletes(from: focus, queryIsEmpty: queryIsEmpty), "\(focus), empty query \(queryIsEmpty)")
+            }
+        }
+        // An empty search field has nothing to delete either, as with ← and →; one with text keeps ⌘⌫ for it, deleting
+        // to the start of the line.
+        XCTAssertTrue(deletes(from: .searchField, queryIsEmpty: true))
+        XCTAssertFalse(deletes(from: .searchField, queryIsEmpty: false))
+        // Keys passing from one view to another leave none holding them: the strip's selection is still there.
+        XCTAssertTrue(deletes(from: nil, queryIsEmpty: false))
+        // A composition owns its keys wherever it is.
+        for focus in QuickAccessFocus.all.map(Optional.some) + [nil] {
+            XCTAssertFalse(QuickAccessKeyRouter.commandDeleteTakesSelection(focus: focus, queryIsEmpty: true,
+                                                                            hasMarkedText: true),
+                           String(describing: focus))
+        }
+    }
+
     func testEscapeIsAlwaysRouted() {
         for focus in QuickAccessFocus.all {
             XCTAssertEqual(command(.escape, in: focus), .escape)
@@ -190,6 +211,10 @@ final class QuickAccessKeyRouterTests: XCTestCase {
                          isSingleLine: Bool = true, queryIsEmpty: Bool = true) -> QuickAccessCommand {
         QuickAccessKeyRouter.command(for: QuickAccessKeyInput(key: key, shift: shift, focus: focus,
                                                               isSingleLine: isSingleLine, queryIsEmpty: queryIsEmpty))
+    }
+
+    private func deletes(from focus: QuickAccessFocus?, queryIsEmpty: Bool) -> Bool {
+        QuickAccessKeyRouter.commandDeleteTakesSelection(focus: focus, queryIsEmpty: queryIsEmpty, hasMarkedText: false)
     }
 
     private func next(after focus: QuickAccessFocus?, forward: Bool = true, hasClips: Bool = true) -> QuickAccessFocus {
