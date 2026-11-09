@@ -131,8 +131,42 @@ struct QuickAccessBandView: View {
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
                     .clipShape(RoundedRectangle(cornerRadius: CommandReviewView.cornerRadius, style: .continuous))
+            } else if let ref = state.textColumnRef, let column = state.textColumn {
+                QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
+                    previewSegments(textChosen: true)
+                    Spacer()
+                    if column.isRecognizing {
+                        Button { actions.previewCommand(.stopTextRecognition) } label: {
+                            HStack(spacing: 6) {
+                                Text("Stop")
+                                ReviewKeycap(symbol: "⌘.")
+                            }
+                        }
+                        .buttonStyle(TrayCapsuleButtonStyle())
+                        .accessibilityLabel("Stop")
+                        .accessibilityIdentifier("QuickAccessStopTextRecognition")
+                    } else {
+                        Button("Keep Line Breaks") { actions.previewCommand(.toggleKeepLineBreaks) }
+                            .buttonStyle(TrayCapsuleButtonStyle(isOn: state.keepsLineBreaks))
+                            .accessibilityAddTraits(state.keepsLineBreaks ? .isSelected : [])
+                            .accessibilityIdentifier("QuickAccessKeepLineBreaks")
+                    }
+                } content: {
+                    QuickAccessSplitPreview(preview: state.preview,
+                                            applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
+                                            column: column, ref: ref, onCommand: actions.previewCommand)
+                }
             } else {
                 QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
+                    if state.offersTextInImage {
+                        previewSegments(textChosen: false)
+                    } else {
+                        Text("Preview")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+                    }
+                    Spacer()
+                } content: {
                     QuickAccessPreviewView(preview: state.preview,
                                        applicationName: selectedRow?.sourceApp.flatMap(applicationNames.name(for:)),
                                        onCommand: actions.previewCommand,
@@ -147,13 +181,27 @@ struct QuickAccessBandView: View {
         }
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
+
+    /// Preview | Text, for an image: Text shows the text in the image beside it.
+    private func previewSegments(textChosen: Bool) -> some View {
+        TraySegments(segments: [
+            .init(id: "Preview", title: "Preview", isChosen: !textChosen) {
+                if textChosen { actions.previewCommand(.closeResultColumn) }
+            },
+            .init(id: "Text", title: "Text", isChosen: textChosen) {
+                if !textChosen { actions.previewCommand(.showTextInImage) }
+            },
+        ])
+    }
 }
 
 /// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target. It stands
 /// on a tray like the band's, in one piece with no surface of its own for the content, under a bar laid out like the
 /// band's toolbar.
-private struct QuickAccessPreviewCard<Content: View>: View {
+private struct QuickAccessPreviewCard<Bar: View, Content: View>: View {
     let onClose: () -> Void
+    /// What the bar holds after the close button.
+    @ViewBuilder let bar: () -> Bar
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var contrast
@@ -174,10 +222,7 @@ private struct QuickAccessPreviewCard<Content: View>: View {
                 .accessibilityLabel("Close Preview")
                 .accessibilityIdentifier("CloseQuickAccessPreview")
                 .help("Close Preview (Esc)")
-                Text("Preview")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
-                Spacer()
+                bar()
             }
             .frame(height: StripLayout.toolbarHeight)
             .padding(.top, StripLayout.toolbarTop)

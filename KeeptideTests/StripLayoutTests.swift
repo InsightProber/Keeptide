@@ -598,6 +598,24 @@ final class StripLayoutTests: XCTestCase {
         }
     }
 
+    func testTheSplitPreviewIsAsWideAsTheBandAndStandsAboveIt() {
+        // A text column beside the preview: the card takes the band's width, its edges in line with the band's, and
+        // stands above it as the review card does.
+        let laptop = NSRect(x: 0, y: 0, width: 1440, height: 875)
+        let m = StripLayout.metrics(for: .medium, visibleWidth: laptop.width)
+        let band = StripLayout.bandFrame(m, in: laptop)
+
+        let (split, moved) = StripLayout.splitLayout(band: band, in: laptop)
+
+        XCTAssertEqual(split.minX, moved.minX, accuracy: 0.5)
+        XCTAssertEqual(split.width, moved.width, accuracy: 0.5)
+        XCTAssertEqual(split.height, StripLayout.previewMaximum.height, accuracy: 0.5)
+        XCTAssertEqual(split.minY, moved.maxY + StripLayout.previewGap, accuracy: 0.5)
+        XCTAssertTrue(laptop.contains(StripLayout.panelFrame(band: moved, preview: split, in: laptop)))
+        // The review card keeps its own width.
+        XCTAssertEqual(StripLayout.previewLayout(band: band, in: laptop).preview.width, StripLayout.previewMaximum.width)
+    }
+
     func testThePanelGivesTheShadowWhatRoomTheScreenHas() {
         // On a tall screen the panel reaches 32 beside the band, 40 above it and 100 below, where the shadow falls.
         let tall = NSRect(x: 0, y: 0, width: 1440, height: 875)

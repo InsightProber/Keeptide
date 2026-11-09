@@ -1986,6 +1986,65 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testShiftCommandTShowsTheTextBesideTheImageAndEscapeClosesTheColumnFirst() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertEqual(controller.state.resultColumn, .text)
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        var display: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            display = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return display?.shownText == "Synthetic text in image"
+        }
+        // The card is as wide as the band and above it, with the text in its right half.
+        let band = try bandRect(in: window)
+        let text = try XCTUnwrap(display).convert(try XCTUnwrap(display).bounds, to: nil)
+        XCTAssertGreaterThan(text.minY, band.maxY, "Above the band")
+        XCTAssertGreaterThan(text.minX, band.midX - 1, "In the right column")
+
+        // Escape closes the column first, then the preview.
+        controller.perform(.escape)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        controller.perform(.escape)
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
+    func testCommandPeriodStopsTheRecognitionAndClosesNothing() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command)))
+
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertEqual(controller.state.resultColumn, .text, "⌘. stops; it is not Escape")
+    }
+
+    func testShiftCommandTLeavesAClipWithoutAnImageAlone() async throws {
+        let (controller, recognizer) = try await makeTextPanel(newestIsImage: false)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])),
+                      "Taken, so it never reaches the menu bar")
+
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertEqual(recognizer.layouts, [])
+    }
+
     func testClicksOnThePreviewsEmptyPartsStayWithThePreview() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -3958,6 +4017,18 @@ final class AppLaunchTests: XCTestCase {
                        .collapsePreview)
     }
 
+    func testEscapeClosesTheTextColumnBeforeThePreviewAndAfterAReview() {
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasResultColumn: true,
+                                                      isPreviewExpanded: true, hasQuery: true),
+                       .closeResultColumn)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: true,
+                                                      hasResultColumn: true, isPreviewExpanded: true, hasQuery: false),
+                       .cancelCommandReview)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: true, hasResultColumn: true,
+                                                      isPreviewExpanded: true, hasQuery: false),
+                       .cancelComposition)
+    }
+
     func testEscapeFromTheCardsClearsAChosenListBeforeClosing() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         _ = try searchEditor(in: controller)
@@ -5165,7 +5236,8 @@ final class AppLaunchTests: XCTestCase {
                            usage: (any QuickAccessUsage)? = nil, library: LibraryService? = nil,
                            collections: (any QuickAccessCollections)? = nil,
                            preferences: QuickAccessPreferences? = nil,
-                           lifecycle: (any QuickAccessLifecycle)? = nil) throws -> PanelController {
+                           lifecycle: (any QuickAccessLifecycle)? = nil,
+                           derivedText: DerivedTextCoordinator? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in }, system: system)
@@ -5174,7 +5246,7 @@ final class AppLaunchTests: XCTestCase {
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
                                            usage: usage, library: library, collections: collections,
                                            collectionChanges: collections as? any QuickAccessCollectionChanges,
-                                           lifecycle: lifecycle)
+                                           lifecycle: lifecycle, derivedText: derivedText)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }
@@ -5259,6 +5331,29 @@ final class AppLaunchTests: XCTestCase {
     /// view may follow the button in a loop of its own until it comes up again, as a text view does on macOS 26: a press
     /// with no release would hold the test there for good. So the release is posted to the application's queue first,
     /// where such a loop finds it, and the press is sent after it. A release nothing took is dropped afterwards.
+    /// A shown panel over a text clip and, unless `newestIsImage` is false, a newer picture, whose text a recognizer
+    /// the test drives makes.
+    private func makeTextPanel(newestIsImage: Bool = true) async throws -> (PanelController, ScriptedRecognizer) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older"], into: harness)
+        if newestIsImage { try await insertImageClip(into: harness) }
+        try await harness.consumer.synchronize()
+        let recognizer = ScriptedRecognizer()
+        let derivedText = DerivedTextCoordinator(
+            store: DerivedTextStore(controller: harness.controller), identity: try await harness.controller.identity(),
+            recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
+        addTeardownBlock { await derivedText.stopAndDrain() }
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                       derivedText: derivedText)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == (newestIsImage ? 2 : 1) }
+        return (controller, recognizer)
+    }
+
     /// A click at `point`, the `count`th of a series, as a second click of a double-click is.
     private func click(at point: NSPoint, in window: NSWindow, count: Int = 1) throws {
         func event(_ type: NSEvent.EventType) throws -> NSEvent {

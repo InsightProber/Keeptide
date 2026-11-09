@@ -203,6 +203,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
+            state.keepsLineBreaks = preferences.keepsLineBreaks
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics
@@ -425,6 +426,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
+        } else if state.textColumnRef != nil {
+            let placed = StripLayout.splitLayout(band: band, in: visibleFrame)
+            band = placed.band
+            preview = placed.preview
         } else if state.isPreviewExpanded {
             preview = StripLayout.previewOverlayFrame(band: band, in: visibleFrame)
         }
@@ -500,6 +505,23 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             togglePreview()
         case .escape:
             escape()
+        case .showTextInImage:
+            let focus = currentFocus
+            state.showTextInImage()
+            update()
+            keepFocus(focus)
+        case .closeResultColumn:
+            let focus = currentFocus
+            state.closeResultColumn()
+            update()
+            keepFocus(focus)
+        case .extractText:
+            state.extractText()
+        case .stopTextRecognition:
+            state.stopTextRecognition()
+        case .toggleKeepLineBreaks:
+            preferences.keepsLineBreaks.toggle()
+            state.setKeepsLineBreaks(preferences.keepsLineBreaks)
         }
     }
 
@@ -1256,6 +1278,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// What Escape has to peel, the same for the search field and for the strip, the preview and the review card.
     private var escapeContext: QuickAccessEscapeContext {
         QuickAccessEscapeContext(hasCommandReview: state.commandReview != nil,
+                                 hasResultColumn: state.textColumnRef != nil,
                                  isPreviewExpanded: state.isPreviewExpanded,
                                  hasFilters: !state.kinds.isEmpty || state.favoritesOnly,
                                  hasList: state.hasList,
@@ -1268,6 +1291,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard closingOnceReturnIsUp == nil else { return close() }
         let context = escapeContext
         let action = QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: context.hasCommandReview,
+                                                    hasResultColumn: context.hasResultColumn,
                                                     isPreviewExpanded: context.isPreviewExpanded,
                                                     hasQuery: !searchField.stringValue.isEmpty,
                                                     hasFilters: context.hasFilters, hasList: context.hasList,
@@ -1278,7 +1302,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .clearQuery:
             searchField.stringValue = ""
             applyEscape(action)
-        case .cancelComposition, .cancelCommandReview, .collapsePreview, .foldSearch:
+        case .cancelComposition, .cancelCommandReview, .closeResultColumn, .collapsePreview, .foldSearch:
             applyEscape(action)
         }
     }
@@ -1288,6 +1312,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         switch action {
         case .cancelCommandReview:
             cancelCommandReview()
+        case .closeResultColumn:
+            perform(.closeResultColumn)
         case .collapsePreview:
             togglePreview()
         case .clearQuery:
@@ -1306,7 +1332,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // shortcut here with Shift.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
-        guard isSessionOpen, modifiers == .command || isShiftCommandM else { return false }
+        let isShiftCommandT = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "t"
+        guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT else { return false }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
         // review card, and nothing else: a preview is not a review, and while an input method composes in the search
         // field the key is the composition's.
@@ -1346,6 +1373,18 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return true
         }
         let key = event.charactersIgnoringModifiers?.lowercased()
+        // ⇧⌘T shows the text in the selected image beside its preview. It never goes on to the menu bar; a composition
+        // keeps it, and held down it has acted already.
+        if isShiftCommandT {
+            if !isComposing, !event.isARepeat, state.offersTextInImage { perform(.showTextInImage) }
+            return true
+        }
+        // ⌘. stops the recognition shown beside the preview. It is taken here, before it becomes Escape, only while
+        // there is a recognition to stop.
+        if key == ".", modifiers == .command, !isComposing, state.textColumn?.isRecognizing == true {
+            if !event.isARepeat { perform(.stopTextRecognition) }
+            return true
+        }
         // ⌘Z undoes a move to Recently Deleted or the search field's typing, whichever `undoFromKeyboard` finds; a
         // composition has it as a key.
         if key == "z", modifiers == .command {

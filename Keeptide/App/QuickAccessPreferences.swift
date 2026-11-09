@@ -13,6 +13,7 @@ final class QuickAccessPreferences {
     static let showsFrequentClipsKey = "quickAccess.showsFrequentClips"
     static let fadesStripEndsKey = "quickAccess.fadesStripEnds"
     static let selectedCardScaleKey = "quickAccess.selectedCardScale"
+    static let keepsLineBreaksKey = "textRecognition.keepsLineBreaks"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -37,6 +38,12 @@ final class QuickAccessPreferences {
         didSet { defaults.set(Self.keptCardScale(selectedCardScale), forKey: Self.selectedCardScaleKey) }
     }
 
+    /// Whether text recognized in an image keeps the image's line breaks, or joins its lines into paragraphs.
+    /// Absent means it keeps them.
+    var keepsLineBreaks: Bool {
+        didSet { defaults.set(keepsLineBreaks, forKey: Self.keepsLineBreaksKey) }
+    }
+
     /// The strip's style as these settings make it, with the enlargement as it is stored. The panel takes it as it
     /// opens.
     var stripStyle: StripStyle {
@@ -51,6 +58,7 @@ final class QuickAccessPreferences {
         showsFrequentClips = defaults.object(forKey: Self.showsFrequentClipsKey) as? Bool ?? true
         selectedCardScale = Self.storedCardScale(in: defaults)
         fadesStripEnds = defaults.object(forKey: Self.fadesStripEndsKey) as? Bool ?? true
+        keepsLineBreaks = defaults.object(forKey: Self.keepsLineBreaksKey) as? Bool ?? true
     }
 
     /// Stored values are not trusted: a number is kept to 1.00–1.25 and to hundredths, and anything else gives the

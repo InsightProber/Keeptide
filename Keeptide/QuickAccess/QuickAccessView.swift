@@ -5,6 +5,8 @@ import Carbon.HIToolbox
 struct QuickAccessEscapeContext {
     /// A command waits on the review card, which lies in the preview's place.
     var hasCommandReview = false
+    /// A column of text shows beside the preview.
+    var hasResultColumn = false
     var isPreviewExpanded = false
     var hasFilters = false
     /// A list other than All is listed.
@@ -126,6 +128,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
         let context = escapeContext()
         let action = QuickAccessEscapePolicy.action(hasMarkedText: textView.hasMarkedText(),
                                                     hasCommandReview: context.hasCommandReview,
+                                                    hasResultColumn: context.hasResultColumn,
                                                     isPreviewExpanded: context.isPreviewExpanded,
                                                     hasQuery: !stringValue.isEmpty, hasFilters: context.hasFilters,
                                                     hasList: context.hasList,
@@ -137,7 +140,7 @@ final class QuickAccessSearchField: NSSearchField, NSSearchFieldDelegate {
             textView.insertText("", replacementRange: textView.markedRange())
             textView.inputContext?.discardMarkedText()
             return true
-        case .cancelCommandReview, .collapsePreview, .foldSearch:
+        case .cancelCommandReview, .closeResultColumn, .collapsePreview, .foldSearch:
             onEscape?(action)
             return true
         case .clearQuery:
@@ -210,18 +213,19 @@ final class QuickAccessFieldEditor: NSTextView {
 }
 
 enum QuickAccessEscapeAction: Equatable {
-    case cancelComposition, cancelCommandReview, collapsePreview, clearQuery, foldSearch, closePanel
+    case cancelComposition, cancelCommandReview, closeResultColumn, collapsePreview, clearQuery, foldSearch, closePanel
 }
 
 /// Escape handles only the top layer: composition, then the command review, whose card lies in the preview's place, then
-/// the preview, then the query and filters, which folds the search with them, then an open search with nothing in it,
-/// then the panel.
+/// the column of text beside the preview, then the preview, then the query and filters, which folds the search with
+/// them, then an open search with nothing in it, then the panel.
 enum QuickAccessEscapePolicy {
-    static func action(hasMarkedText: Bool, hasCommandReview: Bool = false, isPreviewExpanded: Bool = false,
-                       hasQuery: Bool, hasFilters: Bool = false, hasList: Bool = false,
-                       isSearchExpanded: Bool = false) -> QuickAccessEscapeAction {
+    static func action(hasMarkedText: Bool, hasCommandReview: Bool = false, hasResultColumn: Bool = false,
+                       isPreviewExpanded: Bool = false, hasQuery: Bool, hasFilters: Bool = false,
+                       hasList: Bool = false, isSearchExpanded: Bool = false) -> QuickAccessEscapeAction {
         if hasMarkedText { return .cancelComposition }
         if hasCommandReview { return .cancelCommandReview }
+        if hasResultColumn { return .closeResultColumn }
         if isPreviewExpanded { return .collapsePreview }
         if hasQuery || hasFilters || hasList { return .clearQuery }
         return isSearchExpanded ? .foldSearch : .closePanel

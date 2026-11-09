@@ -569,6 +569,11 @@ final class QuickAccessState {
         return row.ref
     }
 
+    /// Whether the selected clip is an image whose text the preview can show beside it.
+    var offersTextInImage: Bool {
+        selection.selectedRow?.kind == .image && services()?.derivedText != nil
+    }
+
     /// What the text column shows, while it shows: a job under way, then how the latest job ended, and otherwise what
     /// an earlier one saved.
     var textColumn: TextColumn? {
