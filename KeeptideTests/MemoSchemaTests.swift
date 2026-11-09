@@ -74,10 +74,10 @@ final class MemoSchemaTests: XCTestCase {
         let field = try XCTUnwrap(current.entitiesByName["MemoDocument"]?.attributesByName["displayKind"])
         XCTAssertTrue(field.isOptional)
         XCTAssertEqual(field.attributeType, .stringAttributeType)
-        XCTAssertEqual(current.versionIdentifiers, ["5"])
+        XCTAssertEqual(current.versionIdentifiers, ["6"])
         let directory = try XCTUnwrap(Bundle(for: PersistenceController.self)
             .url(forResource: "Keeptide", withExtension: "momd"))
-        for version in [1, 2, 3, 4] {
+        for version in [1, 2, 3, 4, 5] {
             let old = try XCTUnwrap(NSManagedObjectModel(contentsOf:
                 directory.appendingPathComponent("KeeptideV\(version).mom")))
             let oldDisplayKind = old.entitiesByName["MemoDocument"]?.attributesByName["displayKind"]
