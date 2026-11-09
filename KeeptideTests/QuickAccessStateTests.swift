@@ -789,6 +789,152 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 
+    // MARK: Text in an image
+
+    func testShowingTheTextInAnImageOpensItsColumnAndRecognizesItOnce() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let ref = try XCTUnwrap(state.selection.selection)
+
+        state.showTextInImage()
+
+        XCTAssertTrue(state.isPreviewExpanded)
+        XCTAssertEqual(state.resultColumn, .text)
+        XCTAssertEqual(state.textColumnRef, ref)
+        let engine = try await startedSource(recognizer, 0)
+        try await SearchTestSupport.waitUntil {
+            if case .recognizing? = state.textColumn { return true }
+            return false
+        }
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("Quarterly plan"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .text("Quarterly plan", status: .complete) }
+        XCTAssertEqual(recognizer.layouts, [true], "Line breaks are kept unless the person chose otherwise")
+
+        state.showTextInImage()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recognizer.layouts.count, 1, "What was made is shown, not made again")
+    }
+
+    func testTextKeptFromBeforeShowsWithoutRecognizingAgain() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let ref = try XCTUnwrap(state.selection.selection)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Kept from before"]),
+            for: DerivedTextRequest(source: ref, operation: .extractText, keepsLineBreaks: true))
+
+        state.showTextInImage()
+
+        try await SearchTestSupport.waitUntil { state.textColumn == .text("Kept from before", status: .complete) }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recognizer.layouts, [])
+    }
+
+    func testOnlyAnImageHasATextColumn() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Plain words", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.showTextInImage()
+
+        XCTAssertNil(state.resultColumn)
+        XCTAssertFalse(state.isPreviewExpanded)
+        XCTAssertNil(state.textColumn)
+        XCTAssertEqual(recognizer.layouts, [])
+    }
+
+    func testTheColumnFollowsTheSelectionWithoutRecognizingOnItsOwn() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Older", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        try await insert("Notes", at: 2, into: fixture)
+        try await insert("Newer", types: [("public.png", try png(width: 30, height: 40))], at: 3, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")), .delta("Newer text"),
+                                                    .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .text("Newer text", status: .complete) }
+
+        // Text has no column yet: the preview shows it alone, and the column is still chosen for the next image.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Notes")
+        XCTAssertEqual(state.resultColumn, .text)
+        XCTAssertNil(state.textColumnRef)
+        state.moveSelection(by: 1)
+        let older = try XCTUnwrap(state.selection.selection)
+        XCTAssertEqual(state.textColumnRef, older)
+        try await SearchTestSupport.waitUntil { state.textColumn == .notStarted }
+        XCTAssertEqual(recognizer.layouts.count, 1, "Nothing is recognized until the person asks")
+
+        state.extractText()
+        _ = try await startedSource(recognizer, 1)
+    }
+
+    func testClosingThePreviewClosesTheColumn() async throws {
+        let (fixture, _) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+
+        state.closeResultColumn()
+        XCTAssertNil(state.resultColumn)
+        XCTAssertTrue(state.isPreviewExpanded, "Closing the column leaves the preview")
+        state.showTextInImage()
+        state.togglePreview()
+
+        XCTAssertFalse(state.isPreviewExpanded)
+        XCTAssertNil(state.resultColumn)
+        XCTAssertNil(state.textColumnRef)
+    }
+
+    func testChangingTheLineBreaksRecognizesTheTextAgainInTheNewLayout() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Line one\nline two"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .text("Line one\nline two", status: .complete) }
+
+        state.setKeepsLineBreaks(false)
+
+        XCTAssertFalse(state.keepsLineBreaks)
+        try await startedSource(recognizer, 1).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Line one line two"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .text("Line one line two", status: .complete) }
+        XCTAssertEqual(recognizer.layouts, [true, false])
+    }
+
+    func testStoppingTheRecognitionLeavesNothingMade() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        state.stopTextRecognition()
+
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        try await SearchTestSupport.waitUntil { state.textColumn == .notStarted }
+    }
+
     func testImagePreviewComesFromThePreviewService() async throws {
         let fixture = try makeFixture()
         try await insert("pixel", types: [("public.png", try png(width: 3000, height: 2000))], at: 1, into: fixture)
@@ -2262,6 +2408,21 @@ final class QuickAccessStateTests: XCTestCase {
     /// The titles of the frequent wing's rows, in order.
     private func wing(_ state: QuickAccessState) -> [String] {
         state.selection.rows.prefix { $0.isFrequent }.map(\.title)
+    }
+
+    /// A fixture whose quick access recognizes text in images with a recognizer the test drives.
+    private func makeTextFixture() async throws -> (Fixture, ScriptedRecognizer) {
+        var fixture = try makeFixture()
+        let recognizer = ScriptedRecognizer()
+        let controller = fixture.harness.controller
+        let derivedText = DerivedTextCoordinator(
+            store: DerivedTextStore(controller: controller), identity: try await controller.identity(),
+            recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
+        addTeardownBlock { await derivedText.stopAndDrain() }
+        var services = fixture.services
+        services.derivedText = derivedText
+        fixture = Fixture(harness: fixture.harness, board: fixture.board, services: services)
+        return (fixture, recognizer)
     }
 
     /// Waits until the current generation has a page.

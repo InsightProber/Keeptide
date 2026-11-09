@@ -35,6 +35,27 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.job(for: source, operation: .extractText), "The job leaves when it ends")
     }
 
+    func testWhatAnEarlierJobSavedIsReadForExactlyItsContent() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Earlier", into: controller)
+        let other = try await insertClip("Other", into: controller)
+        var changed = source
+        changed.digest = Data(repeating: 9, count: 32)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        try await started(recognizer, 0).send(.started(info), .delta("Saved before"), .finished(.completed))
+        await waitUntil("the result is saved") { hasSettled(coordinator, source) }
+
+        let saved = await coordinator.savedResult(for: source, operation: .extractText)
+        let none = await coordinator.savedResult(for: other, operation: .extractText)
+        let stale = await coordinator.savedResult(for: changed, operation: .extractText)
+
+        XCTAssertEqual(saved?.text, "Saved before")
+        XCTAssertNil(none)
+        XCTAssertNil(stale, "The item's content has changed since")
+    }
+
     func testAnImageWithoutTextIsRememberedAndNothingIsSaved() async throws {
         let (controller, store) = try await makeStore()
         let source = try await insertClip("Blank", into: controller)
@@ -380,34 +401,6 @@ final class DerivedTextCoordinatorTests: XCTestCase {
     private func started(_ recognizer: ScriptedRecognizer, _ index: Int) async throws -> ControlledSource {
         await waitUntil("source \(index) is read") { (recognizer.source(index)?.startCount ?? 0) > 0 }
         return try XCTUnwrap(recognizer.source(index))
-    }
-}
-
-/// A recognizer whose sources a test drives by hand. It records what it was asked for.
-private final class ScriptedRecognizer: TextRecognitionEngine, @unchecked Sendable {
-    let tier: EngineTier
-    private let lock = NSLock()
-    private var requests: [(source: ControlledSource, image: @Sendable () async throws -> CGImage, keeps: Bool)] = []
-
-    init(tier: EngineTier = .onThisMac) {
-        self.tier = tier
-    }
-
-    func recognizeText(in image: @escaping @Sendable () async throws -> CGImage,
-                       keepingLineBreaks: Bool) -> any GenerationSource {
-        let source = ControlledSource()
-        lock.withLock { requests.append((source, image, keepingLineBreaks)) }
-        return source
-    }
-
-    var layouts: [Bool] { lock.withLock { requests.map(\.keeps) } }
-
-    func source(_ index: Int) -> ControlledSource? {
-        lock.withLock { index < requests.count ? requests[index].source : nil }
-    }
-
-    func image(_ index: Int) -> @Sendable () async throws -> CGImage {
-        lock.withLock { requests[index].image }
     }
 }
 

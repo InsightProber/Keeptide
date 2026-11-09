@@ -67,6 +67,12 @@ final class DerivedTextCoordinator {
         return kept.outcome
     }
 
+    /// What a job saved for exactly this content of an item, in this session or an earlier one; nil when there is
+    /// nothing, or it can't be read.
+    func savedResult(for source: ContentRef, operation: DerivedTextOperation) async -> DerivedText? {
+        try? await store.result(for: source, operation: operation)
+    }
+
     /// Starts recognizing the text in an image item, in place of any recognition under way for it. Nil once the
     /// library has closed.
     @discardableResult
