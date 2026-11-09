@@ -130,6 +130,7 @@ struct QuickAccessBandView: View {
                 CommandReviewView(review: review, confirmTitle: QuickAccessActions.confirmTitle(for: review),
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
             } else {
                 QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
                     QuickAccessPreviewView(preview: state.preview,
@@ -139,20 +140,23 @@ struct QuickAccessBandView: View {
                                        fileAccessIdentity: state.fileAccessIdentity,
                                        isLoadingOriginal: state.isLoadingOriginalPreview,
                                        previewMessage: state.previewMessage,
-                                       onRequestOriginal: state.loadOriginalPreview)
+                                       onRequestOriginal: state.loadOriginalPreview,
+                                       fillsBackground: false)
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 }
 
-/// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target.
+/// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target. It stands
+/// on a tray like the band's, in one piece with no surface of its own for the content, under a bar laid out like the
+/// band's toolbar.
 private struct QuickAccessPreviewCard<Content: View>: View {
     let onClose: () -> Void
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var appeared = false
 
     var body: some View {
@@ -160,34 +164,49 @@ private struct QuickAccessPreviewCard<Content: View>: View {
             HStack(spacing: 10) {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                        .background(.quaternary, in: Circle())
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color(nsColor: ToolbarPalette.glyph))
+                        .frame(width: QuickAccessSearchControl.foldedWidth, height: QuickAccessSearchControl.foldedWidth)
+                        .background(Color(nsColor: ToolbarPalette.foldedSearchFill), in: Circle())
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close Preview")
                 .accessibilityIdentifier("CloseQuickAccessPreview")
                 .help("Close Preview (Esc)")
-                Text("Preview").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Text("Preview")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .frame(height: 40)
+            .frame(height: StripLayout.toolbarHeight)
+            .padding(.top, StripLayout.toolbarTop)
+            .padding(.horizontal, QuickAccessToolbar.leadingInset)
             content()
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
-                .allowsHitTesting(false)
-        }
+        .background { PreviewTray(increasesContrast: contrast == .increased) }
+        .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .scaleEffect(appeared || reduceMotion ? 1 : 0.92)
         .opacity(appeared || reduceMotion ? 1 : 0)
         .onAppear {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { appeared = true }
         }
+    }
+}
+
+/// The band's tray, with its edge and highlight, behind the preview card.
+private struct PreviewTray: NSViewRepresentable {
+    let increasesContrast: Bool
+
+    func makeNSView(context: Context) -> QuickAccessBandSurface {
+        let surface = QuickAccessBandSurface()
+        // The card changes size as the panel lays it out, and the outline follows.
+        surface.layerContentsRedrawPolicy = .duringViewResize
+        return surface
+    }
+
+    func updateNSView(_ surface: QuickAccessBandSurface, context: Context) {
+        surface.increasesContrast = increasesContrast
     }
 }
 
@@ -384,6 +403,11 @@ final class QuickAccessBandSurface: NSView {
     static let edgeWidth: CGFloat = 1
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
 
     /// The tray's colour.
     static func fill(dark: Bool) -> NSColor {

@@ -1986,6 +1986,37 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testThePreviewStandsOnATrayLikeTheBands() async throws {
+        let visibleFrame = try XCTUnwrap(NSScreen.main).visibleFrame
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], visibleFrame: visibleFrame)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        controller.perform(.togglePreview)
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        settleLayout()
+        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let scroll = try XCTUnwrap(text.enclosingScrollView)
+        // Below the one short line of text, nothing but what the card stands on.
+        let body = scroll.convert(scroll.bounds, to: nil)
+        let empty = NSRect(x: body.midX - 20, y: body.minY + 40, width: 40, height: 20)
+        // The band's own tray, below its top edge and above its toolbar, beside the card.
+        let band = try bandRect(in: window)
+        let bandTray = NSRect(x: band.minX + 40, y: band.maxY - 10, width: 20, height: 6)
+        XCTAssertLessThan(bandTray.maxX, body.minX, "Left of the card, which is as wide as its text")
+
+        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+            window.appearance = NSAppearance(named: appearance)
+            settleLayout()
+            let drawn = try XCTUnwrap(color(in: window, at: empty), "\(appearance.rawValue)")
+            let tray = try XCTUnwrap(color(in: window, at: bandTray), "\(appearance.rawValue)")
+            XCTAssertEqual(drawn.redComponent, tray.redComponent, accuracy: 1 / 255, "\(appearance.rawValue)")
+            XCTAssertEqual(drawn.greenComponent, tray.greenComponent, accuracy: 1 / 255, "\(appearance.rawValue)")
+            XCTAssertEqual(drawn.blueComponent, tray.blueComponent, accuracy: 1 / 255, "\(appearance.rawValue)")
+        }
+        controller.state.close()
+    }
+
     func testAHeldCommandYTogglesThePreviewOnce() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -5474,6 +5505,17 @@ final class AppLaunchTests: XCTestCase {
         let field = try XCTUnwrap(window.contentView.flatMap(findSearchField))
         XCTAssertTrue(window.makeFirstResponder(field))
         return (field, try XCTUnwrap(field.currentEditor() as? NSTextView))
+    }
+
+    /// The one colour the window draws all over `area` (window coordinates), in sRGB, or nil when the area holds more
+    /// than one.
+    private func color(in window: NSWindow, at area: NSRect) throws -> NSColor? {
+        guard try contrast(in: window, at: area) < 2 / 255 else { return nil }
+        let content = try XCTUnwrap(window.contentView)
+        let rect = content.convert(area, from: nil)
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: rect))
+        content.cacheDisplay(in: rect, to: bitmap)
+        return bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB)
     }
 
     /// How far apart the colours the window draws in `area` (window coordinates) are: 0 where nothing or one

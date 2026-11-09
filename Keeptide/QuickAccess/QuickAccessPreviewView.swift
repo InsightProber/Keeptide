@@ -14,6 +14,9 @@ struct QuickAccessPreviewView: View {
     var isLoadingOriginal = false
     var previewMessage: String? = nil
     var onRequestOriginal: (() -> Void)? = nil
+    /// Whether the preview lies on a text background of its own, as in the Library. Quick access shows it
+    /// straight on the card's tray.
+    var fillsBackground = true
 
     var body: some View {
         Group {
@@ -70,7 +73,7 @@ struct QuickAccessPreviewView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background { if fillsBackground { Color(nsColor: .textBackgroundColor) } }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("QuickAccessPreview")
     }
