@@ -123,7 +123,7 @@ private extension ArchiveVerifier {
             boundaryHasher.update(data: Data("[".utf8))
 
             let entriesURL = try resolve(manifest.entries.path, under: root, expectedPrefix: nil)
-            let readResult = try readEntries(at: entriesURL) { entry in
+            let readResult = try readEntries(at: entriesURL, schemaVersion: manifest.schemaVersion) { entry in
                 try Task.checkCancellation()
                 try validate(entry, expectedOrdinal: entryCount + 1)
                 try validateContentDigest(entry)
@@ -244,7 +244,7 @@ private extension ArchiveVerifier {
 
     static func validate(_ manifest: ArchiveManifest) throws {
         guard manifest.format == ArchiveManifest.currentFormat,
-              manifest.schemaVersion == ArchiveManifest.currentSchemaVersion,
+              ArchiveManifest.readableSchemaVersions.contains(manifest.schemaVersion),
               manifest.verifierSchemaVersion == ArchiveManifest.currentVerifierSchemaVersion else {
             throw ArchiveVerificationError.unsupportedSchema
         }
@@ -419,7 +419,7 @@ private extension ArchiveVerifier {
     }
 
     static func readEntries(
-        at url: URL, onEntry: (ArchiveEntry) throws -> Void
+        at url: URL, schemaVersion: Int, onEntry: (ArchiveEntry) throws -> Void
     ) throws -> EntryReadResult {
         try validateRegularFile(url)
         let handle = try FileHandle(forReadingFrom: url)
@@ -439,7 +439,7 @@ private extension ArchiveVerifier {
                     throw ArchiveVerificationError.malformedArchive
                 }
                 let data = Data(line)
-                try StrictJSON.validateEntry(data)
+                try StrictJSON.validateEntry(data, schemaVersion: schemaVersion)
                 try onEntry(decode(ArchiveEntry.self, from: data))
                 pending.removeSubrange(...newline)
             }
@@ -665,7 +665,10 @@ private enum StrictJSON {
         "ordinal", "itemID", "facet", "facetLabel", "contentVersion", "contentDigestSHA256",
         "origin", "contentKind", "contentKindLabel", "availability", "availabilityLabel", "title", "representations",
     ]
-    static let entryOptionalKeys: Set<String> = ["note", "sourceApplicationIdentifier", "collection"]
+    /// Schema 1 gives an entry at most one `collection`; schema 2 lists `collections`.
+    static func entryOptionalKeys(schemaVersion: Int) -> Set<String> {
+        ["note", "sourceApplicationIdentifier", schemaVersion == 1 ? "collection" : "collections"]
+    }
     static let representationRequiredKeys: Set<String> = [
         "id", "itemIndex", "representationIndex", "typeIdentifier", "storage", "byteCount",
     ]
@@ -682,11 +685,21 @@ private enum StrictJSON {
         try exactKeys(try child(object, "entries"), ["path", "byteCount", "sha256"])
     }
 
-    static func validateEntry(_ data: Data) throws {
+    static func validateEntry(_ data: Data, schemaVersion: Int) throws {
         let object = try dictionary(data)
-        try allowedKeys(object, required: entryRequiredKeys, optional: entryOptionalKeys)
-        if let collection = object["collection"] as? [String: Any] {
+        try allowedKeys(object, required: entryRequiredKeys, optional: entryOptionalKeys(schemaVersion: schemaVersion))
+        if let collection = object["collection"] {
+            guard let collection = collection as? [String: Any] else { throw ArchiveVerificationError.malformedArchive }
             try exactKeys(collection, ["id", "name", "color"])
+        }
+        if let collections = object["collections"] {
+            // Present only for an entry in at least one collection, each listed once.
+            guard let collections = collections as? [[String: Any]], !collections.isEmpty else {
+                throw ArchiveVerificationError.malformedArchive
+            }
+            for collection in collections { try exactKeys(collection, ["id", "name", "color"]) }
+            let ids = collections.compactMap { $0["id"] as? String }
+            guard Set(ids).count == collections.count else { throw ArchiveVerificationError.malformedArchive }
         }
         try allowedKeys(try child(object, "origin"), required: ["kind"],
                         optional: ["captureManifestVersion", "captureItemCount"])

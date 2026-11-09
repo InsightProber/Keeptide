@@ -30,7 +30,7 @@ final class SnapshotArchiveTests: XCTestCase {
             title: "second",
             captureID: secondCapture.id,
             memoID: memo.id,
-            collectionID: collection.id,
+            collectionIDs: [collection.id],
             historyEligible: true,
             copyCount: 1
         )
@@ -602,7 +602,7 @@ final class SnapshotArchiveTests: XCTestCase {
             title: "memo only",
             captureID: capture.id,
             memoID: memo.id,
-            collectionID: collection.id,
+            collectionIDs: [collection.id],
             historyEligible: false
         )
         _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(

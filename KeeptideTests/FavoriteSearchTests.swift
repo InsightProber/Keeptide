@@ -12,7 +12,7 @@ final class FavoriteSearchTests: XCTestCase {
             .insert(.collection(firstCollection)), .insert(.collection(secondCollection)),
         ])
         var favorite = fixture.item
-        favorite.collectionID = firstCollection.id
+        favorite.collectionIDs = [firstCollection.id]
         favorite.isFavorite = true
         try await harness.update(.item(favorite.id), to: .item(favorite))
         try await harness.consumer.synchronize()
@@ -22,7 +22,7 @@ final class FavoriteSearchTests: XCTestCase {
         XCTAssertEqual(beforeMove.results.map(\.ref.itemID), [favorite.id])
 
         var moved = favorite
-        moved.collectionID = secondCollection.id
+        moved.collectionIDs = [secondCollection.id]
         try await harness.update(.item(moved.id), to: .item(moved))
         try await harness.consumer.synchronize()
         let afterMove = try await favorites(in: harness.service, query: "部署")
@@ -32,7 +32,7 @@ final class FavoriteSearchTests: XCTestCase {
         let rebuilt = try await SearchHarness.freshDocuments(for: harness.controller)
         let rebuiltMemo = try XCTUnwrap(rebuilt.first { $0.ref.itemID == favorite.id && $0.ref.facet == .memo })
         XCTAssertTrue(rebuiltMemo.isFavorite)
-        XCTAssertEqual(rebuiltMemo.collectionID, secondCollection.id)
+        XCTAssertEqual(rebuiltMemo.collectionIDs, [secondCollection.id])
         XCTAssertFalse(rebuilt.contains { $0.ref.itemID == favorite.id && $0.ref.facet == .history && $0.isFavorite })
     }
 
@@ -69,7 +69,7 @@ final class FavoriteSearchTests: XCTestCase {
         try index.apply([IndexedItemChange(itemID: itemID, documents: [moved])], sequence: 2, checkpoint: .keep)
 
         let stored = try XCTUnwrap(index.allDocuments().first)
-        XCTAssertEqual(stored.collectionID, moved.collectionID)
+        XCTAssertEqual(stored.collectionIDs, moved.collectionIDs)
         XCTAssertTrue(stored.isFavorite)
     }
 
@@ -110,7 +110,7 @@ final class FavoriteSearchTests: XCTestCase {
                             digest: Data(repeating: 7, count: 32)),
             captureID: facet == .history ? UUID() : nil, memoID: memoID,
             merged: false, savedAsMemo: false, kind: .text, sourceApp: "test.source",
-            collectionID: collectionID, isFavorite: isFavorite,
+            collectionIDs: collectionID.map { [$0] } ?? [], isFavorite: isFavorite,
             lastCopiedAt: Date(timeIntervalSince1970: 1_000), title: "", body: body, url: "", note: "",
             bodyPartial: false, textUnavailable: false,
             normalizedTitle: "", normalizedBody: SearchNormalizer.normalize(body),

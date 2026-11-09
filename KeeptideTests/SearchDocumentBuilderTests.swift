@@ -65,10 +65,10 @@ final class SearchDocumentBuilderTests: XCTestCase {
     }
 
     func testInheritedMemoWithVisibleHistoryProducesMergedRows() throws {
-        let collection = CollectionID()
+        let collections = CollectionID.sorted([CollectionID(), CollectionID()])
         let input = makeInput(
             representations: [text(0, 0, "public.utf8-plain-text", Data("kubectl rollout restart".utf8))],
-            collectionID: collection,
+            collectionIDs: collections,
             memo: { itemID, captureID in
                 MemoProjection(
                     ref: ContentRef(itemID: itemID, facet: .memo, version: ContentVersion(rawValue: captureID),
@@ -87,12 +87,12 @@ final class SearchDocumentBuilderTests: XCTestCase {
         XCTAssertFalse(history.merged)
         XCTAssertEqual(history.title, "部署命令")
         XCTAssertEqual(history.note, "prod")
-        XCTAssertNil(history.collectionID)
+        XCTAssertEqual(history.collectionIDs, [])
         XCTAssertEqual(history.body, "kubectl rollout restart")
         XCTAssertTrue(memo.merged)
         XCTAssertFalse(memo.savedAsMemo)
         XCTAssertEqual(memo.ref, input.memo?.ref)
-        XCTAssertEqual(memo.collectionID, collection)
+        XCTAssertEqual(memo.collectionIDs, collections)
         XCTAssertEqual(memo.body, "kubectl rollout restart")
         XCTAssertEqual(memo.memoID, input.memo?.memoID)
     }
@@ -206,7 +206,7 @@ final class SearchDocumentBuilderTests: XCTestCase {
         representations: [TextRepresentation],
         types: [String]? = nil,
         includeHistory: Bool = true,
-        collectionID: CollectionID? = nil,
+        collectionIDs: [CollectionID] = [],
         memo: ((ItemID, UUID) -> MemoProjection)? = nil
     ) -> SearchProjectionInput {
         let itemID = ItemID()
@@ -216,7 +216,7 @@ final class SearchDocumentBuilderTests: XCTestCase {
                          digest: Data(repeating: 1, count: 32))
             : nil
         return SearchProjectionInput(
-            itemID: itemID, title: title, sourceApp: "test.source", collectionID: collectionID,
+            itemID: itemID, title: title, sourceApp: "test.source", collectionIDs: collectionIDs,
             lastCopiedAt: Date(timeIntervalSince1970: 100), history: history,
             memo: memo?(itemID, captureID), captureID: captureID,
             representationTypes: types ?? representations.map(\.typeIdentifier),

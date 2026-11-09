@@ -12,7 +12,7 @@ final class LifecycleCleanupPlannerTests: XCTestCase {
         let capture = try ContentStoreFixtures.capture([[("public.utf8-plain-text", Data("history".utf8))]])
         var item = ContentStoreFixtures.item(capture)
         let collection = CollectionValue(name: "Pinned commands")
-        item.collectionID = collection.id
+        item.collectionIDs = [collection.id]
         item.isFavorite = true
         let memo = ownedMemo(itemID: item.id, body: "old")
         item.memoID = memo.id
@@ -59,7 +59,7 @@ final class LifecycleCleanupPlannerTests: XCTestCase {
         XCTAssertEqual(completed.phase, .completed)
         let updated = try await itemValue(item.id, in: store)
         XCTAssertNil(updated.memoID)
-        XCTAssertNil(updated.collectionID)
+        XCTAssertEqual(updated.collectionIDs, [])
         XCTAssertFalse(updated.isFavorite)
         XCTAssertEqual(updated.captureID, capture.id)
         await assertMissing(.memo(memo.id), in: store)

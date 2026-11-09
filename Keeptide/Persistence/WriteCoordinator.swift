@@ -502,12 +502,13 @@ struct WriteCoordinator: Sendable {
         previous: ItemValue?,
         inserted: Bool
     ) -> ItemReferenceChanges {
-        if inserted { return .all }
+        if inserted { return .inserted(item) }
         guard let previous else { return .none }
         return ItemReferenceChanges(
             capture: previous.captureID != item.captureID,
             memo: previous.memoID != item.memoID,
-            collection: previous.collectionID != item.collectionID
+            addedCollections: Set(item.collectionIDs).subtracting(previous.collectionIDs),
+            collection: previous.collectionIDs != item.collectionIDs
         )
     }
 
@@ -543,9 +544,10 @@ struct WriteCoordinator: Sendable {
                 throw StoreError.invalidTransaction
             }
         }
-        if let collection = item.collectionID {
+        if !item.collectionIDs.isEmpty {
+            // Only a memo belongs to collections, and only to ones that are not deleted when it joins them.
             guard item.memoID != nil else { throw StoreError.invalidTransaction }
-            if changes.collection {
+            for collection in changes.addedCollections {
                 guard let target = try StoredRecords.object(.collection(collection), in: context),
                       target.value(forKey: "deletedAt") == nil else {
                     throw StoreError.invalidTransaction
@@ -567,7 +569,13 @@ struct WriteCoordinator: Sendable {
         switch key {
         case .capture: attribute = "captureID"
         case .memo: attribute = "memoID"
-        case .collection: attribute = "collectionID"
+        case .collection:
+            let request = NSFetchRequest<NSManagedObject>(entityName: "LibraryItem")
+            request.predicate = NSPredicate(format: "collectionID == %@ OR ANY collection.id == %@",
+                                            key.id as NSUUID, key.id as NSUUID)
+            request.fetchLimit = 1
+            guard try context.fetch(request).isEmpty else { throw StoreError.preconditionFailed }
+            return
         default: return
         }
         let request = NSFetchRequest<NSManagedObject>(entityName: "LibraryItem")
@@ -580,10 +588,14 @@ struct WriteCoordinator: Sendable {
 private struct ItemReferenceChanges {
     let capture: Bool
     let memo: Bool
+    /// The collections the item joins in this commit; each must be active.
+    let addedCollections: Set<CollectionID>
     let collection: Bool
 
-    static let all = ItemReferenceChanges(capture: true, memo: true, collection: true)
-    static let none = ItemReferenceChanges(capture: false, memo: false, collection: false)
+    static func inserted(_ item: ItemValue) -> ItemReferenceChanges {
+        ItemReferenceChanges(capture: true, memo: true, addedCollections: Set(item.collectionIDs), collection: true)
+    }
+    static let none = ItemReferenceChanges(capture: false, memo: false, addedCollections: [], collection: false)
 
     var any: Bool {
         capture || memo || collection

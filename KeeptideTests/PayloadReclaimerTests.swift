@@ -205,7 +205,7 @@ final class PayloadReclaimerTests: XCTestCase {
             expectedItem.historyEligible = false
             expectedItem.historyDeletedAt = nil
             expectedItem.historyPurgeAfter = nil
-            expectedItem.collectionID = nil
+            expectedItem.collectionIDs = []
             expectedItem.isFavorite = false
             XCTAssertEqual(finalItem, expectedItem)
             await assertMissing(.memo(fixture.memo.id), in: controller)
@@ -328,7 +328,7 @@ final class PayloadReclaimerTests: XCTestCase {
         let representation = try XCTUnwrap(capture.representations.first)
         var item = ContentStoreFixtures.item(capture)
         let collection = CollectionValue(name: "Retained collection", color: "blue")
-        item.collectionID = collection.id
+        item.collectionIDs = [collection.id]
         item.isFavorite = true
         let memo = MemoValue(itemID: item.id, bodyMode: .inheritedCapture)
         item.memoID = memo.id

@@ -299,7 +299,7 @@ private extension ContentSnapshotReader {
             guard case .item(let item)? = try StoredRecords.value(.item(ref.itemID), in: context) else {
                 throw StoreError.corruptStore
             }
-            guard item.collectionID == nil || item.memoID != nil else { throw StoreError.corruptStore }
+            guard item.collectionIDs.isEmpty || item.memoID != nil else { throw StoreError.corruptStore }
             append(.item(item), to: &records, included: &included)
 
             if let captureID = item.captureID {
@@ -313,7 +313,7 @@ private extension ContentSnapshotReader {
                 try validateArchivedMemo(memo, retainedCaptureID: item.captureID)
                 append(.memo(memo), to: &records, included: &included)
             }
-            if let collectionID = item.collectionID {
+            for collectionID in item.collectionIDs {
                 guard case .collection(let collection)? = try StoredRecords.value(
                     .collection(collectionID),
                     in: context

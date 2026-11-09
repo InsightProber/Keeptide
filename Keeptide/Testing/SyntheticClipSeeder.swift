@@ -47,10 +47,10 @@ enum SyntheticClipSeeder {
         _ = try await library.create(MemoDraft(
             title: "Summarize meeting notes",
             body: "Summarize the notes below into decisions, owners and open questions.",
-            collectionID: prompts.value.id
+            collectionIDs: [prompts.value.id]
         ))
         let ports = try await library.create(MemoDraft(
-            title: "List open ports", body: "lsof -nP -iTCP -sTCP:LISTEN", collectionID: shell.value.id
+            title: "List open ports", body: "lsof -nP -iTCP -sTCP:LISTEN", collectionIDs: [shell.value.id]
         ))
         _ = try await collections.setFavorite([ports], isFavorite: true)
         _ = try await library.create(MemoDraft(title: "Release checklist", body: "Tag, notarize, ship."))

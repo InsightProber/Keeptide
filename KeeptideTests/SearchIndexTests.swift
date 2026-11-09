@@ -137,19 +137,20 @@ final class SearchIndexTests: XCTestCase {
         let memo = MemoValue(itemID: item.id, bodyMode: .inheritedCapture)
         let collections = [CollectionValue(name: "first"), CollectionValue(name: "second")]
         item.memoID = memo.id
-        item.collectionID = collections[0].id
+        item.collectionIDs = [collections[0].id]
         try await harness.commit([.insert(.capture(capture)), .insert(.memo(memo))]
                          + collections.map { .insert(.collection($0)) } + [.insert(.item(item))])
         try await harness.consumer.synchronize()
         let itemID = item.id
-        let collectionIDs = collections.map(\.id)
+        let memoID = memo.id
+        // Only the item's link to its memo and the memo's inverse change: pages of inverse-only transactions.
         for index in 0..<128 {
             try await harness.controller.perform { context in
                 context.reset()
                 guard let object = try StoredRecords.object(.item(itemID), in: context),
-                      let collection = try StoredRecords.object(.collection(collectionIDs[(index + 1) % 2]), in: context)
+                      let memoObject = try StoredRecords.object(.memo(memoID), in: context)
                 else { throw CocoaError(.coderValueNotFound) }
-                object.setValue(collection, forKey: "collection")
+                object.setValue(index.isMultiple(of: 2) ? nil : memoObject, forKey: "memo")
                 try context.save()
                 context.reset()
             }

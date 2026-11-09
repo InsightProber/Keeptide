@@ -103,6 +103,35 @@ final class ExportTests: XCTestCase {
         XCTAssertEqual(activeLeases, 0)
     }
 
+    func testASnippetInSeveralCollectionsExportsEachOfThem() async throws {
+        let fixture = try makeStoreAndDestination()
+        let prompts = CollectionValue(name: "Prompts", color: "blue", sortOrder: 1)
+        let shell = CollectionValue(name: "Shell", color: "green", sortOrder: 2)
+        let body = Data("echo synthetic".utf8)
+        let memo = MemoValue(itemID: ItemID(), bodyMode: .ownedPlainText, body: body,
+                             version: ContentVersion(), digest: ContentDigest.sha256(body))
+        let item = ItemValue(id: memo.itemID, title: "Filed twice", memoID: memo.id,
+                             collectionIDs: [shell.id, prompts.id])
+        _ = try await WriteCoordinator(controller: fixture.controller).commit(StoreTransaction(
+            identity: try await fixture.controller.identity(),
+            mutations: [.insert(.collection(prompts)), .insert(.collection(shell)),
+                        .insert(.memo(memo)), .insert(.item(item))]
+        ))
+        let ref = ContentRef(itemID: item.id, facet: .memo, version: try XCTUnwrap(memo.version),
+                             digest: try XCTUnwrap(memo.digest))
+
+        let result = try await ExportService(controller: fixture.controller).export(
+            ExportRequest(scope: .selected([ref]), destinationParent: fixture.destinationParent)
+        )
+
+        let archive = try readArchive(at: result.destination)
+        XCTAssertEqual(archive.manifest.schemaVersion, 2)
+        let entry = try XCTUnwrap(archive.entries.first)
+        XCTAssertNil(entry.collection)
+        XCTAssertEqual(entry.collections?.map(\.id), CollectionID.sorted([prompts.id, shell.id]).map(\.rawValue))
+        XCTAssertEqual(Set(entry.collections?.map(\.name) ?? []), ["Prompts", "Shell"])
+    }
+
     func testCancellationAndIdentityChangeLeaveNoPublishedOrStagedArchiveAndReleaseLease() async throws {
         try await assertInterruptedExport(identityChange: false)
         try await assertInterruptedExport(identityChange: true)
