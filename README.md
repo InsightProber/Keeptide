@@ -133,12 +133,15 @@ show the selected clip, or its snippet, there.
   mode, and drafts that survive a restart.
 - **Recently Deleted** keeps deleted items for seven days before they are
   removed for good, and you can restore them until then.
+- The sidebar shows how many items each list holds. The **Filter** button over
+  the list narrows it to favorites, to one kind of content or to the app it
+  came from.
 - **File › Export Library…** and **Export Selected…** copy the visible list or
   the selected items into a new folder. An export is a local snapshot, not a
   backup you can import.
 
 <p align="center">
-  <img src="docs/images/library.jpg" width="900" alt="The Keeptide library: a sidebar with Recent Clips, All Snippets, Favorites, Collections and Recently Deleted; a list of recent clips, each with the time it was copied and the app it came from; and the selected landscape image under its title and one line of details, with Copy, Save as Snippet, Favorite, Collection and Info in the toolbar">
+  <img src="docs/images/library.jpg" width="900" alt="The Keeptide library: a sidebar with Recent Clips, All Snippets, Favorites, two collections, Unfiled and Recently Deleted, each list with its count; a list of recent clips under New Snippet and Filter, each with the time it was copied and the app it came from; and the selected landscape image under its title and one line of details, with Copy, Save as Snippet, Favorite, Collection and Info in the toolbar">
 </p>
 
 ### Settings
@@ -167,9 +170,10 @@ Choose **Settings…** from the menu-bar menu.
 
 ## Status
 
-Development builds include local capture, quick access, search, direct paste,
-the snippet library with collections and favorites, history retention, Recently
-Deleted and local export.
+Development builds include local capture, quick access with lists for
+snippets, favorites and collections, search, direct paste, the snippet library
+with collections, favorites, list counts and filters, history retention,
+Recently Deleted and local export.
 
 Planned:
 

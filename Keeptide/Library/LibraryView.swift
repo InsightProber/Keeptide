@@ -361,22 +361,27 @@ struct LibraryView: View {
         List(selection: $selectedScope) {
             Section("Clipboard") {
                 Label("Recent Clips", systemImage: "clock")
+                    .badge(count(of: .recentClips))
                     .tag(LibraryScope.recentClips)
             }
             Section("Snippets") {
                 Label("All Snippets", systemImage: "bookmark")
+                    .badge(count(of: .allSnippets))
                     .tag(LibraryScope.allSnippets)
                 Label("Favorites", systemImage: "star")
+                    .badge(count(of: .favorites))
                     .tag(LibraryScope.favorites)
             }
             Section {
                 if let workspace = session.libraryWorkspace {
                     ForEach(workspace.collections, id: \.value.id) { collection in
                         collectionSidebarRow(collection, workspace: workspace)
+                            .badge(count(of: .collection(collection.value.id)))
                             .tag(LibraryScope.collection(collection.value.id))
                     }
                     if !workspace.collections.isEmpty {
                         Label("Unfiled", systemImage: "tray")
+                            .badge(count(of: .uncategorized))
                             .tag(LibraryScope.uncategorized)
                     }
                 }
@@ -385,13 +390,18 @@ struct LibraryView: View {
             }
             Section {
                 Label("Recently Deleted", systemImage: "trash")
+                    .badge(count(of: .recentlyDeleted))
                     .tag(LibraryScope.recentlyDeleted)
             }
         }
         .listStyle(.sidebar)
         .focused($sidebarHasFocus)
         .accessibilityIdentifier("LibrarySidebar")
-        .task { await session.libraryWorkspace?.refreshCollections() }
+        .task {
+            await session.libraryWorkspace?.refreshCollections()
+            // Recently Deleted's count, before the list is first opened.
+            await session.maintenance?.refreshTrash()
+        }
     }
 
     /// The Collections heading and its button for a new collection; right-clicking the heading offers the same.
@@ -667,6 +677,7 @@ struct LibraryView: View {
             // From Recently Deleted too: the new snippet goes to Unfiled, and All Snippets shows it.
             .disabled(session.libraryWorkspace == nil)
         }
+        ToolbarItem { filterMenu }
     }
 
     /// Over the detail: what acts on the selection, the same four items whatever is selected, then Info and the
@@ -812,12 +823,19 @@ struct LibraryView: View {
             }
             .disabled(session.libraryWorkspace == nil)
         } label: {
-            Label(currentScopeTitle, systemImage: "line.3.horizontal.decrease.circle")
+            Label(currentScopeTitle, systemImage: scopeSymbol)
                 .lineLimit(1)
         }
         .help(LibrarySidebar.chooseListHelp)
         .accessibilityLabel("Library Scope: \(currentScopeTitle)")
         .accessibilityIdentifier("LibraryScopeMenu")
+    }
+
+    /// The chosen list's symbol, as the sidebar shows it; a collection's is a folder.
+    private var scopeSymbol: String {
+        let scope = selectedScope ?? .recentClips
+        if scope.collectionID != nil { return "folder" }
+        return listSections.joined().first { $0.scope == scope }?.symbolName ?? "list.bullet"
     }
 
     private var listSubtitle: String {
@@ -1028,6 +1046,7 @@ struct LibraryView: View {
     private func snippetList(_ workspace: LibraryWorkspace, recentStyle: Bool = false) -> some View {
         VStack(spacing: 0) {
             actionStatusLine(workspace)
+            filterStatusLine(workspace)
             if !workspace.recoveredDrafts.isEmpty || workspace.recoveryNotice != nil {
                 recoveredDrafts(workspace)
                 Divider()
@@ -1051,27 +1070,140 @@ struct LibraryView: View {
             if workspace.entries.isEmpty, !workspace.isLoading {
                 emptyList(workspace, recentStyle: recentStyle)
             } else {
-                List(workspace.entries, selection: entrySelection(workspace)) { entry in
-                    LibraryEntryRow(
-                        entry: entry,
-                        sourceAppName: entry.sourceApp.flatMap { applicationNames.name(for: $0) },
-                        collection: showsCollections(workspace)
-                            ? workspace.collections.first { $0.value.id == entry.collectionID }?.value : nil
-                    )
-                        .tag(entry.id)
-                        .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
-                        .contextMenu {
-                            entryActions(for: contextEntries(entry, workspace: workspace), workspace: workspace)
-                        }
-                        .onAppear {
-                            guard entry.id == workspace.entries.last?.id, workspace.hasMoreEntries else { return }
-                            Task { await workspace.loadMore() }
-                        }
+                List(selection: entrySelection(workspace)) {
+                    ForEach(workspace.entries) { entry in
+                        entryRow(entry, workspace: workspace, recentStyle: recentStyle)
+                    }
                 }
                 .listStyle(.inset)
                 .onDeleteCommand { deleteFromList(workspace) }
                 .accessibilityIdentifier("SnippetList")
             }
+        }
+    }
+
+    // MARK: Counts and the Filter
+
+    /// A list's count from the search index; 0, which shows no badge, while the index cannot give true ones.
+    /// Recently Deleted counts what it holds.
+    private func count(of scope: LibraryScope) -> Int {
+        if scope == .recentlyDeleted { return session.maintenance?.trash.count ?? 0 }
+        guard let counts = session.libraryWorkspace?.counts else { return 0 }
+        switch scope {
+        case .recentClips: return counts.clips
+        case .allSnippets: return counts.snippets
+        case .favorites: return counts.favorites
+        case .uncategorized: return counts.unfiled
+        case .collection(let id): return counts.collections[id] ?? 0
+        case .recentlyDeleted: return 0
+        }
+    }
+
+    private var currentFilter: LibraryFilter { session.libraryWorkspace?.filter ?? LibraryFilter() }
+
+    private func updateFilter(_ change: (inout LibraryFilter) -> Void) {
+        guard let workspace = session.libraryWorkspace else { return }
+        var filter = workspace.filter
+        change(&filter)
+        workspace.setFilter(filter)
+    }
+
+    /// "Favorites, Text, Safari": what the filter keeps.
+    private var filterSummary: String {
+        let filter = currentFilter
+        var names = filter.favoritesOnly && LibraryFilter.offersFavoritesOnly(in: selectedScope ?? .recentClips)
+            ? ["Favorites"] : []
+        names += ContentKind.filters.filter(filter.kinds.contains).map(\.filterTitle)
+        if let app = filter.sourceApp { names.append(applicationNames.name(for: app) ?? app) }
+        return names.joined(separator: ", ")
+    }
+
+    /// Favorites Only, the types and the source apps, as Mail filters a mailbox: the list's own toolbar item.
+    private var filterMenu: some View {
+        let filter = currentFilter
+        let scope = selectedScope ?? .recentClips
+        var apps = session.libraryWorkspace?.sourceApps ?? []
+        if let chosen = filter.sourceApp, !apps.contains(chosen) { apps.insert(chosen, at: 0) }
+        return Menu {
+            Toggle(isOn: Binding(get: { filter.favoritesOnly }, set: { on in updateFilter { $0.favoritesOnly = on } })) {
+                Label("Favorites Only", systemImage: "star")
+            }
+            .disabled(!LibraryFilter.offersFavoritesOnly(in: scope))
+            Divider()
+            Toggle("All Types", isOn: Binding(get: { filter.kinds.isEmpty }, set: { _ in updateFilter { $0.kinds = [] } }))
+            ForEach(ContentKind.filters, id: \.self) { kind in
+                Toggle(isOn: Binding(
+                    get: { filter.kinds.contains(kind) },
+                    set: { on in updateFilter { if on { $0.kinds.insert(kind) } else { $0.kinds.remove(kind) } } }
+                )) {
+                    Label(kind.filterTitle, systemImage: kind.symbolName)
+                }
+            }
+            Divider()
+            Menu("Source App") {
+                Toggle("Any App", isOn: Binding(
+                    get: { filter.sourceApp == nil }, set: { _ in updateFilter { $0.sourceApp = nil } }
+                ))
+                if !apps.isEmpty { Divider() }
+                ForEach(apps, id: \.self) { app in
+                    Toggle(applicationNames.name(for: app) ?? app, isOn: Binding(
+                        get: { filter.sourceApp == app }, set: { on in updateFilter { $0.sourceApp = on ? app : nil } }
+                    ))
+                }
+            }
+            if filter.isActive {
+                Divider()
+                Button("Clear Filter") { updateFilter { $0 = LibraryFilter() } }
+            }
+        } label: {
+            Label("Filter", systemImage: filter.isActive
+                ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+        }
+        .help(filter.isActive ? "Filtered by \(filterSummary)" : "Filter")
+        .accessibilityIdentifier("LibraryFilterMenu")
+        .disabled(session.libraryWorkspace == nil || scope == .recentlyDeleted)
+    }
+
+    /// Over a filtered list, what it is filtered by, and the way back.
+    @ViewBuilder
+    private func filterStatusLine(_ workspace: LibraryWorkspace) -> some View {
+        if workspace.filter.isActive, !filterSummary.isEmpty {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Label("Filtered by \(filterSummary)", systemImage: "line.3.horizontal.decrease.circle.fill")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Button("Clear") { updateFilter { $0 = LibraryFilter() } }
+                        .controlSize(.small)
+                        .accessibilityIdentifier("ClearLibraryFilter")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .accessibilityIdentifier("LibraryFilterStatus")
+                Divider()
+            }
+        }
+    }
+
+    /// One row of a list, with its menu; the last row asks for the next page.
+    private func entryRow(_ entry: LibraryEntry, workspace: LibraryWorkspace, recentStyle: Bool) -> some View {
+        LibraryEntryRow(
+            entry: entry,
+            sourceAppName: entry.sourceApp.flatMap { applicationNames.name(for: $0) },
+            collection: showsCollections(workspace)
+                ? workspace.collections.first { $0.value.id == entry.collectionID }?.value : nil
+        )
+        .tag(entry.id)
+        .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
+        .contextMenu {
+            entryActions(for: contextEntries(entry, workspace: workspace), workspace: workspace)
+        }
+        .onAppear {
+            guard entry.id == workspace.entries.last?.id, workspace.hasMoreEntries else { return }
+            Task { await workspace.loadMore() }
         }
     }
 
@@ -1097,6 +1229,15 @@ struct LibraryView: View {
         } else if !workspace.query.isEmpty {
             ContentUnavailableView.search(text: workspace.query)
                 .accessibilityIdentifier("LibrarySearchEmptyState")
+        } else if workspace.filter.isActive {
+            ContentUnavailableView {
+                Label("No Matching Items", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("Nothing in this list matches the filter.")
+            } actions: {
+                Button("Clear Filter") { updateFilter { $0 = LibraryFilter() } }
+            }
+            .accessibilityIdentifier("LibraryFilterEmptyState")
         } else {
             let empty = LibraryEmptyList.make(
                 for: recentStyle ? .recentClips : selectedScope ?? .allSnippets, named: currentScopeTitle

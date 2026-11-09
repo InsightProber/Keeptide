@@ -1038,6 +1038,73 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "existing")
     }
 
+    func testTheFilterNarrowsTheListAndAnEmptyResultStaysEmpty() async throws {
+        let harness = try SearchHarness.make(in: self)
+        func clip(_ representations: [(String, Data)], from app: String) async throws -> ItemValue {
+            let capture = try ContentStoreFixtures.capture([representations])
+            var item = ContentStoreFixtures.item(capture)
+            item.sourceApp = app
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+            return item
+        }
+        let note = try await clip([("public.utf8-plain-text", Data("plain synthetic note".utf8))],
+                                  from: "com.example.editor")
+        let address = Data("https://example.com/synthetic".utf8)
+        let link = try await clip([("public.url", address), ("public.utf8-plain-text", address)],
+                                  from: "com.example.browser")
+        let workspace = try await makeWorkspace(harness)
+        await workspace.reload()
+        XCTAssertEqual(Set(workspace.entries.map(\.id)), [note.id, link.id])
+
+        workspace.setFilter(LibraryFilter(kinds: [.url]))
+        try await SearchTestSupport.waitUntil { !workspace.isLoading && workspace.entries.map(\.id) == [link.id] }
+        workspace.setFilter(LibraryFilter(sourceApp: "com.example.editor"))
+        try await SearchTestSupport.waitUntil { !workspace.isLoading && workspace.entries.map(\.id) == [note.id] }
+
+        // A filter that leaves nothing shows nothing, not the unfiltered recent clips.
+        workspace.setFilter(LibraryFilter(kinds: [.image]))
+        try await SearchTestSupport.waitUntil { !workspace.isLoading && workspace.entries.isEmpty }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(workspace.entries.isEmpty)
+    }
+
+    func testFavoritesOnlyKeepsTheListsFavoriteSnippets() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let library = LibraryService(controller: harness.controller)
+        let kept = try await library.create(MemoDraft(title: "Kept", body: "kept synthetic body"))
+        _ = try await library.create(MemoDraft(title: "Other", body: "other synthetic body"))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.setScope(.allSnippets)
+        _ = await workspace.setFavorite([kept], isFavorite: true)
+
+        workspace.setFilter(LibraryFilter(favoritesOnly: true))
+
+        try await SearchTestSupport.waitUntil {
+            !workspace.isLoading && workspace.entries.map(\.id) == [kept.itemID]
+        }
+        XCTAssertTrue(LibraryFilter.offersFavoritesOnly(in: .allSnippets))
+        XCTAssertFalse(LibraryFilter.offersFavoritesOnly(in: .recentClips))
+        XCTAssertFalse(LibraryFilter.offersFavoritesOnly(in: .favorites))
+    }
+
+    func testCountsFollowTheLibraryOnceChangesSettle() async throws {
+        let harness = try SearchHarness.make(in: self)
+        _ = try await insertHistory("one synthetic clip", into: harness)
+        let memo = try await LibraryService(controller: harness.controller)
+            .create(MemoDraft(title: "Snippet", body: "synthetic snippet body"))
+        let workspace = try await makeWorkspace(harness)
+
+        await workspace.reload()
+
+        try await SearchTestSupport.waitUntil { workspace.counts != nil }
+        XCTAssertEqual(workspace.counts?.clips, 1)
+        XCTAssertEqual(workspace.counts?.snippets, 1)
+        XCTAssertEqual(workspace.counts?.unfiled, 1)
+        XCTAssertEqual(workspace.counts?.favorites, 0)
+        _ = await workspace.setFavorite([memo], isFavorite: true)
+        try await SearchTestSupport.waitUntil { workspace.counts?.favorites == 1 }
+    }
+
     func testAnItemThatCannotBeOpenedIsNamedUntilAnotherOpens() async throws {
         let harness = try SearchHarness.make(in: self)
         let (item, capture) = try await insertHistory("still here", into: harness)

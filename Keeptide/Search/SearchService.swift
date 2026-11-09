@@ -144,6 +144,19 @@ final class SearchIndexStatus: @unchecked Sendable {
     }
 }
 
+/// How many rows each library list holds, as the index has them. Collections hold memos only, so the memo counts
+/// are grouped by collection and favorite mark in one pass.
+struct LibraryCounts: Equatable, Sendable {
+    /// Recent Clips: every clip.
+    var clips = 0
+    /// All Snippets: every memo.
+    var snippets = 0
+    var favorites = 0
+    /// Memos in no collection.
+    var unfiled = 0
+    var collections: [CollectionID: Int] = [:]
+}
+
 struct SearchService: Sendable {
     static let queueLabel = "io.github.insightprober.keeptide.search"
     /// Every search's blocking SQLite work runs here, never on Swift's cooperative pool.
@@ -217,6 +230,65 @@ struct SearchService: Sendable {
             if error == .corrupt { status.reportReadFailure() }
             emit(unavailable)
         }
+    }
+
+    /// The library's list counts, or nil while the index cannot give true ones: unavailable, or rebuilding, when
+    /// it may hold only part of the library. A list then shows no count rather than a wrong one.
+    func counts() async -> LibraryCounts? {
+        await withCheckedContinuation { continuation in
+            Self.queue.async { continuation.resume(returning: (try? readCounts()) ?? nil) }
+        }
+    }
+
+    /// The source apps of the rows `request` lists, most rows first, at most `limit`. The request's own source app
+    /// and query are left out: the Filter menu offers every app the list has.
+    func sourceApps(of request: SearchRequest, limit: Int = 12) async -> [String] {
+        await withCheckedContinuation { continuation in
+            Self.queue.async { continuation.resume(returning: (try? readSourceApps(request, limit: limit)) ?? []) }
+        }
+    }
+
+    private func readCounts() throws -> LibraryCounts? {
+        guard let index, status.state != .unavailable, let reader = try? index.openReader() else { return nil }
+        defer { reader.close() }
+        return try reader.snapshot { () throws -> LibraryCounts? in
+            guard [.ready, .updating].contains(try indexState(reader)) else { return nil }
+            var counts = LibraryCounts()
+            counts.clips = try count(reader.rows("SELECT count(*) FROM doc WHERE facet = 'history'", []))
+            let groups = try reader.rows(
+                "SELECT collection_id, is_favorite, count(*) FROM doc WHERE facet = 'memo' "
+                    + "GROUP BY collection_id, is_favorite", []
+            )
+            for row in groups {
+                guard row.count == 3, case .integer(let favorite) = row[1], case .integer(let total) = row[2] else {
+                    throw SearchIndexError.corrupt
+                }
+                counts.snippets += Int(total)
+                if favorite != 0 { counts.favorites += Int(total) }
+                if let id = row[0].uuid {
+                    counts.collections[CollectionID(rawValue: id), default: 0] += Int(total)
+                } else {
+                    counts.unfiled += Int(total)
+                }
+            }
+            return counts
+        }
+    }
+
+    private func readSourceApps(_ request: SearchRequest, limit: Int) throws -> [String] {
+        guard let index, status.state != .unavailable, let reader = try? index.openReader() else { return [] }
+        defer { reader.close() }
+        var listing = request
+        listing.query = ""
+        listing.sourceApp = nil
+        var builder = SQLBuilder()
+        let filter = conditions(ParsedQuery(""), listing, &builder)
+        let rows = try reader.rows(
+            "SELECT d.source_app FROM doc d WHERE \(filter) AND d.source_app IS NOT NULL "
+                + "GROUP BY d.source_app ORDER BY count(*) DESC, d.source_app LIMIT \(max(1, min(limit, 50)))",
+            builder.bindings
+        )
+        return rows.compactMap { $0.first?.text }
     }
 
     /// A rebuild interrupted in an earlier run leaves the file mid-build until the

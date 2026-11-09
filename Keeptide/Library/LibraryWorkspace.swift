@@ -1,6 +1,23 @@
 import Foundation
 import Observation
 
+/// The Filter button's choices. They narrow every list but Recently Deleted, and stay as lists change. Favorites
+/// Only applies where a list holds favorites among other snippets.
+struct LibraryFilter: Equatable, Sendable {
+    var favoritesOnly = false
+    var kinds: Set<ContentKind> = []
+    var sourceApp: String?
+
+    var isActive: Bool { favoritesOnly || !kinds.isEmpty || sourceApp != nil }
+
+    static func offersFavoritesOnly(in scope: LibraryScope) -> Bool {
+        switch scope {
+        case .allSnippets, .uncategorized, .collection: true
+        case .recentClips, .favorites, .recentlyDeleted: false
+        }
+    }
+}
+
 enum LibraryScope: Hashable, Sendable {
     case recentClips
     case favorites
@@ -220,6 +237,13 @@ final class LibraryWorkspace {
     private(set) var canUndoNewSave = false
     private(set) var hasMoreEntries = false
     private(set) var searchIsPartial = false
+    /// The Filter button's choices.
+    private(set) var filter = LibraryFilter()
+    /// Each list's count from the search index; nil while the index cannot give true ones.
+    private(set) var counts: LibraryCounts?
+    /// The apps the current list's rows came from, most rows first, for the Filter menu.
+    private(set) var sourceApps: [String] = []
+    @ObservationIgnored private var countsTask: Task<Void, Never>?
     private(set) var isClosing = false
     private(set) var recoveryNotice: String?
     private(set) var collections: [CollectionSnapshot] = []
@@ -443,6 +467,7 @@ final class LibraryWorkspace {
     }
 
     private func reload(refreshIndex: Bool) async {
+        defer { if !isClosing, !isClosed { scheduleCountsRefresh() } }
         loadGeneration &+= 1
         let generation = loadGeneration
         isLoading = true
@@ -552,6 +577,37 @@ final class LibraryWorkspace {
         query = value
         // In Recently Deleted the view filters the deleted items by title; the reload only clears the rows.
         scheduleQueryLoad()
+    }
+
+    func setFilter(_ value: LibraryFilter) {
+        guard !isClosing, !isClosed, filter != value else { return }
+        filter = value
+        scheduleQueryLoad()
+    }
+
+    /// Reads the counts and the list's source apps again once changes settle: 300 ms after the last reload that
+    /// asked, so a run of captures or edits reads the index once.
+    private func scheduleCountsRefresh() {
+        countsTask?.cancel()
+        guard let searchService else { return }
+        var request: SearchRequest?
+        if scope != .recentlyDeleted {
+            var listing = SearchRequest(query: "", scope: scope == .recentClips ? .history : .memo,
+                                        favoritesOnly: scope == .favorites, generation: 0)
+            if case .collection(let id) = scope { listing.collection = .collection(id) }
+            if scope == .uncategorized { listing.collection = .uncategorized }
+            request = listing
+        }
+        countsTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            let counts = await searchService.counts()
+            var apps: [String] = []
+            if let request { apps = await searchService.sourceApps(of: request) }
+            guard !Task.isCancelled, let self, !self.isClosed else { return }
+            self.counts = counts
+            self.sourceApps = apps
+        }
     }
 
     private func scheduleQueryLoad(refreshIndex: Bool = false) {
@@ -1298,8 +1354,10 @@ final class LibraryWorkspace {
             var totalMatches = 0
             var isPartial = false
             for try await page in searchService.search(SearchRequest(
-                query: query, scope: searchScope, collection: collection,
-                favoritesOnly: !searchesEverything && scope == .favorites,
+                query: query, scope: searchScope, kinds: filter.kinds, collection: collection,
+                sourceApp: filter.sourceApp,
+                favoritesOnly: (!searchesEverything && scope == .favorites)
+                    || (filter.favoritesOnly && LibraryFilter.offersFavoritesOnly(in: scope)),
                 // An owned memo's copy time is its creation time and never moves, so memos are listed by use.
                 order: searchScope == .memo ? .lastUsed : .lastCopied,
                 generation: generation, offset: offset, limit: 100
@@ -1308,7 +1366,7 @@ final class LibraryWorkspace {
                 totalMatches = page.totalMatches
                 isPartial = !page.isComplete
             }
-            if scope == .recentClips, query.isEmpty, latest.isEmpty {
+            if scope == .recentClips, query.isEmpty, !filter.isActive, latest.isEmpty {
                 let recent = try await repository.recent(limit: 1_000)
                 let fallback = recent.compactMap(Self.historyEntry)
                 let page = Array(fallback.dropFirst(offset).prefix(100))
