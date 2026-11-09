@@ -19,7 +19,7 @@ final class CollectionWorkspaceTests: XCTestCase {
         let ref = try XCTUnwrap(saved)
         let stored = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
         guard case .item(let item) = stored.value else { return XCTFail("Expected item") }
-        XCTAssertEqual(item.collectionID, draft.id)
+        XCTAssertEqual(item.collectionIDs, [draft.id])
         XCTAssertEqual(workspace.entries.map(\.ref), [ref])
     }
 
@@ -46,7 +46,7 @@ final class CollectionWorkspaceTests: XCTestCase {
         let a = try await service.create(CollectionDraft(name: "A", color: "blue"))
         let b = try await service.create(CollectionDraft(name: "B", color: "green"))
         let ref = try await LibraryService(controller: harness.controller).create(
-            MemoDraft(body: "deploy 合成", collectionID: a.value.id)
+            MemoDraft(body: "deploy 合成", collectionIDs: [a.value.id])
         )
         let workspace = try await workspace(harness)
         // A search keeps to the list shown only under This View; All Content, the default, looks everywhere.
@@ -75,7 +75,7 @@ final class CollectionWorkspaceTests: XCTestCase {
             CollectionDraft(name: "Temporary", color: "orange")
         )
         let ref = try await LibraryService(controller: harness.controller).create(
-            MemoDraft(body: "keep these bytes", collectionID: category.value.id)
+            MemoDraft(body: "keep these bytes", collectionIDs: [category.value.id])
         )
         let workspace = try await workspace(harness)
         await workspace.setScope(.collection(category.value.id))
@@ -117,7 +117,7 @@ final class CollectionWorkspaceTests: XCTestCase {
         let a = try await collections.create(CollectionDraft(name: "A", color: "blue"))
         let b = try await collections.create(CollectionDraft(name: "B", color: "green"))
         let other = try await LibraryService(controller: harness.controller).create(
-            MemoDraft(body: "different existing snippet", collectionID: a.value.id)
+            MemoDraft(body: "different existing snippet", collectionIDs: [a.value.id])
         )
         let workspace = try await workspace(harness)
         await workspace.setScope(.collection(a.value.id))

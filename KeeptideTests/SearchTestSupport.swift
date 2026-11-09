@@ -27,6 +27,7 @@ enum SearchTestSupport {
         kind: ContentKind = .text,
         sourceApp: String? = "test.source",
         collectionID: CollectionID? = nil,
+        collectionIDs: [CollectionID] = [],
         lastCopiedAt: Date = Date(timeIntervalSince1970: 1_000),
         bodyPartial: Bool = false,
         textUnavailable: Bool = false
@@ -34,7 +35,8 @@ enum SearchTestSupport {
         SearchDocument(
             ref: ContentRef(itemID: itemID, facet: facet, version: version, digest: Data(repeating: 7, count: 32)),
             captureID: captureID, memoID: memoID, merged: merged, savedAsMemo: savedAsMemo, kind: kind,
-            sourceApp: sourceApp, collectionID: collectionID, lastCopiedAt: lastCopiedAt,
+            sourceApp: sourceApp, collectionIDs: CollectionID.sorted((collectionID.map { [$0] } ?? []) + collectionIDs),
+            lastCopiedAt: lastCopiedAt,
             title: title, body: body, url: url, note: note, bodyPartial: bodyPartial, textUnavailable: textUnavailable,
             normalizedTitle: SearchNormalizer.normalize(title), normalizedBody: SearchNormalizer.normalize(body),
             normalizedURL: SearchNormalizer.normalize(url), normalizedNote: SearchNormalizer.normalize(note)

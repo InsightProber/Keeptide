@@ -1051,6 +1051,17 @@ struct LibraryView: View {
                 recoveredDrafts(workspace)
                 Divider()
             }
+            if workspace.isUpdatingCollections {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Updating collections…").font(.callout)
+                    Spacer()
+                }
+                .padding(10)
+                .background(.regularMaterial)
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("LibraryUpdatingCollections")
+            }
             if let message = workspace.message {
                 HStack {
                     Label(message, systemImage: "exclamationmark.triangle")

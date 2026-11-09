@@ -79,7 +79,7 @@ final class CollectionTests: XCTestCase {
             let after = try await states(for: fixture, in: controller)
 
             XCTAssertEqual(change.affectedItems, [fixture.item.id])
-            XCTAssertEqual(moved.collectionID, collections[1].value.id)
+            XCTAssertEqual(moved.collectionIDs, [collections[1].value.id])
             XCTAssertTrue(moved.isFavorite)
             assertMetadataUnchanged(before.item, moved, exceptCollection: true, exceptFavorite: false)
             XCTAssertEqual(after.capture, before.capture)
@@ -87,7 +87,7 @@ final class CollectionTests: XCTestCase {
 
             _ = try await service.move([fixture.memoRef], to: nil)
             let uncategorized = try await item(fixture.item.id, in: controller)
-            XCTAssertNil(uncategorized.collectionID)
+            XCTAssertEqual(uncategorized.collectionIDs, [])
         }
     }
 
@@ -113,8 +113,8 @@ final class CollectionTests: XCTestCase {
 
             let unchangedMemo = try await item(memo.item.id, in: controller)
             let unchangedHistory = try await item(historyItem.id, in: controller)
-            XCTAssertNil(unchangedMemo.collectionID)
-            XCTAssertNil(unchangedHistory.collectionID)
+            XCTAssertEqual(unchangedMemo.collectionIDs, [])
+            XCTAssertEqual(unchangedHistory.collectionIDs, [])
         }
     }
 
@@ -135,8 +135,8 @@ final class CollectionTests: XCTestCase {
             let secondAfterDelete = try await states(for: second, in: controller)
 
             XCTAssertNotNil(deletedCollection.deletedAt)
-            XCTAssertNil(detachedFirst.collectionID)
-            XCTAssertNil(detachedSecond.collectionID)
+            XCTAssertEqual(detachedFirst.collectionIDs, [])
+            XCTAssertEqual(detachedSecond.collectionIDs, [])
             XCTAssertEqual(firstAfterDelete.capture, firstBefore.capture)
             XCTAssertEqual(firstAfterDelete.memo, firstBefore.memo)
             XCTAssertEqual(secondAfterDelete.capture, secondBefore.capture)
@@ -148,8 +148,8 @@ final class CollectionTests: XCTestCase {
             let restoredFirst = try await item(first.item.id, in: controller)
             let restoredSecond = try await item(second.item.id, in: controller)
             XCTAssertEqual(restoredCollection, collection.value)
-            XCTAssertEqual(restoredFirst.collectionID, collection.value.id)
-            XCTAssertEqual(restoredSecond.collectionID, collection.value.id)
+            XCTAssertEqual(restoredFirst.collectionIDs, [collection.value.id])
+            XCTAssertEqual(restoredSecond.collectionIDs, [collection.value.id])
         }
     }
 
@@ -182,9 +182,47 @@ final class CollectionTests: XCTestCase {
             let unchangedFirst = try await item(first.item.id, in: controller)
             let winningSecond = try await item(second.item.id, in: controller)
             XCTAssertNotNil(stillDeleted.deletedAt)
-            XCTAssertNil(unchangedFirst.collectionID)
-            XCTAssertNil(winningSecond.collectionID)
+            XCTAssertEqual(unchangedFirst.collectionIDs, [])
+            XCTAssertEqual(winningSecond.collectionIDs, [])
             XCTAssertEqual(winningSecond.title, "Concurrent winner")
+        }
+    }
+
+    func testASnippetJoinsAndLeavesCollectionsOneByOneAndDeletingOneKeepsTheOthers() async throws {
+        try await withStore { controller in
+            let collections = try await seedCollections(3, in: controller)
+            let ids = collections.map(\.value.id)
+            let fixture = try await seedMemo(in: controller, collectionID: nil)
+            let service = CollectionService(controller: controller)
+
+            _ = try await service.add([fixture.memoRef], to: collections[0])
+            _ = try await service.add([fixture.memoRef], to: collections[1])
+            let again = try await service.add([fixture.memoRef], to: collections[1])
+            XCTAssertEqual(again.affectedItems, [])
+            var value = try await item(fixture.item.id, in: controller)
+            XCTAssertEqual(value.collectionIDs, CollectionID.sorted([ids[0], ids[1]]))
+
+            // Deleting a collection takes its snippets out of it alone; undoing it puts them back.
+            let deletion = try await service.delete(collections[0])
+            value = try await item(fixture.item.id, in: controller)
+            XCTAssertEqual(value.collectionIDs, [ids[1]])
+            _ = try await service.undo(deletion.undoToken)
+            value = try await item(fixture.item.id, in: controller)
+            XCTAssertEqual(value.collectionIDs, CollectionID.sorted([ids[0], ids[1]]))
+
+            let removal = try await service.remove([fixture.memoRef], from: ids[1])
+            value = try await item(fixture.item.id, in: controller)
+            XCTAssertEqual(value.collectionIDs, [ids[0]])
+            _ = try await service.undo(removal.undoToken)
+            value = try await item(fixture.item.id, in: controller)
+            XCTAssertEqual(value.collectionIDs, CollectionID.sorted([ids[0], ids[1]]))
+
+            // Moving puts it in the one collection chosen, out of every other.
+            _ = try await service.move([fixture.memoRef], to: collections[2])
+            value = try await item(fixture.item.id, in: controller)
+            XCTAssertEqual(value.collectionIDs, [ids[2]])
+            let members = try await ContentRepository(controller: controller).collectionMembershipSnapshot(ids[0])
+            XCTAssertEqual(members.members.count, 0)
         }
     }
 
@@ -198,28 +236,28 @@ final class CollectionTests: XCTestCase {
             let library = LibraryService(controller: controller)
 
             do {
-                _ = try await library.saveAsMemo(clip.id, collectionID: collections[0].value.id, isFavorite: true)
+                _ = try await library.saveAsMemo(clip.id, collectionIDs: [collections[0].value.id], isFavorite: true)
                 XCTFail("A deleted collection must not receive a new snippet")
             } catch {
                 XCTAssertEqual(error as? StoreError, .preconditionFailed)
             }
             let untouched = try await item(clip.id, in: controller)
             XCTAssertNil(untouched.memoID)
-            XCTAssertNil(untouched.collectionID)
+            XCTAssertEqual(untouched.collectionIDs, [])
             XCTAssertFalse(untouched.isFavorite)
 
-            let outcome = try await library.saveAsMemo(clip.id, collectionID: collections[1].value.id, isFavorite: true)
+            let outcome = try await library.saveAsMemo(clip.id, collectionIDs: [collections[1].value.id], isFavorite: true)
             guard case .created(let created) = outcome else { return XCTFail("Expected a new snippet") }
             let saved = try await item(clip.id, in: controller)
             XCTAssertNotNil(saved.memoID)
-            XCTAssertEqual(saved.collectionID, collections[1].value.id)
+            XCTAssertEqual(saved.collectionIDs, [collections[1].value.id])
             XCTAssertTrue(saved.isFavorite)
 
-            let repeated = try await library.saveAsMemo(clip.id, collectionID: nil, isFavorite: false)
+            let repeated = try await library.saveAsMemo(clip.id, collectionIDs: [], isFavorite: false)
             guard case .existing(let existing) = repeated else { return XCTFail("A second save must not create") }
             XCTAssertEqual(existing, created)
             let kept = try await item(clip.id, in: controller)
-            XCTAssertEqual(kept.collectionID, collections[1].value.id)
+            XCTAssertEqual(kept.collectionIDs, [collections[1].value.id])
             XCTAssertTrue(kept.isFavorite)
         }
     }
@@ -245,7 +283,7 @@ final class CollectionTests: XCTestCase {
         defer { Task { try? await reopened.close() } }
         let persisted = try await item(fixture.item.id, in: reopened)
         XCTAssertTrue(persisted.isFavorite)
-        XCTAssertEqual(persisted.collectionID, collections[1].value.id)
+        XCTAssertEqual(persisted.collectionIDs, [collections[1].value.id])
     }
 
     func testNoOpMoveStillAtomicallyValidatesItsTargetSnapshot() async throws {
@@ -275,7 +313,7 @@ final class CollectionTests: XCTestCase {
 
             let persistedItem = try await item(fixture.item.id, in: controller)
             let persistedCollection = try await repository.recordState(.collection(target.value.id))
-            XCTAssertEqual(persistedItem.collectionID, target.value.id)
+            XCTAssertEqual(persistedItem.collectionIDs, [target.value.id])
             XCTAssertEqual(persistedCollection.value, .collection(concurrentWinner))
         }
     }
@@ -385,7 +423,7 @@ private extension CollectionTests {
             title: "Stable title",
             captureID: capture.id,
             memoID: memo.id,
-            collectionID: collectionID,
+            collectionIDs: collectionID.map { [$0] } ?? [],
             isFavorite: favorite,
             historyEligible: true,
             lastCopiedAt: Date(timeIntervalSince1970: 200),
@@ -441,7 +479,7 @@ private extension CollectionTests {
         exceptFavorite: Bool
     ) {
         var expected = after
-        if exceptCollection { expected.collectionID = before.collectionID }
+        if exceptCollection { expected.collectionIDs = before.collectionIDs }
         if exceptFavorite { expected.isFavorite = before.isFavorite }
         XCTAssertEqual(expected, before)
     }

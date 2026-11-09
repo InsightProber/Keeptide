@@ -195,13 +195,13 @@ final class QuickAccessSaveTests: XCTestCase {
         XCTAssertEqual(state.selection.selectedRow?.savedAsMemo, true)
         var value = try await item(ref, in: harness)
         XCTAssertNotNil(value.memoID)
-        XCTAssertEqual(value.collectionID, prompts.value.id)
+        XCTAssertEqual(value.collectionIDs, [prompts.value.id])
 
         await state.undoSaveSelection()
         XCTAssertEqual(state.saveMessage, "Save undone")
         value = try await item(ref, in: harness)
         XCTAssertNil(value.memoID)
-        XCTAssertNil(value.collectionID)
+        XCTAssertEqual(value.collectionIDs, [])
     }
 
     func testASavedClipMovesIntoTheCollectionChosenAndOnlyOnce() async throws {
@@ -214,14 +214,14 @@ final class QuickAccessSaveTests: XCTestCase {
         XCTAssertEqual(state.saveMessage, "Already in Snippets · Moved to “Prompts”")
         XCTAssertFalse(state.canUndoSave)
         let stored1 = try await item(ref, in: harness)
-        XCTAssertEqual(stored1.collectionID, prompts.value.id)
+        XCTAssertEqual(stored1.collectionIDs, [prompts.value.id])
         // Chosen again, it is there already, and nothing is written.
         await state.saveSelection(target, into: summary(prompts))
         XCTAssertEqual(state.saveMessage, "Already in “Prompts”")
         await state.saveSelection(target, into: nil)
         XCTAssertEqual(state.saveMessage, "Already in Snippets · Moved to Unfiled")
         let stored2 = try await item(ref, in: harness)
-        XCTAssertNil(stored2.collectionID)
+        XCTAssertEqual(stored2.collectionIDs, [])
     }
 
     func testAFavoriteSavesTheClipFirst() async throws {
@@ -275,7 +275,7 @@ final class QuickAccessSaveTests: XCTestCase {
         XCTAssertEqual(state.saveMessage, "Moved to “Prompts”")
         XCTAssertEqual(state.selection.selectedRow?.collectionID, prompts.value.id)
         let stored6 = try await item(ref, in: harness)
-        XCTAssertEqual(stored6.collectionID, prompts.value.id)
+        XCTAssertEqual(stored6.collectionIDs, [prompts.value.id])
         await state.saveSelection(try XCTUnwrap(state.copyTarget), into: summary(prompts))
         XCTAssertEqual(state.saveMessage, "Already in “Prompts”")
 

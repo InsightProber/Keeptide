@@ -622,7 +622,7 @@ final class LibraryWorkspaceTests: XCTestCase {
             .create(CollectionDraft(name: "Prompts", color: "blue"))
         let library = LibraryService(controller: harness.controller)
         let filed = try await library.create(MemoDraft(title: "Filed", body: "in Prompts",
-                                                       collectionID: prompts.value.id))
+                                                       collectionIDs: [prompts.value.id]))
         let loose = try await library.create(MemoDraft(title: "Loose", body: "in no collection"))
         let (clipItem, clipCapture) = try await insertHistory("a clip", into: harness)
         let clip = ContentStoreFixtures.ref(clipItem, clipCapture)
@@ -644,7 +644,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.revealed, LibraryReveal(scope: .recentClips, ref: clip, generation: 3))
 
         // A clip saved as a snippet shows as the snippet when the request asks, and as the clip when it does not.
-        let saved = try await library.saveAsMemo(clip.itemID, collectionID: prompts.value.id).ref
+        let saved = try await library.saveAsMemo(clip.itemID, collectionIDs: [prompts.value.id]).ref
         try await harness.consumer.synchronize()
         await workspace.open(LibraryOpenRequest(ref: clip, showsSnippet: true, generation: 4))
         XCTAssertEqual(workspace.scope, .collection(prompts.value.id))
@@ -823,7 +823,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.editor?.isReadOnly, false)
         XCTAssertTrue(workspace.canUndoNewSave)
         let saved = try await storedItem(item.id, in: harness)
-        XCTAssertEqual(saved.collectionID, collection.value.id)
+        XCTAssertEqual(saved.collectionIDs, [collection.value.id])
         XCTAssertTrue(saved.isFavorite)
 
         let undone = try await workspace.undoNewSave()
@@ -831,7 +831,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         XCTAssertTrue(undone)
         let restored = try await storedItem(item.id, in: harness)
         XCTAssertNil(restored.memoID)
-        XCTAssertNil(restored.collectionID)
+        XCTAssertEqual(restored.collectionIDs, [])
         XCTAssertFalse(restored.isFavorite)
     }
 
@@ -961,7 +961,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         let prompts = try await CollectionService(controller: harness.controller)
             .create(CollectionDraft(name: "Prompts", color: "blue"))
         let filed = try await LibraryService(controller: harness.controller)
-            .create(MemoDraft(body: "filed", collectionID: prompts.value.id))
+            .create(MemoDraft(body: "filed", collectionIDs: [prompts.value.id]))
         let unfiled = try await LibraryService(controller: harness.controller).create(MemoDraft(body: "unfiled"))
         let workspace = try await makeWorkspace(harness)
         await workspace.refreshCollections()
@@ -982,7 +982,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
         _ = try await service.create(CollectionDraft(name: "Drafts", color: "green"))
         let filed = try await LibraryService(controller: harness.controller)
-            .create(MemoDraft(body: "filed", collectionID: prompts.value.id))
+            .create(MemoDraft(body: "filed", collectionIDs: [prompts.value.id]))
         let workspace = try await makeWorkspace(harness)
         await workspace.refreshCollections()
         await workspace.setScope(.collection(prompts.value.id))
@@ -1276,8 +1276,48 @@ final class LibraryWorkspaceTests: XCTestCase {
         await workspace.file([entry.ref], into: prompts)
 
         let filed = try await storedItem(item.id, in: harness)
-        XCTAssertEqual(filed.collectionID, prompts.value.id)
+        XCTAssertEqual(filed.collectionIDs, [prompts.value.id])
         XCTAssertEqual(workspace.actionMessage, "Saved to “Prompts”")
+    }
+
+    func testTheLibrarySaysCollectionsAreUpdatingUntilTheUpdateEnds() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let prompts = try await CollectionService(controller: harness.controller)
+            .create(CollectionDraft(name: "Prompts", color: "blue"))
+        let (finished, finish) = AsyncStream<Void>.makeStream()
+        let update = Task { for await _ in finished {} }
+        let workspace = try await LibraryWorkspace.make(
+            controller: harness.controller,
+            draftDirectory: harness.directory.appendingPathComponent("Drafts"),
+            searchService: harness.service,
+            refreshSearch: { try await harness.consumer.synchronize() },
+            collectionsUpdate: update
+        )
+        XCTAssertTrue(workspace.isUpdatingCollections)
+
+        finish.finish()
+        try await SearchTestSupport.waitUntil { !workspace.isUpdatingCollections }
+        // When it ends, the collections are read again.
+        try await SearchTestSupport.waitUntil { workspace.collections.map(\.value.id) == [prompts.value.id] }
+    }
+
+    func testRemovingFromACollectionKeepsTheSnippetInItsOtherCollections() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let service = CollectionService(controller: harness.controller)
+        let prompts = try await service.create(CollectionDraft(name: "Prompts", color: "blue"))
+        let shell = try await service.create(CollectionDraft(name: "Shell", color: "green"))
+        let memo = try await LibraryService(controller: harness.controller)
+            .create(MemoDraft(body: "filed twice", collectionIDs: [prompts.value.id, shell.value.id]))
+        let workspace = try await makeWorkspace(harness)
+        await workspace.refreshCollections()
+        await workspace.setScope(.collection(prompts.value.id))
+        let entry = try XCTUnwrap(workspace.entries.first)
+
+        await workspace.removeFromCollection([entry.ref])
+
+        let stored = try await storedItem(memo.itemID, in: harness)
+        XCTAssertEqual(stored.collectionIDs, [shell.value.id])
+        XCTAssertEqual(workspace.entries, [])
     }
 
     func testRemovingFromACollectionLeavesTheSnippetUnfiled() async throws {
@@ -1285,7 +1325,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         let prompts = try await CollectionService(controller: harness.controller)
             .create(CollectionDraft(name: "Prompts", color: "blue"))
         let memo = try await LibraryService(controller: harness.controller)
-            .create(MemoDraft(body: "filed", collectionID: prompts.value.id))
+            .create(MemoDraft(body: "filed", collectionIDs: [prompts.value.id]))
         let workspace = try await makeWorkspace(harness)
         await workspace.refreshCollections()
         await workspace.setScope(.collection(prompts.value.id))
@@ -1294,7 +1334,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         await workspace.removeFromCollection([entry.ref])
 
         let removed = try await storedItem(memo.itemID, in: harness)
-        XCTAssertNil(removed.collectionID)
+        XCTAssertEqual(removed.collectionIDs, [])
         XCTAssertEqual(workspace.entries, [])
         XCTAssertEqual(workspace.actionMessage, "Removed from “Prompts”")
         XCTAssertTrue(workspace.canUndoCollectionChange)
@@ -1316,7 +1356,8 @@ final class LibraryWorkspaceTests: XCTestCase {
         let memo = MemoValue(itemID: itemID, title: text, bodyMode: .ownedPlainText, body: body,
                              version: ContentVersion(), digest: ContentDigest.sha256(body))
         let item = ItemValue(id: itemID, sourceApp: "test.source", title: text, captureID: capture.id, memoID: memo.id,
-                             collectionID: collectionID, historyEligible: true, lastCopiedAt: copiedAt, copyCount: 1)
+                             collectionIDs: collectionID.map { [$0] } ?? [], historyEligible: true,
+                             lastCopiedAt: copiedAt, copyCount: 1)
         try await harness.commit([.insert(.capture(capture)), .insert(.memo(memo)), .insert(.item(item))])
         let memoRef = ContentRef(itemID: itemID, facet: .memo, version: try XCTUnwrap(memo.version),
                                  digest: try XCTUnwrap(memo.digest))

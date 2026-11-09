@@ -68,8 +68,8 @@ struct SearchResult: Equatable, Sendable {
     let lastCopiedAt: Date
     let savedAsMemo: Bool
     let isFavorite: Bool
-    /// The memo's collection; nil for an unfiled memo and for every history row.
-    let collectionID: CollectionID?
+    /// The memo's collections, sorted; empty for an unfiled memo and for every history row.
+    let collectionIDs: [CollectionID]
     let isPartiallyIndexed: Bool
     let isTextUnavailable: Bool
     /// A memo's note as written; empty for none and for every history row.
@@ -255,21 +255,29 @@ struct SearchService: Sendable {
             guard [.ready, .updating].contains(try indexState(reader)) else { return nil }
             var counts = LibraryCounts()
             counts.clips = try count(reader.rows("SELECT count(*) FROM doc WHERE facet = 'history'", []))
+            // A snippet in several collections counts once here and once in each of its collections.
             let groups = try reader.rows(
-                "SELECT collection_id, is_favorite, count(*) FROM doc WHERE facet = 'memo' "
-                    + "GROUP BY collection_id, is_favorite", []
+                "SELECT d.is_favorite, EXISTS (SELECT 1 FROM doc_collection c WHERE c.doc_id = d.id), count(*) "
+                    + "FROM doc d WHERE d.facet = 'memo' GROUP BY 1, 2", []
             )
             for row in groups {
-                guard row.count == 3, case .integer(let favorite) = row[1], case .integer(let total) = row[2] else {
+                guard row.count == 3, case .integer(let favorite) = row[0], case .integer(let filed) = row[1],
+                      case .integer(let total) = row[2] else {
                     throw SearchIndexError.corrupt
                 }
                 counts.snippets += Int(total)
                 if favorite != 0 { counts.favorites += Int(total) }
-                if let id = row[0].uuid {
-                    counts.collections[CollectionID(rawValue: id), default: 0] += Int(total)
-                } else {
-                    counts.unfiled += Int(total)
+                if filed == 0 { counts.unfiled += Int(total) }
+            }
+            let members = try reader.rows(
+                "SELECT c.collection_id, count(*) FROM doc_collection c JOIN doc d ON d.id = c.doc_id "
+                    + "WHERE d.facet = 'memo' GROUP BY c.collection_id", []
+            )
+            for row in members {
+                guard row.count == 2, let id = row[0].uuid, case .integer(let total) = row[1] else {
+                    throw SearchIndexError.corrupt
                 }
+                counts.collections[CollectionID(rawValue: id)] = Int(total)
             }
             return counts
         }
@@ -428,8 +436,13 @@ struct SearchService: Sendable {
         case .memo: conditions.append("d.facet = 'memo'")
         }
         switch request.collection {
-        case .collection(let id)?: conditions.append("d.collection_id = \(builder.bind(.text(id.rawValue.uuidString)))")
-        case .uncategorized?: conditions.append("d.collection_id IS NULL")
+        case .collection(let id)?:
+            // Read from the collection's side, through its index, rather than tested row by row.
+            conditions.append(
+                "d.id IN (SELECT c.doc_id FROM doc_collection c "
+                    + "WHERE c.collection_id = \(builder.bind(.text(id.rawValue.uuidString))))"
+            )
+        case .uncategorized?: conditions.append("NOT EXISTS (SELECT 1 FROM doc_collection c WHERE c.doc_id = d.id)")
         case nil: break
         }
         if request.favoritesOnly { conditions.append("d.is_favorite = 1") }
@@ -492,7 +505,8 @@ struct SearchService: Sendable {
         let rows = try reader.rows("""
             SELECT d.id, d.item_id, d.facet, d.version, d.digest, d.saved_as_memo, d.kind, d.source_app,
                    d.last_copied_at, d.title, d.body_partial, d.is_favorite, \(hits.joined(separator: ", ")),
-                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable, d.collection_id,
+                   \(start), substr(d.body, \(start), 600), length(d.body), d.text_unavailable,
+                   \(SQLiteSearchIndex.membershipColumn(document: "d")),
                    d.note, (SELECT u.last_used_at FROM usage u WHERE u.item_id = d.item_id AND u.facet = d.facet)
             FROM doc d WHERE d.id IN (\(ids))
             """, builder.bindings)
@@ -526,7 +540,7 @@ struct SearchService: Sendable {
                 kind: kind, sourceApp: row[7].text,
                 lastCopiedAt: Date(timeIntervalSinceReferenceDate: copiedAt),
                 savedAsMemo: savedAsMemo != 0, isFavorite: favorite != 0,
-                collectionID: row[20].uuid.map(CollectionID.init(rawValue:)),
+                collectionIDs: try SQLiteSearchIndex.collectionIDs(from: row[20]),
                 isPartiallyIndexed: partial != 0,
                 isTextUnavailable: unavailable != 0,
                 note: note,

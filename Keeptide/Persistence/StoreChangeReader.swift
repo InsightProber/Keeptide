@@ -379,6 +379,11 @@ struct StoreChangeReader: Sendable {
         guard change.changeType == .update,
               let properties = change.updatedProperties,
               properties.isEmpty == false else { return false }
+        // An item's collections are its own: joining or leaving one changes the item, though only in a relationship.
+        // The collection's side of it stays an inverse-only update.
+        if change.changedObjectID.entity.name == "LibraryItem", properties.contains(where: { $0.name == "collection" }) {
+            return false
+        }
         return properties.allSatisfy { $0 is NSRelationshipDescription }
     }
 

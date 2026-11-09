@@ -49,7 +49,7 @@ struct IndexedItemChange: Sendable {
 /// at any time, and is rebuilt from Core Data. One lock-guarded writer
 /// connection; every search opens its own reader.
 final class SQLiteSearchIndex: @unchecked Sendable {
-    static let schemaVersion = 2
+    static let schemaVersion = 3
     static let tokenizer = "trigram case_sensitive 1"
     static let fileName = "Search.sqlite"
 
@@ -161,6 +161,12 @@ final class SQLiteSearchIndex: @unchecked Sendable {
                     try database.run("DELETE FROM doc WHERE item_id = ?", [item])
                     for document in change.documents where document.ref.itemID == change.itemID {
                         try database.run(Self.insertDocument, Self.values(for: document, sequence: sequence))
+                        for collection in CollectionID.sorted(document.collectionIDs) {
+                            try database.run(
+                                Self.insertMembership,
+                                [.text(collection.rawValue.uuidString), item, .text(document.ref.facet.rawValue)]
+                            )
+                        }
                     }
                 }
                 if case .set(let token) = checkpoint {
@@ -229,8 +235,10 @@ final class SQLiteSearchIndex: @unchecked Sendable {
 
     func allDocuments() throws -> [SearchDocument] {
         try withConnection { database in
-            try database.rows("SELECT \(Self.documentColumns) FROM doc ORDER BY item_id, facet", [])
-                .map(Self.document(from:))
+            try database.rows(
+                "SELECT \(Self.documentColumns), \(Self.membershipColumn(document: "doc")) FROM doc ORDER BY item_id, facet",
+                []
+            ).map(Self.document(from:))
         }
     }
 
@@ -322,13 +330,37 @@ final class SQLiteSearchIndex: @unchecked Sendable {
 
     static let documentColumns = """
         item_id, facet, version, digest, capture_id, memo_id, merged, saved_as_memo, kind, source_app, \
-        collection_id, is_favorite, last_copied_at, title, body, url, note, n_title, n_body, n_url, n_note, \
+        is_favorite, last_copied_at, title, body, url, note, n_title, n_body, n_url, n_note, \
         body_partial, text_unavailable
         """
 
+    /// A document's collections as one comma-separated column, or NULL when it is in none.
+    static func membershipColumn(document alias: String) -> String {
+        "(SELECT group_concat(collection_id, ',') FROM doc_collection WHERE doc_id = \(alias).id)"
+    }
+
+    /// Decodes `membershipColumn`. Order is not guaranteed by SQLite, so it is sorted here.
+    static func collectionIDs(from value: SQLiteValue) throws -> [CollectionID] {
+        switch value {
+        case .null: return []
+        case .text(let text):
+            let ids = try text.split(separator: ",").map { part -> CollectionID in
+                guard let id = UUID(uuidString: String(part)) else { throw SearchIndexError.corrupt }
+                return CollectionID(rawValue: id)
+            }
+            return CollectionID.sorted(ids)
+        default: throw SearchIndexError.corrupt
+        }
+    }
+
     private static let insertDocument = """
         INSERT INTO doc(\(documentColumns), projected_seq) \
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+
+    private static let insertMembership = """
+        INSERT INTO doc_collection(doc_id, collection_id) \
+        SELECT id, ? FROM doc WHERE item_id = ? AND facet = ?
         """
 
     private static let schema = [
@@ -338,7 +370,7 @@ final class SQLiteSearchIndex: @unchecked Sendable {
             id INTEGER PRIMARY KEY,
             item_id TEXT NOT NULL, facet TEXT NOT NULL, version TEXT NOT NULL, digest BLOB NOT NULL,
             capture_id TEXT, memo_id TEXT, merged INTEGER NOT NULL, saved_as_memo INTEGER NOT NULL,
-            kind TEXT NOT NULL, source_app TEXT, collection_id TEXT, is_favorite INTEGER NOT NULL,
+            kind TEXT NOT NULL, source_app TEXT, is_favorite INTEGER NOT NULL,
             last_copied_at REAL NOT NULL,
             title TEXT NOT NULL, body TEXT NOT NULL, url TEXT NOT NULL, note TEXT NOT NULL,
             n_title TEXT NOT NULL, n_body TEXT NOT NULL, n_url TEXT NOT NULL, n_note TEXT NOT NULL,
@@ -349,6 +381,18 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         "CREATE INDEX doc_capture ON doc(capture_id) WHERE capture_id IS NOT NULL",
         "CREATE INDEX doc_memo ON doc(memo_id) WHERE memo_id IS NOT NULL",
         "CREATE INDEX doc_recent ON doc(last_copied_at)",
+        """
+        CREATE TABLE doc_collection(
+            doc_id INTEGER NOT NULL, collection_id TEXT NOT NULL,
+            PRIMARY KEY(doc_id, collection_id)
+        ) WITHOUT ROWID
+        """,
+        "CREATE INDEX doc_collection_members ON doc_collection(collection_id, doc_id)",
+        """
+        CREATE TRIGGER doc_collection_ad AFTER DELETE ON doc BEGIN
+            DELETE FROM doc_collection WHERE doc_id = old.id;
+        END
+        """,
         """
         CREATE VIRTUAL TABLE doc_fts USING fts5(
             n_title, n_body, n_url, n_note, content='doc', content_rowid='id', tokenize='\(tokenizer)'
@@ -390,7 +434,6 @@ final class SQLiteSearchIndex: @unchecked Sendable {
             document.memoID.map { .text($0.uuidString) } ?? .null,
             .integer(document.merged ? 1 : 0), .integer(document.savedAsMemo ? 1 : 0),
             .text(document.kind.rawValue), document.sourceApp.map(SQLiteValue.text) ?? .null,
-            document.collectionID.map { .text($0.rawValue.uuidString) } ?? .null,
             .integer(document.isFavorite ? 1 : 0),
             .real(document.lastCopiedAt.timeIntervalSinceReferenceDate),
             .text(document.title), .text(document.body), .text(document.url), .text(document.note),
@@ -401,26 +444,26 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         ]
     }
 
-    /// Decodes a row selected with `documentColumns`.
+    /// Decodes a row selected with `documentColumns` followed by `membershipColumn`.
     static func document(from row: [SQLiteValue]) throws -> SearchDocument {
         guard row.count == 23,
               let itemID = row[0].uuid, case .text(let facetText) = row[1],
               let facet = ContentFacet(rawValue: facetText), let version = row[2].uuid,
               case .blob(let digest) = row[3], case .integer(let merged) = row[6],
               case .integer(let savedAsMemo) = row[7], case .text(let kindText) = row[8],
-              let kind = ContentKind(rawValue: kindText), case .integer(let favorite) = row[11],
-              case .real(let copiedAt) = row[12], case .text(let title) = row[13],
-              case .text(let body) = row[14], case .text(let url) = row[15], case .text(let note) = row[16],
-              case .text(let normalizedTitle) = row[17], case .text(let normalizedBody) = row[18],
-              case .text(let normalizedURL) = row[19], case .text(let normalizedNote) = row[20],
-              case .integer(let partial) = row[21], case .integer(let unavailable) = row[22] else {
+              let kind = ContentKind(rawValue: kindText), case .integer(let favorite) = row[10],
+              case .real(let copiedAt) = row[11], case .text(let title) = row[12],
+              case .text(let body) = row[13], case .text(let url) = row[14], case .text(let note) = row[15],
+              case .text(let normalizedTitle) = row[16], case .text(let normalizedBody) = row[17],
+              case .text(let normalizedURL) = row[18], case .text(let normalizedNote) = row[19],
+              case .integer(let partial) = row[20], case .integer(let unavailable) = row[21] else {
             throw SearchIndexError.corrupt
         }
         return SearchDocument(
             ref: ContentRef(itemID: ItemID(rawValue: itemID), facet: facet,
                             version: ContentVersion(rawValue: version), digest: digest),
             captureID: row[4].uuid, memoID: row[5].uuid, merged: merged != 0, savedAsMemo: savedAsMemo != 0,
-            kind: kind, sourceApp: row[9].text, collectionID: row[10].uuid.map(CollectionID.init(rawValue:)),
+            kind: kind, sourceApp: row[9].text, collectionIDs: try collectionIDs(from: row[22]),
             isFavorite: favorite != 0,
             lastCopiedAt: Date(timeIntervalSinceReferenceDate: copiedAt), title: title, body: body, url: url,
             note: note, bodyPartial: partial != 0, textUnavailable: unavailable != 0,

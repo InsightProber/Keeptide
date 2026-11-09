@@ -122,14 +122,40 @@ struct CollectionService: Sendable {
         }
     }
 
+    /// Puts each memo in `collection` alone, or in none when it is nil, whatever collections it was in before.
     func move(_ refs: [ContentRef], to collection: CollectionSnapshot?,
               expecting expectedIdentity: StoreIdentity? = nil) async throws -> CollectionChange {
         let identity = try await operationIdentity(expectedIdentity)
         let target = try await validatedTarget(collection, identity: identity)
         let members = try await memoMembers(refs, identity: identity)
-        let changed = members.filter { $0.item.collectionID != target?.value.id }
-        let values = changed.map { member -> ItemValue in var item = member.item; item.collectionID = target?.value.id; return item }
+        let wanted = target.map { [$0.value.id] } ?? []
+        let changed = members.filter { $0.item.collectionIDs != wanted }
+        let values = changed.map { member -> ItemValue in var item = member.item; item.collectionIDs = wanted; return item }
         return try await commitItems(identity: identity, all: members, changed: changed, values: values, target: target)
+    }
+
+    /// Adds each memo to `collection`, keeping the collections it is already in.
+    func add(_ refs: [ContentRef], to collection: CollectionSnapshot,
+             expecting expectedIdentity: StoreIdentity? = nil) async throws -> CollectionChange {
+        let identity = try await operationIdentity(expectedIdentity)
+        let target = try await validatedTarget(collection, identity: identity)
+        let members = try await memoMembers(refs, identity: identity)
+        let id = collection.value.id
+        let changed = members.filter { !$0.item.collectionIDs.contains(id) }
+        let values = changed.map { member -> ItemValue in var item = member.item; item.collectionIDs.append(id); return item }
+        return try await commitItems(identity: identity, all: members, changed: changed, values: values, target: target)
+    }
+
+    /// Takes each memo out of the collection `id`, keeping its other collections.
+    func remove(_ refs: [ContentRef], from id: CollectionID,
+                expecting expectedIdentity: StoreIdentity? = nil) async throws -> CollectionChange {
+        let identity = try await operationIdentity(expectedIdentity)
+        let members = try await memoMembers(refs, identity: identity)
+        let changed = members.filter { $0.item.collectionIDs.contains(id) }
+        let values = changed.map { member -> ItemValue in
+            var item = member.item; item.collectionIDs.removeAll { $0 == id }; return item
+        }
+        return try await commitItems(identity: identity, all: members, changed: changed, values: values, target: nil)
     }
 
     func setFavorite(_ refs: [ContentRef], isFavorite: Bool,
@@ -157,9 +183,13 @@ struct CollectionService: Sendable {
         var keys: Set<RecordKey> = [.collection(collection.value.id)]
         var affected: [ItemID] = []
         for state in membership.members {
-            guard case .item(var item) = state.value, item.collectionID == collection.value.id else { throw StoreError.corruptStore }
+            guard case .item(var item) = state.value, item.collectionIDs.contains(collection.value.id) else {
+                throw StoreError.corruptStore
+            }
             previous.append(state); conditions.append(.recordUnchanged(.item(item.id), fingerprint: state.fingerprint))
-            item.collectionID = nil; mutations.append(.update(.item(item))); keys.insert(.item(item.id)); affected.append(item.id)
+            // A memo leaves only this collection and stays in any others.
+            item.collectionIDs.removeAll { $0 == collection.value.id }
+            mutations.append(.update(.item(item))); keys.insert(.item(item.id)); affected.append(item.id)
         }
         var transaction = StoreTransaction(identity: identity, preconditions: conditions, mutations: mutations)
         transaction.receiptFingerprintKeys = keys
@@ -288,7 +318,7 @@ struct CollectionService: Sendable {
         for value in values {
             guard case .item(let item) = value else { continue }
             for id in memberships.keys { members[id]?.remove(item.id) }
-            if let id = item.collectionID, memberships[id] != nil { members[id]?.insert(item.id) }
+            for id in item.collectionIDs where memberships[id] != nil { members[id]?.insert(item.id) }
         }
         return try Dictionary(uniqueKeysWithValues: members.map { id, ids in
             (id, try StoredRecords.canonicalDigest(ids.map(\.rawValue.uuidString).sorted()))

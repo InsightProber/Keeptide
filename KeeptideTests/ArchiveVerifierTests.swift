@@ -135,7 +135,8 @@ final class ArchiveVerifierTests: XCTestCase {
 
     func testSchemaAndPublicLabelsAreStrict() async throws {
         for mutation: (inout ArchiveManifest) -> Void in [
-            { $0.schemaVersion = 2 },
+            { $0.schemaVersion = 0 },
+            { $0.schemaVersion = 3 },
             { $0.verifierSchemaVersion = 2 },
             { $0.format = "example.invalid" },
             { $0.source.label = "Local Backup" },
@@ -149,6 +150,38 @@ final class ArchiveVerifierTests: XCTestCase {
 
             await assertVerificationFails(fixture.root)
         }
+    }
+
+    func testSchemaOneEntriesKeepTheirOneCollectionAndSchemaTwoEntriesListTheirs() async throws {
+        let shell = ArchiveCollection(id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+                                      name: "Shell", color: "blue")
+        let prompts = ArchiveCollection(id: UUID(uuidString: "66666666-6666-6666-6666-666666666666")!,
+                                        name: "Prompts", color: "green")
+        let schemaOne = try makePortableFixture(schemaVersion: 1)
+        XCTAssertEqual(schemaOne.entry.collection, shell)
+        _ = try await ArchiveVerifier().verify(at: schemaOne.root)
+
+        let several = try makePortableFixture()
+        several.entry.collections = [shell, prompts]
+        try several.rewriteEntriesAndManifest()
+        _ = try await ArchiveVerifier().verify(at: several.root)
+
+        // Each schema has its own key, a list is never empty, and no collection is listed twice.
+        for change: (ArchiveFixture) -> Void in [
+            { $0.manifest.schemaVersion = 1 },
+            { $0.entry.collection = shell },
+            { $0.entry.collections = [] },
+            { $0.entry.collections = [shell, shell] },
+        ] {
+            let fixture = try makePortableFixture()
+            change(fixture)
+            try fixture.rewriteEntriesAndManifest()
+            await assertVerificationFails(fixture.root)
+        }
+        let schemaOneWithList = try makePortableFixture(schemaVersion: 1)
+        schemaOneWithList.entry.collections = [shell]
+        try schemaOneWithList.rewriteEntriesAndManifest()
+        await assertVerificationFails(schemaOneWithList.root)
     }
 
     func testMalformedJSONIsReportedAsMalformedArchive() async throws {
@@ -460,7 +493,7 @@ private final class ArchiveFixture {
 }
 
 private extension ArchiveVerifierTests {
-    func makePortableFixture() throws -> ArchiveFixture {
+    func makePortableFixture(schemaVersion: Int = ArchiveManifest.currentSchemaVersion) throws -> ArchiveFixture {
         let root = try temporaryRoot()
         try FileManager.default.createDirectory(at: root.appendingPathComponent("payloads"), withIntermediateDirectories: false)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("readable"), withIntermediateDirectories: false)
@@ -487,11 +520,6 @@ private extension ArchiveVerifierTests {
             title: "Command",
             note: nil,
             sourceApplicationIdentifier: "com.example.Terminal",
-            collection: ArchiveCollection(
-                id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
-                name: "Shell",
-                color: "blue"
-            ),
             representations: [
                 ArchiveRepresentation(
                     id: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
@@ -509,12 +537,16 @@ private extension ArchiveVerifierTests {
                 ),
             ]
         )
+        let shell = ArchiveCollection(
+            id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!, name: "Shell", color: "blue"
+        )
+        if schemaVersion == 1 { entry.collection = shell } else { entry.collections = [shell] }
         entry.contentDigestSHA256 = try captureDigestHex(for: entry)
         let line = try encodeLine(entry)
         try line.write(to: root.appendingPathComponent("entries.ndjson"))
         let manifest = ArchiveManifest(
             format: ArchiveManifest.currentFormat,
-            schemaVersion: ArchiveManifest.currentSchemaVersion,
+            schemaVersion: schemaVersion,
             createdAt: Date(timeIntervalSince1970: 1_800_000_000),
             source: ArchiveSource(token: .currentLocalSnapshot, label: "Current Local Snapshot"),
             scope: ArchiveScopeDescriptor(

@@ -294,6 +294,33 @@ final class SearchServiceTests: XCTestCase {
         XCTAssertEqual(page.results.map(\.note), ["Run before deploys"])
     }
 
+    func testASnippetInSeveralCollectionsIsListedAndCountedInEachAndIsNotUnfiled() async throws {
+        let prompts = CollectionID()
+        let shell = CollectionID()
+        let both = SearchTestSupport.document(facet: .memo, body: "deploy both", memoID: UUID(),
+                                              collectionIDs: [prompts, shell])
+        let onlyShell = SearchTestSupport.document(facet: .memo, body: "deploy shell", memoID: UUID(),
+                                                   collectionID: shell)
+        let unfiled = SearchTestSupport.document(facet: .memo, body: "deploy loose", memoID: UUID())
+        let service = try makeService([both, onlyShell, unfiled])
+
+        let inPrompts = try await lastPage(service, request("deploy", collection: .collection(prompts)))
+        let inShell = try await lastPage(service, request("", collection: .collection(shell)))
+        let loose = try await lastPage(service, request("deploy", collection: .uncategorized))
+        let all = try await lastPage(service, request("", scope: .memo))
+        let counts = await service.counts()
+
+        XCTAssertEqual(inPrompts.results.map(\.ref), [both.ref])
+        XCTAssertEqual(Set(inShell.results.map(\.ref)), [both.ref, onlyShell.ref])
+        XCTAssertEqual(inShell.totalMatches, 2)
+        XCTAssertEqual(loose.results.map(\.ref), [unfiled.ref])
+        XCTAssertEqual(all.totalMatches, 3)
+        XCTAssertEqual(all.results.first { $0.ref == both.ref }?.collectionIDs, CollectionID.sorted([prompts, shell]))
+        XCTAssertEqual(counts?.snippets, 3)
+        XCTAssertEqual(counts?.unfiled, 1)
+        XCTAssertEqual(counts?.collections, [prompts: 1, shell: 2])
+    }
+
     func testResultsCarryTheirCollection() async throws {
         let collection = CollectionID()
         let filed = SearchTestSupport.document(facet: .memo, body: "filed", memoID: UUID(), collectionID: collection)
@@ -302,8 +329,8 @@ final class SearchServiceTests: XCTestCase {
 
         let page = try await lastPage(service, request("", scope: .memo))
 
-        XCTAssertEqual(Dictionary(uniqueKeysWithValues: page.results.map { ($0.ref, $0.collectionID) }),
-                       [filed.ref: collection, unfiled.ref: nil])
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: page.results.map { ($0.ref, $0.collectionIDs) }),
+                       [filed.ref: [collection], unfiled.ref: []])
     }
 
     func testKindAndSourceFilters() async throws {
@@ -509,7 +536,7 @@ final class SearchServiceTests: XCTestCase {
             )
         }
         return SearchProjectionInput(
-            itemID: itemID, title: "Captured", sourceApp: "test.source", collectionID: nil,
+            itemID: itemID, title: "Captured", sourceApp: "test.source", collectionIDs: [],
             lastCopiedAt: Date(timeIntervalSince1970: 100),
             history: ContentRef(itemID: itemID, facet: .history, version: ContentVersion(rawValue: captureID),
                                 digest: Data(repeating: 1, count: 32)),

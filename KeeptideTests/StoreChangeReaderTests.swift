@@ -315,7 +315,7 @@ final class StoreChangeReaderTests: XCTestCase {
         let firstCollection = CollectionValue(name: "inverse first")
         let secondCollection = CollectionValue(name: "inverse second")
         item.memoID = memo.id
-        item.collectionID = firstCollection.id
+        item.collectionIDs = [firstCollection.id]
         _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
             identity: try await store.identity(),
             mutations: [
@@ -330,18 +330,17 @@ final class StoreChangeReaderTests: XCTestCase {
         let initial = try await reader.read(after: nil)
         let initialToken = try XCTUnwrap(initial.token)
         let itemID = item.id
-        let collectionIDs = [firstCollection.id, secondCollection.id]
+        let memoID = memo.id
+        // The item's link to its memo, and the memo's inverse, change and nothing else. (Its collections are its own
+        // membership, not an inverse, so the reader reports those.)
         for index in 0..<128 {
             try await store.perform { context in
                 context.reset()
                 guard let itemObject = try StoredRecords.object(.item(itemID), in: context),
-                      let collectionObject = try StoredRecords.object(
-                        .collection(collectionIDs[(index + 1) % collectionIDs.count]),
-                        in: context
-                      ) else {
+                      let memoObject = try StoredRecords.object(.memo(memoID), in: context) else {
                     throw StoreChangeReaderTestFailure.missingFixture
                 }
-                itemObject.setValue(collectionObject, forKey: "collection")
+                itemObject.setValue(index.isMultiple(of: 2) ? nil : memoObject, forKey: "memo")
                 try context.save()
             }
         }
@@ -372,7 +371,7 @@ final class StoreChangeReaderTests: XCTestCase {
         let firstCollection = CollectionValue(name: "first")
         let secondCollection = CollectionValue(name: "second")
         item.memoID = memo.id
-        item.collectionID = firstCollection.id
+        item.collectionIDs = [firstCollection.id]
         _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
             identity: try await store.identity(),
             mutations: [
@@ -386,7 +385,7 @@ final class StoreChangeReaderTests: XCTestCase {
         let initial = try await StoreChangeReader(controller: store).read(after: nil)
         let initialToken = try XCTUnwrap(initial.token)
         let itemState = try await ContentRepository(controller: store).recordState(.item(item.id))
-        item.collectionID = secondCollection.id
+        item.collectionIDs = [secondCollection.id]
         _ = try await WriteCoordinator(controller: store).commit(StoreTransaction(
             identity: try await store.identity(),
             preconditions: [.recordUnchanged(.item(item.id), fingerprint: itemState.fingerprint)],

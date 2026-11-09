@@ -3,10 +3,10 @@ import Foundation
 struct LibraryService: Sendable {
     let controller: PersistenceController
 
-    /// Gives a clip its memo facet, placed in `collectionID` and marked a favorite when asked, in one
+    /// Gives a clip its memo facet, placed in `collectionIDs` and marked a favorite when asked, in one
     /// transaction. A clip that already has a memo is returned as it is, whatever was asked for it.
     func saveAsMemo(
-        _ itemID: ItemID, collectionID: CollectionID? = nil, isFavorite: Bool = false,
+        _ itemID: ItemID, collectionIDs: [CollectionID] = [], isFavorite: Bool = false,
         expecting expectedIdentity: StoreIdentity? = nil
     ) async throws -> SaveMemoOutcome {
         let identity = try await operationIdentity(expectedIdentity)
@@ -34,16 +34,14 @@ struct LibraryService: Sendable {
             displayKind: displayKind.rawValue
         )
         item.memoID = memo.id
-        item.collectionID = collectionID
+        item.collectionIDs = collectionIDs
         item.isFavorite = isFavorite
         var preconditions: [StorePrecondition] = [
             .recordUnchanged(.item(itemID), fingerprint: itemState.fingerprint),
             .contentVersion(historyRef),
             .facetVisible(itemID, .memo, false),
         ]
-        if let collectionPrecondition = activeCollectionPrecondition(collectionID) {
-            preconditions.append(collectionPrecondition)
-        }
+        preconditions += activeCollectionPreconditions(item.collectionIDs)
         do {
             _ = try await writer.commit(StoreTransaction(
                 identity: identity,
@@ -74,8 +72,6 @@ struct LibraryService: Sendable {
             throw LibraryServiceError.invalidDraft
         }
         if let existing = try await retryEquivalentRef(for: draft, identity: identity) { return existing }
-        let collectionPrecondition = activeCollectionPrecondition(draft.collectionID)
-
         let body = Data(draft.body.utf8)
         let version = ContentVersion()
         let digest = ContentDigest.sha256(body)
@@ -84,12 +80,12 @@ struct LibraryService: Sendable {
             body: body, version: version, digest: digest, languageHint: draft.languageHint,
             note: draft.note, displayKind: draft.kind.rawValue
         )
-        let item = ItemValue(id: draft.itemID, memoID: memo.id, collectionID: draft.collectionID)
+        let item = ItemValue(id: draft.itemID, memoID: memo.id, collectionIDs: draft.collectionIDs)
         var preconditions: [StorePrecondition] = [
             .absent(.item(draft.itemID)),
             .absent(.memo(memo.id)),
         ]
-        if let collectionPrecondition { preconditions.append(collectionPrecondition) }
+        preconditions += activeCollectionPreconditions(item.collectionIDs)
         do {
             _ = try await writer.commit(StoreTransaction(
                 identity: identity,
@@ -311,7 +307,7 @@ struct LibraryService: Sendable {
         return .conflictCopy(try await create(MemoDraft(
             itemID: edit.conflictItemID, title: edit.title, body: body,
             kind: edit.kind ?? snapshot.kind, languageHint: edit.languageHint, note: edit.note,
-            collectionID: state.item.collectionID
+            collectionIDs: state.item.collectionIDs
         ), expecting: identity))
     }
 
@@ -328,7 +324,7 @@ struct LibraryService: Sendable {
         if let existing = try await retryEquivalentInheritedRef(
             itemID: itemID, captureID: captureID, title: title,
             displayKind: displayKind, sourceRepresentationType: source.memo.sourceRepresentationType,
-            languageHint: languageHint, note: note, collectionID: source.item.collectionID,
+            languageHint: languageHint, note: note, collectionIDs: source.item.collectionIDs,
             identity: identity
         ) {
             return existing
@@ -341,7 +337,7 @@ struct LibraryService: Sendable {
         )
         let item = ItemValue(
             id: itemID, captureID: captureID, memoID: memo.id,
-            collectionID: source.item.collectionID
+            collectionIDs: source.item.collectionIDs
         )
         var preconditions: [StorePrecondition] = [
             .contentVersion(source.ref),
@@ -350,9 +346,7 @@ struct LibraryService: Sendable {
             .absent(.item(itemID)),
             .absent(.memo(memo.id)),
         ]
-        if let collectionPrecondition = activeCollectionPrecondition(source.item.collectionID) {
-            preconditions.append(collectionPrecondition)
-        }
+        preconditions += activeCollectionPreconditions(item.collectionIDs)
         do {
             _ = try await writer.commit(StoreTransaction(
                 identity: identity,
@@ -366,7 +360,7 @@ struct LibraryService: Sendable {
             if let existing = try await retryEquivalentInheritedRef(
                 itemID: itemID, captureID: captureID, title: title,
                 displayKind: displayKind, sourceRepresentationType: source.memo.sourceRepresentationType,
-                languageHint: languageHint, note: note, collectionID: source.item.collectionID,
+                languageHint: languageHint, note: note, collectionIDs: source.item.collectionIDs,
                 identity: identity
             ) {
                 return existing
@@ -384,7 +378,7 @@ struct LibraryService: Sendable {
         sourceRepresentationType: String?,
         languageHint: String?,
         note: String,
-        collectionID: CollectionID?,
+        collectionIDs: [CollectionID],
         identity: StoreIdentity
     ) async throws -> ContentRef? {
         let repository = ContentRepository(controller: controller)
@@ -397,7 +391,7 @@ struct LibraryService: Sendable {
         guard case .item(let item) = itemState.value,
               item.deletedAt == nil, item.captureID == captureID,
               !item.historyEligible, item.historyDeletedAt == nil,
-              item.collectionID == collectionID,
+              item.collectionIDs == CollectionID.sorted(collectionIDs),
               let memoID = item.memoID else {
             try await validateIdentity(identity)
             throw LibraryServiceError.stableIdentityCollision
@@ -448,7 +442,7 @@ struct LibraryService: Sendable {
         }
         guard case .item(let item) = itemState.value,
               item.deletedAt == nil, item.captureID == nil, !item.historyEligible,
-              item.historyDeletedAt == nil, item.collectionID == draft.collectionID,
+              item.historyDeletedAt == nil, item.collectionIDs == CollectionID.sorted(draft.collectionIDs),
               let memoID = item.memoID else {
             try await validateIdentity(identity)
             throw LibraryServiceError.stableIdentityCollision
@@ -475,10 +469,8 @@ struct LibraryService: Sendable {
         return currentRef
     }
 
-    private func activeCollectionPrecondition(
-        _ collectionID: CollectionID?
-    ) -> StorePrecondition? {
-        collectionID.map(StorePrecondition.collectionActive)
+    private func activeCollectionPreconditions(_ collectionIDs: [CollectionID]) -> [StorePrecondition] {
+        collectionIDs.map(StorePrecondition.collectionActive)
     }
 
     private func operationIdentity(_ expected: StoreIdentity?) async throws -> StoreIdentity {

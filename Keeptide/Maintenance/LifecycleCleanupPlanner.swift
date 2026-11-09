@@ -292,7 +292,7 @@ struct LifecycleCleanupPlanner: Sendable {
                 }
                 var item = snapshot.item
                 item.memoID = nil
-                item.collectionID = nil
+                item.collectionIDs = []
                 item.isFavorite = false
                 let hiddenHistory = try permanentlyHiddenHistory(
                     item: snapshot.item,

@@ -37,7 +37,7 @@ final class ModelCompatibilityTests: XCTestCase {
         XCTAssertEqual(customConfigurations, ["CloudContent", "LocalState"])
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent")).compactMap(\.name)), cloudEntities)
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "LocalState")).compactMap(\.name)), localEntities)
-        XCTAssertEqual(model.versionIdentifiers, ["4"])
+        XCTAssertEqual(model.versionIdentifiers, ["5"])
     }
 
     func testCloudEntitiesExposeTheFrozenAttributes() throws {
@@ -113,7 +113,8 @@ final class ModelCompatibilityTests: XCTestCase {
             "LibraryItem": [
                 "capture": ("CaptureSnapshot", "items", false),
                 "memo": ("MemoDocument", "item", false),
-                "collection": ("Collection", "items", false)
+                // V5: a snippet belongs to any number of collections.
+                "collection": ("Collection", "items", true)
             ],
             "CaptureSnapshot": [
                 "representations": ("CaptureRepresentation", "snapshot", true),
@@ -239,31 +240,40 @@ final class ModelCompatibilityTests: XCTestCase {
         }
     }
 
-    func testV4ChangesOnlyLocalStateAndSupportsInferredMigrationFromEveryPriorModel() throws {
+    func testV5ChangesOnlyTheItemsCollectionsAndSupportsInferredMigrationFromEveryPriorModel() throws {
         let current = try loadModel()
         let directory = try XCTUnwrap(Bundle(for: PersistenceController.self)
             .url(forResource: "Keeptide", withExtension: "momd"))
-        for version in 1...3 {
+        for version in 1...4 {
             let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
                 directory.appendingPathComponent("KeeptideV\(version).mom")))
             _ = try NSMappingModel.inferredMappingModel(forSourceModel: prior, destinationModel: current)
         }
-        let v3 = try XCTUnwrap(NSManagedObjectModel(contentsOf:
-            directory.appendingPathComponent("KeeptideV3.mom")))
-        for entity in cloudEntities {
-            XCTAssertEqual(v3.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity],
-                           "V4 changed CloudContent entity \(entity)")
+        let v4 = try XCTUnwrap(NSManagedObjectModel(contentsOf:
+            directory.appendingPathComponent("KeeptideV4.mom")))
+        for entity in cloudEntities.union(localEntities) where entity != "LibraryItem" {
+            XCTAssertEqual(v4.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity],
+                           "V5 changed entity \(entity)")
         }
+        // LibraryItem changes only in its collection relationship, which becomes to-many. The collectionID scalar
+        // and its index stay one more version, as the source of the membership backfill.
+        let before = try XCTUnwrap(v4.entitiesByName["LibraryItem"])
+        let after = try XCTUnwrap(current.entitiesByName["LibraryItem"])
+        XCTAssertEqual(Set(before.attributesByName.keys), Set(after.attributesByName.keys))
+        XCTAssertEqual(Set(before.relationshipsByName.keys), Set(after.relationshipsByName.keys))
+        XCTAssertFalse(try XCTUnwrap(before.relationshipsByName["collection"]).isToMany)
+        XCTAssertTrue(try XCTUnwrap(after.relationshipsByName["collection"]).isToMany)
+        XCTAssertNotNil(after.attributesByName["collectionID"])
     }
 
-    func testEveryPriorDiskStoreMigratesToV4AndReopensWithStableIdentity() async throws {
+    func testEveryPriorDiskStoreMigratesToV5AndReopensWithStableIdentity() async throws {
         let modelDirectory = try XCTUnwrap(Bundle(for: PersistenceController.self)
             .url(forResource: "Keeptide", withExtension: "momd"))
-        for version in 1...3 {
+        for version in 1...4 {
             let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
                 modelDirectory.appendingPathComponent("KeeptideV\(version).mom")))
             let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Keeptide-V\(version)-to-V4-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent("Keeptide-V\(version)-to-V5-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: directory) }
             let seed = NSPersistentContainer(name: "Keeptide", managedObjectModel: prior)

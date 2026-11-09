@@ -172,7 +172,7 @@ private extension ExportService {
         let memo: MemoValue? = item.memoID.flatMap { id in
             guard case .memo(let value)? = byKey[.memo(id)] else { return nil }; return value
         }
-        let collection: CollectionValue? = item.collectionID.flatMap { id in
+        let collections: [CollectionValue] = item.collectionIDs.compactMap { id in
             guard case .collection(let value)? = byKey[.collection(id)] else { return nil }; return value
         }
         let capture: CaptureValue? = item.captureID.flatMap { id in
@@ -223,7 +223,9 @@ private extension ExportService {
             availabilityLabel: availability.publicLabel, title: ownedMemo ? (memo?.title ?? item.title) : item.title,
             note: content.ref.facet == .memo ? memo?.note.nilIfEmpty : nil,
             sourceApplicationIdentifier: item.sourceApp,
-            collection: collection.map { ArchiveCollection(id: $0.id.rawValue, name: $0.name, color: $0.color) },
+            collections: collections.isEmpty ? nil : collections.map {
+                ArchiveCollection(id: $0.id.rawValue, name: $0.name, color: $0.color)
+            },
             representations: archiveRepresentations)
     }
 
