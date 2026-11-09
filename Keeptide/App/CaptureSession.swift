@@ -97,7 +97,7 @@ final class CaptureSession {
     /// Opens the library that the launch chooses (`CaptureLibrary.choose`).
     func initialize(testSessionID: UUID? = nil, cleanupTestSession: Bool = false,
                     seedSyntheticClips: Bool = false, seedSyntheticSnippets: Bool = false,
-                    manualPasteQA: Bool = false) async {
+                    manualPasteQA: Bool = false, fakeTextRecognition: Bool = false) async {
         guard !isReady, !initializing else { return }
         let library: CaptureLibrary?
         do {
@@ -111,7 +111,8 @@ final class CaptureSession {
         // process without a test session.
         guard let library else { return }
         await open(library, cleanupTestSession: cleanupTestSession, seedSyntheticClips: seedSyntheticClips,
-                   seedSyntheticSnippets: seedSyntheticSnippets)
+                   seedSyntheticSnippets: seedSyntheticSnippets,
+                   fakeTextRecognition: fakeTextRecognition)
     }
 
     #if DEBUG
@@ -126,7 +127,8 @@ final class CaptureSession {
     /// Opens `library`: its store, search index and paste service, and the recording of the clipboard where the
     /// library records.
     private func open(_ library: CaptureLibrary, cleanupTestSession: Bool = false,
-                      seedSyntheticClips: Bool = false, seedSyntheticSnippets: Bool = false) async {
+                      seedSyntheticClips: Bool = false, seedSyntheticSnippets: Bool = false,
+                      fakeTextRecognition: Bool = false) async {
         guard !isReady, !initializing else { return }
         initializing = true
         defer { initializing = false }
@@ -239,8 +241,13 @@ final class CaptureSession {
             )
             previewService = preview
             // Text is recognized in the image at its full size, never in a card's thumbnail.
+            var recognizer: any TextRecognitionEngine = VisionTextRecognitionEngine()
+            #if DEBUG
+            // Only a UI test session's library, and only when asked for.
+            if fakeTextRecognition, case .test = library { recognizer = FakeTextRecognitionEngine() }
+            #endif
             derivedText = DerivedTextCoordinator(
-                store: derivedTextStore, identity: storeIdentity, recognizer: VisionTextRecognitionEngine(),
+                store: derivedTextStore, identity: storeIdentity, recognizer: recognizer,
                 image: { ref in
                     guard let original = try await preview.originalImage(for: ref) else {
                         throw PreviewLoadError.couldNotDecodeImage

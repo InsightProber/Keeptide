@@ -507,9 +507,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             escape()
         case .showTextInImage:
             let focus = currentFocus
+            let wasShowing = state.textColumnRef != nil
             state.showTextInImage()
             update()
             keepFocus(focus)
+            // VoiceOver hears the column once, as it opens.
+            if !wasShowing, state.textColumnRef != nil { announce("\(TextColumnWords.title), on this Mac") }
         case .closeResultColumn:
             let focus = currentFocus
             state.closeResultColumn()

@@ -55,6 +55,10 @@ snippets in a native library.
 - **Snippets you keep.** Save any clip as a snippet or write a new one, edit
   text and Markdown natively, add a snippet to as many collections as you like,
   and mark favorites. Editing a snippet never changes the original copy.
+- **Text in images.** ⇧⌘T shows the text in a copied image beside its
+  preview, recognized on this Mac with Apple's Vision, line by line or joined
+  into paragraphs. Long screenshots are read whole. Nothing is recognized until
+  you ask.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
@@ -109,6 +113,8 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | Double-click | Do what Return does with the clip you double-click |
 | ⇧Return | Paste or copy as plain text |
 | Space or ⌘Y | Show or hide a larger preview |
+| ⇧⌘T | Show the text in the selected image beside its preview |
+| ⌘. | Stop recognizing the text in an image |
 | ⌘K or right-click | Show every action for the selected clip |
 | ⌘S | Save the clip as a snippet |
 | ⇧⌘M | Save the clip into a collection, or add a snippet to one; choosing a checked collection takes the snippet out |
@@ -116,7 +122,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ⌘⌫ | Move the clip or snippet to Recently Deleted; ⌘Z puts it back. With text in the search field, ⌘⌫ edits the text |
 | ⌘E | Show the clip, or its snippet, in the library |
 | ⌘N | Write a new snippet, in the collection you are browsing |
-| Esc | Step back: close the preview, clear the search and return to All, then close quick access |
+| Esc | Step back: close the text beside the preview, then the preview, clear the search and return to All, then close quick access |
 
 ### Library
 
@@ -164,6 +170,8 @@ Choose **Settings…** from the menu-bar menu.
 - Ignored apps, and content that apps mark as private or transient, are
   skipped. A copy larger than 50 MiB, or one whose formats cannot all be read,
   is not kept, and Keeptide says why until a later copy is kept.
+- Text in images is recognized on this Mac. Recognized text is kept beside its
+  image in the local library, and is not saved to iCloud or exported.
 - Clipboard contents are read in a separate sandboxed helper process, so a slow
   or faulty app cannot freeze Keeptide.
 - When the disk is full, Keeptide stops saving new copies and says so. It never

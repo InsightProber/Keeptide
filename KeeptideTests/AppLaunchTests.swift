@@ -5687,6 +5687,17 @@ final class AppLaunchTests: XCTestCase {
         return zip(high, low).map { $0 - $1 }.max() ?? 0
     }
 
+    func testTheStandInTextRecognizerNeedsAUITestSession() {
+        let id = UUID().uuidString
+        func fakes(_ arguments: [String]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: [:]).usesFakeTextRecognition
+        }
+        XCTAssertTrue(fakes(["--ui-testing", "--capture-test-session", id, "--fake-text-recognition"]))
+        XCTAssertFalse(fakes(["--ui-testing", "--fake-text-recognition"]))
+        XCTAssertFalse(fakes(["--capture-test-session", id, "--fake-text-recognition"]))
+        XCTAssertFalse(fakes(["--ui-testing", "--capture-test-session", id]))
+    }
+
     func testSeedingRequiresAnExplicitUITestSession() {
         let id = UUID().uuidString
         func seeds(_ arguments: [String]) -> Bool {

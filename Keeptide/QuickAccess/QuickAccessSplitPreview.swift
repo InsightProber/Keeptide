@@ -187,8 +187,15 @@ private struct TextInImageColumn: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(TextColumnWords.title), on this Mac")
         .accessibilityIdentifier("QuickAccessTextInImage")
-        .onChange(of: column, initial: true) { _, column in
+        .onChange(of: column, initial: true) { old, column in
             if column.isRecognizing { watched = ref }
+            // VoiceOver hears why there is no text, as it comes; the text itself announces its start and end.
+            guard old != column else { return }
+            switch column {
+            case .noText: AccessibilityNotification.Announcement(TextColumnWords.noText).post()
+            case .failed(let error): AccessibilityNotification.Announcement(error.message).post()
+            default: break
+            }
         }
         .task(id: column.isRecognizing ? ref : nil) {
             saysWhatItDoes = false

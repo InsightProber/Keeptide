@@ -85,7 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         testSessionID: launchConfiguration.captureTestSessionID,
                         cleanupTestSession: launchConfiguration.shouldCleanupCaptureTestSession,
                         seedSyntheticClips: launchConfiguration.shouldSeedSyntheticClips,
-                        seedSyntheticSnippets: launchConfiguration.shouldSeedSyntheticSnippets
+                        seedSyntheticSnippets: launchConfiguration.shouldSeedSyntheticSnippets,
+                        fakeTextRecognition: launchConfiguration.usesFakeTextRecognition
                     )
                 }
                 #else
