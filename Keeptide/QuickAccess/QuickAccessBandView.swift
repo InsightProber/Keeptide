@@ -130,7 +130,7 @@ struct QuickAccessBandView: View {
                 CommandReviewView(review: review, confirmTitle: QuickAccessActions.confirmTitle(for: review),
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: CommandReviewView.cornerRadius, style: .continuous))
             } else {
                 QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
                     QuickAccessPreviewView(preview: state.preview,
@@ -141,7 +141,7 @@ struct QuickAccessBandView: View {
                                        isLoadingOriginal: state.isLoadingOriginalPreview,
                                        previewMessage: state.previewMessage,
                                        onRequestOriginal: state.loadOriginalPreview,
-                                       fillsBackground: false)
+                                       isOnTray: true)
                 }
             }
         }
@@ -161,10 +161,10 @@ private struct QuickAccessPreviewCard<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(Color(nsColor: ToolbarPalette.glyph))
                         .frame(width: QuickAccessSearchControl.foldedWidth, height: QuickAccessSearchControl.foldedWidth)
                         .background(Color(nsColor: ToolbarPalette.foldedSearchFill), in: Circle())
@@ -175,7 +175,7 @@ private struct QuickAccessPreviewCard<Content: View>: View {
                 .accessibilityIdentifier("CloseQuickAccessPreview")
                 .help("Close Preview (Esc)")
                 Text("Preview")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
                 Spacer()
             }
@@ -184,8 +184,19 @@ private struct QuickAccessPreviewCard<Content: View>: View {
             .padding(.horizontal, QuickAccessToolbar.leadingInset)
             content()
         }
-        .background { PreviewTray(increasesContrast: contrast == .increased) }
+        .background {
+            ZStack {
+                // The tray's colour as a shape of its own, under the tray's drawing: it takes the pointer on the
+                // card's empty parts, so that a click there never reaches the band beneath the card, and the card's
+                // shadow falls from it.
+                RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous)
+                    .fill(Color(nsColor: QuickAccessBandSurface.trayColor))
+                PreviewTray(increasesContrast: contrast == .increased)
+            }
+            .accessibilityHidden(true)
+        }
         .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .scaleEffect(appeared || reduceMotion ? 1 : 0.92)
         .opacity(appeared || reduceMotion ? 1 : 0)
         .onAppear {
@@ -198,12 +209,7 @@ private struct QuickAccessPreviewCard<Content: View>: View {
 private struct PreviewTray: NSViewRepresentable {
     let increasesContrast: Bool
 
-    func makeNSView(context: Context) -> QuickAccessBandSurface {
-        let surface = QuickAccessBandSurface()
-        // The card changes size as the panel lays it out, and the outline follows.
-        surface.layerContentsRedrawPolicy = .duringViewResize
-        return surface
-    }
+    func makeNSView(context: Context) -> QuickAccessBandSurface { QuickAccessBandSurface() }
 
     func updateNSView(_ surface: QuickAccessBandSurface, context: Context) {
         surface.increasesContrast = increasesContrast
@@ -409,8 +415,14 @@ final class QuickAccessBandSurface: NSView {
         needsDisplay = true
     }
 
+    /// The tray's colour in the appearance it is drawn in, for a view that is not drawn here. AppKit may ask for it
+    /// on any thread.
+    nonisolated static let trayColor = NSColor(name: nil) { appearance in
+        fill(dark: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+    }
+
     /// The tray's colour.
-    static func fill(dark: Bool) -> NSColor {
+    nonisolated static func fill(dark: Bool) -> NSColor {
         dark ? NSColor(srgbRed: 0x12 / 255, green: 0x13 / 255, blue: 0x16 / 255, alpha: 1)
             : NSColor(srgbRed: 0xF3 / 255, green: 0xF3 / 255, blue: 0xF1 / 255, alpha: 1)
     }
