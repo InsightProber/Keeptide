@@ -1059,7 +1059,7 @@ final class QuickAccessStateTests: XCTestCase {
         let filed = try await insert("filed prompt", at: 1, into: fixture)
         let unfiled = try await insert("unfiled prompt", at: 2, into: fixture)
         let library = LibraryService(controller: fixture.harness.controller)
-        let filedMemo = try await library.saveAsMemo(filed.id, collectionID: prompts.value.id).ref
+        let filedMemo = try await library.saveAsMemo(filed.id, collectionIDs: [prompts.value.id]).ref
         _ = try await library.saveAsMemo(unfiled.id)
         try await fixture.harness.consumer.synchronize()
         let state = QuickAccessState(services: { fixture.services })
@@ -1111,7 +1111,7 @@ final class QuickAccessStateTests: XCTestCase {
         _ = try await insert("clip", at: 1, into: fixture)
         let saved = try await insert("saved", at: 2, into: fixture)
         let savedMemo = try await LibraryService(controller: fixture.harness.controller)
-            .saveAsMemo(saved.id, collectionID: prompts.value.id).ref
+            .saveAsMemo(saved.id, collectionIDs: [prompts.value.id]).ref
         try await fixture.harness.consumer.synchronize()
         let rebuilding = QuickAccessServices(
             repository: fixture.services.repository,
@@ -1147,7 +1147,7 @@ final class QuickAccessStateTests: XCTestCase {
         _ = try await insert("clip", at: 1, into: fixture)
         let saved = try await insert("saved", at: 2, into: fixture)
         let savedMemo = try await LibraryService(controller: fixture.harness.controller)
-            .saveAsMemo(saved.id, collectionID: prompts.value.id).ref
+            .saveAsMemo(saved.id, collectionIDs: [prompts.value.id]).ref
         let unavailable = QuickAccessServices(
             repository: fixture.services.repository,
             search: SearchService(index: nil, status: SearchIndexStatus(.unavailable)),

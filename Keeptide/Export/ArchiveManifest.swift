@@ -130,13 +130,18 @@ struct ArchiveEntry: Codable, Equatable, Sendable {
     var title: String
     var note: String?
     var sourceApplicationIdentifier: String?
+    /// Schema 1 only: the one collection an item could be in. A schema 2 entry never has it.
     var collection: ArchiveCollection?
+    /// Schema 2: every collection the item is in, by id; absent when it is in none.
+    var collections: [ArchiveCollection]?
     var representations: [ArchiveRepresentation]
 }
 
 struct ArchiveManifest: Codable, Equatable, Sendable {
     static let currentFormat = "com.insightprober.keeptide.local-export"
-    static let currentSchemaVersion = 1
+    /// 2 lists an entry's `collections`; 1 gave it at most one `collection`. The verifier reads both.
+    static let currentSchemaVersion = 2
+    static let readableSchemaVersions: ClosedRange<Int> = 1...2
     static let currentVerifierSchemaVersion = 1
 
     var format: String

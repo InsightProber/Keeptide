@@ -232,6 +232,9 @@ final class LibraryWorkspace {
     private(set) var recoveredDrafts: [RecoveredDraftSummary] = []
     private(set) var isLoading = false
     private(set) var message: String?
+    /// True while collections move to where this version keeps them, after an upgrade
+    /// (`CollectionMembershipBackfill`). Lists and counts are right meanwhile; the Library says it is at work.
+    private(set) var isUpdatingCollections = false
     /// What the last action on the selection did ("Copied", "Saved to “Prompts”"), until the selection changes.
     private(set) var actionMessage: String?
     private(set) var canUndoNewSave = false
@@ -315,7 +318,8 @@ final class LibraryWorkspace {
         draftDirectory: URL,
         searchService: SearchService? = nil,
         pasteService: PasteService? = nil,
-        refreshSearch: @escaping @Sendable () async throws -> Void = {}
+        refreshSearch: @escaping @Sendable () async throws -> Void = {},
+        collectionsUpdate: Task<Void, Never>? = nil
     ) async throws -> LibraryWorkspace {
         let identity = try await controller.identity()
         let store = try DraftStore(directory: draftDirectory, identity: identity)
@@ -341,6 +345,17 @@ final class LibraryWorkspace {
             for await event in events {
                 guard let workspace else { return }
                 workspace.handle(event)
+            }
+        }
+        if let collectionsUpdate {
+            workspace.isUpdatingCollections = true
+            Task { [weak workspace] in
+                await collectionsUpdate.value
+                guard let workspace, !workspace.isClosing, !workspace.isClosed else { return }
+                workspace.isUpdatingCollections = false
+                // The update dropped any collection that was gone, so lists and counts are read again.
+                await workspace.refreshCollections()
+                await workspace.reload()
             }
         }
         return workspace
@@ -675,7 +690,7 @@ final class LibraryWorkspace {
         if ref.facet == .memo {
             target = .allSnippets
             if case .item(let item)? = try? await repository.recordState(.item(ref.itemID)).value,
-               let id = item.collectionID {
+               let id = item.collectionIDs.first {
                 // The sidebar lists the collection before it is chosen: one not known yet is read first.
                 if !collections.contains(where: { $0.value.id == id }) { await refreshCollections() }
                 if collections.contains(where: { $0.value.id == id }) { target = .collection(id) }
@@ -767,7 +782,8 @@ final class LibraryWorkspace {
         let snapshot: MemoEditingSnapshot
         do {
             outcome = try await libraryService.saveAsMemo(
-                ref.itemID, collectionID: collectionID, isFavorite: isFavorite, expecting: storeIdentity
+                ref.itemID, collectionIDs: collectionID.map { [$0] } ?? [], isFavorite: isFavorite,
+                expecting: storeIdentity
             )
             snapshot = try await libraryService.editingSnapshot(outcome.ref)
         } catch {
@@ -844,7 +860,8 @@ final class LibraryWorkspace {
             }
             do {
                 switch try await libraryService.saveAsMemo(
-                    ref.itemID, collectionID: collectionID, isFavorite: isFavorite, expecting: storeIdentity
+                    ref.itemID, collectionIDs: collectionID.map { [$0] } ?? [], isFavorite: isFavorite,
+                    expecting: storeIdentity
                 ) {
                 case .created(let memo): outcome.saved.append(memo)
                 case .existing(let memo): outcome.alreadySaved.append(memo)
@@ -1055,13 +1072,15 @@ final class LibraryWorkspace {
         await refreshEditorDetails()
     }
 
-    /// ⌫ in a collection: the selected snippets leave it and become unfiled; nothing is deleted.
+    /// ⌫ in a collection: the selected snippets leave it, and stay in any other; nothing is deleted.
     func removeFromCollection(_ refs: [ContentRef]) async {
         guard let id = scope.collectionID, let collection = collections.first(where: { $0.value.id == id }) else {
             return
         }
         let snippets = refs.filter { $0.facet == .memo }
-        guard !snippets.isEmpty, await moveItems(snippets, to: nil) else { return }
+        guard !snippets.isEmpty, await changeCollection({
+            try await self.collectionService.remove(snippets, from: id, expecting: self.storeIdentity)
+        }) else { return }
         actionMessage = "Removed from “\(collection.value.name)”"
         await refreshEditorDetails()
     }
@@ -1300,10 +1319,12 @@ final class LibraryWorkspace {
                 details.byteCount = content.representations.reduce(0) { $0 + $1.byteCount }
             }
             if let memo = current?.memo {
-                details.savedSnippet = .init(ref: memo, collectionID: item.collectionID, isFavorite: item.isFavorite)
+                details.savedSnippet = .init(
+                    ref: memo, collectionID: item.collectionIDs.first, isFavorite: item.isFavorite
+                )
             }
         } else {
-            details.collectionID = item.collectionID
+            details.collectionID = item.collectionIDs.first
             details.isFavorite = item.isFavorite
             if item.captureID != nil {
                 if let history = current?.history {
@@ -1447,7 +1468,7 @@ final class LibraryWorkspace {
             id: result.ref.itemID, ref: result.ref, title: result.title,
             snippet: result.snippet?.text, lastCopiedAt: result.lastCopiedAt,
             kind: result.kind, isMemo: result.ref.facet == .memo || result.savedAsMemo,
-            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionID,
+            isFavorite: result.isFavorite, sourceApp: result.sourceApp, collectionID: result.collectionIDs.first,
             note: result.note, lastUsedAt: result.lastUsedAt
         )
     }

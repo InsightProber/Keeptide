@@ -10,14 +10,14 @@ final class MemoCollectionTests: XCTestCase {
             let service = LibraryService(controller: controller)
 
             let categorized = try await service.create(MemoDraft(
-                body: "categorized", collectionID: collection.id
+                body: "categorized", collectionIDs: [collection.id]
             ))
             let uncategorized = try await service.create(MemoDraft(body: "uncategorized"))
             let categorizedItem = try await item(categorized.itemID, in: controller)
             let uncategorizedItem = try await item(uncategorized.itemID, in: controller)
 
-            XCTAssertEqual(categorizedItem.collectionID, collection.id)
-            XCTAssertNil(uncategorizedItem.collectionID)
+            XCTAssertEqual(categorizedItem.collectionIDs, [collection.id])
+            XCTAssertEqual(uncategorizedItem.collectionIDs, [])
         }
     }
 
@@ -56,7 +56,7 @@ final class MemoCollectionTests: XCTestCase {
             let service = LibraryService(controller: controller)
             let itemID = ItemID()
             let first = MemoDraft(
-                itemID: itemID, body: "stable", collectionID: firstCollection.id
+                itemID: itemID, body: "stable", collectionIDs: [firstCollection.id]
             )
 
             let created = try await service.create(first)
@@ -64,14 +64,14 @@ final class MemoCollectionTests: XCTestCase {
             XCTAssertEqual(created, retry)
             do {
                 _ = try await service.create(MemoDraft(
-                    itemID: itemID, body: "stable", collectionID: secondCollection.id
+                    itemID: itemID, body: "stable", collectionIDs: [secondCollection.id]
                 ))
                 XCTFail("A stable item retry silently changed collection context")
             } catch {
                 XCTAssertEqual(error as? LibraryServiceError, .stableIdentityCollision)
             }
             let persisted = try await item(itemID, in: controller)
-            XCTAssertEqual(persisted.collectionID, firstCollection.id)
+            XCTAssertEqual(persisted.collectionIDs, [firstCollection.id])
         }
     }
 
@@ -83,7 +83,7 @@ final class MemoCollectionTests: XCTestCase {
                 original, name: "Renamed", color: "purple", sortOrder: 20, in: controller
             )
             let draft = MemoDraft(
-                itemID: ItemID(), body: "metadata independent", collectionID: original.id
+                itemID: ItemID(), body: "metadata independent", collectionIDs: [original.id]
             )
 
             let created = try await service.create(draft)
@@ -94,7 +94,7 @@ final class MemoCollectionTests: XCTestCase {
             let persisted = try await item(created.itemID, in: controller)
 
             XCTAssertEqual(retry, created)
-            XCTAssertEqual(persisted.collectionID, original.id)
+            XCTAssertEqual(persisted.collectionIDs, [original.id])
         }
     }
 
@@ -103,7 +103,7 @@ final class MemoCollectionTests: XCTestCase {
             let collection = try await insertCollection(in: controller)
             let service = LibraryService(controller: controller)
             let original = try await service.create(MemoDraft(
-                body: "base", collectionID: collection.id
+                body: "base", collectionIDs: [collection.id]
             ))
             let stale = try await service.editingSnapshot(original)
             _ = try await service.commit(MemoEdit(
@@ -125,7 +125,7 @@ final class MemoCollectionTests: XCTestCase {
             }
             let conflictItem = try await item(conflictID, in: controller)
             XCTAssertEqual(firstRef, retryRef)
-            XCTAssertEqual(conflictItem.collectionID, collection.id)
+            XCTAssertEqual(conflictItem.collectionIDs, [collection.id])
         }
     }
 
@@ -163,7 +163,7 @@ final class MemoCollectionTests: XCTestCase {
             }
             let conflictItem = try await item(conflictID, in: controller)
             XCTAssertEqual(firstRef, retryRef)
-            XCTAssertEqual(conflictItem.collectionID, collection.id)
+            XCTAssertEqual(conflictItem.collectionIDs, [collection.id])
         }
     }
 
@@ -172,7 +172,7 @@ final class MemoCollectionTests: XCTestCase {
             let collection = try await insertCollection(in: controller)
             let service = LibraryService(controller: controller)
             let original = try await service.create(MemoDraft(
-                body: "base", collectionID: collection.id
+                body: "base", collectionIDs: [collection.id]
             ))
             let stale = try await service.editingSnapshot(original)
             let identity = try await controller.identity()

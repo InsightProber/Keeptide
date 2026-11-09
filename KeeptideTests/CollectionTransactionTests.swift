@@ -15,7 +15,7 @@ final class CollectionTransactionTests: XCTestCase {
             let phantom = try await insertMemo(in: controller, collectionID: nil)
             let phantomState = try await repository.recordState(.item(phantom.item.id))
             var attached = phantom.item
-            attached.collectionID = collection.id
+            attached.collectionIDs = [collection.id]
             _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
                 identity: try await controller.identity(),
                 preconditions: [
@@ -27,7 +27,7 @@ final class CollectionTransactionTests: XCTestCase {
             var deletedCollection = collection
             deletedCollection.deletedAt = Date(timeIntervalSince1970: 500)
             var detachedOriginal = original.item
-            detachedOriginal.collectionID = nil
+            detachedOriginal.collectionIDs = []
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
                     identity: try await controller.identity(),
@@ -50,8 +50,8 @@ final class CollectionTransactionTests: XCTestCase {
             let unchangedOriginal = try await itemValue(original.item.id, in: controller)
             let attachedPhantom = try await itemValue(phantom.item.id, in: controller)
             XCTAssertEqual(unchangedCollection, collection)
-            XCTAssertEqual(unchangedOriginal.collectionID, collection.id)
-            XCTAssertEqual(attachedPhantom.collectionID, collection.id)
+            XCTAssertEqual(unchangedOriginal.collectionIDs, [collection.id])
+            XCTAssertEqual(attachedPhantom.collectionIDs, [collection.id])
         }
     }
 
@@ -165,7 +165,7 @@ final class CollectionTransactionTests: XCTestCase {
             let fixture = try await insertMemo(in: controller, collectionID: nil)
             let itemState = try await repository.recordState(.item(fixture.item.id))
             var attached = fixture.item
-            attached.collectionID = collection.id
+            attached.collectionIDs = [collection.id]
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
                     identity: try await controller.identity(),
@@ -180,7 +180,7 @@ final class CollectionTransactionTests: XCTestCase {
             }
 
             let unchanged = try await itemValue(fixture.item.id, in: controller)
-            XCTAssertNil(unchanged.collectionID)
+            XCTAssertEqual(unchanged.collectionIDs, [])
         }
     }
 
@@ -200,7 +200,7 @@ final class CollectionTransactionTests: XCTestCase {
             var deletedCollection = collection
             deletedCollection.deletedAt = Date(timeIntervalSince1970: 801)
             var detached = fixture.item
-            detached.collectionID = nil
+            detached.collectionIDs = []
             var deletion = StoreTransaction(
                 identity: try await controller.identity(),
                 preconditions: [
@@ -215,7 +215,7 @@ final class CollectionTransactionTests: XCTestCase {
             let receipt = try await WriteCoordinator(controller: controller).commit(deletion)
 
             let detachedValue = try await itemValue(fixture.item.id, in: controller)
-            XCTAssertNil(detachedValue.collectionID)
+            XCTAssertEqual(detachedValue.collectionIDs, [])
             let emptyMembership = try await repository.collectionMembershipFingerprint(collection.id)
             var undo = StoreTransaction(
                 identity: try await controller.identity(),
@@ -260,7 +260,7 @@ final class CollectionTransactionTests: XCTestCase {
             var deletedCollection = collection
             deletedCollection.deletedAt = Date(timeIntervalSince1970: 900)
             var detached = fixture.item
-            detached.collectionID = nil
+            detached.collectionIDs = []
             do {
                 _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(
                     identity: try await controller.identity(),
@@ -338,7 +338,7 @@ private extension CollectionTransactionTests {
             id: itemID,
             title: "Memo",
             memoID: memo.id,
-            collectionID: collectionID,
+            collectionIDs: collectionID.map { [$0] } ?? [],
             deletedAt: itemDeletedAt
         )
         _ = try await WriteCoordinator(controller: controller).commit(StoreTransaction(

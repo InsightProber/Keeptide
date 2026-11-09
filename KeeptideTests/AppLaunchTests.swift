@@ -2447,7 +2447,7 @@ final class AppLaunchTests: XCTestCase {
         let ref = try XCTUnwrap(controller.state.copyTarget?.ref)
         let state = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
         guard case .item(let item) = state.value else { return XCTFail("Missing the clip") }
-        XCTAssertEqual(item.collectionID, made[0].value.id)
+        XCTAssertEqual(item.collectionIDs, [made[0].value.id])
         // The actions menu offers the same, under Save to Collection.
         let actions = try actionMenu(of: controller)
         let saveTo = try XCTUnwrap(actions.items.first { $0.title == "Save to Collection" })
@@ -4887,7 +4887,7 @@ final class AppLaunchTests: XCTestCase {
         }
         for snippet in snippets {
             let ref = try await library.create(MemoDraft(title: snippet.title, body: "\(snippet.title) body",
-                                                         collectionID: snippet.collectionID))
+                                                         collectionIDs: snippet.collectionID.map { [$0] } ?? []))
             if favorites.contains(snippet.title) { _ = try await service.setFavorite([ref], isFavorite: true) }
         }
         try await harness.consumer.synchronize()

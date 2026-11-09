@@ -18,12 +18,12 @@ final class MemoSaveUndoTests: XCTestCase {
         try await ContentStoreFixtures.insert(clip, capture, into: controller)
         let library = LibraryService(controller: controller)
         let identity = try await controller.identity()
-        let saved = try await library.saveAsMemo(clip.id, collectionID: collection.value.id, isFavorite: true).ref
+        let saved = try await library.saveAsMemo(clip.id, collectionIDs: [collection.value.id], isFavorite: true).ref
         let snapshot = try await library.editingSnapshot(saved)
         guard case .item(let before) = try await repository.recordState(.item(clip.id)).value else {
             return XCTFail("Missing item")
         }
-        XCTAssertEqual(before.collectionID, collection.value.id)
+        XCTAssertEqual(before.collectionIDs, [collection.value.id])
         XCTAssertTrue(before.isFavorite)
 
         try await library.undoSaveAsMemo(
@@ -34,7 +34,7 @@ final class MemoSaveUndoTests: XCTestCase {
             return XCTFail("Missing item after undo")
         }
         XCTAssertNil(after.memoID)
-        XCTAssertNil(after.collectionID)
+        XCTAssertEqual(after.collectionIDs, [])
         XCTAssertFalse(after.isFavorite)
         let history = try await repository.read(ContentStoreFixtures.ref(clip, capture))
         XCTAssertEqual(history.integrity, .complete)

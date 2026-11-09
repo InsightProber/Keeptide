@@ -60,6 +60,16 @@ final class SchemaFixtureTests: XCTestCase {
         XCTAssertTrue(item.historyEligible)
         XCTAssertEqual(item.lastCopiedAt, Date(timeIntervalSince1970: 1_700_000_100))
         XCTAssertEqual(item.copyCount, 7)
+        XCTAssertEqual(item.collectionIDs, [])
+        // The collection backfill of V5 finds nothing to move in a V1 library, and changes nothing.
+        let backfill = CollectionMembershipBackfill(controller: controller)
+        let backfillNeeded = try await backfill.isNeeded()
+        XCTAssertFalse(backfillNeeded)
+        let backfilled = try await backfill.run()
+        XCTAssertEqual(backfilled, .init())
+        let unchanged = try await ContentRepository(controller: controller).recordState(.item(itemID))
+        XCTAssertEqual(unchanged.value, state.value)
+        XCTAssertEqual(unchanged.fingerprint, state.fingerprint)
 
         let usage = try await LocalUsageStore(controller: controller).summaries(for: [ref])
         XCTAssertEqual(usage, [

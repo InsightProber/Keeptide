@@ -98,7 +98,20 @@ enum StoredRecords {
             object.setValue(item.title, forKey: "title")
             object.setValue(item.captureID, forKey: "captureID")
             object.setValue(item.memoID, forKey: "memoID")
-            object.setValue(item.collectionID?.rawValue, forKey: "collectionID")
+            // Memberships live in the to-many relationship, set here so the commit validates what was written. The
+            // single collectionID of V4 is retired: a written item no longer has one, and the backfill clears the rest.
+            // The relationship is replaced only when the collections change, so an edit leaves the collections' side
+            // of it alone.
+            object.setValue(nil, forKey: "collectionID")
+            let related = object.value(forKey: "collection") as? Set<NSManagedObject> ?? []
+            if Set(related.compactMap { $0.value(forKey: "id") as? UUID }) != Set(item.collectionIDs.map(\.rawValue)) {
+                object.setValue(NSSet(array: try item.collectionIDs.map { id in
+                    guard let collection = try self.object(.collection(id), in: context) else {
+                        throw StoreError.invalidTransaction
+                    }
+                    return collection
+                }), forKey: "collection")
+            }
             object.setValue(item.isFavorite, forKey: "isFavorite")
             object.setValue(item.historyEligible, forKey: "historyEligible")
             object.setValue(item.historyDeletedAt, forKey: "historyDeletedAt")
@@ -190,10 +203,6 @@ enum StoredRecords {
             }
         }
         itemObject.setValue(memoObject, forKey: "memo")
-        itemObject.setValue(
-            try relatedObject(item.collectionID.map(RecordKey.collection), in: context),
-            forKey: "collection"
-        )
     }
 
     static func summaries(limit: Int, in context: NSManagedObjectContext) throws -> [ItemSummary] {
@@ -436,7 +445,8 @@ enum StoredRecords {
     /// Record CAS separately protects member metadata; this fence detects phantoms.
     static func collectionMemberIDs(_ id: CollectionID, in context: NSManagedObjectContext) throws -> [ItemID] {
         let request = NSFetchRequest<NSManagedObject>(entityName: "LibraryItem")
-        request.predicate = NSPredicate(format: "collectionID == %@", id.rawValue as NSUUID)
+        request.predicate = NSPredicate(format: "collectionID == %@ OR ANY collection.id == %@",
+                                        id.rawValue as NSUUID, id.rawValue as NSUUID)
         request.includesPendingChanges = true
         let ids = try context.fetch(request).map { object -> ItemID in
             guard let uuid = object.value(forKey: "id") as? UUID else { throw StoreError.corruptStore }
@@ -604,6 +614,7 @@ extension StoredRecords {
         }
         let captureIDs = Set(included.compactMap(\.item.captureID))
         let texts = try searchCaptureText(manifests: manifests.filter { captureIDs.contains($0.key) }, in: context)
+        let collectionsByItem = try memberships(itemIDs: included.map(\.item.id.rawValue), in: context)
 
         let inputs = included.map { entry in
             let memo = entry.memo.flatMap { ref -> MemoProjection? in
@@ -617,7 +628,7 @@ extension StoredRecords {
             let manifest = entry.item.captureID.flatMap { manifests[$0] }
             return SearchProjectionInput(
                 itemID: entry.item.id, title: entry.item.title, sourceApp: entry.row["sourceApp"] as? String,
-                collectionID: (entry.row["collectionID"] as? UUID).map(CollectionID.init(rawValue:)),
+                collectionIDs: collectionsByItem[entry.item.id.rawValue] ?? [],
                 isFavorite: entry.item.isFavorite,
                 lastCopiedAt: entry.item.lastCopiedAt, history: entry.history, memo: memo,
                 captureID: entry.item.captureID, representationTypes: manifest?.entries.map(\.typeIdentifier) ?? [],
@@ -1165,7 +1176,7 @@ private extension StoredRecords {
             title: try required(object, "title"),
             captureID: object.value(forKey: "captureID") as? UUID,
             memoID: object.value(forKey: "memoID") as? UUID,
-            collectionID: (object.value(forKey: "collectionID") as? UUID).map(CollectionID.init),
+            collectionIDs: try memberships(of: object),
             isFavorite: try bool(object, "isFavorite"),
             historyEligible: try bool(object, "historyEligible"),
             historyDeletedAt: object.value(forKey: "historyDeletedAt") as? Date,
@@ -1174,6 +1185,34 @@ private extension StoredRecords {
             lastCopiedAt: try required(object, "lastCopiedAt"),
             copyCount: try int64(object, "copyCount")
         )
+    }
+
+    /// An item's collections: its to-many relationship, and until the membership backfill has run, the single
+    /// collectionID it had in V4.
+    static func memberships(of object: NSManagedObject) throws -> [CollectionID] {
+        var ids: [CollectionID] = []
+        if let legacy = object.value(forKey: "collectionID") as? UUID { ids.append(CollectionID(rawValue: legacy)) }
+        for collection in object.value(forKey: "collection") as? Set<NSManagedObject> ?? [] {
+            guard let id = collection.value(forKey: "id") as? UUID else { throw StoreError.corruptStore }
+            ids.append(CollectionID(rawValue: id))
+        }
+        return CollectionID.sorted(ids)
+    }
+
+    /// The collections of items read as dictionaries, which cannot carry a to-many relationship: one fetch of just
+    /// these items, their collections prefetched, so the cost follows the items read and not every membership.
+    static func memberships(itemIDs: [UUID], in context: NSManagedObjectContext) throws -> [UUID: [CollectionID]] {
+        var result: [UUID: [CollectionID]] = [:]
+        for ids in batches(itemIDs) {
+            let request = NSFetchRequest<NSManagedObject>(entityName: "LibraryItem")
+            request.predicate = NSPredicate(format: "id IN %@", ids)
+            request.relationshipKeyPathsForPrefetching = ["collection"]
+            for object in try context.fetch(request) {
+                guard let id = object.value(forKey: "id") as? UUID else { throw StoreError.corruptStore }
+                result[id] = try memberships(of: object)
+            }
+        }
+        return result
     }
 
     static func memoValue(_ object: NSManagedObject, includeBody: Bool) throws -> MemoValue {

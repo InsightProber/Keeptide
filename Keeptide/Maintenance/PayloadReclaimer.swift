@@ -574,9 +574,9 @@ private extension PayloadReclaimer {
             clearedFavorite.isFavorite = false
             candidates.append(clearedFavorite)
         }
-        if detached.collectionID != nil {
+        if !detached.collectionIDs.isEmpty {
             var clearedCollection = detached
-            clearedCollection.collectionID = nil
+            clearedCollection.collectionIDs = []
             candidates.append(clearedCollection)
             if clearedCollection.isFavorite {
                 clearedCollection.isFavorite = false

@@ -668,7 +668,8 @@ final class QuickAccessState {
             var collection: CollectionSummary?
             if case .collection(let chosen)? = placement { collection = chosen }
             let favorite = placement == .favorite
-            let outcome = try await library.saveAsMemo(target.ref.itemID, collectionID: collection?.id,
+            let outcome = try await library.saveAsMemo(target.ref.itemID,
+                                                       collectionIDs: collection.map { [$0.id] } ?? [],
                                                        isFavorite: favorite, expecting: identity)
             guard stillAsked() else { return }
             switch outcome {
@@ -1217,7 +1218,7 @@ final class QuickAccessState {
         QuickAccessRow(ref: result.ref, title: result.title, snippet: result.snippet, kind: result.kind,
                        sourceApp: result.sourceApp, date: result.lastCopiedAt, savedAsMemo: result.savedAsMemo,
                        isPartiallyIndexed: result.isPartiallyIndexed, isTextUnavailable: result.isTextUnavailable,
-                       collectionID: result.collectionID, isFavorite: result.isFavorite)
+                       collectionID: result.collectionIDs.first, isFavorite: result.isFavorite)
     }
 
     /// A memo's row from the store, for when the index cannot serve Snippets; its collection and favorite are not

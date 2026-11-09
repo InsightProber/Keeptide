@@ -22,7 +22,7 @@ extension LibraryService {
             }
             ref = try await create(MemoDraft(itemID: draft.itemID, title: draft.title, body: body,
                 kind: draft.kind, languageHint: draft.languageHint, note: draft.note,
-                collectionID: draft.collectionID),
+                collectionIDs: draft.collectionID.map { [$0] } ?? []),
                 expecting: draft.storeIdentity)
         }
 

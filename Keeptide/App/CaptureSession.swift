@@ -38,6 +38,8 @@ final class CaptureSession {
     @ObservationIgnored private var searchIndex: SQLiteSearchIndex?
     @ObservationIgnored private var searchStatus: SearchIndexStatus?
     @ObservationIgnored private var historyConsumer: HistoryConsumer?
+    /// Moves collections to where this version keeps them, after an upgrade; nil when there is nothing to move.
+    @ObservationIgnored private var collectionsUpdate: Task<Void, Never>?
     /// What direct paste asks of the system. Every paste service this session makes uses it.
     @ObservationIgnored private let directPaste: DirectPasteSystem
     /// A clipboard a test gives in place of the real one. Without it, the session reads the clipboard its library
@@ -182,6 +184,12 @@ final class CaptureSession {
             }
             #endif
             controller = store
+            // In the background, away from the main actor and alongside capture: reads see the same collections
+            // before, during and after it, and the Library says it is at work until it ends.
+            let backfill = CollectionMembershipBackfill(controller: store)
+            if (try? await backfill.isNeeded()) == true {
+                collectionsUpdate = Task.detached(priority: .utility) { _ = try? await backfill.run() }
+            }
             let read: @Sendable (ContentRef) async throws -> ResolvedContent = { ref in
                 try Task.checkCancellation()
                 return try await ContentRepository(controller: store).read(ref)
@@ -230,7 +238,8 @@ final class CaptureSession {
                 libraryWorkspace = try await LibraryWorkspace.make(
                     controller: store, draftDirectory: directory.appendingPathComponent("Drafts"),
                     searchService: searchService, pasteService: pasteService,
-                    refreshSearch: { try await consumer?.synchronize() }
+                    refreshSearch: { try await consumer?.synchronize() },
+                    collectionsUpdate: collectionsUpdate
                 )
                 libraryWorkspace?.onCollectionsChanged = { [weak self] in self?.onCollectionsChanged?() }
                 libraryInitializationError = nil
@@ -318,6 +327,10 @@ final class CaptureSession {
         exportCoordinator = nil
         await maintenance?.stopAndDrain()
         maintenance = nil
+        // A run left part way resumes at the next launch.
+        collectionsUpdate?.cancel()
+        await collectionsUpdate?.value
+        collectionsUpdate = nil
         if let foregroundObserver { NSWorkspace.shared.notificationCenter.removeObserver(foregroundObserver) }
         foregroundObserver = nil
         await monitor?.stopAndDrain()

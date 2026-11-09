@@ -147,7 +147,12 @@ struct ItemValue: Codable, Equatable, Sendable {
     var title: String
     var captureID: UUID?
     var memoID: UUID?
-    var collectionID: CollectionID?
+    /// The first of the memo's collections, by id. Stored under the key an item had when it could belong to one
+    /// collection: an item in at most one encodes as it always did, so its fingerprint, and every cleanup intent
+    /// that recorded one, stay valid across the upgrade. Read and write `collectionIDs` instead.
+    private var collectionID: CollectionID?
+    /// The memo's other collections, after `collectionID`; nil, and so not encoded, when there are none.
+    private var additionalCollectionIDs: [CollectionID]?
     var isFavorite: Bool
     var historyEligible: Bool
     var historyDeletedAt: Date?
@@ -158,7 +163,7 @@ struct ItemValue: Codable, Equatable, Sendable {
 
     init(
         id: ItemID = ItemID(), createdAt: Date = Date(), sourceApp: String? = nil, title: String = "",
-        captureID: UUID? = nil, memoID: UUID? = nil, collectionID: CollectionID? = nil,
+        captureID: UUID? = nil, memoID: UUID? = nil, collectionIDs: [CollectionID] = [],
         isFavorite: Bool = false, historyEligible: Bool = false, historyDeletedAt: Date? = nil,
         historyPurgeAfter: Date? = nil, deletedAt: Date? = nil, lastCopiedAt: Date = Date(), copyCount: Int64 = 0
     ) {
@@ -168,7 +173,6 @@ struct ItemValue: Codable, Equatable, Sendable {
         self.title = title
         self.captureID = captureID
         self.memoID = memoID
-        self.collectionID = collectionID
         self.isFavorite = isFavorite
         self.historyEligible = historyEligible
         self.historyDeletedAt = historyDeletedAt
@@ -176,6 +180,25 @@ struct ItemValue: Codable, Equatable, Sendable {
         self.deletedAt = deletedAt
         self.lastCopiedAt = lastCopiedAt
         self.copyCount = copyCount
+        self.collectionIDs = collectionIDs
+    }
+
+    /// The collections the memo belongs to, each once, in the order of their ids; empty for an unfiled memo and for
+    /// every clip.
+    var collectionIDs: [CollectionID] {
+        get { (collectionID.map { [$0] } ?? []) + (additionalCollectionIDs ?? []) }
+        set {
+            let sorted = CollectionID.sorted(newValue)
+            collectionID = sorted.first
+            additionalCollectionIDs = sorted.count > 1 ? Array(sorted.dropFirst()) : nil
+        }
+    }
+}
+
+extension CollectionID {
+    /// Each id once, in the order of their UUID strings: the one order memberships are stored and compared in.
+    static func sorted(_ ids: some Sequence<CollectionID>) -> [CollectionID] {
+        Set(ids).sorted { $0.rawValue.uuidString < $1.rawValue.uuidString }
     }
 }
 
