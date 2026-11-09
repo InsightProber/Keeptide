@@ -617,9 +617,10 @@ final class QuickAccessState {
         await save(target, placing: nil)
     }
 
-    /// ⇧⌘M: the selected clip saved straight into `collection`, or into none with nil, in one transaction; a clip
-    /// already saved, or a snippet, moved there. Moving one that is there already writes nothing.
-    func saveSelection(_ target: CopyTarget, into collection: CollectionSummary?) async {
+    /// ⇧⌘M: the selected clip saved straight into `collection` in one transaction, or the snippet it was saved as
+    /// added to it. A snippet's card knows its collections: choosing one it is in takes it out, and any other adds it.
+    /// Adding one that is in it already writes nothing.
+    func saveSelection(_ target: CopyTarget, into collection: CollectionSummary) async {
         await save(target, placing: .collection(collection))
     }
 
@@ -630,7 +631,7 @@ final class QuickAccessState {
     }
 
     private enum Placement: Equatable {
-        case collection(CollectionSummary?)
+        case collection(CollectionSummary)
         case favorite
     }
 
@@ -642,8 +643,10 @@ final class QuickAccessState {
         // The save is what was done last: a refused copy's reason before it no longer answers it.
         failure = nil
         func stillAsked() -> Bool { isOpen && session === currentSession && copyTarget == target }
-        // A snippet's card knows its favorite mark as ⌘D was pressed.
-        let cardIsFavorite = selection.rows.first { $0.ref == target.ref }?.isFavorite ?? false
+        // A snippet's card knows its favorite mark and its collections as the key was pressed.
+        let card = selection.rows.first { $0.ref == target.ref }
+        let cardIsFavorite = card?.isFavorite ?? false
+        let cardCollections = Set(card?.collectionIDs ?? [])
         do {
             let identity = try await library.controller.identity()
             guard stillAsked() else { return }
@@ -654,7 +657,7 @@ final class QuickAccessState {
                     return
                 }
                 try await place([target.ref], placement, by: changes, onSnippet: true, wasFavorite: cardIsFavorite,
-                                identity: identity, stillAsked: stillAsked)
+                                wasIn: cardCollections, identity: identity, stillAsked: stillAsked)
                 return
             }
             let content = try await services.repository.read(target.ref)
@@ -693,13 +696,13 @@ final class QuickAccessState {
                     return
                 }
                 try await place([memoRef], placement, by: changes, onSnippet: false, wasFavorite: false,
-                                identity: identity, stillAsked: stillAsked)
+                                wasIn: [], identity: identity, stillAsked: stillAsked)
                 if placement == .favorite, stillAsked() { updateRow(ref: target.ref) { $0.isFavorite = true } }
             }
         } catch {
             guard stillAsked() else { return }
             var gone = false
-            if case .collection(let collection?)? = placement { gone = await isGone(collection, in: services) }
+            if case .collection(let collection)? = placement { gone = await isGone(collection, in: services) }
             guard stillAsked() else { return }
             if gone {
                 explainCollectionGone()
@@ -709,19 +712,36 @@ final class QuickAccessState {
         }
     }
 
-    /// Moves or marks snippets that exist already, and says what came of it: on a snippet's own card as it is, on a
-    /// clip's card after "Already in Snippets".
+    /// Places or marks snippets that exist already, and says what came of it: on a snippet's own card as it is, on a
+    /// clip's card after "Already in Snippets". `wasIn` holds the collections the card showed the snippet in.
     private func place(_ refs: [ContentRef], _ placement: Placement, by changes: any QuickAccessCollectionChanges,
-                       onSnippet: Bool, wasFavorite: Bool, identity: StoreIdentity,
+                       onSnippet: Bool, wasFavorite: Bool, wasIn: Set<CollectionID>, identity: StoreIdentity,
                        stillAsked: () -> Bool) async throws {
         let prefix = onSnippet ? "" : "Already in Snippets · "
         switch placement {
         case .collection(let collection):
-            let moved = try await changes.moveSnippets(refs, into: collection?.id, expecting: identity)
+            let place = "“\(collection.name)”"
+            // A snippet's card knows its collections, and choosing one it is in takes it out; a clip's only adds.
+            if onSnippet, wasIn.contains(collection.id) {
+                _ = try await changes.removeSnippets(refs, from: collection.id, expecting: identity)
+                guard stillAsked() else { return }
+                saveMessage = "Removed from \(place)"
+                for ref in refs { updateRow(ref: ref) { $0.collectionIDs.removeAll { $0 == collection.id } } }
+                return
+            }
+            let added = try await changes.addSnippets(refs, to: collection.id, expecting: identity)
             guard stillAsked() else { return }
-            let place = collection.map { "“\($0.name)”" } ?? CollectionMenu.unfiledTitle
-            saveMessage = moved ? "\(prefix)Moved to \(place)" : "Already in \(place)"
-            if moved, onSnippet { for ref in refs { updateRow(ref: ref) { $0.collectionID = collection?.id } } }
+            saveMessage = added ? "\(prefix)Added to \(place)" : "Already in \(place)"
+            if onSnippet {
+                let order = collections.map(\.id)
+                for ref in refs {
+                    updateRow(ref: ref) { row in
+                        if !row.collectionIDs.contains(collection.id) {
+                            row.collectionIDs = CollectionBadge.ordered(row.collectionIDs + [collection.id], by: order)
+                        }
+                    }
+                }
+            }
         case .favorite:
             // A snippet's card knows its mark and turns it over; a clip's only adds it.
             let favorite = onSnippet ? !wasFavorite : true
@@ -787,7 +807,8 @@ final class QuickAccessState {
                 for try await page in search.search(request) where page.isComplete {
                     guard self.isCurrent(generation) else { return }
                     let listed = self.selection.rows.count
-                    self.selection.append(page.results.map { Self.row(from: $0) }, generation: generation)
+                    let order = self.collections.map(\.id)
+                    self.selection.append(page.results.map { Self.row(from: $0, order: order) }, generation: generation)
                     self.totalMatches = page.totalMatches
                     // A page whose rows are all listed already, as when a clip copied again moved up into the
                     // list, would come back the same however often it is asked for.
@@ -951,7 +972,8 @@ final class QuickAccessState {
                     await showListWithoutTheIndex(generation, notice: notice)
                     return
                 }
-                let rows = ledByFrequentWing(page.results.map { Self.row(from: $0) }, candidates: candidates)
+                let order = collections.map(\.id)
+                let rows = ledByFrequentWing(page.results.map { Self.row(from: $0, order: order) }, candidates: candidates)
                 applyRows(rows, generation: generation, isComplete: page.isComplete, keepsChosenRow: true)
                 totalMatches = page.totalMatches
                 indexNotice = Self.notice(for: page.indexState)
@@ -1214,11 +1236,13 @@ final class QuickAccessState {
                               savedAsMemo: summary.memo != nil, isPartiallyIndexed: false, isTextUnavailable: false)
     }
 
-    private static func row(from result: SearchResult) -> QuickAccessRow {
+    /// `order` is the collections' order in the sidebar, which a snippet's own collections are put in.
+    private static func row(from result: SearchResult, order: [CollectionID]) -> QuickAccessRow {
         QuickAccessRow(ref: result.ref, title: result.title, snippet: result.snippet, kind: result.kind,
                        sourceApp: result.sourceApp, date: result.lastCopiedAt, savedAsMemo: result.savedAsMemo,
                        isPartiallyIndexed: result.isPartiallyIndexed, isTextUnavailable: result.isTextUnavailable,
-                       collectionID: result.collectionIDs.first, isFavorite: result.isFavorite)
+                       collectionIDs: CollectionBadge.ordered(result.collectionIDs, by: order),
+                       isFavorite: result.isFavorite)
     }
 
     /// A memo's row from the store, for when the index cannot serve Snippets; its collection and favorite are not

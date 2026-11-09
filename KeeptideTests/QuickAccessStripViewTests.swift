@@ -1261,7 +1261,7 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertNil(HeaderTint.cachedTint(forIconOf: app))
         let prompts = CollectionID()
         var filed = makeRow(title: "Filed snippet", sourceApp: app)
-        filed.collectionID = prompts
+        filed.collectionIDs = [prompts]
         let rows = [makeRow(title: "From an unknown app", sourceApp: app), makeRow(title: "From no app"), filed]
 
         strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: names,
@@ -2781,7 +2781,7 @@ final class QuickAccessStripViewTests: XCTestCase {
                             digest: Data(repeating: 7, count: 32)),
             title: title, snippet: nil, kind: kind, sourceApp: sourceApp, date: Date(timeIntervalSince1970: 1_000),
             savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
-            collectionID: collectionID, isFavorite: isFavorite
+            collectionIDs: collectionID.map { [$0] } ?? [], isFavorite: isFavorite
         )
     }
 }

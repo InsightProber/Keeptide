@@ -114,8 +114,10 @@ final class LibraryWindowController: NSWindowController {
         commands.requestKind(Self.snippetKinds[tag])
     }
 
+    @objc func removeFromCollection(_ sender: Any?) { commands.requestRemoveFromCollection() }
+
     /// ⇧⌘M: the collection menu, under the open item's title; a keyboard has no toolbar button to open it from.
-    @objc func moveToCollection(_ sender: Any?) {
+    @objc func chooseCollection(_ sender: Any?) {
         guard let content = window?.contentView else { return }
         let menu = makeCollectionMenu()
         let titles: Set<String?> = ["Untitled Snippet", "Clipboard Item"]
@@ -126,7 +128,8 @@ final class LibraryWindowController: NSWindowController {
         }
     }
 
-    /// The same rows as the toolbar's collection menu: Unfiled, the collections and New Collection….
+    /// The same rows as the toolbar's collection menu: the collections, checked where all of the selection is, and
+    /// New Collection….
     func makeCollectionMenu() -> NSMenu {
         let menu = NSMenu(title: commands.itemContext.selection.collectionTitle)
         for entry in commands.itemContext.collectionEntries {
@@ -273,10 +276,15 @@ extension LibraryWindowController: NSMenuItemValidation {
             let selection = commands.itemContext.selection
             menuItem.title = selection.favoriteTitle
             return selection.canFavorite && !selection.refs.isEmpty
-        case #selector(moveToCollection(_:)):
+        case #selector(chooseCollection(_:)):
             let selection = commands.itemContext.selection
             menuItem.title = selection.collectionTitle + "…"
             return !selection.refs.isEmpty
+        case #selector(removeFromCollection(_:)):
+            let collection = commands.itemContext.removableCollection
+            menuItem.isHidden = collection == nil
+            menuItem.title = collection.map { "Remove from “\($0.name)”" } ?? "Remove from Collection"
+            return collection != nil && !commands.itemContext.selection.refs.isEmpty
         case #selector(setSnippetKind(_:)):
             let kind = commands.itemContext.selection.kind
             menuItem.state = kind != nil && Self.snippetKinds.firstIndex(of: kind!) == menuItem.tag ? .on : .off
@@ -358,6 +366,7 @@ final class LibraryWindowCommands {
     private(set) var kindRequest: LibraryKindRequest?
     private(set) var showLinkedRequest = 0
     private(set) var deleteRequest = 0
+    private(set) var removeFromCollectionRequest = 0
     private(set) var inspectorToggleRequest = 0
     private(set) var recoverRequest = 0
     private(set) var permanentDeleteRequest = 0
@@ -437,12 +446,14 @@ final class LibraryWindowCommands {
     func requestFavorite() { favoriteRequest &+= 1 }
     func requestShowLinked() { showLinkedRequest &+= 1 }
     func requestDelete() { deleteRequest &+= 1 }
+    func requestRemoveFromCollection() { removeFromCollectionRequest &+= 1 }
     func requestInspectorToggle() { inspectorToggleRequest &+= 1 }
     func requestRecover() { recoverRequest &+= 1 }
     /// Delete Permanently… asks first; the view holds the question.
     func requestPermanentDelete() { permanentDeleteRequest &+= 1 }
 
-    /// A place chosen from the collection menu ⇧⌘M opens: a collection, Unfiled (nil), or a new collection.
+    /// A row chosen from the collection menu ⇧⌘M opens: a collection to add the selection to, or take it out of, or
+    /// a new collection (`collectionID` nil).
     func requestCollection(_ collectionID: CollectionID?, creating: Bool = false) {
         collectionRequest = LibraryCollectionRequest(
             collectionID: collectionID, createsCollection: creating,
@@ -469,6 +480,8 @@ struct LibraryItemContext: Equatable {
     var selection = LibrarySelectionState()
     /// The collection menu's rows for the selection.
     var collectionEntries: [CollectionMenuEntry] = []
+    /// The collection being browsed, while the selection has a snippet in it: Item › Remove from “Prompts”.
+    var removableCollection: CollectionValue?
     var inspectorIsPresented = false
     var isRecentlyDeleted = false
     /// The deleted facet selected in Recently Deleted.

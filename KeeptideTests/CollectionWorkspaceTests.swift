@@ -13,7 +13,7 @@ final class CollectionWorkspaceTests: XCTestCase {
         XCTAssertEqual(workspace.collections.map(\.value.id), [draft.id])
         await workspace.setScope(.collection(draft.id))
         await workspace.startNew()
-        XCTAssertEqual(workspace.editor?.collectionID, draft.id)
+        XCTAssertEqual(workspace.editor?.collectionIDs, [draft.id])
         workspace.editor?.setBody("echo synthetic", isComposing: false)
         let saved = try await workspace.flush()
         let ref = try XCTUnwrap(saved)
@@ -100,7 +100,7 @@ final class CollectionWorkspaceTests: XCTestCase {
         let workspace = try await workspace(harness)
         await workspace.startNew(in: .collection(collection.value.id))
         XCTAssertEqual(workspace.scope, .collection(collection.value.id))
-        XCTAssertEqual(workspace.editor?.collectionID, collection.value.id)
+        XCTAssertEqual(workspace.editor?.collectionIDs, [collection.value.id])
     }
 
     func testScopeChangeInvalidatesNewDraftWaitingForPriorSave() async throws {

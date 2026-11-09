@@ -2432,17 +2432,17 @@ final class AppLaunchTests: XCTestCase {
         let shiftCommandM = try key(kVK_ANSI_M, "M", modifiers: [.command, .shift])
         XCTAssertTrue(window.performKeyEquivalent(with: shiftCommandM))
         let menu = try XCTUnwrap(shown.first?.menu)
-        // Unfiled, then each collection in the sidebar's order; a clip's card does not know its snippet's place, so
-        // nothing is checked. Held down, ⇧⌘M opens nothing more.
+        // Each collection in the sidebar's order; a clip's card does not know its snippet's collections, so nothing is
+        // checked. Held down, ⇧⌘M opens nothing more.
         XCTAssertEqual(menu.title, "Save to Collection")
-        XCTAssertEqual(menu.items.map(\.title), ["Unfiled", "", "Prompts", "Shell"])
+        XCTAssertEqual(menu.items.map(\.title), ["Prompts", "Shell"])
         XCTAssertTrue(menu.items.allSatisfy { $0.state == .off })
-        XCTAssertNotNil(menu.items[2].image)
+        XCTAssertNotNil(menu.items[0].image)
         XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_M, "M", modifiers: [.command, .shift],
                                                                 isARepeat: true)))
         XCTAssertEqual(shown.count, 1)
 
-        menu.performActionForItem(at: 2)
+        menu.performActionForItem(at: 0)
         try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Saved to “Prompts”" }
         let ref = try XCTUnwrap(controller.state.copyTarget?.ref)
         let state = try await ContentRepository(controller: harness.controller).recordState(.item(ref.itemID))
@@ -2452,7 +2452,7 @@ final class AppLaunchTests: XCTestCase {
         let actions = try actionMenu(of: controller)
         let saveTo = try XCTUnwrap(actions.items.first { $0.title == "Save to Collection" })
         XCTAssertTrue(saveTo.isEnabled)
-        XCTAssertEqual(saveTo.submenu?.items.map(\.title), ["Unfiled", "", "Prompts", "Shell"])
+        XCTAssertEqual(saveTo.submenu?.items.map(\.title), ["Prompts", "Shell"])
     }
 
     func testCommandDAndShiftCommandMWaitForTheComposition() async throws {

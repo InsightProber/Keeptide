@@ -83,7 +83,9 @@ enum ApplicationMenuBuilder {
         // The selected items' commands; validation names them for the selection.
         let itemMenu = NSMenu(title: "Item")
         itemMenu.addItem(item(title: "Add to Favorites", action: #selector(LibraryWindowController.toggleFavorite(_:)), keyEquivalent: "d", identifier: "ItemMenu-Favorite"))
-        itemMenu.addItem(item(title: "Move to Collection…", action: #selector(LibraryWindowController.moveToCollection(_:)), keyEquivalent: "m", modifierMask: [.shift, .command], identifier: "ItemMenu-Collection"))
+        itemMenu.addItem(item(title: "Add to Collection…", action: #selector(LibraryWindowController.chooseCollection(_:)), keyEquivalent: "m", modifierMask: [.shift, .command], identifier: "ItemMenu-Collection"))
+        // Shown only while a collection is browsed and the selection is in it; ⌫ in the list does the same.
+        itemMenu.addItem(item(title: "Remove from Collection", action: #selector(LibraryWindowController.removeFromCollection(_:)), identifier: "ItemMenu-RemoveFromCollection"))
         let typeMenu = NSMenu(title: "Type")
         for (index, title) in ["Text", "Prompt", "Code", "Markdown"].enumerated() {
             let kind = item(title: title, action: #selector(LibraryWindowController.setSnippetKind(_:)))

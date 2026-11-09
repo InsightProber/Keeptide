@@ -968,13 +968,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// ⇧⌘M's menu and the actions menu's Save to Collection or Move to Collection: the collection chosen, or Unfiled
-    /// with nil. A collection that went while the menu was open is saved into by name no more: the state reads the
-    /// collections again and says so.
-    private func saveSelected(into id: CollectionID?) {
+    /// ⇧⌘M's menu and the actions menu's Save to Collection or Add to Collection: the collection chosen. A collection
+    /// that went while the menu was open is saved into by name no more: the state reads the collections again and
+    /// says so.
+    private func saveSelected(into id: CollectionID) {
         guard let target = state.copyTarget else { return }
-        let collection = id.flatMap { id in state.collections.first { $0.id == id } }
-        guard id == nil || collection != nil else {
+        guard let collection = state.collections.first(where: { $0.id == id }) else {
             state.explainCollectionGone()
             return announceSaveMessage()
         }
@@ -998,7 +997,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private func showCollectionMenu() {
         guard let row = state.selection.selectedRow, state.selection.executableSelection != nil else { return }
         guard !state.collections.isEmpty else { return state.explainNoCollections() }
-        let menu = NSMenu(title: row.facet == .memo ? "Move to Collection" : "Save to Collection")
+        let menu = NSMenu(title: row.facet == .memo ? "Add to Collection" : "Save to Collection")
         menu.autoenablesItems = false
         // The choice is for the card the menu opened beside, as the actions menu's are.
         let id = row.id

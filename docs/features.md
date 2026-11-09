@@ -36,8 +36,9 @@ plain text, prompt, code and Markdown content, preserving originals during edits
 recoverable local drafts, and independent conflict copies. The native library
 provides text editing, document-local find, explicit capture saving and safe
 undo of a newly saved capture, saving a capture straight into a collection,
-flat collections and favorites, library-wide search from the list, a
-details panel for a snippet's type, collection, favorite and note, sidebar
+flat collections, each snippet in as many as it is added to, and favorites,
+library-wide search from the list, a
+details panel for a snippet's type, collections, favorite and note, sidebar
 counts from the search index, and a filter for favorites, content kinds and
 source apps. Markdown
 reading mode keeps source editing separate from rendering and never fetches
@@ -63,7 +64,7 @@ planned.
 | Editing | Native text editing, recoverable drafts, light Markdown and preservation of the original capture |
 | Quick access | A global shortcut, a band of clip cards, lists of snippets and collections, filters for favorites and types, keyboard navigation and explicit actions |
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
-| Organization | Flat collections with one collection per saved snippet, plus independent favorites |
+| Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |

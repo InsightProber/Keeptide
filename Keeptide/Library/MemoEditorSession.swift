@@ -19,8 +19,8 @@ struct LibraryItemDetails: Equatable, Sendable {
     var createdAt: Date
     var lastCopiedAt: Date
     var copyCount: Int64
-    /// A snippet's own collection and favorite mark.
-    var collectionID: CollectionID?
+    /// A snippet's own collections, in the order of their ids, and its favorite mark.
+    var collectionIDs: [CollectionID] = []
     var isFavorite = false
     /// The snippet a clip was saved as.
     var savedSnippet: SavedSnippet?
@@ -29,7 +29,7 @@ struct LibraryItemDetails: Equatable, Sendable {
 
     struct SavedSnippet: Equatable, Sendable {
         var ref: ContentRef
-        var collectionID: CollectionID?
+        var collectionIDs: [CollectionID]
         var isFavorite: Bool
     }
 
@@ -65,8 +65,8 @@ final class MemoEditorSession {
     @ObservationIgnored private(set) var storeIdentity: StoreIdentity
     @ObservationIgnored private(set) var baseMemoFingerprint: Data?
     @ObservationIgnored private(set) var languageHint: String?
-    /// The collection a new snippet is created in; it applies only until the first save.
-    private(set) var collectionID: CollectionID?
+    /// The collections a new snippet is created in; they apply only until the first save.
+    private(set) var collectionIDs: [CollectionID]
     @ObservationIgnored private var onChange: (() -> Void)?
     @ObservationIgnored private var lastAppliedReceiptRevision: UInt64?
 
@@ -89,7 +89,7 @@ final class MemoEditorSession {
         baseMemoFingerprint: Data? = nil,
         languageHint: String? = nil,
         onChange: (() -> Void)? = nil,
-        collectionID: CollectionID? = nil
+        collectionIDs: [CollectionID] = []
     ) {
         self.draftID = draftID
         self.sessionID = sessionID
@@ -112,7 +112,7 @@ final class MemoEditorSession {
         self.storeIdentity = storeIdentity
         self.baseMemoFingerprint = baseMemoFingerprint
         self.languageHint = languageHint
-        self.collectionID = collectionID
+        self.collectionIDs = CollectionID.sorted(collectionIDs)
         self.onChange = onChange
         lastAppliedReceiptRevision = nil
     }
@@ -142,10 +142,11 @@ final class MemoEditorSession {
         didEdit()
     }
 
-    /// Chooses the collection a new snippet is created in. A saved snippet moves through its collection instead.
-    func setCollectionID(_ value: CollectionID?) {
+    /// Chooses the collections a new snippet is created in. A saved snippet joins and leaves collections through the
+    /// collection service instead.
+    func setCollectionIDs(_ value: [CollectionID]) {
         guard ref == nil, !isReadOnly else { return }
-        collectionID = value
+        collectionIDs = CollectionID.sorted(value)
     }
 
     func setKind(_ value: MemoKind) {

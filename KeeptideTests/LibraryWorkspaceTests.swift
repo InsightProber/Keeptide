@@ -683,7 +683,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         await workspace.startNew(in: .collection(prompts.value.id))
         XCTAssertEqual(workspace.scope, .allSnippets)
         XCTAssertNotNil(workspace.editor)
-        XCTAssertNil(workspace.editor?.collectionID)
+        XCTAssertEqual(workspace.editor?.collectionIDs, [])
         XCTAssertEqual(workspace.message, "This collection no longer exists.")
     }
 
@@ -702,14 +702,14 @@ final class LibraryWorkspaceTests: XCTestCase {
             await workspace.startNew()
             XCTAssertEqual(workspace.scope, item.to, "\(item.from)")
             XCTAssertNotNil(workspace.editor, "\(item.from)")
-            XCTAssertEqual(workspace.editor?.collectionID, item.to.collectionID, "\(item.from)")
+            XCTAssertEqual(workspace.editor?.collectionIDs, item.to.collectionID.map { [$0] } ?? [], "\(item.from)")
             XCTAssertNil(workspace.message, "\(item.from)")
         }
         // Asked for from quick access, the list asked for decides.
         await workspace.setScope(.recentClips)
         await workspace.startNew(in: .collection(prompts.value.id))
         XCTAssertEqual(workspace.scope, .collection(prompts.value.id))
-        XCTAssertEqual(workspace.editor?.collectionID, prompts.value.id)
+        XCTAssertEqual(workspace.editor?.collectionIDs, [prompts.value.id])
     }
 
     private func makeWorkspace(_ harness: SearchHarness) async throws -> LibraryWorkspace {
@@ -947,13 +947,13 @@ final class LibraryWorkspaceTests: XCTestCase {
 
         await workspace.setScope(.collection(collection.value.id))
         XCTAssertEqual(workspace.entries.map(\.ref), [filed.memo])
-        XCTAssertEqual(workspace.entries.first?.collectionID, collection.value.id)
+        XCTAssertEqual(workspace.entries.first?.collectionIDs, [collection.value.id])
         XCTAssertEqual(workspace.entries.first?.sourceApp, "test.source")
 
         await workspace.setScope(.recentClips)
         XCTAssertEqual(workspace.entries.map(\.ref), [filed.history])
         XCTAssertEqual(workspace.entries.first?.sourceApp, "test.source")
-        XCTAssertNil(workspace.entries.first?.collectionID)
+        XCTAssertEqual(workspace.entries.first?.collectionIDs, [])
     }
 
     func testDeletingTheLastCollectionLeavesUnfiled() async throws {
@@ -1273,7 +1273,7 @@ final class LibraryWorkspaceTests: XCTestCase {
         await workspace.select(item.id)
         let entry = try XCTUnwrap(workspace.entries.first { $0.id == item.id })
 
-        await workspace.file([entry.ref], into: prompts)
+        await workspace.add([entry.ref], to: prompts)
 
         let filed = try await storedItem(item.id, in: harness)
         XCTAssertEqual(filed.collectionIDs, [prompts.value.id])

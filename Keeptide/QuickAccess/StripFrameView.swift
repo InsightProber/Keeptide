@@ -15,7 +15,8 @@ enum StripHeaderItem: Equatable {
     /// How often a frequent clip was used, in place of its time.
     case uses(String)
     case marker(StripMarker)
-    /// A memo's collection: its colour's name and its name.
+    /// A memo's first collection in the sidebar's order: its colour's name, and its name followed by "+N" when the
+    /// memo is in more.
     case collection(name: String, color: String)
     /// How many more items than the shown one the clip holds.
     case extraItems(Int)
@@ -42,6 +43,8 @@ struct StripFrameContent: Equatable {
     var facet: ContentFacet = .history
     /// A memo's collection, when the card should name it.
     var collection: CollectionSummary? = nil
+    /// How many more collections than `collection` a memo's card could name.
+    var moreCollections = 0
     /// Whether a memo is a favorite.
     var isFavorite = false
 
@@ -76,7 +79,9 @@ struct StripFrameContent: Equatable {
     /// collection, then the marks, and how many more items there are.
     var headerLine: [StripHeaderItem] {
         [uses.map(StripHeaderItem.uses) ?? .time(time)]
-            + (collection.map { [.collection(name: $0.name, color: $0.color)] } ?? [])
+            + (collection.map {
+                [.collection(name: moreCollections > 0 ? "\($0.name) +\(moreCollections)" : $0.name, color: $0.color)]
+            } ?? [])
             + markers.map(StripHeaderItem.marker)
             + (extraItems > 0 ? [.extraItems(extraItems)] : [])
     }
@@ -88,9 +93,11 @@ struct StripFrameContent: Equatable {
     static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
                      now: Date = Date(), collections: [CollectionID: CollectionSummary] = [:]) -> StripFrameContent {
         let isMemo = row.facet == .memo
+        // The row lists its collections in the sidebar's order; the first the card may name leads.
+        let named = isMemo ? row.collectionIDs.compactMap { collections[$0] } : []
         var content = StripFrameContent(
             kind: row.kind, facet: row.facet,
-            collection: isMemo ? row.collectionID.flatMap { collections[$0] } : nil,
+            collection: named.first,
             isFavorite: isMemo && row.isFavorite,
             time: QuickAccessRowContent.time(of: row.date, relativeTo: now),
             uses: row.frequentUses.map { ClipInfoFormatter.uses($0) }, sourceApp: row.sourceApp,
@@ -98,6 +105,7 @@ struct StripFrameContent: Equatable {
             body: .placeholder(symbol: row.kind.symbolName, title: row.displayTitle),
             extraItems: 0, markers: [], isTextUnavailable: row.isTextUnavailable
         )
+        content.moreCollections = max(0, named.count - 1)
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
         if content.isFavorite { content.markers.append(.favorite) }
@@ -247,7 +255,7 @@ enum CardAccent: Equatable, Sendable {
     /// `row`'s accent: the colour of its collection when `collectionColors` holds it, otherwise `tint`, the colour its
     /// app's icon gives, unless that is grey; nil for neither.
     init?(row: QuickAccessRow, collectionColors: [CollectionID: String], tint: HeaderTint?) {
-        if let id = row.collectionID, let color = collectionColors[id] {
+        if let color = row.collectionIDs.lazy.compactMap({ collectionColors[$0] }).first {
             self = .collection(color)
         } else if let tint, !tint.isNeutral {
             self = .app(tint.background)
