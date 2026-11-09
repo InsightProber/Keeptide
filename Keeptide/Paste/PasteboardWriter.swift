@@ -222,12 +222,28 @@ final class PasteboardWriter {
     nonisolated static func prepareCommand(_ content: ResolvedContent, maximumByteCount: Int) throws
         -> (PreparedPasteboardContent, TerminalCommand) {
         let text = try plainText(content)
+        guard let snapshotID = content.representations.first?.snapshotID else {
+            throw PasteboardWriterError.noPlainText
+        }
+        return try prepareCommand(text: text, snapshotID: snapshotID, maximumByteCount: maximumByteCount)
+    }
+
+    /// Text that is not a clip's, such as a result saved beside it, as a command under `prepareCommand`'s rules.
+    nonisolated static func prepareCommand(text: String, snapshotID: UUID = UUID(), maximumByteCount: Int) throws
+        -> (PreparedPasteboardContent, TerminalCommand) {
         guard TerminalCommand.commandText(in: text).utf8.count <= maximumByteCount else {
             throw PasteboardWriterError.commandTooLong
         }
         let command = TerminalCommand(plainText: text)
         guard !command.text.isEmpty else { throw PasteboardWriterError.noPlainText }
-        return (try utf8PlainText(command.text, of: content), command)
+        return (utf8PlainText(command.text, snapshotID: snapshotID), command)
+    }
+
+    /// Text that is not a clip's, such as a result saved beside it, as the only representation, in UTF-8. Throws
+    /// `.noPlainText` for no text.
+    nonisolated static func preparePlainText(_ text: String) throws -> PreparedPasteboardContent {
+        guard !text.isEmpty else { throw PasteboardWriterError.noPlainText }
+        return utf8PlainText(text, snapshotID: UUID())
     }
 
     /// The one representation that `preparePlainText` and `prepareCommand` write.
@@ -236,6 +252,10 @@ final class PasteboardWriter {
         guard let snapshotID = content.representations.first?.snapshotID else {
             throw PasteboardWriterError.noPlainText
         }
+        return utf8PlainText(text, snapshotID: snapshotID)
+    }
+
+    private nonisolated static func utf8PlainText(_ text: String, snapshotID: UUID) -> PreparedPasteboardContent {
         let utf8 = Data(text.utf8)
         return PreparedPasteboardContent(representations: [RepresentationValue(
             snapshotID: snapshotID, itemIndex: 0, representationIndex: 0,

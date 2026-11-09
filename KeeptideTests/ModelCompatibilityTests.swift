@@ -8,7 +8,8 @@ final class ModelCompatibilityTests: XCTestCase {
         "ItemDeletionMarker", "FacetDeletionMarker"
     ]
     private let localEntities: Set<String> = [
-        "StoreIdentity", "UsageSummary", "UsageExecutionDedup", "FileAccessRecord", "CleanupIntent", "RawRecoveryPlan"
+        "StoreIdentity", "UsageSummary", "UsageExecutionDedup", "FileAccessRecord", "CleanupIntent", "RawRecoveryPlan",
+        "DerivedText"
     ]
     private let legacyLocalEntities: Set<String> = [
         "StoreIdentity", "UsageSummary", "UsageExecutionDedup", "FileAccessRecord"
@@ -37,7 +38,7 @@ final class ModelCompatibilityTests: XCTestCase {
         XCTAssertEqual(customConfigurations, ["CloudContent", "LocalState"])
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent")).compactMap(\.name)), cloudEntities)
         XCTAssertEqual(Set(try XCTUnwrap(model.entities(forConfigurationName: "LocalState")).compactMap(\.name)), localEntities)
-        XCTAssertEqual(model.versionIdentifiers, ["5"])
+        XCTAssertEqual(model.versionIdentifiers, ["6"])
     }
 
     func testCloudEntitiesExposeTheFrozenAttributes() throws {
@@ -96,6 +97,16 @@ final class ModelCompatibilityTests: XCTestCase {
         assertAttributes(model, entity: "FileAccessRecord", expected: [
             "id": .UUIDAttributeType, "snapshotID": .UUIDAttributeType, "bytes": .binaryDataAttributeType,
             "bookmark": .binaryDataAttributeType, "localPath": .stringAttributeType
+        ])
+        assertAttributes(model, entity: "DerivedText", expected: [
+            "id": .UUIDAttributeType, "storeID": .UUIDAttributeType, "storeGeneration": .UUIDAttributeType,
+            "itemID": .UUIDAttributeType, "facet": .stringAttributeType, "sourceVersion": .UUIDAttributeType,
+            "sourceDigest": .binaryDataAttributeType, "operation": .stringAttributeType, "status": .stringAttributeType,
+            "engine": .stringAttributeType, "model": .stringAttributeType, "sourceLanguage": .stringAttributeType,
+            "targetLanguage": .stringAttributeType, "keepsLineBreaks": .booleanAttributeType,
+            "text": .binaryDataAttributeType, "textDigest": .binaryDataAttributeType,
+            "inputTokens": .integer64AttributeType, "outputTokens": .integer64AttributeType,
+            "requestID": .UUIDAttributeType, "createdAt": .dateAttributeType
         ])
         for entity in ["CleanupIntent", "RawRecoveryPlan"] {
             assertAttributes(model, entity: entity, expected: [
@@ -196,7 +207,7 @@ final class ModelCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(externalAttributes, [
             "CaptureRepresentation.bytes", "MemoDocument.body", "FileAccessRecord.bytes", "FileAccessRecord.bookmark",
-            "CleanupIntent.payload", "RawRecoveryPlan.payload"
+            "CleanupIntent.payload", "RawRecoveryPlan.payload", "DerivedText.text"
         ])
 
         let cloudAttributeNames = Set(try XCTUnwrap(model.entities(forConfigurationName: "CloudContent"))
@@ -225,7 +236,8 @@ final class ModelCompatibilityTests: XCTestCase {
             "UsageExecutionDedup": ["id:ascending", "recordedAt:ascending,id:ascending"],
             "FileAccessRecord": ["id:ascending"],
             "CleanupIntent": ["id:ascending", "phase:ascending,updatedAt:ascending"],
-            "RawRecoveryPlan": ["id:ascending", "phase:ascending,updatedAt:ascending"]
+            "RawRecoveryPlan": ["id:ascending", "phase:ascending,updatedAt:ascending"],
+            "DerivedText": ["id:ascending", "itemID:ascending,facet:ascending,operation:ascending"]
         ]
 
         for (entityName, requiredIndexes) in expected {
@@ -241,24 +253,25 @@ final class ModelCompatibilityTests: XCTestCase {
     }
 
     func testV5ChangesOnlyTheItemsCollectionsAndSupportsInferredMigrationFromEveryPriorModel() throws {
-        let current = try loadModel()
         let directory = try XCTUnwrap(Bundle(for: PersistenceController.self)
             .url(forResource: "Keeptide", withExtension: "momd"))
+        let v5 = try XCTUnwrap(NSManagedObjectModel(contentsOf: directory.appendingPathComponent("KeeptideV5.mom")))
+        XCTAssertEqual(v5.versionIdentifiers, ["5"])
         for version in 1...4 {
             let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
                 directory.appendingPathComponent("KeeptideV\(version).mom")))
-            _ = try NSMappingModel.inferredMappingModel(forSourceModel: prior, destinationModel: current)
+            _ = try NSMappingModel.inferredMappingModel(forSourceModel: prior, destinationModel: v5)
         }
         let v4 = try XCTUnwrap(NSManagedObjectModel(contentsOf:
             directory.appendingPathComponent("KeeptideV4.mom")))
-        for entity in cloudEntities.union(localEntities) where entity != "LibraryItem" {
-            XCTAssertEqual(v4.entityVersionHashesByName[entity], current.entityVersionHashesByName[entity],
+        for entity in cloudEntities.union(localEntities) where entity != "LibraryItem" && entity != "DerivedText" {
+            XCTAssertEqual(v4.entityVersionHashesByName[entity], v5.entityVersionHashesByName[entity],
                            "V5 changed entity \(entity)")
         }
         // LibraryItem changes only in its collection relationship, which becomes to-many. The collectionID scalar
         // and its index stay one more version, as the source of the membership backfill.
         let before = try XCTUnwrap(v4.entitiesByName["LibraryItem"])
-        let after = try XCTUnwrap(current.entitiesByName["LibraryItem"])
+        let after = try XCTUnwrap(v5.entitiesByName["LibraryItem"])
         XCTAssertEqual(Set(before.attributesByName.keys), Set(after.attributesByName.keys))
         XCTAssertEqual(Set(before.relationshipsByName.keys), Set(after.relationshipsByName.keys))
         XCTAssertFalse(try XCTUnwrap(before.relationshipsByName["collection"]).isToMany)
@@ -266,14 +279,34 @@ final class ModelCompatibilityTests: XCTestCase {
         XCTAssertNotNil(after.attributesByName["collectionID"])
     }
 
-    func testEveryPriorDiskStoreMigratesToV5AndReopensWithStableIdentity() async throws {
+    func testV6OnlyAddsDerivedTextToLocalStateAndSupportsInferredMigrationFromEveryPriorModel() throws {
+        let current = try loadModel()
+        let directory = try XCTUnwrap(Bundle(for: PersistenceController.self)
+            .url(forResource: "Keeptide", withExtension: "momd"))
+        for version in 1...5 {
+            let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
+                directory.appendingPathComponent("KeeptideV\(version).mom")))
+            XCTAssertNil(prior.entitiesByName["DerivedText"], "V\(version)")
+            _ = try NSMappingModel.inferredMappingModel(forSourceModel: prior, destinationModel: current)
+        }
+        // Every entity V5 had is unchanged; derived text is local only and never mirrored to iCloud.
+        let v5 = try XCTUnwrap(NSManagedObjectModel(contentsOf: directory.appendingPathComponent("KeeptideV5.mom")))
+        XCTAssertEqual(Set(current.entitiesByName.keys).subtracting(v5.entitiesByName.keys), ["DerivedText"])
+        for (entity, hash) in v5.entityVersionHashesByName {
+            XCTAssertEqual(current.entityVersionHashesByName[entity], hash, "V6 changed entity \(entity)")
+        }
+        let cloud = Set(try XCTUnwrap(current.entities(forConfigurationName: "CloudContent")).compactMap(\.name))
+        XCTAssertFalse(cloud.contains("DerivedText"))
+    }
+
+    func testEveryPriorDiskStoreMigratesToTheCurrentModelAndReopensWithStableIdentity() async throws {
         let modelDirectory = try XCTUnwrap(Bundle(for: PersistenceController.self)
             .url(forResource: "Keeptide", withExtension: "momd"))
-        for version in 1...4 {
+        for version in 1...5 {
             let prior = try XCTUnwrap(NSManagedObjectModel(contentsOf:
                 modelDirectory.appendingPathComponent("KeeptideV\(version).mom")))
             let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Keeptide-V\(version)-to-V5-\(UUID().uuidString)", isDirectory: true)
+                .appendingPathComponent("Keeptide-V\(version)-to-current-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: directory) }
             let seed = NSPersistentContainer(name: "Keeptide", managedObjectModel: prior)
@@ -309,6 +342,8 @@ final class ModelCompatibilityTests: XCTestCase {
             let migratedRecords = try await readMigrationFixture(from: migrated, expected: expected)
             XCTAssertEqual(migratedRecords, expected.records, "V\(version) records changed during migration")
             let lifecycleRows = try await insertLifecycleRows(into: migrated, version: version)
+            // The migrated local store keeps derived text, which no earlier version had.
+            let derived = try await insertDerivedText(into: migrated, version: version)
             try await migrated.close()
 
             let reopened = try PersistenceController(directory: directory)
@@ -327,6 +362,8 @@ final class ModelCompatibilityTests: XCTestCase {
                 lifecycleRows,
                 "V\(version) V4 lifecycle rows changed after reopen"
             )
+            let reopenedDerived = try await readDerivedText(from: reopened)
+            XCTAssertEqual(reopenedDerived, derived, "V\(version) derived text changed after reopen")
             try await reopened.close()
         }
     }
@@ -348,7 +385,11 @@ final class ModelCompatibilityTests: XCTestCase {
             usageItemID: UUID(),
             usageFacet: ContentFacet.memo.rawValue,
             usageLastUsedAt: Date(timeIntervalSince1970: 1_800_000_000 + Double(version)),
-            usageCount: Int64(40 + version)
+            usageCount: Int64(40 + version),
+            fileAccessID: UUID(),
+            // Large enough to be kept outside the database, beside the local store.
+            fileAccessBytes: Data((0..<150_000).map { UInt8(($0 * 7 + version) % 251) }),
+            fileAccessBookmark: Data((0..<120_000).map { UInt8(($0 * 13 + version) % 241) })
         )
         let context = container.newBackgroundContext()
         try context.performAndWait {
@@ -369,6 +410,12 @@ final class ModelCompatibilityTests: XCTestCase {
             usage.setValue(records.usageFacet, forKey: "facet")
             usage.setValue(records.usageLastUsedAt, forKey: "lastUsedAt")
             usage.setValue(records.usageCount, forKey: "useCount")
+
+            let fileAccess = NSEntityDescription.insertNewObject(forEntityName: "FileAccessRecord", into: context)
+            fileAccess.setValue(records.fileAccessID, forKey: "id")
+            fileAccess.setValue(UUID(), forKey: "snapshotID")
+            fileAccess.setValue(records.fileAccessBytes, forKey: "bytes")
+            fileAccess.setValue(records.fileAccessBookmark, forKey: "bookmark")
             try context.save()
             context.reset()
         }
@@ -390,7 +437,15 @@ final class ModelCompatibilityTests: XCTestCase {
             usageRequest.predicate = NSPredicate(format: "id == %@", expected.records.usageID as NSUUID)
             usageRequest.fetchLimit = 2
             let usages = try context.fetch(usageRequest)
+            let fileAccessRequest = NSFetchRequest<NSManagedObject>(entityName: "FileAccessRecord")
+            fileAccessRequest.predicate = NSPredicate(format: "id == %@", expected.records.fileAccessID as NSUUID)
+            fileAccessRequest.fetchLimit = 2
+            let fileAccesses = try context.fetch(fileAccessRequest)
             guard usages.count == 1, let usage = usages.first,
+                  fileAccesses.count == 1, let fileAccess = fileAccesses.first,
+                  let fileAccessID = fileAccess.value(forKey: "id") as? UUID,
+                  let fileAccessBytes = fileAccess.value(forKey: "bytes") as? Data,
+                  let fileAccessBookmark = fileAccess.value(forKey: "bookmark") as? Data,
                   let collectionID = collection.value(forKey: "id") as? UUID,
                   let collectionName = collection.value(forKey: "name") as? String,
                   let collectionColor = collection.value(forKey: "color") as? String,
@@ -411,7 +466,10 @@ final class ModelCompatibilityTests: XCTestCase {
                 usageItemID: usageItemID,
                 usageFacet: usageFacet,
                 usageLastUsedAt: usageLastUsedAt,
-                usageCount: usageCount
+                usageCount: usageCount,
+                fileAccessID: fileAccessID,
+                fileAccessBytes: fileAccessBytes,
+                fileAccessBookmark: fileAccessBookmark
             )
         }
     }
@@ -447,6 +505,35 @@ final class ModelCompatibilityTests: XCTestCase {
             context.reset()
         }
         return rows
+    }
+
+    /// One derived text row, written straight into the local store: its ID and text.
+    private func insertDerivedText(into controller: PersistenceController, version: Int) async throws -> [UUID: Data] {
+        let id = UUID()
+        let text = Data("Synthetic derived text from a V\(version) store".utf8)
+        try await controller.perform { context in
+            let object = NSEntityDescription.insertNewObject(forEntityName: "DerivedText", into: context)
+            object.setValue(id, forKey: "id")
+            object.setValue(UUID(), forKey: "itemID")
+            object.setValue(ContentFacet.history.rawValue, forKey: "facet")
+            object.setValue("translate", forKey: "operation")
+            object.setValue(text, forKey: "text")
+            try context.save()
+            context.reset()
+        }
+        return [id: text]
+    }
+
+    private func readDerivedText(from controller: PersistenceController) async throws -> [UUID: Data] {
+        try await controller.perform { context in
+            let rows = try context.fetch(NSFetchRequest<NSManagedObject>(entityName: "DerivedText"))
+            return Dictionary(uniqueKeysWithValues: try rows.map { row in
+                guard let id = row.value(forKey: "id") as? UUID, let text = row.value(forKey: "text") as? Data else {
+                    throw StoreError.corruptStore
+                }
+                return (id, text)
+            })
+        }
     }
 
     private func readLifecycleRows(from controller: PersistenceController) async throws -> [LifecycleRow] {
@@ -513,6 +600,9 @@ private struct MigrationRecords: Equatable, Sendable {
     let usageFacet: String
     let usageLastUsedAt: Date
     let usageCount: Int64
+    let fileAccessID: UUID
+    let fileAccessBytes: Data
+    let fileAccessBookmark: Data
 }
 
 private struct LifecycleRow: Equatable, Sendable {

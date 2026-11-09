@@ -223,9 +223,11 @@ final class CaptureSession {
             exportCoordinator = .production(
                 exporter: ExportService(controller: store, expecting: storeIdentity)
             )
+            let derivedText = DerivedTextStore(controller: store)
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
                                         didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) },
-                                        system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo)
+                                        system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo,
+                                        readDerivedText: { try await derivedText.result(for: $0, operation: $1) })
             previewService = PreviewService(
                 read: read,
                 fileReferences: { ref in

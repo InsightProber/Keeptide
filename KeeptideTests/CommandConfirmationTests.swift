@@ -81,7 +81,7 @@ final class CommandConfirmationTests: XCTestCase {
         XCTAssertEqual(review.command.lineCount, 2)
         XCTAssertEqual(review.targetName, "Terminal")
         XCTAssertEqual(review.confirmation.delivery, .paste)
-        XCTAssertEqual(review.confirmation.ref, ref)
+        XCTAssertEqual(review.confirmation.subject, .content(ref))
         XCTAssertEqual(review.confirmation.mode, .original)
         XCTAssertEqual(review.confirmation.sessionGeneration, session.sessionGeneration)
         // Nothing reaches the clipboard, the panel or the target, and nothing counts as a use.
@@ -136,7 +136,7 @@ final class CommandConfirmationTests: XCTestCase {
 
         let renewed = try XCTUnwrap(outcome.review)
         XCTAssertTrue(renewed.isRenewal)
-        XCTAssertEqual(renewed.confirmation.ref, second)
+        XCTAssertEqual(renewed.confirmation.subject, .content(second))
         XCTAssertEqual(renewed.command.text, "set -u\necho synthetic-delta")
         XCTAssertEqual(fixture.board.changeCount, before)
         XCTAssertEqual(fake.sent, [])
@@ -163,8 +163,12 @@ final class CommandConfirmationTests: XCTestCase {
 
         let renewed = try XCTUnwrap(outcome.review)
         XCTAssertTrue(renewed.isRenewal)
-        XCTAssertEqual(renewed.confirmation.ref.itemID, ref.itemID)
-        XCTAssertNotEqual(renewed.confirmation.ref.version, review.confirmation.ref.version)
+        guard case .content(let renewedRef) = renewed.confirmation.subject,
+              case .content(let reviewedRef) = review.confirmation.subject else {
+            return XCTFail("A clip's review is of its content")
+        }
+        XCTAssertEqual(renewedRef.itemID, ref.itemID)
+        XCTAssertNotEqual(renewedRef.version, reviewedRef.version)
         XCTAssertEqual(fixture.board.changeCount, before)
         XCTAssertEqual(fake.sent, [])
     }
