@@ -111,6 +111,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var captureNotice: () -> String? = { nil }
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
+    /// What `update()` says as a recognition ends without text.
+    private var textColumnEndings = TextColumnEndings()
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
     /// to count the calls.
     var fieldCharactersMoved: (NSTextView) -> Void = { $0.inputContext?.invalidateCharacterCoordinates() }
@@ -237,6 +239,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         isSessionOpen = false
         isHiddenForPaste = false
         searchReachedByKeyboard = false
+        textColumnEndings.reset()
         state.close()
         // The undo stack is the showing's: a move stays in Recently Deleted, where the library recovers it.
         window?.undoManager?.removeAllActions()
@@ -355,6 +358,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // only shown: it would be read each time the panel opens.
         if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
         toolbar.captureNotice = notice
+        // And why a recognition that just ended left the text column without text.
+        let column = state.textColumnRef.flatMap { ref in state.textColumn.map { (ref: ref, column: $0) } }
+        if let words = textColumnEndings.words(for: column, isJustMade: state.isTextColumnJustMade,
+                                               isOpen: isSessionOpen) {
+            announce(words)
+        }
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }
@@ -459,8 +468,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             layout: layout, state: state, toolbar: toolbar, strip: strip, glow: glow, applicationNames: applicationNames,
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
                                                  confirmCommand: { [weak self] in self?.confirmFromCard() },
-                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() },
-                                                 announce: { [weak self] in self?.announce($0) })
+                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() })
         )
     }
 

@@ -24,8 +24,6 @@ struct QuickAccessBandView: View {
         /// The review card's buttons.
         let confirmCommand: () -> Void
         let cancelCommandReview: () -> Void
-        /// Says something to VoiceOver from the panel.
-        let announce: (String) -> Void
     }
 
     let layout: Layout
@@ -204,8 +202,7 @@ struct QuickAccessBandView: View {
         let applicationName = selectedRow?.sourceApp.flatMap(applicationNames.name(for:))
         if let ref = state.textColumnRef, let column = state.textColumn {
             QuickAccessSplitPreview(preview: state.preview, applicationName: applicationName, column: column, ref: ref,
-                                    isJustMade: state.isTextColumnJustMade, onCommand: actions.previewCommand,
-                                    announce: actions.announce)
+                                    isJustMade: state.isTextColumnJustMade, onCommand: actions.previewCommand)
         } else {
             QuickAccessPreviewView(preview: state.preview,
                                    applicationName: applicationName,

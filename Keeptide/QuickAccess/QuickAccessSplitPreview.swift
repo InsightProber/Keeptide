@@ -16,8 +16,6 @@ struct QuickAccessSplitPreview: View {
     /// Whether the text in the column is what the latest recognition just made.
     let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
-    /// Says something to VoiceOver from the panel.
-    let announce: (String) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whether the text has faded in beside the image: the one movement as the preview splits.
     @State private var showsText = false
@@ -32,7 +30,7 @@ struct QuickAccessSplitPreview: View {
                     ColumnDivider(vertical: sideBySide)
                     // A column of its own for each image: the text and its selection never carry over.
                     TextInImageColumn(column: column, pixelSize: preview?.pixelSize, isJustMade: isJustMade,
-                                      onCommand: onCommand, announce: announce)
+                                      onCommand: onCommand)
                         .id(ref)
                 }
                 .opacity(showsText || reduceMotion ? 1 : 0)
@@ -41,6 +39,34 @@ struct QuickAccessSplitPreview: View {
         .onAppear {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { showsText = true }
         }
+    }
+}
+
+/// Why a recognition that just ended left the text column without text, said to VoiceOver as it ends: there is none in
+/// the image, or why it failed. The panel asks on every change it sees, and not the column's view: SwiftUI doesn't
+/// always deliver a view's `onChange`. Each ending is said once, as the column changes to it for the same image; an
+/// ending shown for another image, as the panel opens, or that isn't the latest recognition's, says nothing.
+struct TextColumnEndings {
+    /// The column as it was last shown.
+    private var shown: (ref: ContentRef, column: TextColumn)?
+
+    /// The words for the column now shown, if any, given the column shown before; it remembers this one.
+    mutating func words(for column: (ref: ContentRef, column: TextColumn)?, isJustMade: Bool,
+                        isOpen: Bool) -> String? {
+        let before = shown
+        shown = column
+        guard isOpen, isJustMade, let column, let before, before.ref == column.ref,
+              before.column != column.column else { return nil }
+        switch column.column {
+        case .noText: return TextColumnWords.noText
+        case .failed(let error): return error.message
+        case .loading, .notStarted, .recognizing, .text, .unsaved: return nil
+        }
+    }
+
+    /// Forgets the column shown before, as the panel closes.
+    mutating func reset() {
+        shown = nil
     }
 }
 
@@ -217,14 +243,14 @@ private struct ColumnDivider: View {
 /// it, the recognition under way, or why there is none. One display shows the text from the moment recognition starts
 /// until it is made, so the text is typed out as it comes and VoiceOver hears the recognition start and end; text kept
 /// from before, or brought back by stopping a recognition, shows at once. Why a recognition found no text, or none
-/// could be made or kept, is said as it ends. The column is the image's own: another image has another column.
+/// could be made or kept, the panel says as it ends (`TextColumnEndings`). The column is the image's own: another image
+/// has another column.
 private struct TextInImageColumn: View {
     let column: TextColumn
     let pixelSize: CGSize?
     /// Whether what the column shows is how the latest recognition of its image just ended.
     let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
-    let announce: (String) -> Void
     /// Whether the recognition has run long enough to say what it is doing.
     @State private var saysWhatItDoes = false
 
@@ -243,15 +269,6 @@ private struct TextInImageColumn: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(TextColumnWords.title), on this Mac")
         .accessibilityIdentifier("QuickAccessTextInImage")
-        // An ending shown again, for an image looked at earlier, says nothing.
-        .onChange(of: column) { _, column in
-            guard isJustMade else { return }
-            switch column {
-            case .noText: announce(TextColumnWords.noText)
-            case .failed(let error): announce(error.message)
-            case .loading, .notStarted, .recognizing, .text, .unsaved: break
-            }
-        }
         .task(id: column.isScanning) {
             saysWhatItDoes = false
             guard column.isScanning else { return }
