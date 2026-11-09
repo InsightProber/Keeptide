@@ -206,6 +206,84 @@ final class SearchServiceTests: XCTestCase {
         ])
     }
 
+    func testCountsGiveEachListItsRowsInOnePass() async throws {
+        let prompts = CollectionID()
+        let drafts = CollectionID()
+        func memo(in collection: CollectionID?, favorite: Bool = false) -> SearchDocument {
+            var document = SearchTestSupport.document(facet: .memo, body: "synthetic", memoID: UUID(),
+                                                      collectionID: collection)
+            document.isFavorite = favorite
+            return document
+        }
+        let service = try makeService([
+            SearchTestSupport.document(body: "clip one"), SearchTestSupport.document(body: "clip two"),
+            memo(in: nil, favorite: true), memo(in: nil),
+            memo(in: prompts), memo(in: prompts, favorite: true), memo(in: drafts),
+        ])
+
+        let counts = await service.counts()
+
+        XCTAssertEqual(counts, LibraryCounts(clips: 2, snippets: 5, favorites: 2, unfiled: 2,
+                                             collections: [prompts: 2, drafts: 1]))
+    }
+
+    func testCountsAreWithheldWhileTheIndexCannotGiveTrueOnes() async throws {
+        let (service, _, status) = try makeService([SearchTestSupport.document(body: "clip")],
+                                                   in: SearchTestSupport.directory())
+        status.update(.rebuilding)
+        let rebuilding = await service.counts()
+        XCTAssertNil(rebuilding)
+        status.update(.unavailable)
+        let unavailable = await service.counts()
+        XCTAssertNil(unavailable)
+        status.update(.updating)
+        let updating = await service.counts()
+        XCTAssertEqual(updating?.clips, 1)
+    }
+
+    func testSourceAppsAreTheListsOwnMostRowsFirst() async throws {
+        let service = try makeService([
+            SearchTestSupport.document(body: "a", sourceApp: "com.example.editor"),
+            SearchTestSupport.document(body: "b", sourceApp: "com.example.browser"),
+            SearchTestSupport.document(body: "c", sourceApp: "com.example.browser"),
+            SearchTestSupport.document(body: "d", sourceApp: nil),
+            SearchTestSupport.document(facet: .memo, body: "e", memoID: UUID(), sourceApp: "com.example.notes"),
+        ])
+
+        // The list's own apps, whatever the query or the source app already chosen.
+        var clips = request("b", scope: .history)
+        clips.sourceApp = "com.example.editor"
+        let clipApps = await service.sourceApps(of: clips)
+        XCTAssertEqual(clipApps, ["com.example.browser", "com.example.editor"])
+        let snippetApps = await service.sourceApps(of: request("", scope: .memo))
+        XCTAssertEqual(snippetApps, ["com.example.notes"])
+    }
+
+    /// The sidebar counts every snippet in one GROUP BY. The time is printed for the PR; the bound only catches a
+    /// count that stopped using one pass.
+    func testCountingTenThousandSnippetsIsQuick() async throws {
+        let collections = (0..<20).map { _ in CollectionID() }
+        let documents = (0..<10_000).map { index -> SearchDocument in
+            var document = SearchTestSupport.document(
+                facet: .memo, title: "Synthetic snippet \(index)", body: "body \(index)", memoID: UUID(),
+                collectionID: index % 4 == 0 ? nil : collections[index % collections.count]
+            )
+            document.isFavorite = index % 7 == 0
+            return document
+        }
+        let service = try makeService(documents)
+
+        _ = await service.counts() // The first read opens and warms the file.
+        let clock = ContinuousClock()
+        var counts: LibraryCounts?
+        let elapsed = await clock.measure { counts = await service.counts() }
+
+        print("Counting 10,000 snippets took \(elapsed)")
+        XCTAssertEqual(counts?.snippets, 10_000)
+        XCTAssertEqual(counts?.unfiled, 2_500)
+        XCTAssertLessThan(elapsed, .milliseconds(500))
+    }
+
     func testResultsCarryTheirNote() async throws {
         let noted = SearchTestSupport.document(facet: .memo, body: "noted body", note: "Run before deploys",
                                                memoID: UUID())
