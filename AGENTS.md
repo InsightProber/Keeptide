@@ -38,7 +38,8 @@ service foundation preserves capture identity during saving and body edits,
 retains conflicting edits separately, and recovers local drafts. Its native editor
 supports recoverable editing, document find, search, and explicit saving. Persistent
 file authorization is local and explicit. ⇧⌘T shows the text recognized on this Mac
-in a copied image beside its preview, and keeps it locally beside the image.
+in a copied image beside its preview, and keeps it locally beside the image; Return,
+⌘C and ⌘S then paste, copy or save that text instead of the image.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
 Planned capabilities must stay labelled until implemented and verified.

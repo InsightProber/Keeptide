@@ -29,6 +29,26 @@ final class DerivedTextPasteTests: XCTestCase {
         XCTAssertEqual(written.token?.matches(pasteboard: board), true)
     }
 
+    func testShownTextIsCopiedAsPlainTextMarkedAsKeeptidesOwn() throws {
+        let (controller, store) = try makeStore()
+        let board = makeBoard()
+        let written = TokenBox()
+        let paste = service(controller, board, store: store, didWrite: { written.token = $0 },
+                            recordUse: { _ in XCTFail("Copying text shown in the panel counts no use of any item") })
+
+        XCTAssertTrue(paste.copyText("Bonjour à tous"))
+
+        let item = try XCTUnwrap(board.pasteboardItems?.first)
+        XCTAssertEqual(contentTypes(item), ["public.utf8-plain-text"])
+        XCTAssertEqual(item.string(forType: .init("public.utf8-plain-text")), "Bonjour à tous")
+        // Keeptide's own write: capture skips it, so the copy never enters the history.
+        XCTAssertEqual(written.token?.matches(pasteboard: board), true)
+        // With nothing to copy, the clipboard stays as it was.
+        let changes = board.changeCount
+        XCTAssertFalse(paste.copyText(""))
+        XCTAssertEqual(board.changeCount, changes)
+    }
+
     func testAResultThatCannotBeReadIsRefused() async throws {
         let (controller, store) = try makeStore()
         let board = makeBoard()

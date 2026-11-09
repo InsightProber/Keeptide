@@ -11,7 +11,8 @@ struct QuickAccessActions: Equatable {
     /// nil in command mode.
     var plainTextTitle: String?
     /// "Copy" beside a paste. In a terminal's session it is "Copy As-Is" whether or not the panel pastes, and "Copy
-    /// As-Is (Keeps Trailing Newline)" in command mode. nil when not offered.
+    /// As-Is (Keeps Trailing Newline)" in command mode. Beside a paste of text made of the clip, "Copy Text". nil when
+    /// not offered.
     var copyOnlyTitle: String?
     /// How the copy-only item copies.
     var copyOnlyMode: PasteMode
@@ -21,10 +22,13 @@ struct QuickAccessActions: Equatable {
 
     /// `availability` is what the session's checks found as the panel opened, nil without a library; `kind` is the
     /// selected row's, nil with nothing selected. `awaitsReopen` says that this run asked for access, which Keeptide
-    /// can use only once it reopens.
+    /// can use only once it reopens. `takesText` says that Return takes text made of the clip, such as the text
+    /// recognized in an image, rather than the clip: that text is plain, so ⇧Return takes it the same way and has no
+    /// item of its own, and copying it is an item of its own.
     static func make(target: PasteTarget?, availability: DirectPasteAvailability?, kind: ContentKind?,
-                     awaitsReopen: Bool = false) -> QuickAccessActions {
-        var actions = QuickAccessActions(primaryTitle: "Copy", plainTextTitle: "Copy as Plain Text", copyOnlyTitle: nil,
+                     awaitsReopen: Bool = false, takesText: Bool = false) -> QuickAccessActions {
+        var actions = QuickAccessActions(primaryTitle: takesText ? "Copy Text" : "Copy",
+                                         plainTextTitle: takesText ? nil : "Copy as Plain Text", copyOnlyTitle: nil,
                                          copyOnlyMode: .original, offersEnableDirectPaste: false, hint: nil)
         // With no target, or no library to check it, the panel copies as it did before direct paste.
         guard let target, let availability, availability != .copy(.noTarget) else { return actions }
@@ -35,12 +39,19 @@ struct QuickAccessActions: Equatable {
         }
         actions.offersEnableDirectPaste = fallback == .notPermitted
         actions.hint = fallback.flatMap { hint(for: $0, awaitsReopen: awaitsReopen) }
-        if target.isTerminal, kind == .text || kind == .url {
-            // Only Copy As-Is keeps the clip as captured, trailing line break included.
+        // Beside a paste of the text, its copy, which leaves the panel open.
+        if takesText, fallback == nil { actions.copyOnlyTitle = "Copy Text" }
+        if target.isTerminal, takesText || kind == .text || kind == .url {
             actions.primaryTitle = fallback == nil ? "Paste Command" : "Copy Command"
             actions.plainTextTitle = nil
+            guard !takesText else { return actions }
+            // Only Copy As-Is keeps the clip as captured, trailing line break included.
             actions.copyOnlyTitle = "Copy As-Is (Keeps Trailing Newline)"
             actions.copyOnlyMode = .asIs
+            return actions
+        }
+        if takesText {
+            if fallback == nil { actions.primaryTitle = "Paste Text into \(target.name)" }
             return actions
         }
         if fallback == nil {

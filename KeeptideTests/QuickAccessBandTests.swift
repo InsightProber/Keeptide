@@ -751,6 +751,27 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertNil(say(.noText))
     }
 
+    func testOnlyAWholeTextCanBeCopiedWithoutSelectingIt() throws {
+        let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        func split(_ column: TextColumn) -> QuickAccessSplitPreview {
+            QuickAccessSplitPreview(preview: nil, applicationName: nil, column: column, ref: image, isJustMade: false,
+                                    onCommand: { _ in }, onCopy: { _ in })
+        }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { window.close() }
+        let hosting = NSHostingView(rootView: split(.text("Part of a", keepsLineBreaks: true, status: .stopped)))
+        window.contentView = hosting
+        settle(window)
+        let display = try XCTUnwrap(views(StreamingTextDisplay.self, in: hosting).first)
+        XCTAssertFalse(display.allowsCopyingAll, "Part of a text is copied by selecting it")
+
+        hosting.rootView = split(.text("A whole text", keepsLineBreaks: true, status: .complete))
+        settle(window)
+        XCTAssertTrue(display.allowsCopyingAll)
+    }
+
     // MARK: Helpers
 
     /// The band view with `metrics`, medium cards unless given others, and nothing in its state, in a window that is
@@ -768,7 +789,8 @@ final class QuickAccessBandTests: XCTestCase {
             layout: QuickAccessBandView.Layout(metrics: metrics, previewSize: nil, roomBelow: roomBelow),
             state: QuickAccessState(services: { nil }), toolbar: toolbar,
             strip: strip, glow: glow, applicationNames: ApplicationNames(),
-            actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {})
+            actions: QuickAccessBandView.Actions(previewCommand: { _ in }, confirmCommand: {}, cancelCommandReview: {},
+                                                 copyText: { _ in })
         )
         let root = band
             .environment(\._accessibilityReduceTransparency, reducesTransparency)

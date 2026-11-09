@@ -40,7 +40,12 @@ on this Mac with Apple's Vision, line by line or joined into paragraphs. A tall
 image, such as a long screenshot, is read in strips so that its small text is
 found. Nothing is recognized until it is asked for, and the recognized text is
 kept beside its image on this Mac, not in iCloud or in exports. ⌘. stops a
-recognition, and Escape closes the text before the preview.
+recognition, and Escape closes the text before the preview. While the text
+shows, Return pastes it instead of the image, through the same checks as a
+clip; in a terminal it is a command, reviewed first when it has several lines
+or control or invisible characters. ⌘C copies it, or the part selected, and
+leaves quick access open; ⌘S saves it as a snippet of its own. A double-click
+on a card, or a right-click on another card, still acts on that clip.
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,

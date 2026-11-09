@@ -1058,6 +1058,222 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(recognizer.layouts, [false])
     }
 
+    func testReturnTakesTheTextBesideAnImageOnceItIsKept() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let ref = try XCTUnwrap(state.selection.selection)
+        state.showTextInImage()
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil { state.textColumn?.isRecognizing == true }
+        XCTAssertNil(state.actionTarget, "Nothing to take while the text is made, and not the image either")
+
+        engine.send(.delta("Quarterly plan"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { state.actionTarget != nil }
+        let saved = try await DerivedTextStore(controller: fixture.harness.controller)
+            .result(for: ref, operation: .extractText)
+        let target = try XCTUnwrap(state.actionTarget)
+        XCTAssertEqual(target.ref, ref)
+        XCTAssertEqual(target.derivedText,
+                       DerivedTextPaste(id: try XCTUnwrap(saved).id, operation: .extractText,
+                                        textDigest: try XCTUnwrap(saved).textDigest))
+        XCTAssertEqual(state.actions.primaryTitle, "Copy Text")
+        XCTAssertNil(state.actions.plainTextTitle, "The text is plain: ⇧Return takes it as Return does")
+
+        await state.act(on: target, mode: .original, delivery: state.preferredDelivery)
+
+        XCTAssertEqual(fixture.board.string(forType: .string), "Quarterly plan")
+        // ⇧Return takes the text the same way.
+        await state.act(on: target, mode: .plainText, delivery: state.preferredDelivery)
+        XCTAssertEqual(fixture.board.string(forType: .string), "Quarterly plan")
+        // With the column closed, Return takes the clip again.
+        state.closeResultColumn()
+        XCTAssertEqual(state.actionTarget, state.copyTarget)
+        XCTAssertNil(state.actionTarget?.derivedText)
+        XCTAssertEqual(state.actionTarget?.ref, ref)
+    }
+
+    func testReturnTakesNothingUntilTheTextIsWholeAndKept() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+
+        // While what was kept of it is read.
+        let reading = try await occupyWriter(of: fixture.harness.controller)
+        state.showTextInImage()
+        XCTAssertEqual(state.textColumn, .loading)
+        XCTAssertNil(state.actionTarget)
+        try await reading.value
+
+        // Failed.
+        let failing = try await startedSource(recognizer, 0)
+        failing.send(.started(GenerationInfo(engine: "On this Mac")))
+        failing.end(throwing: failure)
+        try await SearchTestSupport.waitUntil { state.textColumn == .failed(failure) }
+        XCTAssertNil(state.actionTarget)
+
+        // No text.
+        state.extractText()
+        try await startedSource(recognizer, 1).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .noText }
+        XCTAssertNil(state.actionTarget)
+
+        // Made, while it is being kept.
+        let saving = try await occupyWriter(of: fixture.harness.controller)
+        state.extractText()
+        try await startedSource(recognizer, 2).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Quarterly plan"), .finished(.completed))
+        try await SearchTestSupport.waitUntil {
+            state.textColumn == .text("Quarterly plan", keepsLineBreaks: true, status: .complete)
+        }
+        XCTAssertNil(state.actionTarget, "Not kept yet")
+        try await saving.value
+        try await SearchTestSupport.waitUntil { state.actionTarget?.derivedText != nil }
+
+        // Made, and the library couldn't keep it: it shows and copies, but Return takes nothing.
+        state.extractText()
+        let unkept = try await startedSource(recognizer, 3)
+        try await fixture.harness.controller.close()
+        unkept.send(.started(GenerationInfo(engine: "On this Mac")), .delta("Kept nowhere"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumn == .unsaved("Kept nowhere", keepsLineBreaks: true) }
+        XCTAssertNil(state.actionTarget)
+        XCTAssertEqual(state.textColumnText, "Kept nowhere")
+    }
+
+    func testPartOfATextIsNeitherTakenNorCopiedWholeNorSaved() async throws {
+        let (fixture, _) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let ref = try XCTUnwrap(state.selection.selection)
+        // Kept from before as part of a text: stopped before it was whole.
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .stopped(.person), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Part of a"]),
+            for: DerivedTextRequest(source: ref, operation: .extractText, keepsLineBreaks: true))
+        state.showTextInImage()
+        try await SearchTestSupport.waitUntil {
+            state.textColumn == .text("Part of a", keepsLineBreaks: true, status: .stopped)
+        }
+
+        XCTAssertNil(state.actionTarget)
+        XCTAssertNil(state.textColumnText)
+        XCTAssertFalse(state.copyText())
+        XCTAssertTrue(state.copyText("Part"), "What is selected of it can be copied")
+        let outcome = await state.saveTextAsSnippet()
+        XCTAssertEqual(outcome, .nothingToSave)
+    }
+
+    func testCopyingTheTextBesideAnImageLeavesThePanelOpenAndSaysSo() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Notes", at: 1, into: fixture)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        var completed = false
+        state.onCompleted = { _ in completed = true }
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Quarterly plan\nQ3"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumnResult != nil }
+        XCTAssertFalse(state.isTextCopied)
+
+        XCTAssertTrue(state.copyText())
+
+        XCTAssertEqual(fixture.board.string(forType: .string), "Quarterly plan\nQ3")
+        // Marked as Keeptide's own: capture skips it.
+        XCTAssertEqual(fixture.board.pasteboardItems?.first?.types.contains(.init(OwnWriteToken.typeIdentifier)), true)
+        XCTAssertTrue(state.isTextCopied)
+        // Part of it, as the text's own Copy hands it over.
+        XCTAssertTrue(state.copyText("Q3"))
+        XCTAssertEqual(fixture.board.string(forType: .string), "Q3")
+        XCTAssertFalse(completed, "Copying the text is no action on the clip: the panel stays")
+        // What it says belongs to the image it copied: another clip has nothing copied.
+        state.moveSelection(by: 1)
+        XCTAssertFalse(state.isTextCopied)
+    }
+
+    func testWhatASaveOfTheTextCameToIsNotSaidOverAnotherClip() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Notes", at: 1, into: fixture)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Quarterly plan"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumnResult != nil }
+        let busy = try await occupyWriter(of: fixture.harness.controller)
+
+        let saving = Task { await state.saveTextAsSnippet() }
+        try await Task.sleep(for: .milliseconds(100))
+        state.moveSelection(by: 1)
+        try await busy.value
+        let outcome = await saving.value
+
+        XCTAssertEqual(state.selection.selectedRow?.title, "Notes")
+        XCTAssertNil(state.saveMessage)
+        // Under way as the selection moved, the save was asked for and says nothing over the other clip; it stopped
+        // while waiting for the store, before it made anything, as a clip's save does.
+        XCTAssertEqual(outcome, .interrupted)
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        let saved = try await repository.recent(limit: 100).filter { $0.history == nil }
+        XCTAssertEqual(saved.count, 0)
+        // Back on the image, it saves, and then knows it saved.
+        state.moveSelection(by: -1)
+        state.showTextInImage()
+        try await SearchTestSupport.waitUntil { state.textColumnText == "Quarterly plan" }
+        let first = await state.saveTextAsSnippet()
+        XCTAssertEqual(first, .said("Text saved to Snippets"))
+        let again = await state.saveTextAsSnippet()
+        XCTAssertEqual(again, .said("Already in Snippets"))
+        let savedAgain = try await repository.recent(limit: 100).filter { $0.history == nil }
+        XCTAssertEqual(savedAgain.count, 1)
+    }
+
+    func testSavingTheTextBesideAnImageMakesASnippetOfItAlone() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        let image = try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1,
+                                     into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Quarterly plan"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumnResult != nil }
+
+        await state.saveTextAsSnippet()
+
+        XCTAssertEqual(state.saveMessage, "Text saved to Snippets")
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        let snippets = try await repository.recent(limit: 100).filter { $0.history == nil }.compactMap(\.memo)
+        XCTAssertEqual(snippets.count, 1)
+        let body = try await LibraryService(controller: fixture.harness.controller)
+            .editingSnapshot(try XCTUnwrap(snippets.first)).body
+        XCTAssertEqual(body, "Quarterly plan")
+        // The image stays as it was, with no snippet of its own.
+        let listed = try await repository.recent(limit: 100)
+        XCTAssertNil(listed.first { $0.itemID == image.id }?.memo)
+
+        // Saved again in this showing, it is there already.
+        await state.saveTextAsSnippet()
+        XCTAssertEqual(state.saveMessage, "Already in Snippets")
+        let again = try await repository.recent(limit: 100).filter { $0.history == nil }
+        XCTAssertEqual(again.count, 1)
+    }
+
     func testTheColumnSaysWhatItIsDoingAndHowMuchItFound() {
         let queued = GenerationSnapshot(phase: .queued, info: nil)
         let running = GenerationSnapshot(phase: .waiting, info: GenerationInfo(engine: "On this Mac"))
@@ -2504,11 +2720,13 @@ final class QuickAccessStateTests: XCTestCase {
         addTeardownBlock { board.releaseGlobally() }
         let repository = ContentRepository(controller: harness.controller)
         let usage = LocalUsageStore(controller: harness.controller)
+        let derivedTextStore = DerivedTextStore(controller: harness.controller)
         let paste = PasteService(pasteboard: board, read: { ref in
             await readGate?.enter()
             return try await repository.read(ref)
         }, recordUse: { try await usage.record($0) }, didWrite: { _ in }, system: system,
-           directPasteOnlyTo: directPasteOnlyTo)
+           directPasteOnlyTo: directPasteOnlyTo,
+           readDerivedText: { try await derivedTextStore.result(for: $0, operation: $1) })
         // A paste request the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let preview = PreviewService(read: { ref in
@@ -2608,6 +2826,7 @@ final class QuickAccessStateTests: XCTestCase {
         addTeardownBlock { await derivedText.stopAndDrain() }
         var services = fixture.services
         services.derivedText = derivedText
+        services.library = LibraryService(controller: controller)
         fixture = Fixture(harness: fixture.harness, board: fixture.board, services: services)
         return (fixture, recognizer)
     }

@@ -9,10 +9,13 @@ enum ActionMenuCommand: Equatable {
     case undoMoveToRecentlyDeleted, moveToRecentlyDeleted
     /// Remove from “Prompts”: out of the collection the list shows.
     case removeFromCollection(CollectionID)
+    /// The text in an image: shown beside it, made again, copied, kept as a snippet, laid out, or stopped.
+    case showTextInImage, extractText, copyText, saveTextAsSnippet, toggleKeepLineBreaks, stopTextRecognition
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
-/// and the copy that never pastes, where the panel offers them; then the preview; then what keeps the clip: Save as
+/// and the copy that never pastes, where the panel offers them, or while the preview shows the text beside an image,
+/// what can be done with that text; then the preview, and Extract Text; then what keeps the clip: Save as
 /// Snippet, Save to Collection (Add to Collection on a snippet), Undo Save as Snippet while the save can still be
 /// undone, and the favorite mark; then the library's actions; then Enable Direct Paste… when the panel only copies for
 /// want of access; last what takes the clip away: Undo Move to Recently Deleted right after a move, Remove from the
@@ -27,29 +30,57 @@ enum ActionMenuCommand: Equatable {
 /// panel's last undoable change.
 @MainActor
 enum ActionMenu {
+    /// What the menu offers for the text in an image. Every card has Extract Text, which only an image's makes use
+    /// of. While the preview shows the text beside an image, the menu starts with what can be done with that text, in
+    /// place of what Return and ⇧Return do with the clip: one item for each of the column's controls.
+    struct TextInImage: Equatable {
+        /// Whether the clip is an image whose text can be shown.
+        var isOffered = false
+        /// The column of text, while the preview shows it beside the clip.
+        var column: Column?
+
+        struct Column: Equatable {
+            /// Return can take the text: it is whole and kept.
+            var canTake = false
+            /// There is text to copy and to keep as a snippet.
+            var hasText = false
+            var keepsLineBreaks = true
+            var canStop = false
+            /// No text was made yet, or making it failed: Extract Text, or Try Again, makes it.
+            var canExtract = false
+            var failed = false
+        }
+    }
+
     static let noCollectionsHelp = "Create a collection first."
+    static let noTextToExtractHelp = "Only images have text to extract."
     /// The undo's action name, which Undo Move to Recently Deleted names.
     static let moveToRecentlyDeletedName = "Move to Recently Deleted"
 
     static func make(actions: QuickAccessActions, row: QuickAccessRow?, canAct: Bool, isReviewing: Bool = false,
                      isPreviewExpanded: Bool, canUndoSave: Bool = false, collections: [CollectionSummary] = [],
                      canMoveToRecentlyDeleted: Bool = false, listedCollection: CollectionSummary? = nil,
-                     canUndoMoveToRecentlyDeleted: Bool = false,
+                     canUndoMoveToRecentlyDeleted: Bool = false, textInImage: TextInImage = TextInImage(),
                      perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
-        let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
-        primary.isEnabled = canAct && !isReviewing
-        menu.addItem(primary)
-        if let title = actions.plainTextTitle {
-            let plainText = ActionMenuItem(title, key: "\r", modifiers: .shift) { perform(.plainText) }
-            plainText.isEnabled = canAct && !isReviewing && row.map { $0.kind != .image && $0.kind != .file } == true
-            menu.addItem(plainText)
-        }
-        if let title = actions.copyOnlyTitle {
-            let copyOnly = ActionMenuItem(title, key: "", modifiers: []) { perform(.copyOnly) }
-            copyOnly.isEnabled = canAct
-            menu.addItem(copyOnly)
+        if let column = textInImage.column {
+            addTextItems(column, actions: actions, isReviewing: isReviewing, to: menu, perform: perform)
+        } else {
+            let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
+            primary.isEnabled = canAct && !isReviewing
+            menu.addItem(primary)
+            if let title = actions.plainTextTitle {
+                let plainText = ActionMenuItem(title, key: "\r", modifiers: .shift) { perform(.plainText) }
+                plainText.isEnabled = canAct && !isReviewing
+                    && row.map { $0.kind != .image && $0.kind != .file } == true
+                menu.addItem(plainText)
+            }
+            if let title = actions.copyOnlyTitle {
+                let copyOnly = ActionMenuItem(title, key: "", modifiers: []) { perform(.copyOnly) }
+                copyOnly.isEnabled = canAct
+                menu.addItem(copyOnly)
+            }
         }
         menu.addItem(.separator())
         let preview = ActionMenuItem(isPreviewExpanded ? "Hide Preview" : "Show Preview", key: " ", modifiers: []) {
@@ -57,8 +88,17 @@ enum ActionMenu {
         }
         preview.isEnabled = row != nil
         menu.addItem(preview)
+        if textInImage.column == nil {
+            let extract = ActionMenuItem("Extract Text", key: "t", modifiers: [.command, .shift]) {
+                perform(.showTextInImage)
+            }
+            extract.isEnabled = textInImage.isOffered && row != nil
+            if let row, row.kind != .image { extract.toolTip = noTextToExtractHelp }
+            menu.addItem(extract)
+        }
         menu.addItem(.separator())
-        let save = ActionMenuItem("Save as Snippet", key: "s", modifiers: .command) {
+        // While the text shows, ⌘S keeps the text; this item still keeps the clip.
+        let save = ActionMenuItem("Save as Snippet", key: textInImage.column == nil ? "s" : "", modifiers: .command) {
             perform(.saveSnippet)
         }
         let isSnippet = row?.facet == .memo
@@ -123,6 +163,35 @@ enum ActionMenu {
         delete.isEnabled = canMoveToRecentlyDeleted && row != nil
         menu.addItem(delete)
         return menu
+    }
+
+    /// What can be done with the text beside an image: take it as Return does, copy it beside a paste, keep it as a
+    /// snippet, lay it out, stop making it, and make it, or make it again after a failure.
+    private static func addTextItems(_ column: TextInImage.Column, actions: QuickAccessActions, isReviewing: Bool,
+                                     to menu: NSMenu, perform: @escaping (ActionMenuCommand) -> Void) {
+        let take = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
+        take.isEnabled = column.canTake && !isReviewing
+        menu.addItem(take)
+        if let title = actions.copyOnlyTitle {
+            let copy = ActionMenuItem(title, key: "c", modifiers: .command) { perform(.copyText) }
+            copy.isEnabled = column.hasText
+            menu.addItem(copy)
+        }
+        let save = ActionMenuItem("Save Text as Snippet", key: "s", modifiers: .command) {
+            perform(.saveTextAsSnippet)
+        }
+        save.isEnabled = column.hasText
+        menu.addItem(save)
+        let lineBreaks = ActionMenuItem("Keep Line Breaks", key: "", modifiers: []) { perform(.toggleKeepLineBreaks) }
+        lineBreaks.state = column.keepsLineBreaks ? .on : .off
+        menu.addItem(lineBreaks)
+        let stop = ActionMenuItem("Stop", key: ".", modifiers: .command) { perform(.stopTextRecognition) }
+        stop.isEnabled = column.canStop
+        menu.addItem(stop)
+        let extract = ActionMenuItem(column.failed ? "Try Again" : "Extract Text", key: "t",
+                                     modifiers: [.command, .shift]) { perform(.extractText) }
+        extract.isEnabled = column.canExtract
+        menu.addItem(extract)
     }
 
     /// The collections a clip or snippet can go in, in the sidebar's order, each with a dot in its colour. A

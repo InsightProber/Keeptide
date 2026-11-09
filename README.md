@@ -110,11 +110,12 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ⌘L | Go to the list switch |
 | Typing | Search the current list; All searches clips and snippets |
 | Return | Paste into the app you came from, or copy |
-| Double-click | Do what Return does with the clip you double-click |
+| Double-click | Paste or copy the clip you double-click, as Return does with a clip |
 | ⇧Return | Paste or copy as plain text |
 | Space or ⌘Y | Show or hide a larger preview |
 | ⇧⌘T | Show the text in the selected image beside its preview |
 | ⌘. | Stop recognizing the text in an image |
+| Return, ⌘C, ⌘S beside the text in an image | Paste the text, copy it (or the part you selected), or save it as a snippet |
 | ⌘K or right-click | Show every action for the selected clip |
 | ⌘S | Save the clip as a snippet |
 | ⇧⌘M | Save the clip into a collection, or add a snippet to one; choosing a checked collection takes the snippet out |
