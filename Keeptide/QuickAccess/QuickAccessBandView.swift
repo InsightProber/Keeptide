@@ -130,6 +130,7 @@ struct QuickAccessBandView: View {
                 CommandReviewView(review: review, confirmTitle: QuickAccessActions.confirmTitle(for: review),
                                   onConfirm: actions.confirmCommand, onCancel: actions.cancelCommandReview,
                                   onCommand: actions.previewCommand)
+                    .clipShape(RoundedRectangle(cornerRadius: CommandReviewView.cornerRadius, style: .continuous))
             } else {
                 QuickAccessPreviewCard(onClose: { actions.previewCommand(.togglePreview) }) {
                     QuickAccessPreviewView(preview: state.preview,
@@ -139,55 +140,79 @@ struct QuickAccessBandView: View {
                                        fileAccessIdentity: state.fileAccessIdentity,
                                        isLoadingOriginal: state.isLoadingOriginalPreview,
                                        previewMessage: state.previewMessage,
-                                       onRequestOriginal: state.loadOriginalPreview)
+                                       onRequestOriginal: state.loadOriginalPreview,
+                                       isOnTray: true)
                 }
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 }
 
-/// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target.
+/// A window-like surface inside the same nonactivating panel, so previewing never changes the paste target. It stands
+/// on a tray like the band's, in one piece with no surface of its own for the content, under a bar laid out like the
+/// band's toolbar.
 private struct QuickAccessPreviewCard<Content: View>: View {
     let onClose: () -> Void
     @ViewBuilder let content: () -> Content
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var appeared = false
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 24, height: 24)
-                        .background(.quaternary, in: Circle())
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(Color(nsColor: ToolbarPalette.glyph))
+                        .frame(width: QuickAccessSearchControl.foldedWidth, height: QuickAccessSearchControl.foldedWidth)
+                        .background(Color(nsColor: ToolbarPalette.foldedSearchFill), in: Circle())
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close Preview")
                 .accessibilityIdentifier("CloseQuickAccessPreview")
                 .help("Close Preview (Esc)")
-                Text("Preview").font(.callout.weight(.medium)).foregroundStyle(.secondary)
+                Text("Preview")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
                 Spacer()
             }
-            .padding(.horizontal, 12)
-            .frame(height: 40)
+            .frame(height: StripLayout.toolbarHeight)
+            .padding(.top, StripLayout.toolbarTop)
+            .padding(.horizontal, QuickAccessToolbar.leadingInset)
             content()
         }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(.primary.opacity(0.12), lineWidth: 1)
-                .allowsHitTesting(false)
+        .background {
+            ZStack {
+                // The tray's colour as a shape of its own, under the tray's drawing: it takes the pointer on the
+                // card's empty parts, so that a click there never reaches the band beneath the card, and the card's
+                // shadow falls from it.
+                RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous)
+                    .fill(Color(nsColor: QuickAccessBandSurface.trayColor))
+                PreviewTray(increasesContrast: contrast == .increased)
+            }
+            .accessibilityHidden(true)
         }
+        .clipShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: StripLayout.cornerRadius, style: .continuous))
         .scaleEffect(appeared || reduceMotion ? 1 : 0.92)
         .opacity(appeared || reduceMotion ? 1 : 0)
         .onAppear {
             withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) { appeared = true }
         }
+    }
+}
+
+/// The band's tray, with its edge and highlight, behind the preview card.
+private struct PreviewTray: NSViewRepresentable {
+    let increasesContrast: Bool
+
+    func makeNSView(context: Context) -> QuickAccessBandSurface { QuickAccessBandSurface() }
+
+    func updateNSView(_ surface: QuickAccessBandSurface, context: Context) {
+        surface.increasesContrast = increasesContrast
     }
 }
 
@@ -385,8 +410,19 @@ final class QuickAccessBandSurface: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
+    /// The tray's colour in the appearance it is drawn in, for a view that is not drawn here. AppKit may ask for it
+    /// on any thread.
+    nonisolated static let trayColor = NSColor(name: nil) { appearance in
+        fill(dark: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
+    }
+
     /// The tray's colour.
-    static func fill(dark: Bool) -> NSColor {
+    nonisolated static func fill(dark: Bool) -> NSColor {
         dark ? NSColor(srgbRed: 0x12 / 255, green: 0x13 / 255, blue: 0x16 / 255, alpha: 1)
             : NSColor(srgbRed: 0xF3 / 255, green: 0xF3 / 255, blue: 0xF1 / 255, alpha: 1)
     }
