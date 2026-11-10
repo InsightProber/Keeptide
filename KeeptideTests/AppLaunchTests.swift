@@ -1558,6 +1558,10 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === toolbar.lists)
         XCTAssertEqual(menus, 0)
         XCTAssertEqual(handedOver, 0)
+        // The E key types “.”, and “e” with ⌘: it is ⌘E, which shows the clip in the library, and not ⌘., the text
+        // system's key. The panel's commands come first, as AppKit offers a key to key equivalents before key bindings.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_E, ".", modifiers: .command)))
+        XCTAssertEqual(handedOver, 1)
     }
 
     func testOptionCommandWClosesOnlyThePanel() async throws {

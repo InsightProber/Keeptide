@@ -1350,6 +1350,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         event.characters(byApplyingModifiers: event.modifierFlags.intersection(.shift).union(.command))?.lowercased()
     }
 
+    /// The keys of the panel's commands with ⌘ alone, as `commandKey(of:)` gives them: ⌘S, ⌘E, ⌘N, ⌘D, ⌘F, ⌘[, ⌘],
+    /// ⌘L, ⌘K, ⌘Y and ⌘Z, each run by `handleKeyEquivalent(_:)`.
+    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z"]
+
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
         // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M and ⇧⌘T
         // are the shortcuts here with Shift.
@@ -1360,9 +1364,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let isShiftCommandM = modifiers == [.command, .shift] && key == "m"
         let isShiftCommandT = modifiers == [.command, .shift] && key == "t"
         // ⌘. is the text system's key, not the menu bar's: its key bindings know it by what the key types without ⌘,
-        // with Shift where "." needs it, and make it Escape if the panel leaves it. The panel knows it the same way.
+        // with Shift where "." needs it, and make it Escape if the panel leaves it to text. The panel knows it the same
+        // way, after its own commands, as AppKit offers a key to key equivalents before key bindings: on Dvorak –
+        // QWERTY ⌘ the key that types "." types "e" with ⌘, and is ⌘E.
         let isCommandPeriod = event.charactersIgnoringModifiers == "."
             && (modifiers == .command || modifiers == [.command, .shift])
+            && !(modifiers == .command && Self.ownCommandKeys.contains(key ?? ""))
         guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT || isCommandPeriod else {
             return false
         }
