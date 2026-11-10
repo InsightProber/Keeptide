@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import XCTest
 @testable import Keeptide
@@ -118,4 +119,40 @@ func waitUntil(
         }
         try? await Task.sleep(for: .milliseconds(2))
     }
+}
+
+/// A recognizer whose sources a test drives by hand. It records what it was asked for.
+final class ScriptedRecognizer: TextRecognitionEngine, @unchecked Sendable {
+    let tier: EngineTier
+    private let lock = NSLock()
+    private var requests: [(source: ControlledSource, image: @Sendable () async throws -> CGImage, keeps: Bool)] = []
+
+    init(tier: EngineTier = .onThisMac) {
+        self.tier = tier
+    }
+
+    func recognizeText(in image: @escaping @Sendable () async throws -> CGImage,
+                       keepingLineBreaks: Bool) -> any GenerationSource {
+        let source = ControlledSource()
+        lock.withLock { requests.append((source, image, keepingLineBreaks)) }
+        return source
+    }
+
+    var layouts: [Bool] { lock.withLock { requests.map(\.keeps) } }
+
+    func source(_ index: Int) -> ControlledSource? {
+        lock.withLock { index < requests.count ? requests[index].source : nil }
+    }
+
+    func image(_ index: Int) -> @Sendable () async throws -> CGImage {
+        lock.withLock { requests[index].image }
+    }
+}
+
+/// The recognizer's `index`th source, once its job has started reading it.
+@MainActor
+func startedSource(_ recognizer: ScriptedRecognizer, _ index: Int, file: StaticString = #filePath,
+                   line: UInt = #line) async throws -> ControlledSource {
+    await waitUntil("source \(index) is read", file: file, line: line) { (recognizer.source(index)?.startCount ?? 0) > 0 }
+    return try XCTUnwrap(recognizer.source(index), file: file, line: line)
 }

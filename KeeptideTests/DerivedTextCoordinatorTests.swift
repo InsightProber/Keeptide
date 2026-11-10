@@ -35,6 +35,27 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.job(for: source, operation: .extractText), "The job leaves when it ends")
     }
 
+    func testWhatAnEarlierJobSavedIsReadForExactlyItsContent() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Earlier", into: controller)
+        let other = try await insertClip("Other", into: controller)
+        var changed = source
+        changed.digest = Data(repeating: 9, count: 32)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        try await started(recognizer, 0).send(.started(info), .delta("Saved before"), .finished(.completed))
+        await waitUntil("the result is saved") { hasSettled(coordinator, source) }
+
+        let saved = await coordinator.savedResult(for: source, operation: .extractText)
+        let none = await coordinator.savedResult(for: other, operation: .extractText)
+        let stale = await coordinator.savedResult(for: changed, operation: .extractText)
+
+        XCTAssertEqual(saved?.text, "Saved before")
+        XCTAssertNil(none)
+        XCTAssertNil(stale, "The item's content has changed since")
+    }
+
     func testAnImageWithoutTextIsRememberedAndNothingIsSaved() async throws {
         let (controller, store) = try await makeStore()
         let source = try await insertClip("Blank", into: controller)
@@ -68,7 +89,7 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         XCTAssertNil(read)
     }
 
-    func testStoppingAJobLeavesTheEarlierResult() async throws {
+    func testStoppingAJobLeavesWhatTheEarlierOneMade() async throws {
         let (controller, store) = try await makeStore()
         let source = try await insertClip("Receipt", into: controller)
         let recognizer = ScriptedRecognizer()
@@ -76,6 +97,8 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         coordinator.extractText(from: source, keepingLineBreaks: true)
         try await started(recognizer, 0).send(.started(info), .delta("Total 12.80"), .finished(.completed))
         await waitUntil("the first result is saved") { hasSettled(coordinator, source) }
+        let earlier = try XCTUnwrap(coordinator.outcome(for: source, operation: .extractText))
+        XCTAssertTrue(coordinator.showsLatestEnding(for: source, operation: .extractText))
 
         coordinator.extractText(from: source, keepingLineBreaks: false)
         let second = try await started(recognizer, 1)
@@ -83,11 +106,150 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         coordinator.stop(source, operation: .extractText)
 
         await waitUntil("the second job ended") { coordinator.job(for: source, operation: .extractText) == nil }
-        await waitUntil("its ending is taken in") { coordinator.outcome(for: source, operation: .extractText) == nil }
         XCTAssertTrue(second.wasCancelled)
+        XCTAssertEqual(coordinator.outcome(for: source, operation: .extractText), earlier,
+                       "What the item showed before the stopped job, it shows again")
+        XCTAssertFalse(coordinator.showsLatestEnding(for: source, operation: .extractText),
+                       "It is not how the latest job ended")
         let read = try await store.result(for: source, operation: .extractText)
         XCTAssertEqual(read?.text, "Total 12.80")
         XCTAssertEqual(read?.keepsLineBreaks, true)
+    }
+
+    func testAJobStoppedBeforeTheEarlierOneWasSavedLeavesWhatThatSaved() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Receipt", into: controller)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        let first = try await started(recognizer, 0)
+        let busy = try await occupyWriter(of: controller)
+        first.send(.started(info), .delta("Total 12.80"), .finished(.completed))
+        await waitUntil("the first job ended") { coordinator.job(for: source, operation: .extractText) == nil }
+
+        // While the first job's text waits for the store, a second job starts and is stopped.
+        coordinator.extractText(from: source, keepingLineBreaks: false)
+        let second = try await started(recognizer, 1)
+        coordinator.stop(source, operation: .extractText)
+        await waitUntil("the second job ended") { coordinator.job(for: source, operation: .extractText) == nil }
+        XCTAssertTrue(second.wasCancelled)
+        XCTAssertEqual(coordinator.outcome(for: source, operation: .extractText),
+                       .saving("Total 12.80", DerivedTextRequest(source: source, operation: .extractText,
+                                                                 keepsLineBreaks: true)))
+
+        try await busy.value
+        await waitUntil("the first job's text is saved") {
+            if case .saved(let saved)? = coordinator.outcome(for: source, operation: .extractText) {
+                return saved.text == "Total 12.80"
+            }
+            return false
+        }
+    }
+
+    func testTextIsRecognizedWhenAskedForOnlyIfNothingWasMadeOfIt() async throws {
+        let (controller, store) = try await makeStore()
+        let kept = try await insertClip("Kept", into: controller)
+        let fresh = try await insertClip("Fresh", into: controller)
+        _ = try await store.save(GenerationSnapshot(phase: .finished(.completed), info: info,
+                                                    texts: [.main: "Kept from before"]),
+                                 for: DerivedTextRequest(source: kept, operation: .extractText, keepsLineBreaks: true))
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+
+        coordinator.extractTextUnlessMade(from: kept, keepingLineBreaks: true)
+        coordinator.extractTextUnlessMade(from: fresh, keepingLineBreaks: false)
+        coordinator.extractTextUnlessMade(from: fresh, keepingLineBreaks: false)
+
+        XCTAssertTrue(coordinator.isWaitingToStart(fresh, operation: .extractText), "What was kept is read first")
+        let engine = try await started(recognizer, 0)
+        XCTAssertFalse(coordinator.isWaitingToStart(fresh, operation: .extractText))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recognizer.layouts, [false], "Once, and only for the item nothing was kept of")
+        XCTAssertNil(coordinator.job(for: kept, operation: .extractText))
+        XCTAssertFalse(coordinator.isWaitingToStart(kept, operation: .extractText))
+
+        // Text made in this session counts as made too; only a failure is tried again.
+        engine.send(.started(info), .delta("Fresh text"), .finished(.completed))
+        await waitUntil("the result is saved") { hasSettled(coordinator, fresh) }
+        coordinator.extractTextUnlessMade(from: fresh, keepingLineBreaks: false)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recognizer.layouts, [false])
+    }
+
+    func testStoppingARequestWaitingOnTheStoreStartsNothing() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Fresh", into: controller)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+
+        coordinator.extractTextUnlessMade(from: source, keepingLineBreaks: true)
+        coordinator.stop(source, operation: .extractText)
+
+        XCTAssertFalse(coordinator.isWaitingToStart(source, operation: .extractText))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(recognizer.layouts, [])
+    }
+
+    func testAskingAgainWhileTheStoreIsReadTakesTheLatestLayout() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Fresh", into: controller)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+
+        coordinator.extractTextUnlessMade(from: source, keepingLineBreaks: true)
+        coordinator.extractTextUnlessMade(from: source, keepingLineBreaks: false)
+
+        _ = try await started(recognizer, 0)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(recognizer.layouts, [false], "Once, in the layout asked for last")
+    }
+
+    func testAStoppedJobsTextTheStoreDidntTakeLeavesWhatTheEarlierSaveCameTo() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Receipt", into: controller)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        let first = try await started(recognizer, 0)
+        let busy = try await occupyWriter(of: controller)
+        first.send(.started(info), .delta("Total 12.80"), .finished(.completed))
+        await waitUntil("the first job ended") { coordinator.job(for: source, operation: .extractText) == nil }
+
+        // While the first job's text waits for the store, a second job catches part of a text and is stopped. The
+        // store keeps the first, whole text, and not the second's part of one.
+        coordinator.extractText(from: source, keepingLineBreaks: false)
+        let second = try await started(recognizer, 1)
+        second.send(.started(info), .delta("Total"))
+        await waitUntil("the second job has text") {
+            coordinator.job(for: source, operation: .extractText)?.snapshot.hasText == true
+        }
+        coordinator.stop(source, operation: .extractText)
+        await waitUntil("the second job ended") { coordinator.job(for: source, operation: .extractText) == nil }
+        try await busy.value
+
+        await waitUntil("the item shows what the first save came to") {
+            if case .saved(let saved)? = coordinator.outcome(for: source, operation: .extractText) {
+                return saved.text == "Total 12.80"
+            }
+            return false
+        }
+    }
+
+    func testAskingAgainForTextThatFailedTriesAgain() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Damaged", into: controller)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        let engine = try await started(recognizer, 0)
+        engine.send(.started(info))
+        engine.end(throwing: failure)
+        await waitUntil("the job failed") { hasSettled(coordinator, source) }
+
+        coordinator.extractTextUnlessMade(from: source, keepingLineBreaks: true)
+
+        _ = try await started(recognizer, 1)
     }
 
     func testANewerRequestReplacesTheOneUnderWay() async throws {
@@ -142,8 +304,10 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         engine.send(.started(info), .delta("Kept nowhere"), .finished(.completed))
 
         await waitUntil("the job ended") { hasSettled(coordinator, source) }
-        XCTAssertEqual(coordinator.outcome(for: source, operation: .extractText), .notSaved("Kept nowhere"),
-                       "The text is still there to show and copy")
+        XCTAssertEqual(coordinator.outcome(for: source, operation: .extractText),
+                       .notSaved("Kept nowhere", DerivedTextRequest(source: source, operation: .extractText,
+                                                                    keepsLineBreaks: true)),
+                       "The text is still there to show and copy, in the layout it was made in")
     }
 
     func testAnEndedJobsTextShowsWhileItIsBeingSaved() async throws {
@@ -158,7 +322,9 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         engine.send(.started(info), .delta("Total 12.80"), .finished(.completed))
 
         await waitUntil("the job ended") { coordinator.job(for: source, operation: .extractText) == nil }
-        XCTAssertEqual(coordinator.outcome(for: source, operation: .extractText), .saving("Total 12.80"),
+        XCTAssertEqual(coordinator.outcome(for: source, operation: .extractText),
+                       .saving("Total 12.80", DerivedTextRequest(source: source, operation: .extractText,
+                                                                 keepsLineBreaks: true)),
                        "Between the job's end and the save, the item shows what the job made")
         try await busy.value
         await waitUntil("the result is saved") {
@@ -380,34 +546,6 @@ final class DerivedTextCoordinatorTests: XCTestCase {
     private func started(_ recognizer: ScriptedRecognizer, _ index: Int) async throws -> ControlledSource {
         await waitUntil("source \(index) is read") { (recognizer.source(index)?.startCount ?? 0) > 0 }
         return try XCTUnwrap(recognizer.source(index))
-    }
-}
-
-/// A recognizer whose sources a test drives by hand. It records what it was asked for.
-private final class ScriptedRecognizer: TextRecognitionEngine, @unchecked Sendable {
-    let tier: EngineTier
-    private let lock = NSLock()
-    private var requests: [(source: ControlledSource, image: @Sendable () async throws -> CGImage, keeps: Bool)] = []
-
-    init(tier: EngineTier = .onThisMac) {
-        self.tier = tier
-    }
-
-    func recognizeText(in image: @escaping @Sendable () async throws -> CGImage,
-                       keepingLineBreaks: Bool) -> any GenerationSource {
-        let source = ControlledSource()
-        lock.withLock { requests.append((source, image, keepingLineBreaks)) }
-        return source
-    }
-
-    var layouts: [Bool] { lock.withLock { requests.map(\.keeps) } }
-
-    func source(_ index: Int) -> ControlledSource? {
-        lock.withLock { index < requests.count ? requests[index].source : nil }
-    }
-
-    func image(_ index: Int) -> @Sendable () async throws -> CGImage {
-        lock.withLock { requests[index].image }
     }
 }
 

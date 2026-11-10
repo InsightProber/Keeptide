@@ -61,6 +61,41 @@ struct QuickAccessServices {
     var collectionChanges: (any QuickAccessCollectionChanges)? = nil
     /// Moving clips and snippets to Recently Deleted and back; without it nothing can be moved there from the panel.
     var lifecycle: (any QuickAccessLifecycle)? = nil
+    /// Recognizing the text in images and reading what was recognized before; without it the preview has no text
+    /// column.
+    var derivedText: DerivedTextCoordinator? = nil
+}
+
+/// A column of derived text beside the preview. Only an image has one now: the text recognized in it.
+enum ResultColumn: Equatable, Sendable {
+    case text
+}
+
+/// What the text column shows for the selected image.
+enum TextColumn: Equatable {
+    /// What was made before is still being read.
+    case loading
+    /// Nothing has been made of the image's text yet: the column offers to extract it.
+    case notStarted
+    /// Recognition is waiting or under way.
+    case recognizing(GenerationSnapshot)
+    /// The image's text, made now or kept from before, line by line or in paragraphs as `keepsLineBreaks` says.
+    case text(String, keepsLineBreaks: Bool, status: DerivedTextStatus)
+    /// The text was made, but the library couldn't keep it.
+    case unsaved(String, keepsLineBreaks: Bool)
+    /// The image has no text.
+    case noText
+    case failed(GenerationError)
+}
+
+extension TextColumn {
+    /// How the text shown is laid out; nil without text.
+    var keepsLineBreaks: Bool? {
+        switch self {
+        case .text(_, let keeps, _), .unsaved(_, let keeps): keeps
+        case .loading, .notStarted, .recognizing, .noText, .failed: nil
+        }
+    }
 }
 
 enum QuickAccessPhase: Equatable {
@@ -133,7 +168,21 @@ final class QuickAccessState {
     private(set) var selection = SelectionCoordinator()
     private(set) var phase = QuickAccessPhase.libraryUnavailable
     private(set) var indexNotice: IndexNotice?
-    private(set) var isPreviewExpanded = false
+    private(set) var isPreviewExpanded = false {
+        // A column belongs to the preview, and closes with it however the preview closes.
+        didSet { if !isPreviewExpanded { resultColumn = nil } }
+    }
+    /// The column beside the preview, while one is chosen. It shows only for a clip that has one, and stays chosen
+    /// while the selection moves through clips that don't.
+    private(set) var resultColumn: ResultColumn?
+    /// Whether text recognized from now on keeps the image's line breaks or joins lines into paragraphs: the person's
+    /// choice, which the panel gives as it opens and keeps as Keep Line Breaks changes it.
+    private(set) var keepsLineBreaks = true
+    /// The image the saved text below was read for. Until it is the previewed image, the column is still reading.
+    private var savedTextRef: ContentRef?
+    /// What an earlier job saved of the previewed image's text, if anything.
+    private var savedText: DerivedText?
+    @ObservationIgnored private var readingSavedText: Task<Void, Never>?
     private(set) var preview: PreviewContent?
     private(set) var isLoadingOriginalPreview = false
     private(set) var previewMessage: String?
@@ -516,6 +565,141 @@ final class QuickAccessState {
             loadMoreIfNeeded(visibleRow: index)
         }
         return move
+    }
+
+    /// Whether the preview is split for the column chosen beside it: as wide as the band and above it, with an image's
+    /// text beside the image. A clip that has no such column shows its preview alone in the same place, so the card
+    /// stays where it is while the selection moves.
+    var isPreviewSplit: Bool {
+        resultColumn == .text && isPreviewExpanded && services()?.derivedText != nil
+    }
+
+    /// The image whose text the column shows: the selected clip, while the preview is split and the clip is an image.
+    var textColumnRef: ContentRef? {
+        guard isPreviewSplit, let row = selection.selectedRow, row.kind == .image else { return nil }
+        return row.ref
+    }
+
+    /// Whether the selected clip is an image whose text the preview can show beside it.
+    var offersTextInImage: Bool {
+        selection.selectedRow?.kind == .image && services()?.derivedText != nil
+    }
+
+    /// What the text column shows, while it shows: a job under way, then how the latest job ended, and otherwise what
+    /// an earlier one saved.
+    var textColumn: TextColumn? {
+        guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return nil }
+        if let job = derivedText.job(for: ref, operation: .extractText) { return .recognizing(job.snapshot) }
+        switch derivedText.outcome(for: ref, operation: .extractText) {
+        // Recognition on this Mac ends whole or not at all, so the text being saved is whole.
+        case .saving(let made, let request)?:
+            return .text(made, keepsLineBreaks: request.keepsLineBreaks, status: .complete)
+        case .saved(let result)?:
+            return .text(result.text, keepsLineBreaks: result.keepsLineBreaks, status: result.status)
+        case .noText?: return .noText
+        case .notSaved(let made, let request)?: return .unsaved(made, keepsLineBreaks: request.keepsLineBreaks)
+        case .failed(let error)?: return .failed(error)
+        case nil: break
+        }
+        guard savedTextRef == ref else { return .loading }
+        if let savedText {
+            return .text(savedText.text, keepsLineBreaks: savedText.keepsLineBreaks, status: savedText.status)
+        }
+        // Text the person asked for starts once the store has said it kept none.
+        return derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted
+    }
+
+    /// Whether the text in the column is what the latest recognition of its image just made, rather than text kept from
+    /// before or brought back by stopping a recognition.
+    var isTextColumnJustMade: Bool {
+        guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return false }
+        return derivedText.showsLatestEnding(for: ref, operation: .extractText)
+    }
+
+    /// Opens the preview with the text in the selected image beside it, and recognizes the text unless something was
+    /// made of it already; a failure is tried again. The recognition starts whatever the selection does next. Nothing
+    /// happens for a clip that isn't an image.
+    func showTextInImage() {
+        guard let row = selection.selectedRow, row.kind == .image, let derivedText = services()?.derivedText else {
+            return
+        }
+        resultColumn = .text
+        if !isPreviewExpanded {
+            isPreviewExpanded = true
+            loadPreview()
+        }
+        derivedText.extractTextUnlessMade(from: row.ref, keepingLineBreaks: keepsLineBreaks)
+    }
+
+    func closeResultColumn() {
+        resultColumn = nil
+    }
+
+    /// Recognizes the text in the image the column shows, again if it was made before.
+    func extractText() {
+        guard let ref = textColumnRef else { return }
+        services()?.derivedText?.extractText(from: ref, keepingLineBreaks: keepsLineBreaks)
+    }
+
+    /// Whether there is a recognition to stop in the column: one under way or waiting its turn, or one asked for that
+    /// waits on what the store kept.
+    var canStopTextRecognition: Bool {
+        guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return false }
+        return textColumn?.isRecognizing == true || derivedText.isWaitingToStart(ref, operation: .extractText)
+    }
+
+    func stopTextRecognition() {
+        guard let ref = textColumnRef else { return }
+        services()?.derivedText?.stop(ref, operation: .extractText)
+    }
+
+    /// The person's choice of layout, as the panel opens. It changes nothing shown.
+    func restoreKeepsLineBreaks(_ keeps: Bool) {
+        keepsLineBreaks = keeps
+    }
+
+    /// Whether Keep Line Breaks shows as on: as the text in the column is laid out, or without text there, as the
+    /// person chose.
+    var isKeepLineBreaksOn: Bool {
+        textColumn?.keepsLineBreaks ?? keepsLineBreaks
+    }
+
+    /// Turns Keep Line Breaks over from what it shows, and recognizes the text shown, or being made, again in that
+    /// layout; a recognition asked for that hasn't started yet starts in it. Returns the person's new choice, for the
+    /// panel to keep.
+    @discardableResult
+    func toggleKeepLineBreaks() -> Bool {
+        let column = textColumn
+        keepsLineBreaks = !(column?.keepsLineBreaks ?? keepsLineBreaks)
+        switch column {
+        case .text?, .unsaved?, .recognizing?:
+            extractText()
+        case .loading?:
+            if let ref = textColumnRef, let derivedText = services()?.derivedText,
+               derivedText.isWaitingToStart(ref, operation: .extractText) {
+                derivedText.extractTextUnlessMade(from: ref, keepingLineBreaks: keepsLineBreaks)
+            }
+        case .notStarted?, .noText?, .failed?, nil:
+            break
+        }
+        return keepsLineBreaks
+    }
+
+    /// Reads what an earlier job saved of the previewed image's text, for the text column.
+    private func readSavedText() {
+        readingSavedText?.cancel()
+        readingSavedText = nil
+        savedTextRef = nil
+        savedText = nil
+        guard isPreviewExpanded, let row = selection.selectedRow, row.kind == .image,
+              let derivedText = services()?.derivedText else { return }
+        let ref = row.ref
+        readingSavedText = Task { [weak self] in
+            let saved = await derivedText.savedResult(for: ref, operation: .extractText)
+            guard !Task.isCancelled, let self, selection.selection == ref else { return }
+            savedTextRef = ref
+            savedText = saved
+        }
     }
 
     func togglePreview() {
@@ -1344,6 +1528,7 @@ final class QuickAccessState {
         let generation = previewGeneration
         previewing?.cancel()
         previewing = nil
+        readSavedText()
         loadingOriginalPreview?.cancel()
         loadingOriginalPreview = nil
         isLoadingOriginalPreview = false
@@ -1392,6 +1577,8 @@ final class QuickAccessState {
 
     private func cancelLoads() {
         previewGeneration &+= 1
+        readingSavedText?.cancel()
+        readingSavedText = nil
         loading?.cancel()
         loading = nil
         refreshing?.cancel()

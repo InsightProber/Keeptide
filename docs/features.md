@@ -34,6 +34,14 @@ that respects Reduce Motion. Its close button, a click on the exposed band, or
 Escape dismisses the preview while preserving the current search and selection.
 Escape continues through the existing search layers before closing quick access.
 
+⇧⌘T, or **Text** in the preview's bar, shows the text in a selected image
+beside its preview: the image on the left and, on the right, its text recognized
+on this Mac with Apple's Vision, line by line or joined into paragraphs. A tall
+image, such as a long screenshot, is read in strips so that its small text is
+found. Nothing is recognized until it is asked for, and the recognized text is
+kept beside its image on this Mac, not in iCloud or in exports. ⌘. stops a
+recognition, and Escape closes the text before the preview.
+
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library
@@ -69,6 +77,7 @@ planned.
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
+| Text in images | Text recognized on this Mac in a copied image, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |
 | Recovery | Recently deleted content, clear storage errors and protection against partial writes |
@@ -88,6 +97,8 @@ planned.
   disk cannot safely accept new content, new copies are not saved, and Keeptide
   says so until there is room.
 - Saved commands are content. Reusing them must not automatically execute them.
+- Text recognition reads only images that were copied, when asked. Keeptide does
+  not read the screen or other apps' windows.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
   before it sends the paste and again after the panel hides. When they changed,

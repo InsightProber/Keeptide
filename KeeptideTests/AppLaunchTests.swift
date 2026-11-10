@@ -9,6 +9,8 @@ import XCTest
 final class AppLaunchTests: XCTestCase {
     /// A panel a test set up in a task of its own, for the test to look at once the task is done.
     private var panelUnderTest: PanelController?
+    /// The store under the panel `makeTextPanel` made last.
+    private var textPanelHarness: SearchHarness?
 
     func testDefaultLibraryInitializerCreatesItsWindow() {
         XCTAssertNotNil(LibraryWindowController(session: CaptureSession()).window)
@@ -2174,6 +2176,365 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testShiftCommandTShowsTheTextBesideTheImageAndEscapeClosesTheColumnFirst() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertEqual(controller.state.resultColumn, .text)
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        var display: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            display = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return display?.shownText == "Synthetic text in image"
+        }
+        // The card is as wide as the band and above it, with the text in its right half.
+        let band = try bandRect(in: window)
+        let text = try XCTUnwrap(display).convert(try XCTUnwrap(display).bounds, to: nil)
+        XCTAssertGreaterThan(text.minY, band.maxY, "Above the band")
+        XCTAssertGreaterThan(text.minX, band.midX - 1, "In the right column")
+
+        // Escape closes the column first, then the preview.
+        controller.perform(.escape)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        controller.perform(.escape)
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
+    func testCommandPeriodStopsTheRecognitionAndClosesNothing() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command)))
+
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertEqual(controller.state.resultColumn, .text, "⌘. stops; it is not Escape")
+    }
+
+    func testShiftCommandTLeavesAClipWithoutAnImageAlone() async throws {
+        let (controller, recognizer) = try await makeTextPanel(newestIsImage: false)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])),
+                      "Taken, so it never reaches the menu bar")
+
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertEqual(recognizer.layouts, [])
+    }
+
+    func testTheTextIsTypedIntoTheDisplayThatWatchedItsRecognitionAndVoiceOverHearsItEnd() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        var watching: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            watching = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return watching?.mode == .writing
+        }
+        let display = try XCTUnwrap(watching)
+        var heard: [String] = []
+        display.postAnnouncement = { _, message in heard.append(message) }
+
+        engine.send(.delta("Synthetic text in image"), .finished(.completed))
+
+        let made = TextColumn.text("Synthetic text in image", keepsLineBreaks: true, status: .complete)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == made && display.shownText == "Synthetic text in image"
+        }
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertTrue(views(StreamingTextDisplay.self, in: window.contentView).contains { $0 === display },
+                      "The display that watched the recognition shows its text")
+        XCTAssertEqual(heard, ["Text recognized"])
+
+        // Stopped in the other layout, the recognition brings back the text as it was, and says nothing of it.
+        controller.perform(.toggleKeepLineBreaks)
+        let again = try await startedSource(recognizer, 1)
+        again.send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return display.mode == .writing
+        }
+        controller.perform(.stopTextRecognition)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == made && display.mode == .still
+        }
+        XCTAssertEqual(display.shownText, "Synthetic text in image")
+        XCTAssertEqual(heard, ["Text recognized", "Recognizing text"])
+    }
+
+    func testVoiceOverHearsWhyAnImageHasNoTextFromThePanel() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        var watching: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            watching = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return watching?.mode == .writing
+        }
+        var heard: [String] = []
+        try XCTUnwrap(watching).postAnnouncement = { _, message in heard.append(message) }
+
+        engine.send(.finished(.completed))
+
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TextColumnWords.noText)
+        }
+        XCTAssertEqual(announced, ["\(TextColumnWords.title), on this Mac", TextColumnWords.noText])
+        XCTAssertEqual(heard, [], "Nothing was recognized, so nothing is said to be")
+    }
+
+    func testVoiceOverHearsWhyRecognizedTextCouldntBeKept() async throws {
+        // A library that has since become another: what is made isn't kept.
+        let (controller, recognizer) = try await makeTextPanel(keepsUnderAnotherGeneration: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        let busy = try await occupyTextPanelWriter()
+
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("Synthetic text in image"),
+                    .finished(.completed))
+
+        // The text shows while the store is asked to keep it, then why it can't be.
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            if case .text? = controller.state.textColumn { return true }
+            return false
+        }
+        try await busy.value
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(GenerationError.contentUnavailable.message)
+        }
+        XCTAssertEqual(controller.state.textColumn, .failed(.contentUnavailable))
+    }
+
+    func testExtractTextShowsTheRecognitionAtOnce() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        _ = try await startedSource(recognizer, 0)
+        controller.perform(.stopTextRecognition)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == .notStarted
+                && self.views(StreamingTextDisplay.self, in: window.contentView).isEmpty
+        }
+
+        controller.perform(.extractText)
+
+        try await startedSource(recognizer, 1).send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.views(StreamingTextDisplay.self, in: window.contentView).first?.mode == .writing
+        }
+    }
+
+    func testThePreviewIsOneCardWhetherItIsSplitOrNot() async throws {
+        let (controller, _) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        controller.perform(.togglePreview)
+        settleLayout()
+        let card = try previewTray(in: window)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        settleLayout()
+        XCTAssertTrue(try previewTray(in: window) === card, "Split, the card is the same")
+        controller.perform(.move(1))
+        settleLayout()
+        XCTAssertTrue(try previewTray(in: window) === card, "Split on a clip without a column, the card is the same")
+        controller.perform(.escape)
+        settleLayout()
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertTrue(try previewTray(in: window) === card, "Back over the band, the card is the same")
+    }
+
+    func testTheSplitStaysPutWhileTheSelectionMovesToAClipWithoutAColumn() async throws {
+        let (controller, _) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        settleLayout()
+        let frame = window.frame
+        let split = try panelLayout(in: window)
+        XCTAssertGreaterThan(split.previewGap, 0, "Above the band")
+
+        controller.perform(.move(1))
+        settleLayout()
+
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "older")
+        XCTAssertTrue(controller.state.isPreviewSplit)
+        XCTAssertNil(controller.state.textColumn)
+        XCTAssertEqual(window.frame, frame, "Neither the panel nor the band moves")
+        XCTAssertEqual(try panelLayout(in: window), split)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.views(NSTextView.self, in: window.contentView)
+                .contains { !$0.isFieldEditor && $0.string == "older" }
+        }
+
+        // The text's lines are no longer than in the plain preview.
+        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView)
+            .first { !$0.isFieldEditor && $0.string == "older" })
+        XCTAssertLessThanOrEqual(try XCTUnwrap(text.enclosingScrollView).frame.width,
+                                 StripLayout.previewMaximum.width)
+
+        // Escape closes the split first: the preview stands over the band again.
+        controller.perform(.escape)
+        settleLayout()
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertLessThan(try panelLayout(in: window).previewGap, 0, "Over the band")
+    }
+
+    func testPreviewInTheBarLeavesTheSplitOnAClipWithoutAColumn() async throws {
+        let (controller, _) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        controller.perform(.move(1))
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        let elements = try swiftUIAccessibilityElements(in: content) {
+            $0.contains(where: identified("QuickAccessPreviewSegment.Preview"))
+        }
+
+        press(try XCTUnwrap(elements.first(where: identified("QuickAccessPreviewSegment.Preview"))))
+
+        try await SearchTestSupport.waitUntil { controller.state.resultColumn == nil }
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+    }
+
+    func testAClickOnTheBandBelowTheSplitSelectsTheCard() async throws {
+        let (controller, _) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        // No springs: the frames are drawn where they belong as soon as the band moves.
+        strip.reducesMotion = { true }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        settleLayout()
+        let older = try XCTUnwrap(framesOnScreen(in: strip).first { ($0.accessibilityLabel() ?? "").contains("older") })
+        let card = older.convert(older.bounds, to: nil)
+        let point = NSPoint(x: card.midX, y: card.midY)
+        XCTAssertGreaterThan(try panelLayout(in: window).previewGap, 0, "The split card stands above the band")
+        let hit = window.contentView?.hitTest(point)
+        XCTAssertTrue(hit === strip, "The strip takes the click: \(String(describing: hit))")
+
+        try click(at: point, in: window)
+
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "older")
+        XCTAssertTrue(controller.state.isPreviewExpanded, "The preview stays, and shows the card clicked")
+        XCTAssertTrue(controller.state.isPreviewSplit)
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
+    func testCommandPeriodNeverBecomesEscapeWhileTheColumnShows() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        // Where "." needs Shift, ⌘. comes with it.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Semicolon, ".",
+                                                                 modifiers: [.command, .shift])))
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        try await SearchTestSupport.waitUntil { controller.state.textColumn == .notStarted }
+
+        // Held down, or pressed once nothing is being recognized, it stops nothing and closes nothing.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Semicolon, ".", modifiers: [.command, .shift],
+                                                                 isARepeat: true)))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command)))
+        XCTAssertEqual(controller.state.resultColumn, .text)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+
+        // Without the column, ⌘. goes on to become Escape, once: its repeats peel nothing more.
+        controller.perform(.escape)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command)))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command,
+                                                                 isARepeat: true)))
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
+    func testKeysInTheRecognizedTextActAsTheyDoInThePreviewsText() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        var display: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            display = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return display?.shownText == "Synthetic text in image"
+        }
+        XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(display).textView))
+
+        window.sendEvent(try key(kVK_Space, " ", windowNumber: window.windowNumber))
+
+        XCTAssertFalse(controller.state.isPreviewExpanded, "Space closes the preview, as it does in the preview's text")
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
+    func testTheSplitSaysWhyAnImageCantBeShown() async throws {
+        let (controller, _) = try await makeTextPanel(imageData: Data("not a picture".utf8))
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        guard case .info? = controller.state.preview else {
+            return XCTFail("\(String(describing: controller.state.preview))")
+        }
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+
+        let elements = try swiftUIAccessibilityElements(in: content) { elements in
+            elements.contains { self.text(of: $0) == "This image couldn't be read." }
+        }
+
+        XCTAssertTrue(elements.contains { text(of: $0) == "This image couldn't be read." },
+                      "The image's column says why, in place of a spinner that never stops")
+    }
+
     func testClicksOnThePreviewsEmptyPartsStayWithThePreview() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -2203,8 +2564,7 @@ final class AppLaunchTests: XCTestCase {
 
         // On the card, beside the picture, over the strip and its cards.
         let point = NSPoint(x: band.midX - 300, y: band.midY)
-        let content = try XCTUnwrap(window.contentView)
-        let hit = content.hitTest(content.convert(point, from: nil))
+        let hit = window.contentView?.hitTest(point)
         XCTAssertFalse(hit === strip || hit?.isDescendant(of: strip) == true,
                        "The card takes the pointer, not the strip beneath it: \(String(describing: hit))")
         try click(at: point, in: window)
@@ -4146,6 +4506,18 @@ final class AppLaunchTests: XCTestCase {
                        .collapsePreview)
     }
 
+    func testEscapeClosesTheTextColumnBeforeThePreviewAndAfterAReview() {
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasResultColumn: true,
+                                                      isPreviewExpanded: true, hasQuery: true),
+                       .closeResultColumn)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: true,
+                                                      hasResultColumn: true, isPreviewExpanded: true, hasQuery: false),
+                       .cancelCommandReview)
+        XCTAssertEqual(QuickAccessEscapePolicy.action(hasMarkedText: true, hasResultColumn: true,
+                                                      isPreviewExpanded: true, hasQuery: false),
+                       .cancelComposition)
+    }
+
     func testEscapeFromTheCardsClearsAChosenListBeforeClosing() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         _ = try searchEditor(in: controller)
@@ -5239,14 +5611,14 @@ final class AppLaunchTests: XCTestCase {
     }
 
     /// Stores a small PNG picture as the newest clip.
-    private func insertImageClip(into harness: SearchHarness) async throws {
+    private func insertImageClip(into harness: SearchHarness, data: Data? = nil) async throws {
         let context = try XCTUnwrap(CGContext(
             data: nil, width: 4, height: 3, bitsPerComponent: 8, bytesPerRow: 0,
             space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         context.setFillColor(CGColor(srgbRed: 0.2, green: 0.5, blue: 0.9, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 4, height: 3))
-        let png = try XCTUnwrap(NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+        let png = try data ?? XCTUnwrap(NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
             .representation(using: .png, properties: [:]))
         let capture = try ContentStoreFixtures.capture([[("public.png", png)]])
         let item = ItemValue(title: "Picture", captureID: capture.id, historyEligible: true,
@@ -5353,7 +5725,8 @@ final class AppLaunchTests: XCTestCase {
                            usage: (any QuickAccessUsage)? = nil, library: LibraryService? = nil,
                            collections: (any QuickAccessCollections)? = nil,
                            preferences: QuickAccessPreferences? = nil,
-                           lifecycle: (any QuickAccessLifecycle)? = nil) throws -> PanelController {
+                           lifecycle: (any QuickAccessLifecycle)? = nil,
+                           derivedText: DerivedTextCoordinator? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
                                  recordUse: { _ in }, didWrite: { _ in }, system: system)
@@ -5362,7 +5735,7 @@ final class AppLaunchTests: XCTestCase {
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
                                            usage: usage, library: library, collections: collections,
                                            collectionChanges: collections as? any QuickAccessCollectionChanges,
-                                           lifecycle: lifecycle)
+                                           lifecycle: lifecycle, derivedText: derivedText)
         return PanelController(state: QuickAccessState(services: { services }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }
@@ -5443,11 +5816,41 @@ final class AppLaunchTests: XCTestCase {
         }
     }
 
-    /// A left click at `point` in the window. Every press these tests send through a window goes through here, since a
-    /// view may follow the button in a loop of its own until it comes up again, as a text view does on macOS 26: a press
-    /// with no release would hold the test there for good. So the release is posted to the application's queue first,
-    /// where such a loop finds it, and the press is sent after it. A release nothing took is dropped afterwards.
-    /// A click at `point`, the `count`th of a series, as a second click of a double-click is.
+    /// A shown panel over a text clip and, unless `newestIsImage` is false, a newer picture, whose text a recognizer
+    /// the test drives makes. `imageData` stands in for the picture's PNG. With `keepsUnderAnotherGeneration`, the
+    /// library is another generation than the one the text is made for, so nothing made is kept.
+    private func makeTextPanel(newestIsImage: Bool = true, imageData: Data? = nil,
+                               keepsUnderAnotherGeneration: Bool = false)
+        async throws -> (PanelController, ScriptedRecognizer) {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older"], into: harness)
+        if newestIsImage { try await insertImageClip(into: harness, data: imageData) }
+        try await harness.consumer.synchronize()
+        let recognizer = ScriptedRecognizer()
+        let current = try await harness.controller.identity()
+        let identity = keepsUnderAnotherGeneration ? StoreIdentity(storeID: current.storeID, generation: UUID())
+            : current
+        let derivedText = DerivedTextCoordinator(
+            store: DerivedTextStore(controller: harness.controller), identity: identity,
+            recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
+        textPanelHarness = harness
+        addTeardownBlock { await derivedText.stopAndDrain() }
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                       derivedText: derivedText)
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == (newestIsImage ? 2 : 1) }
+        return (controller, recognizer)
+    }
+
+    /// A left click at `point` in the window, the `count`th of a series, as a second click of a double-click is. Every
+    /// press these tests send through a window goes through here, since a view may follow the button in a loop of its
+    /// own until it comes up again, as a text view does on macOS 26: a press with no release would hold the test there
+    /// for good. So the release is posted to the application's queue first, where such a loop finds it, and the press
+    /// is sent after it. A release nothing took is dropped afterwards.
     private func click(at point: NSPoint, in window: NSWindow, count: Int = 1) throws {
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
@@ -5619,9 +6022,36 @@ final class AppLaunchTests: XCTestCase {
     /// Where the band is in the panel's window: as wide as the screen's visible area less the margins, and as tall
     /// as its card size makes it, with the room the panel gives its shadow below it.
     private func bandRect(in window: NSWindow) throws -> NSRect {
-        let layout = try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.layout
+        let layout = try panelLayout(in: window)
         return NSRect(x: StripLayout.sideMargin, y: layout.roomBelow, width: layout.metrics.bandWidth,
                       height: StripLayout.bandHeight(layout.metrics))
+    }
+
+    /// How the panel lays out its band and its card.
+    private func panelLayout(in window: NSWindow) throws -> QuickAccessBandView.Layout {
+        try XCTUnwrap(window.contentView as? NSHostingView<QuickAccessBandView>).rootView.layout
+    }
+
+    /// The tray the preview card stands on: the one beside the band's own.
+    private func previewTray(in window: NSWindow) throws -> QuickAccessBandSurface {
+        let band = try bandRect(in: window)
+        return try XCTUnwrap(views(QuickAccessBandSurface.self, in: window.contentView)
+            .first { $0.convert($0.bounds, to: nil) != band }, "No preview card")
+    }
+
+    /// Keeps the store of the panel `makeTextPanel` made busy for half a second, so that what is read or saved
+    /// through its one writer meanwhile waits.
+    private func occupyTextPanelWriter() async throws -> Task<Void, any Error> {
+        let controller = try XCTUnwrap(textPanelHarness).controller
+        let holding = expectation(description: "the writer is busy")
+        let busy = Task.detached {
+            try await controller.perform { _ in
+                holding.fulfill()
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
+        await fulfillment(of: [holding], timeout: 5)
+        return busy
     }
 
     /// Every element below `view` that VoiceOver could reach, SwiftUI's included, once `ready` finds what it needs.
@@ -5835,6 +6265,17 @@ final class AppLaunchTests: XCTestCase {
             }
         }
         return zip(high, low).map { $0 - $1 }.max() ?? 0
+    }
+
+    func testTheStandInTextRecognizerNeedsAUITestSession() {
+        let id = UUID().uuidString
+        func fakes(_ arguments: [String]) -> Bool {
+            LaunchConfiguration(arguments: arguments, environment: [:]).usesFakeTextRecognition
+        }
+        XCTAssertTrue(fakes(["--ui-testing", "--capture-test-session", id, "--fake-text-recognition"]))
+        XCTAssertFalse(fakes(["--ui-testing", "--fake-text-recognition"]))
+        XCTAssertFalse(fakes(["--capture-test-session", id, "--fake-text-recognition"]))
+        XCTAssertFalse(fakes(["--ui-testing", "--capture-test-session", id]))
     }
 
     func testSeedingRequiresAnExplicitUITestSession() {
