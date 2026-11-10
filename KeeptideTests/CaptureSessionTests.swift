@@ -1,4 +1,6 @@
 import AppKit
+import CoreText
+import ImageIO
 import XCTest
 @testable import Keeptide
 
@@ -49,6 +51,7 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNotNil(session.previewService)
         XCTAssertNotNil(session.contentRepository)
         XCTAssertNotNil(session.usageStore)
+        XCTAssertNotNil(session.derivedText)
         XCTAssertEqual(changes.count, 1)
 
         await session.shutdown()
@@ -56,7 +59,72 @@ final class CaptureSessionTests: XCTestCase {
         XCTAssertNil(session.previewService)
         XCTAssertNil(session.contentRepository)
         XCTAssertNil(session.usageStore)
+        XCTAssertNil(session.derivedText)
         XCTAssertEqual(changes.count, 2)
+    }
+
+    func testTextIsRecognizedInAnImageTheSessionKept() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+        await session.initialize(testSessionID: configuration.id)
+        let derivedText = try XCTUnwrap(session.derivedText)
+        // A screenshot drawn here, then a line of text.
+        clipboard.copies = [[CapturedRepresentation(typeIdentifier: "public.png", bytes: try Self.screenshot([
+            "The quarterly report is due Friday. Finance needs",
+            "the numbers by noon so the board pack can go out.",
+        ]))]]
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { session.recent.count == 2 }
+        let image = try XCTUnwrap(session.recent.first { $0.kind == .image }?.history)
+        let text = try XCTUnwrap(session.recent.first { $0.kind != .image }?.history)
+
+        derivedText.extractText(from: image, keepingLineBreaks: false)
+        derivedText.extractText(from: text, keepingLineBreaks: false)
+
+        // Vision's first run in a process loads its model.
+        await waitUntil("both have ended", timeout: .seconds(120)) {
+            guard let recognized = derivedText.outcome(for: image, operation: .extractText),
+                  derivedText.outcome(for: text, operation: .extractText) != nil else { return false }
+            if case .saving = recognized { return false }
+            return true
+        }
+        guard case .saved(let saved)? = derivedText.outcome(for: image, operation: .extractText) else {
+            return XCTFail("\(String(describing: derivedText.outcome(for: image, operation: .extractText)))")
+        }
+        XCTAssertTrue(saved.text.contains("quarterly report"), saved.text)
+        XCTAssertTrue(saved.text.contains("board pack"), saved.text)
+        XCTAssertEqual(derivedText.outcome(for: text, operation: .extractText),
+                       .failed(GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")),
+                       "A text clip has no image to read")
+        await session.shutdown()
+    }
+
+    /// A PNG of `lines` in dark grey on white, drawn with Core Text.
+    private static func screenshot(_ lines: [String]) throws -> Data {
+        let context = try XCTUnwrap(CGContext(data: nil, width: 1400, height: 700, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 1400, height: 700))
+        let font = CTFontCreateWithName("Helvetica" as CFString, 30, nil)
+        for (index, line) in lines.enumerated() {
+            let text = NSAttributedString(string: line, attributes: [
+                NSAttributedString.Key(kCTFontAttributeName as String): font,
+                NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 0.1, alpha: 1),
+            ])
+            context.textPosition = CGPoint(x: 40, y: 640 - CGFloat(index) * 40)
+            CTLineDraw(CTLineCreateWithAttributedString(text), context)
+        }
+        let image = try XCTUnwrap(context.makeImage())
+        let data = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return data as Data
     }
 
     func testQuickAccessServicesReadUsesFromTheSessionsStore() async throws {
@@ -638,6 +706,8 @@ final class SessionClipboard: SnapshotReading {
     var deniesAccess = false
     var failure: (any Error)?
     var holdsReads = false
+    /// What the next copies hold, oldest first. Once they run out, each copy is a line of text.
+    var copies: [[CapturedRepresentation]] = []
     private(set) var readsStarted = 0
     private var heldReads: [CheckedContinuation<Void, Never>] = []
 
@@ -648,7 +718,8 @@ final class SessionClipboard: SnapshotReading {
         if holdsReads { await withCheckedContinuation { heldReads.append($0) } }
         let text = CapturedRepresentation(typeIdentifier: "public.utf8-plain-text",
                                           bytes: Data("Synthetic copy \(expectedChangeCount)".utf8))
-        return CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: [text])],
+        let representations = copies.isEmpty ? [text] : copies.removeFirst()
+        return CaptureSnapshotValue(items: [CapturedPasteboardItem(representations: representations)],
                                     changeCount: expectedChangeCount, sourceApp: sourceApp)
     }
 

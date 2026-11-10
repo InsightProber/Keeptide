@@ -86,6 +86,8 @@ struct GenerationError: Error, Equatable, Sendable {
         case streamInterrupted
         /// An engine on this Mac can't do this right now.
         case engineUnavailable
+        /// The item can't be read: it changed or went, or its content is damaged.
+        case contentUnavailable
     }
 
     var kind: Kind
@@ -94,4 +96,7 @@ struct GenerationError: Error, Equatable, Sendable {
     var retryAfter: Duration? = nil
 
     static let interrupted = GenerationError(kind: .streamInterrupted, message: "The response ended unexpectedly.")
+    /// The item changed or went before its result could be made or kept.
+    static let contentUnavailable = GenerationError(kind: .contentUnavailable,
+                                                    message: "This item changed or is no longer available.")
 }

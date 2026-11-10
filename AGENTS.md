@@ -104,8 +104,13 @@ Planned capabilities must stay labelled until implemented and verified.
   large image decoding, indexing or storage maintenance on the main thread.
 - Keep file membership, shared schemes and deployment settings correct when
   adding Xcode files. Check API availability on the minimum supported macOS.
-- Prefer a small, clear implementation over speculative abstractions. The first
-  release does not include model inference, vector storage or input monitoring.
+- Prefer a small, clear implementation over speculative abstractions.
+- On-device model inference uses only Apple's frameworks: Vision for text
+  recognition, with Translation and Natural Language planned. Also planned:
+  Apple Intelligence on Macs that have it, and cloud models a person chooses
+  explicitly with their own API key, reached only through a dedicated cloud
+  module. The first release does not include embeddings, vector storage or
+  input monitoring.
 
 ## Storage and privacy invariants
 
