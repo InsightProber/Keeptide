@@ -1357,6 +1357,194 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(controller.state.list, .snippets)
     }
 
+    func testTheLibrarysShortcutsStopAtThePanelWhereverItsKeysAre() async throws {
+        try requireANSICommandLayer()
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let strip = try XCTUnwrap(views(QuickAccessStripView.self, in: window.contentView).first)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var handedOver = 0
+        controller.onOpenInLibrary = { _, _ in handedOver += 1 }
+        controller.onNewSnippet = { _ in handedOver += 1 }
+        controller.onOpenLibrary = { handedOver += 1 }
+        controller.onOpenSettings = { handedOver += 1 }
+        let selected = controller.state.selection.selectedID
+        let library = try libraryOnlyKeys()
+        // Edit's Cut, Copy, Paste and Select All: nothing in the strip, the lists or the filter button takes them, and
+        // the menu bar would send them on to the library's list or editor.
+        let editing = [try key(kVK_ANSI_X, "x", modifiers: .command), try key(kVK_ANSI_C, "c", modifiers: .command),
+                       try key(kVK_ANSI_V, "v", modifiers: .command), try key(kVK_ANSI_A, "a", modifiers: .command)]
+
+        // The search field has the keys as the panel opens: the panel takes the library's keys, and nothing changes.
+        for event in library {
+            XCTAssertTrue(window.performKeyEquivalent(with: event), event.charactersIgnoringModifiers ?? "")
+        }
+        XCTAssertTrue(isEditing(field, in: window))
+        // From the strip, the lists and the filter button, in Tab's order, it takes the editing keys too.
+        for station in [strip, toolbar.lists, toolbar.filterButton] as [NSView] {
+            controller.perform(.cycleFocus(forward: true))
+            XCTAssertTrue(window.firstResponder === station, "\(type(of: station))")
+            for event in library + editing {
+                XCTAssertTrue(window.performKeyEquivalent(with: event),
+                              "\(type(of: station)): \(event.charactersIgnoringModifiers ?? "")")
+                XCTAssertTrue(window.firstResponder === station, "\(type(of: station))")
+            }
+        }
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(controller.state.query, "")
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertEqual(controller.state.selection.selectedID, selected)
+        XCTAssertEqual(handedOver, 0)
+    }
+
+    func testCutCopyPasteAndSelectAllStillReachTheTextInThePanel() async throws {
+        try requireANSICommandLayer()
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        XCTAssertTrue(window.isKeyWindow, "The panel has the keys")
+        let edit = try XCTUnwrap(ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
+            .item(withTitle: "Edit")?.submenu)
+        let editing = [(kVK_ANSI_X, "x", "Cut"), (kVK_ANSI_C, "c", "Copy"), (kVK_ANSI_V, "v", "Paste"),
+                       (kVK_ANSI_A, "a", "Select All")]
+        // The panel lets the keys go on to the menu bar, whose items send them to the text with the keys, as they would
+        // with no panel in front. Cut, Copy and Paste are not sent here, as they would use the clipboard.
+        func assertEditingReaches(_ text: NSTextView, _ name: String) throws {
+            for (code, character, title) in editing {
+                XCTAssertFalse(window.performKeyEquivalent(with: try key(code, character, modifiers: .command)),
+                               "\(name): \(title)")
+                let item = try XCTUnwrap(edit.item(withTitle: title))
+                let target = NSApp.target(forAction: try XCTUnwrap(item.action), to: item.target, from: item)
+                XCTAssertTrue(target as AnyObject? === text, "\(name): \(title)")
+            }
+        }
+
+        // The preview's text, once it has the keys.
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        controller.perform(.togglePreview)
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        settleLayout()
+        let preview = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        XCTAssertTrue(window.makeFirstResponder(preview))
+        try assertEditingReaches(preview, "Preview")
+        controller.perform(.togglePreview)
+
+        // The search field's text.
+        let (field, editor) = try searchEditor(in: controller)
+        editor.insertText("synthetic query", replacementRange: NSRange(location: NSNotFound, length: 0))
+        try await SearchTestSupport.waitUntil { controller.state.query == "synthetic query" }
+        editor.setSelectedRange(NSRange(location: 0, length: 9))
+        try assertEditingReaches(editor, "Search field")
+        XCTAssertTrue(editor.validateUserInterfaceItem(try XCTUnwrap(edit.item(withTitle: "Cut"))))
+        XCTAssertTrue(editor.validateUserInterfaceItem(try XCTUnwrap(edit.item(withTitle: "Copy"))))
+        // Select All leaves the clipboard alone, so it is sent: the menu selects the whole query.
+        XCTAssertTrue(edit.performKeyEquivalent(with: try key(kVK_ANSI_A, "a", modifiers: .command)))
+        XCTAssertEqual(editor.selectedRange(), NSRange(location: 0, length: 15))
+        // ⌘← is no key the menu bar has, and goes on, to the text.
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_LeftArrow, "\u{F702}", modifiers: .command)))
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertEqual(field.stringValue, "synthetic query")
+    }
+
+    func testEveryLibraryKeyInTheMenuBarStopsAtThePanel() throws {
+        try requireANSICommandLayer()
+        // With no session open, as while the panel waits for Return to come up after an action, the panel runs none of
+        // its commands, so each key can be pressed in turn. The search field has the keys.
+        let controller = PanelController()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var taken: [String] = [], goneOn: [String] = []
+        for item in keyedItems(in: ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")) {
+            if window.performKeyEquivalent(with: try key(for: item)) {
+                taken.append(item.title)
+            } else {
+                goneOn.append(item.title)
+            }
+        }
+        // Every item that acts on the library window is kept from it, those the panel has commands of its own for too.
+        XCTAssertEqual(taken, ["New Snippet", "New Collection…", "Save", "Find in Note…", "Search Library…",
+                               "Copy Entire Item", "Show Sidebar", "Show Inspector", "Previous List", "Next List",
+                               "Choose List…", "Add to Favorites", "Add to Collection…", "Move to Recently Deleted"])
+        // The others act elsewhere: the app takes Settings… and Quit, the search field's text Cut, Copy, Paste and
+        // Select All, and the panel's window Undo, Redo and Close.
+        XCTAssertEqual(goneOn, ["Settings…", "Quit Keeptide", "Undo", "Redo", "Cut", "Copy", "Paste", "Select All",
+                                "Close"])
+        for action in ["undo:", "redo:", "performClose:"] {
+            XCTAssertTrue(window.responds(to: NSSelectorFromString(action)), action)
+        }
+    }
+
+    func testTheMenuBarsKeysAreKnownByWhatTheyTypeWithCommand() async throws {
+        try requireANSICommandLayer()
+        // On a layout such as Russian the keys type Cyrillic letters, and with ⌘ the Latin ones by which the menu bar
+        // knows its items' keys. These events type Cyrillic letters; their key codes type Latin ones with ⌘ here.
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let paste = try key(kVK_ANSI_V, "м", modifiers: .command)
+
+        // The search field's text takes Paste: it goes on to the menu bar.
+        XCTAssertFalse(window.performKeyEquivalent(with: paste))
+        XCTAssertTrue(isEditing(field, in: window))
+        // From the strip, Paste, New Collection… and Show Sidebar stop at the panel.
+        controller.perform(.focusResults)
+        for event in [paste, try key(kVK_ANSI_N, "Т", modifiers: [.command, .shift]),
+                      try key(kVK_ANSI_S, "ы", modifiers: [.control, .command])] {
+            XCTAssertTrue(window.performKeyEquivalent(with: event), event.charactersIgnoringModifiers ?? "")
+        }
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
+    func testOptionCommandWClosesOnlyThePanel() async throws {
+        try requireANSICommandLayer()
+        // AppKit adds Close All to the app's Window menu, as Close's alternate with ⌥⌘W. From the panel it would close
+        // the library window too.
+        let windowMenu = try XCTUnwrap(NSApp.mainMenu?.item(withTitle: "Window")?.submenu)
+        let closeAll = try XCTUnwrap(windowMenu.items.first { $0.action == NSSelectorFromString("closeAll:") })
+        XCTAssertEqual(closeAll.keyEquivalent, "w")
+        XCTAssertEqual(closeAll.keyEquivalentModifierMask, [.command, .option])
+        let (controller, _) = try await makePanelWithClips(["older"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_W, "∑", modifiers: [.command, .option])))
+        XCTAssertFalse(controller.isSessionOpen)
+        XCTAssertFalse(window.isVisible)
+    }
+
+    func testACompositionStillHasTheLibrarysKeysAsKeys() async throws {
+        try requireANSICommandLayer()
+        let (controller, _) = try await makePanelWithClips(["older"], shown: true)
+        let window = try XCTUnwrap(controller.window)
+        let composing = try composingText(in: controller)
+        let library = try libraryOnlyKeys()
+
+        // With a session open, the keys the panel has no command for go to the composition, for the input method. The
+        // panel's own commands wait for the composition and take their keys (see
+        // testLibraryShortcutsDoNotInterruptMarkedSearchText).
+        for event in library {
+            XCTAssertTrue(window.performKeyEquivalent(with: event), event.charactersIgnoringModifiers ?? "")
+        }
+        XCTAssertEqual(composing.keys, library)
+        // Copy goes on to the menu bar, which sends it to the text.
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        XCTAssertEqual(composing.keys, library)
+
+        // With no session, as while the panel waits for Return to come up, every library key goes to the composition,
+        // the panel's own ⌘S, ⌘[, ⇧⌘M and ⌘⌫ too.
+        let idle = PanelController()
+        let idleWindow = try XCTUnwrap(idle.window)
+        let idleComposing = try composingText(in: idle)
+        let all = library + [try key(kVK_ANSI_S, "s", modifiers: .command),
+                             try key(kVK_ANSI_LeftBracket, "[", modifiers: .command),
+                             try key(kVK_ANSI_M, "M", modifiers: [.command, .shift]),
+                             try key(kVK_Delete, "\u{7F}", modifiers: .command)]
+        for event in all {
+            XCTAssertTrue(idleWindow.performKeyEquivalent(with: event), event.charactersIgnoringModifiers ?? "")
+        }
+        XCTAssertEqual(idleComposing.keys, all)
+    }
+
     func testAnInputMethodsFirstKeyUnfoldsTheSearchAtTheRight() async throws {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -6522,6 +6710,63 @@ final class AppLaunchTests: XCTestCase {
         ))
     }
 
+    /// ⇧⌘N New Collection…, ⇧⌘F Search Library…, ⇧⌘C Copy Entire Item, ⌃⌘S Show Sidebar and ⌃⌘I Show Inspector: the
+    /// menu bar's library keys the panel has no command for.
+    private func libraryOnlyKeys() throws -> [NSEvent] {
+        [try key(kVK_ANSI_N, "N", modifiers: [.command, .shift]),
+         try key(kVK_ANSI_F, "F", modifiers: [.command, .shift]),
+         try key(kVK_ANSI_C, "C", modifiers: [.command, .shift]),
+         try key(kVK_ANSI_S, "s", modifiers: [.control, .command]),
+         try key(kVK_ANSI_I, "i", modifiers: [.control, .command])]
+    }
+
+    /// Skips a test whose keys must type, with ⌘, what their ANSI key codes name, as on the US and ABC layouts: the
+    /// panel knows the menu bar's keys as the menu bar does, by what they type with ⌘ on this Mac's layout.
+    private func requireANSICommandLayer() throws {
+        let keys = [(kVK_ANSI_A, "a"), (kVK_ANSI_C, "c"), (kVK_ANSI_D, "d"), (kVK_ANSI_F, "f"), (kVK_ANSI_I, "i"),
+                    (kVK_ANSI_L, "l"), (kVK_ANSI_M, "m"), (kVK_ANSI_N, "n"), (kVK_ANSI_Q, "q"), (kVK_ANSI_S, "s"),
+                    (kVK_ANSI_V, "v"), (kVK_ANSI_W, "w"), (kVK_ANSI_X, "x"), (kVK_ANSI_Z, "z"), (kVK_ANSI_Comma, ","),
+                    (kVK_ANSI_LeftBracket, "["), (kVK_ANSI_RightBracket, "]")]
+        for (code, character) in keys {
+            let typed = try key(code, character, modifiers: .command).characters(byApplyingModifiers: .command)
+            guard typed == character else {
+                throw XCTSkip("This Mac's keyboard layout types “\(typed ?? "")” with ⌘ and the ANSI \(character) key")
+            }
+        }
+    }
+
+    /// Text in the panel that an input method composes in, standing in for the search field's editor, with the keys.
+    private func composingText(in controller: PanelController) throws -> ComposingTextView {
+        let window = try XCTUnwrap(controller.window)
+        let text = ComposingTextView(frame: NSRect(x: 0, y: 0, width: 40, height: 20))
+        try XCTUnwrap(window.contentView).addSubview(text)
+        addTeardownBlock { text.removeFromSuperview() }
+        XCTAssertTrue(window.makeFirstResponder(text))
+        return text
+    }
+
+    /// The items in `menu` and its submenus that have a key equivalent, in the menu's order.
+    private func keyedItems(in menu: NSMenu) -> [NSMenuItem] {
+        menu.items.flatMap { item in
+            (item.keyEquivalent.isEmpty ? [] : [item]) + (item.submenu.map { keyedItems(in: $0) } ?? [])
+        }
+    }
+
+    /// A menu item's key equivalent as the keyboard types it: Shift gives a letter in upper case, and the menu's
+    /// backspace is the Delete key. A key missing here is a new one in the menu bar: decide what the panel does with
+    /// it, in `PanelController`, before adding it.
+    private func key(for item: NSMenuItem) throws -> NSEvent {
+        let codes = [",": kVK_ANSI_Comma, "q": kVK_ANSI_Q, "n": kVK_ANSI_N, "s": kVK_ANSI_S, "z": kVK_ANSI_Z,
+                     "x": kVK_ANSI_X, "c": kVK_ANSI_C, "v": kVK_ANSI_V, "a": kVK_ANSI_A, "f": kVK_ANSI_F,
+                     "i": kVK_ANSI_I, "[": kVK_ANSI_LeftBracket, "]": kVK_ANSI_RightBracket, "l": kVK_ANSI_L,
+                     "d": kVK_ANSI_D, "m": kVK_ANSI_M, "w": kVK_ANSI_W, "\u{8}": kVK_Delete]
+        let code = try XCTUnwrap(codes[item.keyEquivalent], "No key for “\(item.title)”")
+        let modifiers = item.keyEquivalentModifierMask
+        let characters = item.keyEquivalent == "\u{8}" ? "\u{7F}"
+            : modifiers.contains(.shift) ? item.keyEquivalent.uppercased() : item.keyEquivalent
+        return try key(code, characters, modifiers: modifiers)
+    }
+
     /// The key coming up.
     private func keyUp(_ code: Int, _ characters: String, windowNumber: Int = 0) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(
@@ -6941,6 +7186,16 @@ private final class ScanGate: @unchecked Sendable {
         condition.broadcast()
         condition.unlock()
     }
+}
+
+/// Text an input method is composing in. It keeps the keys it is handed rather than acting on them.
+@MainActor
+private final class ComposingTextView: NSTextView {
+    private(set) var keys: [NSEvent] = []
+
+    override func hasMarkedText() -> Bool { true }
+
+    override func keyDown(with event: NSEvent) { keys.append(event) }
 }
 
 // Exercise key-window notifications without taking focus from another application.
