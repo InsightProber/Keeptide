@@ -1,13 +1,21 @@
 import Foundation
 
+/// What a paste writes: an item's own content, or a result saved beside it.
+enum PasteSubject: Equatable, Sendable {
+    /// The item's content as read, version and digest included.
+    case content(ContentRef)
+    /// A saved result, known by its ID and the digest of its text, so a result that replaced it is another subject.
+    case derivedText(id: UUID, source: ContentRef, textDigest: Data)
+}
+
 /// Lets one reviewed command through `PasteService`'s confirmation gate, once. The service issues it with each
-/// review and keeps it as the session's one pending confirmation. It applies only while the session, the content
-/// read, the requested mode and the delivery are all those it was issued for.
+/// review and keeps it as the session's one pending confirmation. It applies only while the session, what was read,
+/// the requested mode and the delivery are all those it was issued for.
 struct CommandConfirmation: Equatable, Sendable {
     let id: UUID
     let sessionGeneration: UInt64
-    /// The content that was read for the review, version and digest included.
-    let ref: ContentRef
+    /// What was read for the review: the item's content, or the result shown in its place.
+    let subject: PasteSubject
     let mode: PasteMode
     let delivery: PasteDelivery
 }

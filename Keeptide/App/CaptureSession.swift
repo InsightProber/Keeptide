@@ -25,6 +25,9 @@ final class CaptureSession {
     @ObservationIgnored private(set) var fileAccessStore: FileAccessStore?
     @ObservationIgnored private(set) var fileAccessIdentity: StoreIdentity?
     @ObservationIgnored private(set) var usageStore: LocalUsageStore?
+    /// Makes text recognized in images and keeps it beside its items, for the store generation opened by this
+    /// session; nil until the store opens. No UI uses it yet.
+    @ObservationIgnored private(set) var derivedText: DerivedTextCoordinator?
     /// Local export is bound to the exact store identity opened by this session.
     private(set) var exportCoordinator: ExportCoordinator?
     /// Called when the store-backed services appear or go away.
@@ -223,15 +226,27 @@ final class CaptureSession {
             exportCoordinator = .production(
                 exporter: ExportService(controller: store, expecting: storeIdentity)
             )
+            let derivedTextStore = DerivedTextStore(controller: store)
             pasteService = PasteService(pasteboard: board, read: read, recordUse: { try await usage.record($0) },
                                         didWrite: { [weak monitor] in monitor?.suppressOwnWrite($0) },
-                                        system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo)
-            previewService = PreviewService(
+                                        system: directPaste, directPasteOnlyTo: library.directPasteOnlyTo,
+                                        readDerivedText: { try await derivedTextStore.result(for: $0, operation: $1) })
+            let preview = PreviewService(
                 read: read,
                 fileReferences: { ref in
                     try await fileAccess.filePreviewReferences(for: ref, expecting: storeIdentity)
                 }
             )
+            previewService = preview
+            // Text is recognized in the image at its full size, never in a card's thumbnail.
+            derivedText = DerivedTextCoordinator(
+                store: derivedTextStore, identity: storeIdentity, recognizer: VisionTextRecognitionEngine(),
+                image: { ref in
+                    guard let original = try await preview.originalImage(for: ref) else {
+                        throw PreviewLoadError.couldNotDecodeImage
+                    }
+                    return original.image
+                })
             await startSearch(store: store, directory: directory)
             let consumer = historyConsumer
             do {
@@ -327,6 +342,9 @@ final class CaptureSession {
         exportCoordinator = nil
         await maintenance?.stopAndDrain()
         maintenance = nil
+        // Recognition stops, and the results being saved are written, before the store closes.
+        await derivedText?.stopAndDrain()
+        derivedText = nil
         // A run left part way resumes at the next launch.
         collectionsUpdate?.cancel()
         await collectionsUpdate?.value
