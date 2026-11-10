@@ -2174,6 +2174,81 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testClicksOnThePreviewsEmptyPartsStayWithThePreview() async throws {
+        let harness = try SearchHarness.make(in: self)
+        let board = NSPasteboard.withUniqueName()
+        addTeardownBlock { board.releaseGlobally() }
+        try await insertClips(["older", "newer"], into: harness)
+        // The newest clip, a small picture shown in the middle of the card, with nothing beside it.
+        try await insertImageClip(into: harness)
+        try await harness.consumer.synchronize()
+        let controller = try makePanel(over: harness, pasteboard: board,
+                                       visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        controller.show()
+        addTeardownBlock { controller.close() }
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 3 }
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        controller.perform(.focusResults)
+        controller.perform(.togglePreview)
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        window.contentView?.layoutSubtreeIfNeeded()
+        settleLayout()
+        let band = try bandRect(in: window)
+        let selection = controller.state.selection.selectedID
+        board.declareTypes([.string], owner: nil)
+        XCTAssertTrue(board.setString("untouched", forType: .string))
+        let changeCount = board.changeCount
+
+        // On the card, beside the picture, over the strip and its cards.
+        let point = NSPoint(x: band.midX - 300, y: band.midY)
+        let content = try XCTUnwrap(window.contentView)
+        let hit = content.hitTest(content.convert(point, from: nil))
+        XCTAssertFalse(hit === strip || hit?.isDescendant(of: strip) == true,
+                       "The card takes the pointer, not the strip beneath it: \(String(describing: hit))")
+        try click(at: point, in: window)
+        try click(at: point, in: window, count: 2)
+
+        XCTAssertTrue(controller.state.isPreviewExpanded, "The preview stays open")
+        XCTAssertEqual(controller.state.selection.selectedID, selection, "No clip hidden under the card is selected")
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(board.changeCount, changeCount, "No clip hidden under the card is copied or pasted")
+        XCTAssertEqual(board.string(forType: .string), "untouched")
+    }
+
+    func testThePreviewStandsOnATrayLikeTheBands() async throws {
+        let (controller, _) = try await makePanelWithClips(
+            ["older", "newer"], visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        controller.perform(.focusResults)
+        controller.perform(.togglePreview)
+        try await SearchTestSupport.waitUntil { controller.state.preview != nil }
+        settleLayout()
+        let text = try XCTUnwrap(views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor })
+        let scroll = try XCTUnwrap(text.enclosingScrollView)
+        // Below the one short line of text, nothing but what the card stands on.
+        let body = scroll.convert(scroll.bounds, to: nil)
+        let empty = NSRect(x: body.midX - 20, y: body.minY + 40, width: 40, height: 20)
+        // The band's own tray, below its top edge and above its toolbar, beside the card.
+        let band = try bandRect(in: window)
+        let bandTray = NSRect(x: band.minX + 40, y: band.maxY - 10, width: 20, height: 6)
+        XCTAssertLessThan(bandTray.maxX, body.minX, "Left of the card, which is as wide as its text")
+        XCTAssertFalse(empty.intersects(band), "Above the band, where nothing but the card can show")
+
+        for appearance in [NSAppearance.Name.darkAqua, .aqua] {
+            window.appearance = NSAppearance(named: appearance)
+            settleLayout()
+            let drawn = try XCTUnwrap(color(in: window, at: empty), "\(appearance.rawValue)")
+            let tray = try XCTUnwrap(color(in: window, at: bandTray), "\(appearance.rawValue)")
+            XCTAssertEqual(drawn.redComponent, tray.redComponent, accuracy: 1 / 255, "\(appearance.rawValue)")
+            XCTAssertEqual(drawn.greenComponent, tray.greenComponent, accuracy: 1 / 255, "\(appearance.rawValue)")
+            XCTAssertEqual(drawn.blueComponent, tray.blueComponent, accuracy: 1 / 255, "\(appearance.rawValue)")
+        }
+        controller.state.close()
+    }
+
     func testAHeldCommandYTogglesThePreviewOnce() async throws {
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -2248,18 +2323,19 @@ final class AppLaunchTests: XCTestCase {
         let band = try bandRect(in: window)
         assertFrame(window.convertToScreen(band), places: expectedBand)
 
-        // The card is screen-safe and centred over the band. Its native text viewport is 40 pt shorter than the
-        // card because the close-button header stands above it.
+        // The card is screen-safe and centred over the band. Its native text viewport is shorter than the card by
+        // the bar above it.
+        let viewportMidY = band.midY - StripLayout.previewBarHeight / 2
         var card = NSRect.zero
         try await SearchTestSupport.waitUntil {
             window.contentView?.layoutSubtreeIfNeeded()
             let text = self.views(NSTextView.self, in: window.contentView).first { !$0.isFieldEditor }
             card = text?.enclosingScrollView.map { $0.convert($0.bounds, to: nil) } ?? .zero
-            return card.height > 0 && abs(card.midY - (band.midY - 20)) <= 0.5
+            return card.height > 0 && abs(card.midY - viewportMidY) <= 0.5
         }
         XCTAssertTrue(card.intersects(band), "Over the band")
         XCTAssertEqual(card.midX, band.midX, accuracy: 0.5)
-        XCTAssertEqual(card.midY, band.midY - 20, accuracy: 0.5)
+        XCTAssertEqual(card.midY, viewportMidY, accuracy: 0.5)
         let content = try XCTUnwrap(window.contentView)
         XCTAssertGreaterThanOrEqual(card.minY, content.bounds.minY - 0.5, "Inside the window")
         XCTAssertLessThanOrEqual(card.maxY, content.bounds.maxY + 0.5, "Inside the window")
@@ -5371,11 +5447,12 @@ final class AppLaunchTests: XCTestCase {
     /// view may follow the button in a loop of its own until it comes up again, as a text view does on macOS 26: a press
     /// with no release would hold the test there for good. So the release is posted to the application's queue first,
     /// where such a loop finds it, and the press is sent after it. A release nothing took is dropped afterwards.
-    private func click(at point: NSPoint, in window: NSWindow) throws {
+    /// A click at `point`, the `count`th of a series, as a second click of a double-click is.
+    private func click(at point: NSPoint, in window: NSWindow, count: Int = 1) throws {
         func event(_ type: NSEvent.EventType) throws -> NSEvent {
             try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
                                              windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                             clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+                                             clickCount: count, pressure: type == .leftMouseUp ? 0 : 1))
         }
         NSApp.postEvent(try event(.leftMouseUp), atStart: false)
         window.sendEvent(try event(.leftMouseDown))
@@ -5719,6 +5796,22 @@ final class AppLaunchTests: XCTestCase {
         let field = try XCTUnwrap(window.contentView.flatMap(findSearchField))
         XCTAssertTrue(window.makeFirstResponder(field))
         return (field, try XCTUnwrap(field.currentEditor() as? NSTextView))
+    }
+
+    /// The one colour the window draws all over `area` (window coordinates), in sRGB, or nil when the area holds more
+    /// than one.
+    private func color(in window: NSWindow, at area: NSRect, file: StaticString = #filePath,
+                       line: UInt = #line) throws -> NSColor? {
+        let spread = try contrast(in: window, at: area)
+        guard spread < 2 / 255 else {
+            XCTFail("\(area) holds more than one colour: they are \(spread) apart", file: file, line: line)
+            return nil
+        }
+        let content = try XCTUnwrap(window.contentView)
+        let rect = content.convert(area, from: nil)
+        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: rect))
+        content.cacheDisplay(in: rect, to: bitmap)
+        return bitmap.colorAt(x: bitmap.pixelsWide / 2, y: bitmap.pixelsHigh / 2)?.usingColorSpace(.sRGB)
     }
 
     /// How far apart the colours the window draws in `area` (window coordinates) are: 0 where nothing or one
