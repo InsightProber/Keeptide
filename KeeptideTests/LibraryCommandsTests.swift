@@ -484,6 +484,15 @@ final class LibraryCommandsTests: XCTestCase {
             XCTAssertFalse(on.contains(action), NSStringFromSelector(action))
         }
         XCTAssertTrue(on.contains(#selector(AppDelegate.showSettings(_:))))
+        // Close All, which AppKit adds to the Window menu, is the app's, and would close the library window too: the
+        // panel takes it, and closes only itself.
+        let closeAll = NSMenuItem(title: "Close All", action: NSSelectorFromString("closeAll:"), keyEquivalent: "w")
+        let closing = NSApp.target(forAction: try XCTUnwrap(closeAll.action), to: nil, from: closeAll)
+        XCTAssertTrue(closing as AnyObject? === panel.window)
+        XCTAssertTrue(Self.validates(closeAll, at: closing))
+        NSApp.sendAction(try XCTUnwrap(closeAll.action), to: nil, from: closeAll)
+        XCTAssertFalse(panel.isSessionOpen)
+        XCTAssertTrue(libraryWindow.isVisible)
     }
 
     func testItemCommandsAreForwardedAsRequests() throws {

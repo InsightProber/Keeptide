@@ -253,7 +253,8 @@ extension LibraryWindowController: NSMenuItemValidation {
     /// it, and a command that nothing in quick access takes comes here. The panel stops the menu bar's keys for these
     /// commands itself, but not a shortcut given to one in System Settings, a key the menu bar moves for a keyboard
     /// layout, or a key pressed in the file-access sheet. Text commands, Find in Note… among them, go to the text with
-    /// the library's keys instead; the panel keeps those that nothing in it takes.
+    /// the library's keys instead; the panel keeps those that nothing in it takes, though not from the file-access
+    /// sheet, whose responder chain leaves the panel out.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let isEnabled = validateCommand(menuItem)
         return isEnabled && NSApp.keyWindow?.isQuickAccess != true

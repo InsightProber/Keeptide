@@ -1606,7 +1606,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// Whether a responder in the panel takes `action`, from the one with the keys through the panel's window to this
-    /// controller: the menu bar's item would send it there before it turns to the library window.
+    /// controller: the menu bar's item would send it there. Otherwise it ends at the panel's window, off.
     private func panelTakes(_ action: Selector) -> Bool {
         var responder = window?.firstResponder
         while let current = responder {
@@ -1685,10 +1685,17 @@ private final class QuickAccessPanel: NSPanel {
         if delegate?.windowShouldClose?(self) ?? true { close() }
     }
 
+    /// Close All, which AppKit adds to the Window menu, closes only the panel, as ⌥⌘W does. The app would otherwise
+    /// take it and close the library window behind the panel too.
+    @objc func closeAll(_ sender: Any?) {
+        performClose(sender)
+    }
+
     /// ⌘W reaches `performClose` through the Window menu's Close, which NSWindow disables for a window without a
     /// close button; ⌘W would then only beep.
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        menuItem.action == #selector(performClose(_:)) || super.validateMenuItem(menuItem)
+        menuItem.action == #selector(performClose(_:)) || menuItem.action == #selector(closeAll(_:))
+            || super.validateMenuItem(menuItem)
     }
 
     /// Text that cannot be edited, selected or searched, where the menu bar's text commands end when nothing in the
