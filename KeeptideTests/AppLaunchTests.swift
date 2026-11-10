@@ -2451,6 +2451,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandTShowsTheTranslationBesideTheTextAndCommandPeriodAndEscapeComeFirst() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -2492,6 +2493,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheTranslationIsCopiedSavedAndOfferedInTheActionsMenu() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -2545,6 +2547,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testOptionCommandTOffersTheLanguagesToTranslateIntoAndSaysWhatEachNeeds() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR"],
                           statuses: [("en", "ja-JP", .needsDownload)])
@@ -2587,6 +2590,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheTranslationsTitleOpensTheLanguageMenuBelowIt() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -2625,6 +2629,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheActionsMenuOffersTheLanguagesToTranslateInto() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP"], statuses: [("en", "ja-JP", .needsDownload)])
         let preferences = try makePreferences(.medium)
@@ -2665,6 +2670,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testALanguageChosenAfterTheSelectionMovedIsForTheClipTheMenuOpenedFor() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true, translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -2688,6 +2694,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testALanguageChosenForAClipThatLeftTheListTranslatesNothing() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true, translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -2709,6 +2716,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testOptionCommandTOpensNothingUnderACompositionOrForAClipThatCantBeTranslated() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeTextPanel(newestIsImage: false)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -2742,7 +2750,37 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(languageMenus, 1)
     }
 
+    func testCommandTAndOptionCommandTComeFromTheKeyThatTypesTWithCommand() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var actionMenus = 0
+        controller.presentActionMenu = { _, _, _ in actionMenus += 1 }
+        var languageMenus = 0
+        controller.presentLanguageMenu = { _, _, _ in languageMenus += 1 }
+
+        // On a Russian layout the T key types “е” alone and “t” with ⌘: it is ⌘T, and with ⌥ it is ⌥⌘T.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "\u{435}", modifiers: .command)))
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "\u{435}",
+                                                                modifiers: [.command, .option])))
+        XCTAssertEqual(languageMenus, 1)
+
+        // On Dvorak – QWERTY ⌘ the K key types “t” alone and “k” with ⌘: it is ⌘K, and with ⌥ it is no ⌥⌘T.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "t", modifiers: .command)))
+        XCTAssertEqual(actionMenus, 1)
+        let languageMenusBefore = languageMenus
+        _ = window.performKeyEquivalent(with: try key(kVK_ANSI_K, "t", modifiers: [.command, .option]))
+        XCTAssertEqual(languageMenus, languageMenusBefore)
+
+        // The T key's ⌘T translates the text.
+        _ = try await startedTranslation(translator, 0)
+    }
+
     func testTheLanguageMenuSaysWhatAnImagesTextNeedsOnceItIsRecognized() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR"], statuses: [("de", "fr-FR", .unsupported)])
         let (controller, recognizer) = try await makeTextPanel(translator: translator)
@@ -3336,6 +3374,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testATextsCardSaysItIsTranslatedOnceItIs() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -3354,6 +3393,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandTTranslatesTheTextInAnImageBesideTheImage() async throws {
+        try requireANSICommandLayer()
         let translator = ScriptedTranslator()
         let (controller, recognizer) = try await makeTextPanel(translator: translator)
         let window = try XCTUnwrap(controller.window)
@@ -6275,6 +6315,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandTTranslatesNothingWhileAReviewShows() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let translator = ScriptedTranslator()

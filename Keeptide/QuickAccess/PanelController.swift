@@ -1540,12 +1540,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// The keys of the panel's commands with ⌘ alone, as `commandKey(of:)` gives them: ⌘S, ⌘E, ⌘N, ⌘D, ⌘F, ⌘[, ⌘],
-    /// ⌘L, ⌘K, ⌘Y, ⌘Z and, while the text beside an image shows, ⌘C, each run by `handleKeyEquivalent(_:)`.
-    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z", "c"]
+    /// ⌘L, ⌘K, ⌘Y, ⌘Z, ⌘T and, while a result shows beside the preview, ⌘C, each run by `handleKeyEquivalent(_:)`.
+    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z", "t", "c"]
 
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
         // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M and ⇧⌘T
-        // are the shortcuts here with Shift.
+        // are the shortcuts here with Shift, and ⌥⌘T the one with Option.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         // The panel knows its commands' keys as the menu bar knows its items' keys, apart from ⌘Return, keypad Enter
         // and ⌘⌫, which it knows by the key, and ⌘.
