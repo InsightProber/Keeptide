@@ -1137,14 +1137,99 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(children[3].accessibilityHelp(), "Text couldn't be recognized in this image.")
     }
 
-    func testTheRecognitionLineRunsAlongARecognizingCardOnly() throws {
+    func testATextCardSaysWhatIsKnownOfItsTranslation() throws {
+        let strip = makeStrip()
+        let rows = [makeRow(title: "Agenda"), makeRow(title: "Memo"), makeRow(title: "Notes"),
+                    makeRow(title: "Draft"), makeRow(title: "Letter")]
+        let marks: [ContentRef: StripTranslationMark] = [
+            rows[0].ref: .translated(into: "zh-Hans"), rows[1].ref: .translating(into: "fr"), rows[2].ref: .waiting,
+            rows[3].ref: .stopped, rows[4].ref: .failed("Translation isn't available on this Mac."),
+        ]
+
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   translationMarks: marks)
+
+        let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        guard children.count == 5 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
+        XCTAssertEqual(children[0].accessibilityLabel(), "Text, \(time(rows[0])): Agenda, translated")
+        XCTAssertEqual(children[1].accessibilityLabel(), "Text, \(time(rows[1])): Memo, translating")
+        XCTAssertEqual(children[2].accessibilityLabel(), "Text, \(time(rows[2])): Notes, waiting to translate")
+        XCTAssertEqual(children[3].accessibilityLabel(), "Text, \(time(rows[3])): Draft, translation stopped")
+        XCTAssertEqual(children[4].accessibilityLabel(),
+                       "Text, \(time(rows[4])): Letter, translation failed: Translation isn't available on this Mac.")
+        XCTAssertEqual(children[0].accessibilityHelp(), "Translated to Chinese (Simplified). Press ⌘T to show.")
+        XCTAssertEqual(children[1].accessibilityHelp(), "Translating to French…")
+        XCTAssertEqual(children[4].accessibilityHelp(), "Translation isn't available on this Mac.")
+
+        // An image can carry both marks: what is known of its text, then of its translation.
+        let image = makeRow(kind: .image, title: "Receipt")
+        strip.show([image], selection: image.id, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   textMarks: [image.ref: .hasText], translationMarks: [image.ref: .translated(into: "fr")])
+        let both = try XCTUnwrap((strip.accessibilityChildren() as? [NSView])?.first)
+        XCTAssertEqual(both.accessibilityLabel(), "Image, \(time(image)): Receipt, has text, translated")
+        XCTAssertEqual(both.accessibilityHelp(),
+                       "Has text. Press ⇧⌘T to show. Translated to French. Press ⌘T to show.")
+    }
+
+    func testEachTranslationMarkIsDrawnOnTheCardInItsOwnWay() async throws {
+        /// The card as it is drawn, with Reduce Motion so that the line under the header holds still.
+        func picture(_ mark: StripTranslationMark?) async throws -> Data {
+            let row = makeRow(title: "Agenda")
+            let card = StripFrameView(content: StripFrameContent.make(row: row, detail: nil, cardSize: metrics.cardSize,
+                                                                      translationMark: mark),
+                                      applicationIcon: ApplicationNames().icon(for: nil), metrics: metrics, accent: nil,
+                                      isSelected: false)
+                .environment(\._accessibilityReduceMotion, true)
+            let hosting = NSHostingView(rootView: card)
+            hosting.frame = NSRect(origin: .zero, size: metrics.frameSize)
+            let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.appearance = NSAppearance(named: .darkAqua)
+            addTeardownBlock { window.close() }
+            window.contentView = hosting
+            hosting.layoutSubtreeIfNeeded()
+            // SwiftUI draws on the next turn of the run loop.
+            try await Task.sleep(for: .milliseconds(100))
+            hosting.layoutSubtreeIfNeeded()
+            let rep = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+            window.appearance?.performAsCurrentDrawingAppearance { hosting.cacheDisplay(in: hosting.bounds, to: rep) }
+            return try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+        }
+
+        let marks: [StripTranslationMark?] = [nil, .translating(into: "fr"), .waiting, .translated(into: "fr"), .stopped,
+                                              .failed("Translation isn't available on this Mac.")]
+        var pictures: [Data] = []
+        for mark in marks { pictures.append(try await picture(mark)) }
+
+        // Each mark is drawn, and no two alike: outlined, with the line or without, dashed, solid, or orange.
+        XCTAssertEqual(Set(pictures).count, marks.count)
+    }
+
+    func testATranslatedMarkOnALightAccentTakesADarkGlyph() {
+        func srgb(_ hex: Int) -> NSColor {
+            NSColor(srgbRed: CGFloat(hex >> 16 & 0xFF) / 255, green: CGFloat(hex >> 8 & 0xFF) / 255,
+                    blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
+        }
+        // The system's light accents: yellow, orange and green.
+        for light in [0xFFCC00, 0xFF9500, 0x28CD41] {
+            XCTAssertTrue(StripMarkColors.prefersDarkGlyph(on: srgb(light)), String(light, radix: 16))
+        }
+        // And its darker ones: blue, purple, pink, red and graphite.
+        for dark in [0x007AFF, 0xAF52DE, 0xFF2D55, 0xFF3B30, 0x8E8E93] {
+            XCTAssertFalse(StripMarkColors.prefersDarkGlyph(on: srgb(dark)), String(dark, radix: 16))
+        }
+    }
+
+    func testTheProgressLineRunsAlongACardOnlyWhileItsTextOrTranslationIsMade() throws {
         /// Each line in a card, with how far its top is below the card's top.
-        func lines(for mark: StripTextMark, reduceMotion: Bool = false,
+        func lines(for mark: StripTextMark?, translation: StripTranslationMark? = nil, reduceMotion: Bool = false,
                    metrics: StripMetrics? = nil) -> [(line: StripProgressLineView, top: CGFloat)] {
             let metrics = metrics ?? self.metrics
             let row = makeRow(kind: .image, title: "Poster", sourceApp: "com.apple.Preview")
             let card = StripFrameView(content: StripFrameContent.make(row: row, detail: nil,
-                                                                      cardSize: metrics.cardSize, textMark: mark),
+                                                                      cardSize: metrics.cardSize, textMark: mark,
+                                                                      translationMark: translation),
                                       applicationIcon: ApplicationNames().icon(for: "com.apple.Preview"),
                                       metrics: metrics, accent: nil, isSelected: false)
                 .environment(\._accessibilityReduceMotion, reduceMotion)
@@ -1171,6 +1256,13 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(lines(for: .recognizing, reduceMotion: true).first).line.isMoving)
         XCTAssertTrue(lines(for: .waiting).isEmpty, "Waiting has no line")
         XCTAssertTrue(lines(for: .hasText).isEmpty)
+        // A translation under way draws the same line, once, beside text that is being recognized too.
+        XCTAssertEqual(lines(for: nil, translation: .translating(into: "fr")).count, 1)
+        XCTAssertEqual(lines(for: .recognizing, translation: .translating(into: "fr")).count, 1)
+        XCTAssertEqual(lines(for: .hasText, translation: .translating(into: nil)).count, 1)
+        for still in [StripTranslationMark.waiting, .translated(into: "fr"), .stopped, .failed("Why")] {
+            XCTAssertTrue(lines(for: nil, translation: still).isEmpty, "\(still)")
+        }
         // Under the header and not in it, where it would cross the time's descenders: a small card's header ends
         // right below them.
         for size in CardSize.allCases {

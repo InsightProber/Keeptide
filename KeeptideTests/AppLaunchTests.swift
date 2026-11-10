@@ -2994,6 +2994,24 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", has text") == true }
     }
 
+    func testATextsCardSaysItIsTranslatedOnceItIs() async throws {
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        func textLabel() -> String? {
+            framesOnScreen(in: strip).compactMap { $0.accessibilityLabel() }.first { $0.contains("older") }
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        let engine = try await startedTranslation(translator, 0)
+        try await SearchTestSupport.waitUntil { textLabel()?.hasSuffix(", translating") == true }
+
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("较旧"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { textLabel()?.hasSuffix(", translated") == true }
+    }
+
     func testThePreviewIsOneCardWhetherItIsSplitOrNot() async throws {
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)

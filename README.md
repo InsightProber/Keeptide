@@ -63,8 +63,9 @@ snippets in a native library.
 - **Translation.** ⌘T shows a translation of the selected text beside its
   preview, made on this Mac with Apple's Translation into the first language
   in your language list. Code, links and parts already in that language stay
-  as they are. Nothing is translated until you ask, and when translating again
-  fails, the earlier translation stays.
+  as they are. Nothing is translated until you ask, a text's card shows when
+  it is being translated or has been, and when translating again fails, the
+  earlier translation stays.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content

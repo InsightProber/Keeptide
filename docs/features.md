@@ -65,7 +65,11 @@ When translating again fails, the earlier translation stays and the column says
 why; the same holds for the text in an image. While a whole translation that was
 kept shows, Return pastes it instead of the text, through the same checks as a
 clip; ⌘C copies a whole translation, or the part selected, and leaves quick
-access open, and ⌘S saves it as a snippet of its own.
+access open, and ⌘S saves it as a snippet of its own. A text's card in quick
+access carries a "文A" mark while its translation is made or waits its turn,
+once it is translated, when the translation was stopped part way, or when
+translating it failed; its help tag and VoiceOver say which, with the language
+of a translation or why it failed.
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,

@@ -1150,6 +1150,133 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertNil(translator.request(0), "Whatever language it is in")
     }
 
+    func testEachTextCardSaysWhatIsKnownOfItsTranslation() async throws {
+        let translator = ScriptedTranslator()
+        let (fixture, _) = try await makeTextFixture(translator: translator)
+        try await insert("Kept", body: "Kept synthetic note.", at: 0, into: fixture)
+        try await insert("Cut off", body: "Cut off synthetic note.", at: 0.5, into: fixture)
+        try await insert("Stopped before", body: "Stopped synthetic note.", at: 1, into: fixture)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 2, into: fixture)
+        try await insert("Older", body: "Older synthetic note.", at: 3, into: fixture)
+        try await insert("Newer", body: "Newer synthetic note.", at: 4, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.open()
+        try await settled(state)
+        let rows = state.selection.rows
+        let store = DerivedTextStore(controller: fixture.harness.controller)
+        for (title, phase, text) in [("Kept", GenerationSnapshot.Phase.finished(.completed), "Note gardée."),
+                                     ("Cut off", .finished(.truncated), "Note coup"),
+                                     ("Stopped before", .stopped(.person), "Note arrê")] {
+            let source = try XCTUnwrap(rows.first { $0.title == title }?.ref)
+            _ = try await store.save(
+                GenerationSnapshot(phase: phase, info: GenerationInfo(engine: "On this Mac"), texts: [.main: text]),
+                for: DerivedTextRequest(source: source, operation: .translate, targetLanguage: "fr"))
+        }
+        func mark(_ title: String) -> StripTranslationMark? {
+            rows.first { $0.title == title }.flatMap { state.translationMark(for: $0) }
+        }
+
+        // What was kept from before is read with the cards' details: a whole translation, and ones stopped or cut off
+        // part way.
+        state.loadDetails(for: rows.map(\.ref), frameSize: CGSize(width: 200, height: 200))
+        try await SearchTestSupport.waitUntil { mark("Kept") == .translated(into: "fr") }
+        XCTAssertEqual(mark("Stopped before"), .stopped)
+        XCTAssertEqual(mark("Cut off"), .stopped, "Cut off at its length limit, it is incomplete too")
+        XCTAssertNil(mark("Screenshot"), "Only text is translated")
+        XCTAssertNil(mark("Newer"))
+        XCTAssertNil(mark("Older"))
+
+        // The newest translated, and the older one waiting its turn behind it.
+        XCTAssertEqual(state.selection.selectedRow?.title, "Newer")
+        state.showTranslation()
+        let newer = try await startedTranslation(translator, 0)
+        try await SearchTestSupport.waitUntil { mark("Newer") == .translating(into: "zh-Hans") }
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Older")
+        state.showTranslation()
+        try await SearchTestSupport.waitUntil { mark("Older") == .waiting }
+
+        newer.send(.started(GenerationInfo(engine: "On this Mac")), .delta("较新的笔记。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { mark("Newer") == .translated(into: "zh-Hans") }
+        let failure = GenerationError(kind: .engineUnavailable, message: "Translation isn't available on this Mac.")
+        let older = try await startedTranslation(translator, 1)
+        older.send(.started(GenerationInfo(engine: "On this Mac")))
+        older.end(throwing: failure)
+        try await SearchTestSupport.waitUntil { mark("Older") == .failed(failure.message) }
+
+        // Translated again and stopped part way: the translation is incomplete.
+        state.translate()
+        let again = try await startedTranslation(translator, 2)
+        again.send(.started(GenerationInfo(engine: "On this Mac")), .delta("较旧"))
+        try await SearchTestSupport.waitUntil {
+            if case .translating(let snapshot, _)? = state.translationColumn { return snapshot.hasText }
+            return false
+        }
+        state.stopTranslation()
+        try await SearchTestSupport.waitUntil { mark("Older") == .stopped }
+
+        // Nothing to translate: no mark.
+        state.translate()
+        try await startedTranslation(translator, 3).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.translationColumn == .nothingToTranslate(into: "zh-Hans") }
+        XCTAssertNil(mark("Older"))
+
+        // A job under way, and how it ends, come before what was kept: translated whole into another language.
+        state.select(try XCTUnwrap(rows.first { $0.title == "Stopped before" }?.id))
+        state.translate(into: Locale.Language(identifier: "zh-Hans"))
+        let whole = try await startedTranslation(translator, 4)
+        try await SearchTestSupport.waitUntil { mark("Stopped before") == .translating(into: "zh-Hans") }
+        whole.send(.started(GenerationInfo(engine: "On this Mac")), .delta("停下的笔记。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { mark("Stopped before") == .translated(into: "zh-Hans") }
+
+        // Stopped part way where a whole translation is kept: the store keeps the whole one, and the card says so.
+        state.select(try XCTUnwrap(rows.first { $0.title == "Kept" }?.id))
+        state.translate(into: Locale.Language(identifier: "ja"))
+        let part = try await startedTranslation(translator, 5)
+        try await SearchTestSupport.waitUntil { mark("Kept") == .translating(into: "ja") }
+        part.send(.started(GenerationInfo(engine: "On this Mac")), .delta("保存"))
+        try await SearchTestSupport.waitUntil {
+            if case .translating(let snapshot, _)? = state.translationColumn { return snapshot.hasText }
+            return false
+        }
+        state.stopTranslation()
+        try await SearchTestSupport.waitUntil { mark("Kept") == .translated(into: "fr") }
+
+        // Translating again fails, and leaves the translation kept from before.
+        state.translate(into: Locale.Language(identifier: "ja"))
+        try await startedTranslation(translator, 6).end(throwing: failure)
+        try await SearchTestSupport.waitUntil { state.translationColumn?.isFailed == true }
+        XCTAssertEqual(mark("Kept"), .translated(into: "fr"))
+
+        // Opened again, the card says nothing of that failure before the store has said what it keeps.
+        state.close()
+        state.open()
+        try await settled(state)
+        XCTAssertNil(mark("Kept"), "Not failed: a translation kept from before may stand")
+        state.loadDetails(for: rows.map(\.ref), frameSize: CGSize(width: 200, height: 200))
+        try await SearchTestSupport.waitUntil { mark("Kept") == .translated(into: "fr") }
+    }
+
+    func testATranslationMarkSaysTheLanguageAndHowToShowIt() {
+        XCTAssertEqual(StripTranslationMark.translated(into: "zh-Hans").help,
+                       "Translated to Chinese (Simplified). Press ⌘T to show.")
+        XCTAssertEqual(StripTranslationMark.translated(into: nil).help, "Translated. Press ⌘T to show.")
+        XCTAssertEqual(StripTranslationMark.translating(into: "fr").help, "Translating to French…")
+        XCTAssertEqual(StripTranslationMark.translating(into: nil).help, "Translating…")
+        XCTAssertEqual(StripTranslationMark.waiting.help, "Waiting to translate")
+        XCTAssertEqual(StripTranslationMark.stopped.help, "Stopped. The translation is incomplete.")
+        XCTAssertEqual(StripTranslationMark.failed("Translation isn't available on this Mac.").help,
+                       "Translation isn't available on this Mac.")
+        // What VoiceOver hears at the end of the card's label.
+        XCTAssertEqual(StripTranslationMark.translated(into: "fr").spoken, "translated")
+        XCTAssertEqual(StripTranslationMark.translating(into: "fr").spoken, "translating")
+        XCTAssertEqual(StripTranslationMark.waiting.spoken, "waiting to translate")
+        XCTAssertEqual(StripTranslationMark.stopped.spoken, "translation stopped")
+        XCTAssertEqual(StripTranslationMark.failed("Translation isn't available on this Mac.").spoken,
+                       "translation failed: Translation isn't available on this Mac.")
+    }
+
     func testOnlyTextHasATranslationColumnAndItFollowsTheSelectionWithoutTranslating() async throws {
         let translator = ScriptedTranslator()
         let (state, _) = try await makeTranslationPanel(translator)
@@ -1697,16 +1824,23 @@ final class QuickAccessStateTests: XCTestCase {
                                     into: fixture)
         try await insert("Older", types: [("public.png", try png(width: 30, height: 40))], at: 3, into: fixture)
         try await insert("Newer", types: [("public.png", try png(width: 20, height: 20))], at: 4, into: fixture)
+        try await insert("Cut off", types: [("public.png", try png(width: 50, height: 30))], at: 0, into: fixture)
         let state = QuickAccessState(services: { fixture.services })
         state.open()
         try await settled(state)
         let rows = state.selection.rows
         let keptRef = try XCTUnwrap(rows.first { $0.title == "Kept" }?.ref)
         XCTAssertEqual(keptRef.itemID, kept.id)
-        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+        let store = DerivedTextStore(controller: fixture.harness.controller)
+        _ = try await store.save(
             GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
                                texts: [.main: "Kept from before"]),
             for: DerivedTextRequest(source: keptRef, operation: .extractText, keepsLineBreaks: true))
+        _ = try await store.save(
+            GenerationSnapshot(phase: .finished(.truncated), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Cut off at the length limit"]),
+            for: DerivedTextRequest(source: try XCTUnwrap(rows.first { $0.title == "Cut off" }?.ref),
+                                    operation: .extractText, keepsLineBreaks: true))
         func mark(_ title: String) -> StripTextMark? {
             rows.first { $0.title == title }.flatMap { state.textMark(for: $0) }
         }
@@ -1714,6 +1848,7 @@ final class QuickAccessStateTests: XCTestCase {
         // What was kept from before is read with the cards' details.
         state.loadDetails(for: rows.map(\.ref), frameSize: CGSize(width: 200, height: 200))
         try await SearchTestSupport.waitUntil { mark("Kept") == .hasText }
+        XCTAssertEqual(mark("Cut off"), .hasText, "Text cut off at its length limit is text, as when it is made now")
         XCTAssertNil(mark("Notes"), "Only an image has text in it")
         XCTAssertNil(mark("Newer"))
         XCTAssertNil(mark("Older"))
@@ -1749,6 +1884,20 @@ final class QuickAccessStateTests: XCTestCase {
                                                     .finished(.completed))
         try await SearchTestSupport.waitUntil { state.textColumn == .noText }
         XCTAssertNil(mark("Older"))
+
+        // Recognized again and failed where text was kept from before: the card still says it has text, and opened
+        // again, it says nothing of the failure before the store has said what it keeps.
+        state.select(try XCTUnwrap(rows.first { $0.title == "Kept" }?.id))
+        state.extractText()
+        try await startedSource(recognizer, 4).end(throwing: failure)
+        try await SearchTestSupport.waitUntil { state.textColumn?.isFailed == true }
+        XCTAssertEqual(mark("Kept"), .hasText)
+        state.close()
+        state.open()
+        try await settled(state)
+        XCTAssertNil(mark("Kept"), "Not failed: text kept from before may stand")
+        state.loadDetails(for: rows.map(\.ref), frameSize: CGSize(width: 200, height: 200))
+        try await SearchTestSupport.waitUntil { mark("Kept") == .hasText }
     }
 
     func testWhatWasKeptIsReadAgainForEachShowingAndALateReadStaysInItsOwn() async throws {

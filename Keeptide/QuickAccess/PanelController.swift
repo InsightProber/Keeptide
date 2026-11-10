@@ -388,14 +388,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.dimsSideFrames = hasCard
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
         let colors = collectionColors
-        // What each image's card says of its text, read here so that the cards follow the recognitions.
+        // What each image's card says of its text, and each text's card of its translation, read here so that the
+        // cards follow the jobs.
         let textMark = state.textMarker()
         let textMarks = Dictionary(state.selection.rows.compactMap { row in textMark(row).map { (row.ref, $0) } },
                                    uniquingKeysWith: { first, _ in first })
+        let translationMark = state.translationMarker()
+        let translationMarks = Dictionary(
+            state.selection.rows.compactMap { row in translationMark(row).map { (row.ref, $0) } },
+            uniquingKeysWith: { first, _ in first })
         strip.show(state.selection.rows, selection: state.selection.selectedID, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded,
                    collections: cardCollections, collectionColors: colors, slides: !showsNewList,
-                   textMarks: textMarks)
+                   textMarks: textMarks, translationMarks: translationMarks)
         glow.show(selectedCardGlow(collectionColors: colors))
     }
 
