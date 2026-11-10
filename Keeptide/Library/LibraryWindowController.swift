@@ -247,7 +247,17 @@ final class LibraryWindowController: NSWindowController {
 }
 
 extension LibraryWindowController: NSMenuItemValidation {
+    /// While quick access, or a sheet over it, has the keys, every library command stays off, its title still following
+    /// the library. The panel never becomes the main window, so the library window stays the main one behind it, and a
+    /// command that nothing in quick access takes comes here. The panel stops the menu bar's keys for these commands
+    /// itself; a shortcut given to one in System Settings, a key the menu bar moves for a keyboard layout, or a key
+    /// pressed in the file-access sheet still reaches the menu bar.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let isEnabled = validateCommand(menuItem)
+        return isEnabled && NSApp.keyWindow?.isQuickAccess != true
+    }
+
+    private func validateCommand(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(selectPreviousList(_:)), #selector(selectNextList(_:)), #selector(chooseList(_:)):
             // ⌘[ and ⌘] indent in the body editor, and an input method owns the keys while it composes.

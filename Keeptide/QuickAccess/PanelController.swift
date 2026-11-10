@@ -1629,6 +1629,16 @@ private final class MoveUndo {
     }
 }
 
+extension NSWindow {
+    /// Whether this is quick access's panel, or a sheet over it such as the file-access sheet. While the key window is,
+    /// the library's menu commands stay off. The panel never becomes the main window, so a command that nothing in
+    /// quick access takes goes on to the library window behind it, or, with the library closed, to the app, which
+    /// opens the library.
+    var isQuickAccess: Bool {
+        self is QuickAccessPanel || sheetParent?.isQuickAccess == true
+    }
+}
+
 /// A menu item that runs a closure.
 private final class ClosureMenuItem: NSMenuItem {
     private let handler: () -> Void
