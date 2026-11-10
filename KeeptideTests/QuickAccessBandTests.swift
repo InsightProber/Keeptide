@@ -717,11 +717,11 @@ final class QuickAccessBandTests: XCTestCase {
     // MARK: Text in an image
 
     func testTheTextColumnSaysWhyWhenARecognitionEndsWithoutText() {
-        var endings = TextColumnEndings()
+        var endings = ResultColumnEndings()
         let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
         let failure = GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")
         func say(_ column: TextColumn?, _ ending: UUID? = nil, ref: ContentRef = image, open: Bool = true) -> String? {
-            endings.words(for: column.map { (ref, $0, ending) }, isOpen: open)
+            endings.words(for: column.map { (ref, ending, $0.endingWords, $0.isRead) }, isOpen: open)
         }
 
         XCTAssertNil(say(.loading))
@@ -761,14 +761,14 @@ final class QuickAccessBandTests: XCTestCase {
     }
 
     func testTheTextColumnSaysOnceThatRecognizingAgainFailedAndLeftWhatItHad() {
-        var endings = TextColumnEndings()
+        var endings = ResultColumnEndings()
         let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
         let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
         let made = TextColumn.text("Synthetic", keepsLineBreaks: true, status: .complete)
         let recognizing = TextColumn.recognizing(GenerationSnapshot(phase: .waiting, info: nil))
         let (madeEnding, failedEnding) = (UUID(), UUID())
         func say(_ column: TextColumn, _ ending: UUID?, ref: ContentRef = image) -> String? {
-            endings.words(for: (ref, column, ending), isOpen: true)
+            endings.words(for: (ref, ending, column.endingWords, column.isRead), isOpen: true)
         }
 
         XCTAssertNil(say(recognizing, nil))
@@ -799,6 +799,99 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertTrue(unavailable.hasPrefix(GenerationError.contentUnavailable.message), unavailable)
         XCTAssertNotEqual(unavailable, TextColumnWords.failedAgain(leaving: made, because: failure))
         XCTAssertEqual(TextColumnWords.subtitle(for: .failedAgain(made, failure)), TextColumnWords.subtitle(for: made))
+    }
+
+    func testTheTranslationColumnSaysOnceWhyATranslationLeftNoNewTranslation() {
+        var endings = ResultColumnEndings()
+        let text = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let failure = GenerationError(kind: .languageNotDownloaded,
+                                      message: "To translate from English to Japanese on this Mac, download both languages.")
+        let made = TranslationColumn.translation("季度计划", into: "zh-Hans", status: .complete)
+        func say(_ column: TranslationColumn, _ ending: UUID?) -> String? {
+            endings.words(for: (text, ending, column.endingWords, column.isRead), isOpen: true)
+        }
+
+        XCTAssertNil(say(.translating(GenerationSnapshot(phase: .waiting, info: nil), into: "zh-Hans"), nil))
+        XCTAssertNil(say(made, UUID()), "A translation speaks for itself")
+        let failed = UUID()
+        XCTAssertEqual(say(.failedAgain(made, failure, asked: "ja"), failed),
+                       "Couldn't translate to Japanese. The Chinese (Simplified) translation is unchanged.")
+        XCTAssertNil(say(.failedAgain(made, failure, asked: "ja"), failed), "Once")
+        XCTAssertEqual(say(.translation("季度", into: "zh-Hans", status: .stopped), UUID()), TranslationColumnWords.stopped)
+        XCTAssertEqual(say(.failed(failure, asked: "ja"), UUID()), failure.message)
+        XCTAssertEqual(say(.nothingToTranslate(into: "zh-Hans"), UUID()), TranslationColumnWords.nothingToTranslate)
+        // A clip that became unavailable says so; and the subtitle is the translation's that stays.
+        XCTAssertEqual(TranslationColumnWords.failedAgain(leaving: made, because: .contentUnavailable, asked: "ja"),
+                       "\(GenerationError.contentUnavailable.message) The Chinese (Simplified) translation is unchanged.")
+        XCTAssertEqual(TranslationColumnWords.subtitle(for: .failedAgain(made, failure, asked: "ja")),
+                       TranslationColumnWords.subtitle(for: made))
+        // Where nothing was found to translate before, no translation is said to stay.
+        XCTAssertEqual(TranslationColumnWords.failedAgain(leaving: .nothingToTranslate(into: "en"), because: failure,
+                                                          asked: "ja"),
+                       "Couldn't translate to Japanese.")
+        XCTAssertEqual(TranslationColumnWords.translate(into: Locale.Language(identifier: "zh-Hans-CN")),
+                       "Translate to Chinese (Simplified)")
+    }
+
+    func testTheTranslationsMenuItemsWaitForAReviewCardAndKeepCommandSForThemselves() {
+        let actions = QuickAccessActions.make(target: nil, availability: nil, kind: .text, takesText: true,
+                                              resultName: "Translation")
+        func menu(reviewing: Bool) -> NSMenu {
+            ActionMenu.make(actions: actions, row: nil, canAct: true, isReviewing: reviewing, isPreviewExpanded: true,
+                            translation: ActionMenu.Translation(
+                                isOffered: true, column: .init(canTake: true, hasText: true, canStop: false,
+                                                               canTranslate: true, failed: true))) { _ in }
+        }
+        func item(_ title: String, in menu: NSMenu) -> NSMenuItem? { menu.items.first { $0.title == title } }
+
+        XCTAssertEqual(item("Try Again", in: menu(reviewing: false))?.isEnabled, true)
+        XCTAssertEqual(item("Try Again", in: menu(reviewing: true))?.isEnabled, false, "Nothing starts behind the card")
+        XCTAssertEqual(item("Copy Translation", in: menu(reviewing: true))?.isEnabled, false)
+        // ⌘S keeps the translation; the clip's own Save as Snippet stays without it.
+        XCTAssertEqual(item("Save Translation as Snippet", in: menu(reviewing: false))?.keyEquivalent, "s")
+        XCTAssertEqual(item("Save as Snippet", in: menu(reviewing: false))?.keyEquivalent, "")
+    }
+
+    func testPartOfATranslationTheLibraryCouldNotKeepIsStillPartOfOne() {
+        let part = TranslationColumn.unsaved("季度", into: "zh-Hans", status: .stopped)
+        XCTAssertNil(part.wholeText, "Part of a translation is copied by selecting it")
+        XCTAssertEqual(part.endingWords, TranslationColumnWords.stopped)
+        XCTAssertTrue(part.offersTryAgain)
+        let whole = TranslationColumn.unsaved("季度计划", into: "zh-Hans", status: .complete)
+        XCTAssertEqual(whole.wholeText, "季度计划")
+        XCTAssertFalse(whole.offersTryAgain)
+        XCTAssertNotEqual(TranslationColumnWords.subtitle(for: part), TranslationColumnWords.subtitle(for: whole))
+    }
+
+    func testTheOriginalSaysWhyItCantBeShownAndWhenOnlyItsStartIs() {
+        XCTAssertEqual(TranslationOriginal(nil), .loading)
+        XCTAssertEqual(TranslationOriginal(.text("Synthetic", isTruncated: true)),
+                       .text("Synthetic", isTruncated: true))
+        XCTAssertEqual(TranslationOriginal(.failed(.contentUnavailable)),
+                       .unavailable(PasteRefusal.contentUnavailable.message))
+        XCTAssertEqual(TranslationOriginal(.info(kind: .text, sourceApp: nil)),
+                       .unavailable(TranslationColumnWords.originalUnavailable))
+    }
+
+    func testATranslationLeftByAFailureShowsAsItWasBesideItsText() throws {
+        let text = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let failure = GenerationError(kind: .engineUnavailable, message: "This text couldn't be translated on this Mac.")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { window.close() }
+        let made = TranslationColumn.translation("季度计划周五截止。", into: "zh-Hans", status: .complete)
+        let hosting = NSHostingView(rootView: QuickAccessTranslationSplit(
+            original: .text("The quarterly plan is due on Friday.", isTruncated: false), applicationName: "Notes",
+            column: .failedAgain(made, failure, asked: "ja"), target: Locale.Language(identifier: "zh-Hans"),
+            nextTarget: nil, ref: text, isJustMade: true, onCommand: { _ in }, onCopy: { _ in }))
+        window.contentView = hosting
+        settle(window)
+
+        let display = try XCTUnwrap(views(StreamingTextDisplay.self, in: hosting).first)
+        XCTAssertEqual(display.shownText, "季度计划周五截止。", "Shown at once, not typed out again")
+        XCTAssertEqual(display.mode, .still)
+        XCTAssertTrue(display.allowsCopyingAll)
     }
 
     func testTextLeftByAFailedRecognitionShowsAsItWas() throws {

@@ -11,15 +11,19 @@ enum ActionMenuCommand: Equatable {
     case removeFromCollection(CollectionID)
     /// The text in an image: shown beside it, made again, copied, kept as a snippet, laid out, or stopped.
     case showTextInImage, extractText, copyText, saveTextAsSnippet, toggleKeepLineBreaks, stopTextRecognition
+    /// A translation: shown beside its text, made again, or stopped. Copying and keeping it are the text's items.
+    case showTranslation, translate, stopTranslation
+    /// Translate To: the language chosen, by its code, which the clip's translation is made in, and every one after.
+    case translateInto(String)
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
 /// and the copy that never pastes, where the panel offers them, or while the preview shows the text beside an image,
-/// what can be done with that text; then the preview, and Extract Text; then what keeps the clip: Save as
-/// Snippet, Save to Collection (Add to Collection on a snippet), Undo Save as Snippet while the save can still be
-/// undone, and the favorite mark; then the library's actions; then Enable Direct Paste… when the panel only copies for
-/// want of access; last what takes the clip away: Undo Move to Recently Deleted right after a move, Remove from the
-/// collection a collection's list shows, and Move to Recently Deleted, named as the library names them. Other
+/// what can be done with that text; then the preview, Extract Text, Translate and Translate To; then what keeps the
+/// clip: Save as Snippet, Save to Collection (Add to Collection on a snippet), Undo Save as Snippet while the save can
+/// still be undone, and the favorite mark; then the library's actions; then Enable Direct Paste… when the panel only
+/// copies for want of access; last what takes the clip away: Undo Move to Recently Deleted right after a move, Remove
+/// from the collection a collection's list shows, and Move to Recently Deleted, named as the library names them. Other
 /// unavailable actions are disabled rather than hidden, so the menu's shape stays predictable: Return's and ⇧Return's
 /// are disabled while a command waits on the review card, which alone confirms it, the collections without any to
 /// choose, and Move to Recently Deleted without a library to move it in.
@@ -52,8 +56,35 @@ enum ActionMenu {
         }
     }
 
+    /// What the menu offers for a translation. Every card has Translate and Translate To, which a text's and an
+    /// image's make use of. While the preview shows a translation beside a clip, the menu starts with what can be done
+    /// with it.
+    struct Translation {
+        /// Whether the clip is a text, or an image, whose translation can be shown.
+        var isOffered = false
+        /// The translation column, while the preview shows it beside the clip.
+        var column: Column?
+        /// The languages Translate To lists, as the language menu does.
+        var languages = TranslationLanguageMenu()
+        /// The languages as they are when Translate To opens, which may have been read since the menu was made.
+        var currentLanguages: (() -> TranslationLanguageMenu)?
+
+        struct Column: Equatable {
+            /// Return can take the translation: it is whole and kept.
+            var canTake = false
+            /// There is a translation to copy and to keep as a snippet.
+            var hasText = false
+            var canStop = false
+            /// Nothing was translated yet, or translating failed or stopped: Translate, or Try Again, makes it.
+            var canTranslate = false
+            /// Translating failed or stopped: the item is Try Again.
+            var failed = false
+        }
+    }
+
     static let noCollectionsHelp = "Create a collection first."
     static let noTextToExtractHelp = "Only images have text to extract."
+    static let noTextToTranslateHelp = "Only text, and the text in images, can be translated."
     /// The undo's action name, which Undo Move to Recently Deleted names.
     static let moveToRecentlyDeletedName = "Move to Recently Deleted"
 
@@ -61,11 +92,15 @@ enum ActionMenu {
                      isPreviewExpanded: Bool, canUndoSave: Bool = false, collections: [CollectionSummary] = [],
                      canMoveToRecentlyDeleted: Bool = false, listedCollection: CollectionSummary? = nil,
                      canUndoMoveToRecentlyDeleted: Bool = false, textInImage: TextInImage = TextInImage(),
+                     translation: Translation = Translation(),
                      perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
         if let column = textInImage.column {
             addTextItems(column, actions: actions, isReviewing: isReviewing, to: menu, perform: perform)
+        } else if let column = translation.column {
+            addTranslationItems(column, translation: translation, actions: actions, isReviewing: isReviewing,
+                                to: menu, perform: perform)
         } else {
             let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
             primary.isEnabled = canAct && !isReviewing
@@ -96,9 +131,18 @@ enum ActionMenu {
             if let row, row.kind != .image { extract.toolTip = noTextToExtractHelp }
             menu.addItem(extract)
         }
+        if translation.column == nil {
+            let translate = ActionMenuItem("Translate", key: "t", modifiers: .command) { perform(.showTranslation) }
+            translate.isEnabled = translation.isOffered && row != nil && !isReviewing
+            if let row, !QuickAccessState.isTranslatable(row.kind) { translate.toolTip = noTextToTranslateHelp }
+            menu.addItem(translate)
+            menu.addItem(translateTo(translation, isEnabled: translate.isEnabled, toolTip: translate.toolTip,
+                                     perform: perform))
+        }
         menu.addItem(.separator())
-        // While the text shows, ⌘S keeps the text; this item still keeps the clip.
-        let save = ActionMenuItem("Save as Snippet", key: textInImage.column == nil ? "s" : "", modifiers: .command) {
+        // While the text or a translation shows, ⌘S keeps it; this item still keeps the clip.
+        let showsResult = textInImage.column != nil || translation.column != nil
+        let save = ActionMenuItem("Save as Snippet", key: showsResult ? "" : "s", modifiers: .command) {
             perform(.saveSnippet)
         }
         let isSnippet = row?.facet == .memo
@@ -165,6 +209,65 @@ enum ActionMenu {
         return menu
     }
 
+    /// What can be done with the translation beside a text: take it as Return does, copy it beside a paste, keep it as
+    /// a snippet, stop making it, make it, or make it again after a failure, and make it in another language.
+    private static func addTranslationItems(_ column: Translation.Column, translation: Translation,
+                                            actions: QuickAccessActions, isReviewing: Bool, to menu: NSMenu,
+                                            perform: @escaping (ActionMenuCommand) -> Void) {
+        let take = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
+        take.isEnabled = column.canTake && !isReviewing
+        menu.addItem(take)
+        if let title = actions.copyOnlyTitle {
+            let copy = ActionMenuItem(title, key: "c", modifiers: .command) { perform(.copyText) }
+            copy.isEnabled = column.hasText
+            menu.addItem(copy)
+        }
+        let save = ActionMenuItem("Save Translation as Snippet", key: "s", modifiers: .command) {
+            perform(.saveTextAsSnippet)
+        }
+        save.isEnabled = column.hasText
+        menu.addItem(save)
+        let stop = ActionMenuItem("Stop", key: ".", modifiers: .command) { perform(.stopTranslation) }
+        stop.isEnabled = column.canStop
+        menu.addItem(stop)
+        let translate = ActionMenuItem(column.failed ? "Try Again" : "Translate", key: "t", modifiers: .command) {
+            perform(.translate)
+        }
+        translate.isEnabled = column.canTranslate && !isReviewing
+        menu.addItem(translate)
+        menu.addItem(translateTo(translation, isEnabled: !isReviewing, toolTip: nil, perform: perform))
+    }
+
+    /// Translate To: its submenu lists the languages translations can be made in, as the language menu does.
+    private static func translateTo(_ translation: Translation, isEnabled: Bool, toolTip: String?,
+                                    perform: @escaping (ActionMenuCommand) -> Void) -> NSMenuItem {
+        let item = NSMenuItem(title: "Translate To", action: nil, keyEquivalent: "")
+        let languages = translation.languages
+        item.submenu = LanguageSubmenu(languages: translation.currentLanguages ?? { languages }) {
+            perform(.translateInto($0))
+        }
+        item.isEnabled = isEnabled
+        item.toolTip = toolTip
+        return item
+    }
+
+    /// The languages translations can be made in, as the language menu lists them: the ones the person prefers, then a
+    /// separator and the others. The language chosen is checked, and what translating into a language needs is said
+    /// after its name, as the system's menus say such things, and in what VoiceOver reads.
+    static func addLanguageItems(_ languages: TranslationLanguageMenu, to menu: NSMenu,
+                                 choose: @escaping (String) -> Void) {
+        func add(_ language: TranslationLanguageMenu.Item) {
+            let item = ActionMenuItem(language.name, key: "", modifiers: []) { choose(language.code) }
+            item.state = language.isChosen ? .on : .off
+            item.badge = language.note.map { NSMenuItemBadge(string: $0.title) }
+            item.setAccessibilityLabel(language.spokenName)
+            menu.addItem(item)
+        }
+        languages.preferred.forEach(add)
+        if !languages.preferred.isEmpty, !languages.others.isEmpty { menu.addItem(.separator()) }
+        languages.others.forEach(add)
+    }
+
     /// What can be done with the text beside an image: take it as Return does, copy it beside a paste, keep it as a
     /// snippet, lay it out, stop making it, and make it, or make it again after a failure.
     private static func addTextItems(_ column: TextInImage.Column, actions: QuickAccessActions, isReviewing: Bool,
@@ -226,6 +329,30 @@ enum ActionMenu {
     /// clip nor the search field. `frame` is the clip's frame in `view`.
     static func anchor(beside frame: NSRect, in view: NSView) -> NSPoint {
         NSPoint(x: frame.maxX + 8, y: view.isFlipped ? frame.minY : frame.maxY)
+    }
+}
+
+/// Translate To's languages: listed as the actions menu is made, and again from what is known each time the submenu
+/// opens, as the languages the menu's opening began to read may have been read since.
+@MainActor
+private final class LanguageSubmenu: NSMenu, NSMenuDelegate {
+    private let languages: () -> TranslationLanguageMenu
+    private let choose: (String) -> Void
+
+    init(languages: @escaping () -> TranslationLanguageMenu, choose: @escaping (String) -> Void) {
+        self.languages = languages
+        self.choose = choose
+        super.init(title: "Translate To")
+        autoenablesItems = false
+        delegate = self
+        ActionMenu.addLanguageItems(languages(), to: self, choose: choose)
+    }
+
+    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        removeAllItems()
+        ActionMenu.addLanguageItems(languages(), to: self, choose: choose)
     }
 }
 

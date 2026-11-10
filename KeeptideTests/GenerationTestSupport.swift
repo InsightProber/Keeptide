@@ -161,9 +161,28 @@ final class ScriptedTranslator: TranslationEngine, @unchecked Sendable {
     let tier: EngineTier
     private let lock = NSLock()
     private var requests: [Request] = []
+    private var scriptedLanguages: [Locale.Language] = []
+    private var scriptedStatuses: [TranslationPair: TranslationPairStatus] = [:]
 
     init(tier: EngineTier = .onThisMac) {
         self.tier = tier
+    }
+
+    /// The languages it says it translates, and what each pair needs on this Mac; a pair not given needs nothing.
+    func script(languages: [String], statuses: [(from: String, to: String, TranslationPairStatus)] = []) {
+        lock.withLock {
+            scriptedLanguages = languages.map(Locale.Language.init(identifier:))
+            scriptedStatuses = Dictionary(statuses.map { from, to, status in
+                (TranslationPair(source: Locale.Language(identifier: from), target: Locale.Language(identifier: to)),
+                 status)
+            }, uniquingKeysWith: { _, last in last })
+        }
+    }
+
+    func supportedLanguages() async -> [Locale.Language] { lock.withLock { scriptedLanguages } }
+
+    func status(of pair: TranslationPair) async -> TranslationPairStatus {
+        lock.withLock { scriptedStatuses[pair] ?? .installed }
     }
 
     func translate(_ text: @escaping @Sendable () async throws -> String, from source: Locale.Language?,
@@ -184,4 +203,14 @@ func startedSource(_ recognizer: ScriptedRecognizer, _ index: Int, file: StaticS
                    line: UInt = #line) async throws -> ControlledSource {
     await waitUntil("source \(index) is read", file: file, line: line) { (recognizer.source(index)?.startCount ?? 0) > 0 }
     return try XCTUnwrap(recognizer.source(index), file: file, line: line)
+}
+
+/// The translator's `index`th source, once its job has started reading it.
+@MainActor
+func startedTranslation(_ translator: ScriptedTranslator, _ index: Int, file: StaticString = #filePath,
+                        line: UInt = #line) async throws -> ControlledSource {
+    await waitUntil("translation \(index) is read", file: file, line: line) {
+        (translator.request(index)?.generation.startCount ?? 0) > 0
+    }
+    return try XCTUnwrap(translator.request(index)?.generation, file: file, line: line)
 }

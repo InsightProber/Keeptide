@@ -26,6 +26,8 @@ struct QuickAccessBandView: View {
         let cancelCommandReview: () -> Void
         /// Copies text the preview shows, such as part of the text recognized in an image, as the panel copies it.
         let copyText: (String) -> Void
+        /// Where the translation's title is, in the band, as it is laid out: the language menu opens below it.
+        var languageTitleMoved: (CGRect) -> Void = { _ in }
     }
 
     let layout: Layout
@@ -148,17 +150,22 @@ struct QuickAccessBandView: View {
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 
-    /// What the preview's bar holds after the close button: Preview | Text for an image, and while its text shows,
-    /// Stop or Keep Line Breaks at the end. While the preview is split, the segments stay for a clip without text in
-    /// an image too, with Text chosen and dimmed, and Preview leaves the split.
+    /// What the preview's bar holds after the close button: the columns the clip has beside its preview, Preview | Text
+    /// | Translation for an image and Preview | Translation for text, and while the text in an image shows, Stop or Keep
+    /// Line Breaks at the end, or Stop while a translation is made. While the preview is split, the column chosen stays
+    /// for a clip without it too, dimmed, and Preview leaves the split.
     @ViewBuilder
     private var previewBar: some View {
-        if state.offersTextInImage || state.isPreviewSplit {
-            previewSegments(textChosen: state.isPreviewSplit, textEnabled: state.offersTextInImage)
-        } else {
+        let chosen = state.isPreviewSplit ? state.resultColumn : nil
+        let columns = [(column: ResultColumn.text, enabled: state.offersTextInImage),
+                       (column: ResultColumn.translation, enabled: state.offersTranslation)]
+            .filter { $0.enabled || $0.column == chosen }
+        if columns.isEmpty {
             Text("Preview")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+        } else {
+            previewSegments(columns, chosen: chosen)
         }
         Spacer()
         if let column = state.textColumn {
@@ -178,11 +185,26 @@ struct QuickAccessBandView: View {
             }
             textButtons(enabled: state.textColumnText != nil)
         }
+        if let column = state.translationColumn {
+            if column.isTranslating {
+                Button { actions.previewCommand(.stopTranslation) } label: {
+                    HStack(spacing: 6) {
+                        Text("Stop")
+                        ReviewKeycap(symbol: "⌘.")
+                    }
+                }
+                .buttonStyle(TrayCapsuleButtonStyle())
+                .accessibilityLabel("Stop")
+                .accessibilityIdentifier("QuickAccessStopTranslation")
+                .help("Stop Translating (⌘.)")
+            }
+            textButtons(enabled: state.translationColumnText != nil, name: "Translation")
+        }
     }
 
-    /// Copy and Save as Snippet for the text beside an image, dimmed until there is text. After a copy, "Copied" shows
-    /// beside Copy for a moment.
-    private func textButtons(enabled: Bool) -> some View {
+    /// Copy and Save as Snippet for the text beside an image, or the translation beside a text, dimmed until there is
+    /// one. After a copy, "Copied" shows beside Copy for a moment.
+    private func textButtons(enabled: Bool, name: String = "Text") -> some View {
         HStack(spacing: 8) {
             if state.isTextCopied {
                 Text("Copied")
@@ -190,10 +212,10 @@ struct QuickAccessBandView: View {
                     .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
                     .accessibilityIdentifier("QuickAccessTextCopied")
             }
-            TrayRoundButton(symbol: "doc.on.doc", label: "Copy Text", help: "Copy Text (⌘C)",
-                            identifier: "QuickAccessCopyText") { actions.previewCommand(.copyText) }
-            TrayRoundButton(symbol: "bookmark", label: "Save Text as Snippet", help: "Save Text as Snippet (⌘S)",
-                            identifier: "QuickAccessSaveText") { actions.previewCommand(.saveTextAsSnippet) }
+            TrayRoundButton(symbol: "doc.on.doc", label: "Copy \(name)", help: "Copy \(name) (⌘C)",
+                            identifier: "QuickAccessCopy\(name)") { actions.previewCommand(.copyText) }
+            TrayRoundButton(symbol: "bookmark", label: "Save \(name) as Snippet", help: "Save \(name) as Snippet (⌘S)",
+                            identifier: "QuickAccessSave\(name)") { actions.previewCommand(.saveTextAsSnippet) }
         }
         .disabled(!enabled)
     }
@@ -225,6 +247,15 @@ struct QuickAccessBandView: View {
             QuickAccessSplitPreview(preview: state.preview, applicationName: applicationName, column: column, ref: ref,
                                     isJustMade: state.isTextColumnJustMade, onCommand: actions.previewCommand,
                                     onCopy: actions.copyText)
+        } else if let ref = state.translationColumnRef, let column = state.translationColumn {
+            let asked = column.askedLanguage.map(Locale.Language.init(identifier:)) ?? state.translationTarget
+            QuickAccessTranslationSplit(original: state.translationOriginal, preview: state.preview,
+                                        applicationName: applicationName, column: column,
+                                        target: state.translationTarget,
+                                        nextTarget: state.translationTarget(after: asked), ref: ref,
+                                        isJustMade: state.isTranslationColumnJustMade,
+                                        onCommand: actions.previewCommand, onCopy: actions.copyText,
+                                        onLanguageTitleMoved: actions.languageTitleMoved)
         } else {
             QuickAccessPreviewView(preview: state.preview,
                                    applicationName: applicationName,
@@ -240,18 +271,33 @@ struct QuickAccessBandView: View {
         }
     }
 
-    /// Preview | Text: Text shows the text in an image beside it, and Preview leaves the split.
-    private func previewSegments(textChosen: Bool, textEnabled: Bool) -> some View {
-        TraySegments(segments: [
-            .init(id: "Preview", title: "Preview", isChosen: !textChosen,
-                  help: textChosen ? "Preview Alone (Esc)" : nil) {
-                if textChosen { actions.previewCommand(.closeResultColumn) }
-            },
-            .init(id: "Text", title: "Text", isChosen: textChosen, isEnabled: textEnabled,
-                  help: textEnabled ? "\(TextColumnWords.title) (⇧⌘T)" : "\(TextColumnWords.title), for an image") {
-                if !textChosen { actions.previewCommand(.showTextInImage) }
-            },
-        ])
+    /// Preview, then a segment for each column: the text in an image, or the translation of a text or of the text in an
+    /// image, beside it. Preview leaves the split.
+    private func previewSegments(_ columns: [(column: ResultColumn, enabled: Bool)],
+                                 chosen: ResultColumn?) -> some View {
+        let segments = columns.map { column, enabled -> TraySegments.Segment in
+            let isChosen = column == chosen
+            switch column {
+            case .text:
+                return .init(id: "Text", title: "Text", isChosen: isChosen, isEnabled: enabled,
+                             help: enabled ? "\(TextColumnWords.title) (⇧⌘T)"
+                                 : "\(TextColumnWords.title), for an image") {
+                    if !isChosen { actions.previewCommand(.showTextInImage) }
+                }
+            case .translation:
+                return .init(id: "Translation", title: TranslationColumnWords.title, isChosen: isChosen,
+                             isEnabled: enabled,
+                             help: enabled ? "\(TranslationColumnWords.title) (⌘T)"
+                                 : "\(TranslationColumnWords.title), for text or an image") {
+                    if !isChosen { actions.previewCommand(.showTranslation) }
+                }
+            }
+        }
+        let preview = TraySegments.Segment(id: "Preview", title: "Preview", isChosen: chosen == nil,
+                                           help: chosen != nil ? "Preview Alone (Esc)" : nil) {
+            if chosen != nil { actions.previewCommand(.closeResultColumn) }
+        }
+        return TraySegments(segments: [preview] + segments)
     }
 }
 

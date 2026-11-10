@@ -63,6 +63,12 @@ struct DerivedText: Equatable, Sendable {
     let createdAt: Date
 }
 
+/// What a card says of a kept result: how whole it is, and the language it is in.
+struct DerivedTextSummary: Equatable, Sendable {
+    let status: DerivedTextStatus
+    let targetLanguage: String?
+}
+
 /// The results kept beside items in the library's local store: one per item, facet and operation, so that a new result
 /// replaces the old one rather than piling up. A result is bound to its item's content as it was: while the item is in
 /// Recently Deleted, after it changed, or under another store generation, there is no result for it, and the item's
@@ -182,14 +188,14 @@ final class DerivedTextStore: @unchecked Sendable {
         }
     }
 
-    /// Which of these sources have a whole result of the operation, for exactly their content, in this store
-    /// generation: what the cards say of their items, read for the cards on screen at once. One fetch finds the rows of
-    /// all the items; only an item with a whole result is checked for being current. A row that can't be read, or an
-    /// item that can't be checked, is no result, and the others still count.
-    func sourcesWithWholeResults(_ sources: [ContentRef],
-                                 operation: DerivedTextOperation) async throws -> Set<ContentRef> {
+    /// What is kept of the operation for these sources, each for exactly its content in this store generation: how
+    /// whole each result is and the language it is in, which the cards say of their items, read for the cards on screen
+    /// at once. One fetch finds the rows of all the items. A row that can't be read, or an item that can't be checked,
+    /// is no result, and the others still count.
+    func summaries(of sources: [ContentRef],
+                   operation: DerivedTextOperation) async throws -> [ContentRef: DerivedTextSummary] {
         let wanted = Set(sources)
-        guard !wanted.isEmpty else { return [] }
+        guard !wanted.isEmpty else { return [:] }
         let itemIDs = Set(wanted.map(\.itemID.rawValue)).map { $0 as NSUUID }
         let controller = controller
         return try await controller.perform { context in
@@ -198,12 +204,11 @@ final class DerivedTextStore: @unchecked Sendable {
             let identity = controller.runtime.identity
             let request = NSFetchRequest<NSManagedObject>(entityName: "DerivedText")
             request.predicate = NSPredicate(format: "itemID IN %@ AND operation == %@", itemIDs, operation.rawValue)
-            var found: Set<ContentRef> = []
-            for object in try context.fetch(request) {
-                guard let kept = try? Self.result(from: object), wanted.contains(kept.source),
-                      !found.contains(kept.source), Self.isWholeResult(object, of: kept.source, under: identity),
+            var found: [ContentRef: DerivedTextSummary] = [:]
+            for object in try context.fetch(request) where Self.isWritten(object, under: identity) {
+                guard let kept = try? Self.result(from: object), wanted.contains(kept.source), found[kept.source] == nil,
                       (try? Self.isCurrent(kept.source, in: context)) == true else { continue }
-                found.insert(kept.source)
+                found[kept.source] = DerivedTextSummary(status: kept.status, targetLanguage: kept.targetLanguage)
             }
             return found
         }
