@@ -185,19 +185,27 @@ final class GenerationJobTests: XCTestCase {
         let automaticA = ControlledSource()
         let automaticB = ControlledSource()
         let person = ControlledSource()
+        let another = ControlledSource()
         let a = center.start(item("a"), lane: .onDevice, priority: .automatic, options: options(), source: automaticA) { _ in }
         let b = center.start(item("b"), lane: .onDevice, priority: .automatic, options: options(), source: automaticB) { _ in }
-        let c = center.start(item("c"), lane: .onDevice, priority: .user, options: options(), source: person) { _ in }
         await waitUntil("the first job starts") { automaticA.startCount == 1 }
         XCTAssertEqual(b.snapshot.phase, .queued)
-        XCTAssertEqual(c.snapshot.phase, .queued)
-        XCTAssertEqual(center.jobs.count, 3)
+        XCTAssertEqual(center.jobs.count, 2)
 
-        automaticA.send(.delta("Done"), .finished(.completed))
-        await waitUntil("the person's job starts next") { person.startCount == 1 }
-        XCTAssertEqual(a.snapshot.phase, .finished(.completed))
+        // A person's job doesn't wait for one running in the background: that one gives way, and the person's runs
+        // next, ahead of the one still waiting.
+        let c = center.start(item("c"), lane: .onDevice, priority: .user, options: options(), source: person) { _ in }
+        await waitUntil("the person's job starts") { person.startCount == 1 }
+        XCTAssertEqual(a.snapshot.phase, .stopped(.yielded))
         XCTAssertEqual(b.snapshot.phase, .queued)
         XCTAssertEqual(automaticB.startCount, 0)
+        // Another person's job waits its turn: a person's job never gives way.
+        let d = center.start(item("d"), lane: .onDevice, priority: .user, options: options(), source: another) { _ in }
+        XCTAssertEqual(d.snapshot.phase, .queued)
+        person.send(.delta("Done"), .finished(.completed))
+        await waitUntil("the next person's job starts") { another.startCount == 1 }
+        XCTAssertEqual(c.snapshot.phase, .finished(.completed))
+        XCTAssertEqual(automaticB.startCount, 0, "The one in the background still waits behind")
     }
 
     func testJobsOfTheSamePriorityStartInTheOrderTheyCame() async {

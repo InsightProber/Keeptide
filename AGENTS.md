@@ -46,9 +46,10 @@ into the language fixed in Settings › AI, or else the one last chosen from the
 menu its title and ⌥⌘T open, which marks the languages not downloaded, and kept
 locally; Return, ⌘C and ⌘S then take it in the same way; translating or
 recognizing again that fails leaves the earlier result. Settings › AI sets the
-line breaks and the language to translate into, Last Used or a fixed one, lists
-what each preferred language needs to be translated into it, and says whether
-Apple Intelligence is available; nothing uses Apple Intelligence yet.
+line breaks and the language to translate into, Last Used or a fixed one, can
+translate new text in other languages automatically in the background on this
+Mac, lists what each preferred language needs to be translated into it, and says
+whether Apple Intelligence is available; nothing uses Apple Intelligence yet.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
 Planned capabilities must stay labelled until implemented and verified.

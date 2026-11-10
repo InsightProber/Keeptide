@@ -127,6 +127,59 @@ final class CaptureSessionTests: XCTestCase {
         return data as Data
     }
 
+    func testTextCopiedInAnotherLanguageIsTranslatedWhereTranslateAutomaticallyIsOn() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "fr-FR", "zh-Hans-CN"])
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard,
+                                     translator: translator)
+        var automatic: (fixed: String?, lastUsed: String?)?
+        session.automaticTranslation = { automatic }
+        await session.initialize(testSessionID: configuration.id)
+        func copy(_ text: String) {
+            clipboard.copies.append([CapturedRepresentation(typeIdentifier: "public.utf8-plain-text", bytes: Data(text.utf8))])
+            clipboard.changeCount += 1
+        }
+        let french = "Le rapport trimestriel est attendu vendredi, avec les chiffres définitifs de chaque équipe."
+
+        // While Translate automatically is off, text is translated only when asked.
+        copy(french)
+        try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(translator.request(0))
+        // Turned on, text copied is translated, a clip copied again as much as a new one.
+        automatic = (nil, "zh-Hans")
+        copy(french)
+        let engine = try await startedTranslation(translator, 0)
+        let clip = try XCTUnwrap(session.recent.first?.history)
+        XCTAssertEqual(session.derivedText?.job(for: clip, operation: .translate)?.priority, .automatic)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "zh-Hans-CN"))
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度报告将于周五提交。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil {
+            guard case .saved? = session.derivedText?.outcome(for: clip, operation: .translate) else { return false }
+            return true
+        }
+        // Copied again once its translation is kept, it isn't translated again; nor is an image, which has no text
+        // to translate until it is recognized.
+        let reads = clipboard.readsStarted
+        copy(french)
+        try await SearchTestSupport.waitUntil { clipboard.readsStarted > reads }
+        clipboard.copies.append([CapturedRepresentation(typeIdentifier: "public.png", bytes: try Self.screenshot([
+            "Le rapport trimestriel est attendu vendredi.",
+        ]))])
+        clipboard.changeCount += 1
+        try await SearchTestSupport.waitUntil { session.recent.count == 2 }
+        copy("The quarterly report is due on Friday, with the final numbers from every team.")
+        try await SearchTestSupport.waitUntil { session.recent.count == 3 }
+        _ = try await startedTranslation(translator, 1)
+        let text = try await translator.request(1)?.text()
+        XCTAssertEqual(text, "The quarterly report is due on Friday, with the final numbers from every team.",
+                       "Only the new text is translated")
+        await session.shutdown()
+    }
+
     func testQuickAccessServicesReadUsesFromTheSessionsStore() async throws {
         let configuration = try makeIsolatedSession()
         let session = CaptureSession()

@@ -67,8 +67,11 @@ snippets in a native library.
   name above the translation, or ⌥⌘T, opens a menu of languages that marks the
   ones to download first. An image's text is recognized first when it hasn't
   been. Code, links and parts already in that language stay as they are. Nothing
-  is translated until you ask, a card shows when it is being translated or has
-  been, and when translating again fails, the earlier translation stays.
+  is translated until you ask, unless **Translate automatically** is on in
+  **Settings › AI**: then new text in another language is translated on this Mac
+  as you copy it. A card shows when a translation you asked for is under way,
+  and once a text has been translated; when translating again fails, the earlier
+  translation stays.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
@@ -174,7 +177,7 @@ Choose **Settings…** from the menu-bar menu.
 | General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, whether direct paste is on, opening at login, the welcome window and library export |
 | Shortcuts | The quick access shortcut: ⇧⌘V, ⌥⌘V, ⌃⌘V or off |
 | Privacy | Ignored apps, how long to keep clipboard history (from one day to forever) and storage warnings |
-| AI | Whether recognized text keeps its line breaks, the language to translate into (the last one chosen, or one you fix), what translating from each of your languages into it needs on this Mac, and whether Apple Intelligence is available (Keeptide doesn't use it yet) |
+| AI | Whether recognized text keeps its line breaks, the language to translate into (the last one chosen, or one you fix), whether new text in other languages is translated as you copy it, what translating from each of your languages into it needs on this Mac, and whether Apple Intelligence is available (Keeptide doesn't use it yet) |
 | iCloud | Shows that iCloud saving is not available in this build |
 
 ## Privacy

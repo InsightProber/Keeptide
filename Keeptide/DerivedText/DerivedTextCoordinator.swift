@@ -85,6 +85,8 @@ final class DerivedTextCoordinator {
     @ObservationIgnored private let identity: StoreIdentity
     @ObservationIgnored private let recognizer: any TextRecognitionEngine
     @ObservationIgnored private let translator: any TranslationEngine
+    /// The languages the person prefers, first first, as the system lists them.
+    @ObservationIgnored private let preferredLanguages: @Sendable () -> [String]
     @ObservationIgnored private let image: @Sendable (ContentRef) async throws -> CGImage
     @ObservationIgnored private let text: @Sendable (ContentRef) async throws -> String
     /// The latest request for each item and operation, while its job runs or its result is saved. Only its ending
@@ -100,8 +102,11 @@ final class DerivedTextCoordinator {
     /// `identity` is the store generation the library opened with; results are kept only under it. `image` reads an
     /// item's image at its full size, and `text` an item's text, as plain text.
     init(store: DerivedTextStore, identity: StoreIdentity, recognizer: any TextRecognitionEngine,
-         translator: any TranslationEngine, image: @escaping @Sendable (ContentRef) async throws -> CGImage,
+         translator: any TranslationEngine,
+         preferredLanguages: @escaping @Sendable () -> [String] = { Locale.preferredLanguages },
+         image: @escaping @Sendable (ContentRef) async throws -> CGImage,
          text: @escaping @Sendable (ContentRef) async throws -> String) {
+        self.preferredLanguages = preferredLanguages
         self.store = store
         self.identity = identity
         self.recognizer = recognizer
@@ -244,6 +249,46 @@ final class DerivedTextCoordinator {
                         asked: .translateImage(to: target, keepingLineBreaks: keepingLineBreaks))
     }
 
+    /// Translates the text of an item just copied in the background, as Translate automatically does: on this Mac only,
+    /// into the language fixed in Settings, else the one last used, as quick access would make one. Only text in another
+    /// language, of no more than `automaticLength` characters, whose main language this Mac translates from without a
+    /// download is translated, and never in place of anything asked for, made, kept from before in whatever language, or
+    /// under way. It gives way to every job a person asks for, and nothing is said of it while it runs, or if it ends with
+    /// nothing to keep; once made, the translation is kept as any is.
+    func translateAutomatically(_ source: ContentRef, fixed: String?, lastUsed: String?) {
+        let key = Self.key(for: source, operation: .translate)
+        // Copied text never leaves this Mac to be translated.
+        guard !isClosed, translator.tier == .onThisMac, job(for: source, operation: .translate) == nil,
+              waiting[key] == nil, !hasMade(source, key) else { return }
+        let text = text
+        let translator = translator
+        let preferredLanguages = preferredLanguages
+        Task { [weak self] in
+            // What was kept is read first; while the store can't say, nothing is translated.
+            guard let store = self?.store else { return }
+            let kept: DerivedText?
+            do { kept = try await store.result(for: source, operation: .translate) } catch { return }
+            guard kept == nil else { return }
+            let offered = await translator.supportedLanguages()
+            let target = TranslationTargets.target(fixed: fixed, lastUsed: lastUsed, preferred: preferredLanguages(),
+                                                   offered: offered)
+            guard let body = try? await text(source) else { return }
+            // A long text is measured, and its language told, away from the main actor.
+            let telling = Task.detached(priority: .utility) { () -> Locale.Language? in
+                guard body.count <= Self.automaticLength else { return nil }
+                return TranslationSource.mainLanguage(of: body, supported: offered)
+            }
+            guard let language = await telling.value, !language.isSameLanguage(as: target),
+                  await translator.status(of: TranslationPair(source: language, target: target)) == .installed,
+                  let self, !isClosed, job(for: source, operation: .translate) == nil, waiting[key] == nil,
+                  !hasMade(source, key) else { return }
+            startTranslation(source, text: body, to: target, priority: .automatic)
+        }
+    }
+
+    /// The longest text Translate automatically translates, in characters.
+    nonisolated static let automaticLength = 5_000
+
     /// Translates the text in an image into `target`: the text recognized in this session, or else kept from before,
     /// and otherwise the text a recognition finds first, in this layout. A recognition under way is waited for. The
     /// translation starts in place of any under way for the image. An image with no text in it, or whose recognition
@@ -338,7 +383,8 @@ final class DerivedTextCoordinator {
 
     private func startUnlessMade(_ source: ContentRef, operation: DerivedTextOperation, asked: Asked) {
         let key = Self.key(for: source, operation: operation)
-        guard !isClosed, job(for: source, operation: operation) == nil else { return }
+        // A job made in the background gives way to the same one asked for, which goes ahead of it.
+        guard !isClosed, Self.givesWay(job(for: source, operation: operation)) else { return }
         if waiting[key]?.source == source {
             waiting[key] = (source, asked)
             return
@@ -351,7 +397,9 @@ final class DerivedTextCoordinator {
             guard let self, let request = waiting[key], request.source == source else { return }
             waiting[key] = nil
             // Meanwhile a job may have been asked for, and may have made something.
-            guard kept == nil, job(for: source, operation: operation) == nil, !hasMade(source, key) else { return }
+            guard kept == nil, Self.givesWay(job(for: source, operation: operation)), !hasMade(source, key) else {
+                return
+            }
             switch request.asked {
             case .extractText(let keepsLineBreaks): extractText(from: source, keepingLineBreaks: keepsLineBreaks)
             case .translate(let target): translate(source, to: target)
@@ -373,7 +421,7 @@ final class DerivedTextCoordinator {
     /// Starts translating `given` text of an item, or the item's own text without it.
     @discardableResult
     private func startTranslation(_ source: ContentRef, text given: String?, from language: Locale.Language? = nil,
-                                  to target: Locale.Language) -> GenerationJob? {
+                                  to target: Locale.Language, priority: JobPriority = .user) -> GenerationJob? {
         guard !isClosed else { return nil }
         let text = text
         let generation = translator.translate({
@@ -386,7 +434,21 @@ final class DerivedTextCoordinator {
         // A first translation loads its languages, and a long paragraph takes some seconds, the first or any other.
         options.firstTextTimeout = .seconds(90)
         options.idleTimeout = .seconds(90)
-        return start(request, lane: translator.tier.lane, options: options, generation: generation)
+        let key = Self.key(for: source, operation: .translate)
+        // One made in the background that gave way to what a person asked for is asked for again, behind it, unless
+        // something was asked for or made of the item meanwhile.
+        let again: (() -> Void)? = priority == .automatic ? { [weak self] in
+            guard let self, !isClosed, job(for: source, operation: .translate) == nil, waiting[key] == nil,
+                  !hasMade(source, key) else { return }
+            startTranslation(source, text: given, from: language, to: target, priority: .automatic)
+        } : nil
+        return start(request, lane: translator.tier.lane, priority: priority, options: options, generation: generation,
+                     again: again)
+    }
+
+    /// No job, or one made in the background, which the same job asked for by a person replaces.
+    private static func givesWay(_ job: GenerationJob?) -> Bool {
+        job.map { $0.priority == .automatic } ?? true
     }
 
     // MARK: Languages
@@ -478,23 +540,31 @@ final class DerivedTextCoordinator {
         GenerationKey(item: "\(source.itemID.rawValue.uuidString)/\(source.facet.rawValue)", action: operation.rawValue)
     }
 
-    private func start(_ request: DerivedTextRequest, lane: JobLane, options: GenerationJob.Options,
-                       generation: any GenerationSource) -> GenerationJob {
+    private func start(_ request: DerivedTextRequest, lane: JobLane, priority: JobPriority = .user,
+                       options: GenerationJob.Options, generation: any GenerationSource,
+                       again: (() -> Void)? = nil) -> GenerationJob {
         let key = Self.key(for: request.source, operation: request.operation)
         let token = UUID()
         // Before the job starts: starting it stops the one under way, whose end this request now outranks, and it
         // stands in for a request still waiting on the store.
         latest[key] = (token, request)
         waiting[key] = nil
-        return jobs.start(key, lane: lane, priority: .user, options: options, source: generation) { [weak self] in
-            self?.end($0, of: request, key: key, token: token)
+        return jobs.start(key, lane: lane, priority: priority, options: options, source: generation) { [weak self] in
+            self?.end($0, of: request, key: key, token: token, priority: priority, again: again)
         }
     }
 
     private func end(_ snapshot: GenerationSnapshot, of request: DerivedTextRequest, key: GenerationKey,
-                     token: UUID) {
+                     token: UUID, priority: JobPriority, again: (() -> Void)?) {
         // A newer request, or the library closing, decides what the item shows.
         guard !isClosed, latest[key]?.token == token else { return }
+        // Nobody asked for what is made in the background: one that ends with nothing to keep is said to nobody, and
+        // leaves what was kept.
+        if priority == .automatic, [.discard, .clear].contains(snapshot.saveDecision) {
+            latest[key] = nil
+            if case .stopped(.yielded) = snapshot.phase { again?() }
+            return
+        }
         lastEnded[key] = token
         if request.operation == .extractText, let waiting = afterText[key], waiting.source == request.source {
             afterText[key] = nil

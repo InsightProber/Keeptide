@@ -68,6 +68,12 @@ final class AppEnvironment {
         settingsFactory = makeSettings
         onboardingFactory = makeOnboarding
         showLibraryOverride = showLibrary
+        // New text is translated in the background where Translate automatically is on, into the language quick access
+        // would translate it into.
+        captureSession.automaticTranslation = { [weak self] in
+            guard let preferences = self?.quickAccessPreferences, preferences.translatesAutomatically else { return nil }
+            return (preferences.fixedTranslationTarget, preferences.translationTarget)
+        }
         captureSession.onServicesChanged = { [weak self] in
             guard let self else { return }
             self.panel?.state.servicesDidChange()
