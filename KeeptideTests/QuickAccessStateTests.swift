@@ -1761,7 +1761,7 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja-JP"))
         XCTAssertEqual(state.translationLanguageMenu.preferred.map(\.isChosen), [true, false])
         // So is a language chosen before that Translation no longer offers.
-        state.restoreTranslationTarget("sv")
+        state.restoreTranslationTarget("sv", fixed: nil)
         XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja-JP"))
     }
 
@@ -1832,7 +1832,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.translationLanguageMenu.preferred.first?.note != nil }
         XCTAssertEqual(state.translationLanguageMenu.preferred.first?.code, "en")
         XCTAssertEqual(state.translationLanguageMenu.preferred.first?.note, .notDownloaded, "US English's")
-        state.restoreTranslationTarget("en")
+        state.restoreTranslationTarget("en", fixed: nil)
         XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "en-US"))
     }
 
@@ -1940,22 +1940,62 @@ final class QuickAccessStateTests: XCTestCase {
         let translator = ScriptedTranslator()
         let (state, _) = try await makeTranslationPanel(translator)
 
-        state.restoreTranslationTarget("fr")
+        state.restoreTranslationTarget("fr", fixed: nil)
         XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "fr"))
         state.showTranslation()
         _ = try await startedTranslation(translator, 0)
         XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "fr"))
         // Without a choice, or with one that names no language, the first the person prefers.
-        state.restoreTranslationTarget(nil)
+        state.restoreTranslationTarget(nil, fixed: nil)
         XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "zh-Hans-CN"))
         for nothing in ["", "zz", "123"] {
-            state.restoreTranslationTarget(nothing)
+            state.restoreTranslationTarget(nothing, fixed: nil)
             XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "zh-Hans-CN"), nothing)
         }
         // A choice is kept as translations name the language, and one that names none chooses nothing.
         XCTAssertEqual(state.chooseTranslationLanguage("ja-JP"), "ja")
         XCTAssertNil(state.chooseTranslationLanguage("zz"))
         XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja"))
+    }
+
+    func testALanguageFixedInSettingsIsTheOneTranslationsAreMadeInAndTheMenuTranslatesIntoAnotherOnce() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+
+        state.restoreTranslationTarget("fr", fixed: "ja")
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja"), "The fixed language, not the last used")
+        state.showTranslation()
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "ja"))
+        // A language chosen in the menu translates the clip into it and is kept as the last used one, but the fixed
+        // language stays the one translations are made in.
+        XCTAssertEqual(state.chooseTranslationLanguage("de"), "de")
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "de"))
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja"))
+        // Without a fixed language, or with one that names none, the last used one again.
+        for nothing in [nil, "", "zz"] as [String?] {
+            state.restoreTranslationTarget("de", fixed: nothing)
+            XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "de"), String(describing: nothing))
+        }
+    }
+
+    func testALanguageFixedInSettingsThatTranslationDoesntOfferGivesWayToTheLastUsedOne() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR", "ja-JP"])
+        let (state, _) = try await makeTranslationPanel(translator)
+        try await SearchTestSupport.waitUntil { state.knownTranslationLanguages.count == 4 }
+
+        state.restoreTranslationTarget("fr", fixed: "sv")
+
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "fr-FR"))
+        // Nor is a code that names no language taken, whatever Translation offers.
+        XCTAssertEqual(TranslationTargets.target(fixed: "zz", lastUsed: nil, preferred: ["zh-Hans-CN"], offered: []),
+                       Locale.Language(identifier: "zh-Hans-CN"))
+        // The language menu checks the fixed language for a clip whose column shows none.
+        state.restoreTranslationTarget("fr", fixed: "ja")
+        XCTAssertEqual(state.translationLanguageMenu.others.filter(\.isChosen).map(\.code), ["ja"])
+        XCTAssertEqual(state.translationLanguageMenu.preferred.filter(\.isChosen).map(\.code), [])
     }
 
     func testFindingNoTextInTheOtherLayoutReplacesTheTextMadeBefore() async throws {

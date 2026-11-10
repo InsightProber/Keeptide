@@ -222,6 +222,7 @@ final class AppEnvironment {
         launchAtLogin.refresh()
         // Coming back from System Settings, Settings shows what was changed there.
         settingsModel.directPaste.refresh()
+        settingsWindow?.refreshIfOpen()
     }
 
     /// Whether Keeptide can paste directly, read through the panel's paste service, the capture session's own; nil
