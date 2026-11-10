@@ -158,6 +158,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         panel.delegate = self
         panel.onEscape = { [weak self] in self?.escape() }
         panel.onKeyEquivalent = { [weak self] in self?.handleKeyEquivalent($0) ?? false }
+        panel.onUnclaimedKeyEquivalent = { [weak self] in self?.keepFromMenuBar($0) ?? false }
         panel.onFirstResponderChange = { [weak self] in self?.focusChanged() }
         panel.isOutsideContent = { [weak self] point in
             guard let self else { return false }
@@ -1492,8 +1493,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return true
         }
         let isComposing = (window?.firstResponder as? NSTextView)?.hasMarkedText() == true
-        // ⌘⌫ and ⌘Z never go on to the menu bar: its Item › Move to Recently Deleted and Edit › Undo would act on the
-        // library window behind the panel. What the panel leaves to text goes to that text as a key.
+        // ⌘⌫ and ⌘Z never go on to the menu bar: its Item › Move to Recently Deleted would act on the library window
+        // behind the panel. What the panel leaves to text goes to that text as a key.
         //
         // ⌘⌫, known by the key, moves the selected clip to Recently Deleted. Text in the search field, and a
         // composition, keep it: it deletes to the start of the line there. Pressed again just after it emptied the
@@ -1613,6 +1614,70 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return false
         }
     }
+
+    // MARK: Menu bar keys
+
+    /// The menu bar's library keys, each with the modifiers held for it, in the menu bar's order and spelled as the
+    /// menu bar spells them. Their items have no target of their own: unless something in the panel takes the action,
+    /// it goes to the main window, which is the library window behind the panel while the panel has the keys, and with
+    /// no library window open, New Snippet and Search Library… open one. The panel has commands of its own for some of
+    /// these keys.
+    private static let libraryKeys: [(key: String, modifiers: NSEvent.ModifierFlags)] = [
+        // File: New Snippet, New Collection… and Save.
+        ("n", .command), ("n", [.command, .shift]), ("s", .command),
+        // Edit: Find in Note…, Search Library… and Copy Entire Item.
+        ("f", .command), ("f", [.command, .shift]), ("c", [.command, .shift]),
+        // View: Show Sidebar, Show Inspector, Previous List, Next List and Choose List….
+        ("s", [.control, .command]), ("i", [.control, .command]), ("[", .command), ("]", .command), ("l", .command),
+        // Item: Add to Favorites, Add to Collection… and Move to Recently Deleted, ⌘⌫, which types a backspace with ⌘.
+        ("d", .command), ("m", [.command, .shift]), ("\u{8}", .command),
+    ]
+
+    /// Edit's Cut, Copy, Paste and Select All, by their keys with ⌘. Their items have no target either: each goes to
+    /// the first responder that takes it, in the panel and then in the library window behind it.
+    private static let textActions: [String: Selector] = [
+        "x": #selector(NSText.cut(_:)), "c": #selector(NSText.copy(_:)), "v": #selector(NSText.paste(_:)),
+        "a": #selector(NSText.selectAll(_:)),
+    ]
+
+    /// Keeps a key equivalent from the menu bar, once neither the panel's commands nor its views have taken it, and
+    /// says whether it did. It knows the key as the menu bar does, by what the key types with ⌘, and Shift if it is
+    /// held: on a layout such as Russian or Dvorak – QWERTY ⌘, that is not what the key types alone, which the panel's
+    /// own commands go by.
+    /// - The library's keys stop here and do nothing. While an input method composes, its text gets them, as keys.
+    /// - Cut, Copy, Paste and Select All go on while something in the panel takes them, as the search field's text and
+    ///   the preview's do, and stop here while the strip, the lists or the filter button have the keys.
+    /// - ⌥⌘W is Close All, which AppKit adds to the Window menu: it would close the library window too, so it closes
+    ///   only the panel, as ⌘W does.
+    /// - The menu bar's other keys go on, as none of them acts on the library: Settings… and Quit are the app's, the
+    ///   panel's window takes Close, Undo and Redo, and the app the keys AppKit adds for dictation and Emoji & Symbols.
+    ///   So do keys the menu bar has no item for, such as ⌘← in the search field.
+    ///
+    /// Not known here, and still taken to the library by the menu bar: shortcuts a person gives the library's items in
+    /// System Settings, and any the menu bar moves to another key for a keyboard layout.
+    private func keepFromMenuBar(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        let key = event.characters(byApplyingModifiers: modifiers.intersection(.shift).union(.command))?.lowercased()
+        if modifiers == [.command, .option], key == "w" {
+            window?.performClose(nil)
+            return true
+        }
+        if modifiers == .command, let action = key.flatMap({ Self.textActions[$0] }) { return !panelTakes(action) }
+        guard Self.libraryKeys.contains(where: { $0.key == key && $0.modifiers == modifiers }) else { return false }
+        if let text = window?.firstResponder as? NSTextView, text.hasMarkedText() { text.keyDown(with: event) }
+        return true
+    }
+
+    /// Whether a responder in the panel takes `action`, from the one with the keys through the panel's window to this
+    /// controller: the menu bar's item would send it there before it turns to the library window.
+    private func panelTakes(_ action: Selector) -> Bool {
+        var responder = window?.firstResponder
+        while let current = responder {
+            if current.responds(to: action) { return true }
+            responder = current.nextResponder
+        }
+        return false
+    }
 }
 
 /// One move to Recently Deleted on the panel's undo stack: its undo waits for the move, and undoes it if it went.
@@ -1646,6 +1711,9 @@ private final class ClosureMenuItem: NSMenuItem {
 private final class QuickAccessPanel: NSPanel {
     var onEscape: (() -> Void)?
     var onKeyEquivalent: ((NSEvent) -> Bool)?
+    /// A key equivalent that neither `onKeyEquivalent` nor the panel's views took, before AppKit offers it to the
+    /// menu bar.
+    var onUnclaimedKeyEquivalent: ((NSEvent) -> Bool)?
     /// Every key going down or coming up in the panel, before the panel handles it.
     var onKeyEvent: ((NSEvent) -> Void)?
     /// Called whenever the keys move from one view to another.
@@ -1678,6 +1746,7 @@ private final class QuickAccessPanel: NSPanel {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         onKeyEquivalent?(event) == true || super.performKeyEquivalent(with: event)
+            || onUnclaimedKeyEquivalent?(event) == true
     }
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
