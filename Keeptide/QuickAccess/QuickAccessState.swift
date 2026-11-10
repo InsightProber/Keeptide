@@ -433,7 +433,8 @@ final class QuickAccessState {
 
     /// What the panel offers for the selected row, or for the text beside it while the preview shows that.
     var actions: QuickAccessActions {
-        textColumnRef == nil ? actions(for: selection.selection) : textActions
+        resultColumnRef == nil ? actions(for: selection.selection)
+            : textColumnRef != nil ? textActions : translationActions
     }
 
     /// What Return can do in this session, whatever clip is selected: the toolbar keeps room for the widest.
@@ -441,13 +442,19 @@ final class QuickAccessState {
         ([nil] + [ContentKind.text, .url, .image, .file, .other]).map { kind in
             QuickAccessActions.make(target: pasteTarget, availability: directPaste, kind: kind,
                                     awaitsReopen: directPasteAwaitsReopen)
-        } + [textActions]
+        } + [textActions, translationActions]
     }
 
     /// What Return does with text made of the selected clip, such as the text recognized in an image.
     private var textActions: QuickAccessActions {
         QuickAccessActions.make(target: pasteTarget, availability: directPaste, kind: .text,
                                 awaitsReopen: directPasteAwaitsReopen, takesText: true)
+    }
+
+    /// What Return does with the translation of the selected clip.
+    private var translationActions: QuickAccessActions {
+        QuickAccessActions.make(target: pasteTarget, availability: directPaste, kind: .text,
+                                awaitsReopen: directPasteAwaitsReopen, takesText: true, resultName: "Translation")
     }
 
     /// What the panel offers for a listed row, such as the one a right-click is on, which need not be the selected one.
@@ -1023,7 +1030,16 @@ final class QuickAccessState {
     var textColumnText: String? { textColumn?.wholeText }
 
     /// Whether the text beside the image, or the translation beside the text, was copied just now.
-    var isTextCopied: Bool { copiedTextRef != nil && copiedTextRef == (textColumnRef ?? translationColumnRef) }
+    var isTextCopied: Bool { copiedTextRef != nil && copiedTextRef == resultColumnRef }
+
+    /// The clip the preview shows a result beside: an image with its text, or a text with its translation.
+    var resultColumnRef: ContentRef? { textColumnRef ?? translationColumnRef }
+
+    /// The whole result the preview shows beside the clip, whether or not the library could keep it.
+    var resultColumnText: String? { textColumnRef != nil ? textColumnText : translationColumnText }
+
+    /// The whole result the preview shows beside the clip, as it was saved: what Return takes.
+    var resultColumnResult: DerivedText? { textColumnRef != nil ? textColumnResult : translationColumnResult }
 
     /// The whole translation the column shows, made now or kept from before, whether or not the library could keep it.
     var translationColumnText: String? { translationColumn?.wholeText }
@@ -1033,9 +1049,8 @@ final class QuickAccessState {
     /// written.
     @discardableResult
     func copyText(_ part: String? = nil) -> Bool {
-        guard let ref = textColumnRef ?? translationColumnRef,
-              let text = part ?? (textColumnRef != nil ? textColumnText : translationColumnText),
-              let paste = services()?.paste, paste.copyText(text) else { return false }
+        guard let ref = resultColumnRef, let text = part ?? resultColumnText, let paste = services()?.paste,
+              paste.copyText(text) else { return false }
         copiedTextRef = ref
         textCopiedNote?.cancel()
         textCopiedNote = Task { [weak self] in
@@ -1057,13 +1072,14 @@ final class QuickAccessState {
     /// only while the same image's text shows.
     @discardableResult
     func saveTextAsSnippet() async -> TextSaveOutcome {
-        guard isOpen, !saving, let ref = textColumnRef, let text = textColumnText, let currentSession = session,
+        guard isOpen, !saving, let ref = resultColumnRef, let text = resultColumnText, let currentSession = session,
               let library = services()?.library else { return .nothingToSave }
+        let name = textColumnRef != nil ? "Text" : "Translation"
         failure = nil
         guard !savedTexts.contains(text) else { return say("Already in Snippets") }
         saving = true
         defer { saving = false }
-        func stillAsked() -> Bool { isOpen && session === currentSession && textColumnRef == ref }
+        func stillAsked() -> Bool { isOpen && session === currentSession && resultColumnRef == ref }
         do {
             let identity = try await library.controller.identity()
             guard stillAsked() else { return .interrupted }
@@ -1074,10 +1090,10 @@ final class QuickAccessState {
             // Undo Save takes back a clip saved as a snippet; this is a snippet of its own.
             savedUndo = nil
             canUndoSave = false
-            return say("Text saved to Snippets")
+            return say("\(name) saved to Snippets")
         } catch {
             guard stillAsked() else { return .interrupted }
-            return say("The text couldn't be saved. Try again.")
+            return say("The \(name.lowercased()) couldn't be saved. Try again.")
         }
     }
 
@@ -1225,12 +1241,12 @@ final class QuickAccessState {
         selection.executableSelection.map { CopyTarget(ref: $0, generation: selection.generation) }
     }
 
-    /// What Return takes: while the preview shows the text beside an image, that text once it is made and kept, and
-    /// otherwise the selected clip. Nil when there is nothing to take, as while the text is still being made: then
-    /// Return takes neither the text nor the image.
+    /// What Return takes: while the preview shows a result beside the clip, the text in an image or a translation,
+    /// that result once it is made whole and kept, and otherwise the selected clip. Nil when there is nothing to take,
+    /// as while the result is still being made: then Return takes neither the result nor the clip.
     var actionTarget: CopyTarget? {
-        guard let ref = textColumnRef else { return copyTarget }
-        guard selection.executableSelection == ref, let result = textColumnResult else { return nil }
+        guard let ref = resultColumnRef else { return copyTarget }
+        guard selection.executableSelection == ref, let result = resultColumnResult else { return nil }
         return CopyTarget(ref: ref, generation: selection.generation,
                           derivedText: DerivedTextPaste(id: result.id, operation: result.operation,
                                                         textDigest: result.textDigest))

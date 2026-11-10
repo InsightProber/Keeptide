@@ -11,6 +11,8 @@ enum ActionMenuCommand: Equatable {
     case removeFromCollection(CollectionID)
     /// The text in an image: shown beside it, made again, copied, kept as a snippet, laid out, or stopped.
     case showTextInImage, extractText, copyText, saveTextAsSnippet, toggleKeepLineBreaks, stopTextRecognition
+    /// A translation: shown beside its text, made again, or stopped. Copying and keeping it are the text's items.
+    case showTranslation, translate, stopTranslation
 }
 
 /// ⌘K and a right-click: the actions for one clip. First what Return and ⇧Return do, named as the toolbar names them,
@@ -52,8 +54,30 @@ enum ActionMenu {
         }
     }
 
+    /// What the menu offers for a translation. Every card has Translate, which only a text's makes use of for now.
+    /// While the preview shows a translation beside a text, the menu starts with what can be done with it.
+    struct Translation: Equatable {
+        /// Whether the clip is text whose translation can be shown.
+        var isOffered = false
+        /// The translation column, while the preview shows it beside the clip.
+        var column: Column?
+
+        struct Column: Equatable {
+            /// Return can take the translation: it is whole and kept.
+            var canTake = false
+            /// There is a translation to copy and to keep as a snippet.
+            var hasText = false
+            var canStop = false
+            /// Nothing was translated yet, or translating failed or stopped: Translate, or Try Again, makes it.
+            var canTranslate = false
+            /// Translating failed or stopped: the item is Try Again.
+            var failed = false
+        }
+    }
+
     static let noCollectionsHelp = "Create a collection first."
     static let noTextToExtractHelp = "Only images have text to extract."
+    static let noTextToTranslateHelp = "Only text can be translated."
     /// The undo's action name, which Undo Move to Recently Deleted names.
     static let moveToRecentlyDeletedName = "Move to Recently Deleted"
 
@@ -61,11 +85,14 @@ enum ActionMenu {
                      isPreviewExpanded: Bool, canUndoSave: Bool = false, collections: [CollectionSummary] = [],
                      canMoveToRecentlyDeleted: Bool = false, listedCollection: CollectionSummary? = nil,
                      canUndoMoveToRecentlyDeleted: Bool = false, textInImage: TextInImage = TextInImage(),
+                     translation: Translation = Translation(),
                      perform: @escaping (ActionMenuCommand) -> Void) -> NSMenu {
         let menu = NSMenu(title: "Actions")
         menu.autoenablesItems = false
         if let column = textInImage.column {
             addTextItems(column, actions: actions, isReviewing: isReviewing, to: menu, perform: perform)
+        } else if let column = translation.column {
+            addTranslationItems(column, actions: actions, isReviewing: isReviewing, to: menu, perform: perform)
         } else {
             let primary = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
             primary.isEnabled = canAct && !isReviewing
@@ -96,9 +123,16 @@ enum ActionMenu {
             if let row, row.kind != .image { extract.toolTip = noTextToExtractHelp }
             menu.addItem(extract)
         }
+        if translation.column == nil {
+            let translate = ActionMenuItem("Translate", key: "t", modifiers: .command) { perform(.showTranslation) }
+            translate.isEnabled = translation.isOffered && row != nil && !isReviewing
+            if let row, row.kind != .text { translate.toolTip = noTextToTranslateHelp }
+            menu.addItem(translate)
+        }
         menu.addItem(.separator())
-        // While the text shows, ⌘S keeps the text; this item still keeps the clip.
-        let save = ActionMenuItem("Save as Snippet", key: textInImage.column == nil ? "s" : "", modifiers: .command) {
+        // While the text or a translation shows, ⌘S keeps it; this item still keeps the clip.
+        let showsResult = textInImage.column != nil || translation.column != nil
+        let save = ActionMenuItem("Save as Snippet", key: showsResult ? "" : "s", modifiers: .command) {
             perform(.saveSnippet)
         }
         let isSnippet = row?.facet == .memo
@@ -163,6 +197,34 @@ enum ActionMenu {
         delete.isEnabled = canMoveToRecentlyDeleted && row != nil
         menu.addItem(delete)
         return menu
+    }
+
+    /// What can be done with the translation beside a text: take it as Return does, copy it beside a paste, keep it as
+    /// a snippet, stop making it, and make it, or make it again after a failure.
+    private static func addTranslationItems(_ column: Translation.Column, actions: QuickAccessActions,
+                                            isReviewing: Bool, to menu: NSMenu,
+                                            perform: @escaping (ActionMenuCommand) -> Void) {
+        let take = ActionMenuItem(actions.primaryTitle, key: "\r", modifiers: []) { perform(.primary) }
+        take.isEnabled = column.canTake && !isReviewing
+        menu.addItem(take)
+        if let title = actions.copyOnlyTitle {
+            let copy = ActionMenuItem(title, key: "c", modifiers: .command) { perform(.copyText) }
+            copy.isEnabled = column.hasText
+            menu.addItem(copy)
+        }
+        let save = ActionMenuItem("Save Translation as Snippet", key: "s", modifiers: .command) {
+            perform(.saveTextAsSnippet)
+        }
+        save.isEnabled = column.hasText
+        menu.addItem(save)
+        let stop = ActionMenuItem("Stop", key: ".", modifiers: .command) { perform(.stopTranslation) }
+        stop.isEnabled = column.canStop
+        menu.addItem(stop)
+        let translate = ActionMenuItem(column.failed ? "Try Again" : "Translate", key: "t", modifiers: .command) {
+            perform(.translate)
+        }
+        translate.isEnabled = column.canTranslate && !isReviewing
+        menu.addItem(translate)
     }
 
     /// What can be done with the text beside an image: take it as Return does, copy it beside a paste, keep it as a

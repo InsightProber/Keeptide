@@ -1294,6 +1294,75 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(translator.request(3)?.target, Locale.Language(identifier: "en"))
     }
 
+    func testReturnTakesTheTranslationOnceItIsWholeAndKept() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture) = try await makeTranslationPanel(translator)
+        let ref = try XCTUnwrap(state.selection.selection)
+        state.showTranslation()
+        let engine = try await startedTranslation(translator, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度计划"))
+        try await SearchTestSupport.waitUntil { state.translationColumn?.isTranslating == true }
+        XCTAssertNil(state.actionTarget, "Nothing to take while the translation is made, and not the text either")
+
+        engine.send(.finished(.completed))
+
+        try await SearchTestSupport.waitUntil { state.actionTarget != nil }
+        let kept = try await DerivedTextStore(controller: fixture.harness.controller)
+            .result(for: ref, operation: .translate)
+        let saved = try XCTUnwrap(kept)
+        let target = try XCTUnwrap(state.actionTarget)
+        XCTAssertEqual(target.ref, ref)
+        XCTAssertEqual(target.derivedText,
+                       DerivedTextPaste(id: saved.id, operation: .translate, textDigest: saved.textDigest))
+        XCTAssertEqual(state.actions.primaryTitle, "Copy Translation")
+        XCTAssertNil(state.actions.plainTextTitle, "The translation is plain: ⇧Return takes it as Return does")
+
+        await state.act(on: target, mode: .original, delivery: state.preferredDelivery)
+
+        XCTAssertEqual(fixture.board.string(forType: .string), "季度计划")
+        // With the column closed, Return takes the text clip again.
+        state.closeResultColumn()
+        XCTAssertEqual(state.actionTarget, state.copyTarget)
+        XCTAssertNil(state.actionTarget?.derivedText)
+    }
+
+    func testSavingTheTranslationMakesASnippetOfItAlone() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture) = try await makeTranslationPanel(translator)
+        let text = try XCTUnwrap(state.selection.selectedRow)
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("季度计划周五截止。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
+
+        await state.saveTextAsSnippet()
+
+        XCTAssertEqual(state.saveMessage, "Translation saved to Snippets")
+        let repository = ContentRepository(controller: fixture.harness.controller)
+        let snippets = try await repository.recent(limit: 100).filter { $0.history == nil }.compactMap(\.memo)
+        XCTAssertEqual(snippets.count, 1)
+        let body = try await LibraryService(controller: fixture.harness.controller)
+            .editingSnapshot(try XCTUnwrap(snippets.first)).body
+        XCTAssertEqual(body, "季度计划周五截止。")
+        // The text clip stays as it was, with no snippet of its own.
+        let listed = try await repository.recent(limit: 100)
+        XCTAssertNil(listed.first { $0.itemID == text.ref.itemID }?.memo)
+        await state.saveTextAsSnippet()
+        XCTAssertEqual(state.saveMessage, "Already in Snippets")
+    }
+
+    func testTheTranslationsActionsAreNamedForIt() {
+        let notes = PasteTarget(processIdentifier: 7, bundleIdentifier: "com.apple.Notes", name: "Notes",
+                                windowNumber: 1)
+        let pasting = QuickAccessActions.make(target: notes, availability: .paste(notes), kind: .text, takesText: true,
+                                              resultName: "Translation")
+        XCTAssertEqual(pasting.primaryTitle, "Paste Translation into Notes")
+        XCTAssertEqual(pasting.copyOnlyTitle, "Copy Translation")
+        let copying = QuickAccessActions.make(target: nil, availability: nil, kind: .text, takesText: true,
+                                              resultName: "Translation")
+        XCTAssertEqual(copying.primaryTitle, "Copy Translation")
+    }
+
     func testTheTranslationTargetIsThePersonsFirstLanguageAndTheNextOneWhereTheTextIsInIt() {
         XCTAssertEqual(TranslationTargets.first(of: ["zh-Hans-CN", "en-US"]), Locale.Language(identifier: "zh-Hans-CN"))
         XCTAssertEqual(TranslationTargets.first(of: []), Locale.Language(identifier: "en"))

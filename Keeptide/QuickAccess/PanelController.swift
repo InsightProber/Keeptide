@@ -850,7 +850,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard state.commandReview == nil else { return }
         guard let target = target(for: subject) else {
             // The text beside the image has nothing to take yet; the image is not taken in its place.
-            if subject != .clip, state.textColumnRef != nil { NSSound.beep() }
+            if subject != .clip, state.resultColumnRef != nil { NSSound.beep() }
             return
         }
         if guessesReturn { heldReturnKeys.insert(Self.returnMayBeDown) }
@@ -1043,7 +1043,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let row = id.flatMap { id in state.selection.rows.first { $0.id == id } }
         let canUndoSave = state.canUndoSave && id == state.selection.selectedID
         // The text beside the selected image, while the preview shows it.
-        let showsText = id != nil && id == state.selection.selectedID && state.textColumnRef != nil
+        let isSelected = id != nil && id == state.selection.selectedID
+        let showsText = isSelected && state.textColumnRef != nil
         var textInImage = ActionMenu.TextInImage(isOffered: row?.kind == .image && state.canRecognizeText)
         if showsText, let column = state.textColumn {
             textInImage.column = ActionMenu.TextInImage.Column(
@@ -1051,7 +1052,17 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 keepsLineBreaks: state.isKeepLineBreaksOn, canStop: state.canStopTextRecognition,
                 canExtract: column == .notStarted || column.isFailed, failed: column.isFailed)
         }
-        return ActionMenu.make(actions: showsText ? state.actions : state.actions(for: id?.ref), row: row,
+        // And the translation beside the selected text.
+        let showsTranslation = isSelected && state.translationColumnRef != nil
+        var translation = ActionMenu.Translation(isOffered: row?.kind == .text && state.canRecognizeText)
+        if showsTranslation, let column = state.translationColumn {
+            translation.column = ActionMenu.Translation.Column(
+                canTake: state.actionTarget != nil, hasText: state.translationColumnText != nil,
+                canStop: state.canStopTranslation, canTranslate: column == .notStarted || column.offersTryAgain,
+                failed: column.offersTryAgain)
+        }
+        let showsResult = showsText || showsTranslation
+        return ActionMenu.make(actions: showsResult ? state.actions : state.actions(for: id?.ref), row: row,
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded,
@@ -1059,7 +1070,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                                canMoveToRecentlyDeleted: state.canMoveToRecentlyDeleted,
                                listedCollection: state.listedCollection(of: row),
                                canUndoMoveToRecentlyDeleted: canUndoMoveToRecentlyDeleted,
-                               textInImage: textInImage) { [weak self] command in
+                               textInImage: textInImage, translation: translation) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -1068,8 +1079,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 guard state.selection.selectedID == id else { return }
             }
             switch command {
-            // What the menu named when it was made: the text that showed, or the clip.
-            case .primary: act(.original, guessesReturn: returnMayBeDown, subject: showsText ? .text : .clip)
+            // What the menu named when it was made: the text or the translation that showed, or the clip.
+            case .primary: act(.original, guessesReturn: returnMayBeDown, subject: showsResult ? .text : .clip)
             case .plainText: act(.plainText, guessesReturn: returnMayBeDown, subject: .clip)
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
@@ -1089,6 +1100,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .saveTextAsSnippet: perform(.saveTextAsSnippet)
             case .toggleKeepLineBreaks: perform(.toggleKeepLineBreaks)
             case .stopTextRecognition: perform(.stopTextRecognition)
+            case .showTranslation: perform(.showTranslation)
+            case .translate: perform(.translate(into: nil))
+            case .stopTranslation: perform(.stopTranslation)
             }
         }
     }
@@ -1193,7 +1207,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// ⌘S: the selected clip, or while the preview shows the text beside an image, that text. The toolbar shows what
     /// the save came to, and VoiceOver reads it.
     private func saveSelectedSnippet() {
-        guard state.textColumnRef != nil else { return saveSelectedClipAsSnippet() }
+        guard state.resultColumnRef != nil else { return saveSelectedClipAsSnippet() }
         saveShownText()
     }
 
@@ -1513,7 +1527,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // ⌘C while the preview shows the text beside an image copies that text: what is selected in it, or with the
         // keys elsewhere, all of it. A selection in another text, the search field's or a review's command, is that
         // text's to copy, and so is everything while a review shows. The panel stays. Held down, it has copied already.
-        if key == "c", modifiers == .command, !isComposing, state.textColumnRef != nil, state.commandReview == nil {
+        if key == "c", modifiers == .command, !isComposing, state.resultColumnRef != nil, state.commandReview == nil {
             if event.isARepeat { return true }
             let responder = window?.firstResponder
             if let text = responder as? GeneratedTextView {

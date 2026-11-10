@@ -122,7 +122,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ⇧⌘T | Show the text in the selected image beside its preview |
 | ⌘T | Show the translation of the selected text beside its preview |
 | ⌘. | Stop recognizing the text in an image, or translating |
-| Return, ⌘C, ⌘S beside the text in an image | Paste the text, copy it (or the part you selected), or save it as a snippet |
+| Return, ⌘C, ⌘S beside the text in an image or a translation | Paste it, copy it (or the part you selected), or save it as a snippet |
 | ⌘K or right-click | Show every action for the selected clip |
 | ⌘S | Save the clip as a snippet |
 | ⇧⌘M | Save the clip into a collection, or add a snippet to one; choosing a checked collection takes the snippet out |

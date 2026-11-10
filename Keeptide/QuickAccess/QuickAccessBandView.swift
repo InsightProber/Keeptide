@@ -185,23 +185,26 @@ struct QuickAccessBandView: View {
             }
             textButtons(enabled: state.textColumnText != nil)
         }
-        if state.translationColumn?.isTranslating == true {
-            Button { actions.previewCommand(.stopTranslation) } label: {
-                HStack(spacing: 6) {
-                    Text("Stop")
-                    ReviewKeycap(symbol: "⌘.")
+        if let column = state.translationColumn {
+            if column.isTranslating {
+                Button { actions.previewCommand(.stopTranslation) } label: {
+                    HStack(spacing: 6) {
+                        Text("Stop")
+                        ReviewKeycap(symbol: "⌘.")
+                    }
                 }
+                .buttonStyle(TrayCapsuleButtonStyle())
+                .accessibilityLabel("Stop")
+                .accessibilityIdentifier("QuickAccessStopTranslation")
+                .help("Stop Translating (⌘.)")
             }
-            .buttonStyle(TrayCapsuleButtonStyle())
-            .accessibilityLabel("Stop")
-            .accessibilityIdentifier("QuickAccessStopTranslation")
-            .help("Stop Translating (⌘.)")
+            textButtons(enabled: state.translationColumnText != nil, name: "Translation")
         }
     }
 
-    /// Copy and Save as Snippet for the text beside an image, dimmed until there is text. After a copy, "Copied" shows
-    /// beside Copy for a moment.
-    private func textButtons(enabled: Bool) -> some View {
+    /// Copy and Save as Snippet for the text beside an image, or the translation beside a text, dimmed until there is
+    /// one. After a copy, "Copied" shows beside Copy for a moment.
+    private func textButtons(enabled: Bool, name: String = "Text") -> some View {
         HStack(spacing: 8) {
             if state.isTextCopied {
                 Text("Copied")
@@ -209,10 +212,10 @@ struct QuickAccessBandView: View {
                     .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
                     .accessibilityIdentifier("QuickAccessTextCopied")
             }
-            TrayRoundButton(symbol: "doc.on.doc", label: "Copy Text", help: "Copy Text (⌘C)",
-                            identifier: "QuickAccessCopyText") { actions.previewCommand(.copyText) }
-            TrayRoundButton(symbol: "bookmark", label: "Save Text as Snippet", help: "Save Text as Snippet (⌘S)",
-                            identifier: "QuickAccessSaveText") { actions.previewCommand(.saveTextAsSnippet) }
+            TrayRoundButton(symbol: "doc.on.doc", label: "Copy \(name)", help: "Copy \(name) (⌘C)",
+                            identifier: "QuickAccessCopy\(name)") { actions.previewCommand(.copyText) }
+            TrayRoundButton(symbol: "bookmark", label: "Save \(name) as Snippet", help: "Save \(name) as Snippet (⌘S)",
+                            identifier: "QuickAccessSave\(name)") { actions.previewCommand(.saveTextAsSnippet) }
         }
         .disabled(!enabled)
     }

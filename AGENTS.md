@@ -41,8 +41,8 @@ file authorization is local and explicit. ⇧⌘T shows the text recognized on t
 in a copied image beside its preview, and keeps it locally beside the image; Return,
 ⌘C and ⌘S then paste, copy or save that text instead of the image.
 ⌘T shows a translation of a text clip beside its preview, made on this Mac with
-Apple's Translation and kept locally; translating or recognizing again that fails
-leaves the earlier result.
+Apple's Translation and kept locally, which Return, ⌘C and ⌘S then take in the
+same way; translating or recognizing again that fails leaves the earlier result.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
 Planned capabilities must stay labelled until implemented and verified.
