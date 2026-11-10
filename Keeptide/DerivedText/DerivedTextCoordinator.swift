@@ -389,6 +389,55 @@ final class DerivedTextCoordinator {
         return start(request, lane: translator.tier.lane, options: options, generation: generation)
     }
 
+    // MARK: Languages
+
+    /// Every language translations can be made in, a language in each region Translation has it in, as British and US
+    /// English are downloaded apart, and what translating a text in `source` into each needs on this Mac. Nothing is
+    /// said without the text's language, or of that language itself; a text in a language this Mac doesn't translate
+    /// from can be translated into none.
+    func translationLanguages(from source: Locale.Language?) async -> [TranslationLanguage] {
+        var languages: [Locale.Language] = []
+        for language in await translator.supportedLanguages() where !languages.contains(language) {
+            languages.append(language)
+        }
+        guard let source else { return languages.map { TranslationLanguage(language: $0, status: nil) } }
+        let isKnown = languages.contains { $0.isSameLanguage(as: source) }
+        var result: [TranslationLanguage] = []
+        for language in languages where !Task.isCancelled {
+            guard !language.isSameLanguage(as: source) else {
+                result.append(TranslationLanguage(language: language, status: nil))
+                continue
+            }
+            let status = isKnown ? await translator.status(of: TranslationPair(source: source, target: language))
+                : .unsupported
+            result.append(TranslationLanguage(language: language, status: status))
+        }
+        return result
+    }
+
+    /// The language most of `text` is in, as a translation of it tells, from its start, which is enough to tell: nil
+    /// where it can't tell, once the library has closed, or for a reader that stopped waiting. It is told away from the
+    /// main actor, in the background, as it is told before anyone may ask for it, and the telling stops once nobody
+    /// waits for it.
+    func language(of text: String) async -> Locale.Language? {
+        guard !isClosed, !text.isEmpty, !Task.isCancelled else { return nil }
+        let supported = await translator.supportedLanguages()
+        let telling = Task.detached(priority: .utility) {
+            TranslationSource.mainLanguage(of: String(text.prefix(Self.languageSampleLength)), supported: supported)
+        }
+        return await withTaskCancellationHandler { await telling.value } onCancel: { telling.cancel() }
+    }
+
+    /// How much of a text its language is told from, in characters.
+    nonisolated static let languageSampleLength = 10_000
+
+    /// The text recognized in an image in this session, whether or not the library could keep it: nil while it is
+    /// recognized, where none was found, and where none was recognized yet.
+    func recognizedText(in source: ContentRef) -> String? {
+        guard case .text(let text) = textInImage(source) else { return nil }
+        return text
+    }
+
     /// Whether a request for exactly this content waits on what the store kept, which decides whether it starts.
     func isWaitingToStart(_ source: ContentRef, operation: DerivedTextOperation) -> Bool {
         waiting[Self.key(for: source, operation: operation)]?.source == source

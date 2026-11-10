@@ -26,6 +26,8 @@ struct QuickAccessBandView: View {
         let cancelCommandReview: () -> Void
         /// Copies text the preview shows, such as part of the text recognized in an image, as the panel copies it.
         let copyText: (String) -> Void
+        /// Where the translation's title is, in the band, as it is laid out: the language menu opens below it.
+        var languageTitleMoved: (CGRect) -> Void = { _ in }
     }
 
     let layout: Layout
@@ -252,7 +254,8 @@ struct QuickAccessBandView: View {
                                         target: state.translationTarget,
                                         nextTarget: state.translationTarget(after: asked), ref: ref,
                                         isJustMade: state.isTranslationColumnJustMade,
-                                        onCommand: actions.previewCommand, onCopy: actions.copyText)
+                                        onCommand: actions.previewCommand, onCopy: actions.copyText,
+                                        onLanguageTitleMoved: actions.languageTitleMoved)
         } else {
             QuickAccessPreviewView(preview: state.preview,
                                    applicationName: applicationName,

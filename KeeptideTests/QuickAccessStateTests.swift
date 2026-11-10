@@ -1506,10 +1506,10 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertNil(state.translationColumnResult)
         XCTAssertEqual(state.translationColumn?.endingWords, TranslationColumnWords.stopped)
 
-        // ⌘T tries again, as the column's Try Again does.
+        // ⌘T tries again, as the column's Try Again does, in the region the person wants.
         state.showTranslation()
         _ = try await startedTranslation(translator, 1)
-        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "zh-Hans"))
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "zh-Hans-CN"))
     }
 
     func testATranslationIntoAnotherLanguageThatFailsLeavesTheOneBeforeAndSaysSo() async throws {
@@ -1582,7 +1582,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.translationColumn == .failed(missing, asked: "en") }
         state.translate()
         _ = try await startedTranslation(translator, 3)
-        XCTAssertEqual(translator.request(3)?.target, Locale.Language(identifier: "en"))
+        XCTAssertEqual(translator.request(3)?.target, Locale.Language(identifier: "en-US"))
     }
 
     func testReturnTakesTheTranslationOnceItIsWholeAndKept() async throws {
@@ -1662,6 +1662,300 @@ final class QuickAccessStateTests: XCTestCase {
                        Locale.Language(identifier: "ja-JP"))
         XCTAssertEqual(TranslationTargets.next(after: chinese, of: ["zh-Hans-CN"]), Locale.Language(identifier: "en"))
         XCTAssertNil(TranslationTargets.next(after: Locale.Language(identifier: "en-GB"), of: ["en-US"]))
+        // Once Translation's languages are known, one it doesn't offer is passed over.
+        let offered = ["en-US", "en-GB", "ja-JP", "zh-Hans-CN"].map(Locale.Language.init(identifier:))
+        XCTAssertEqual(TranslationTargets.first(of: ["sv-SE", "ja-JP"], offered: offered),
+                       Locale.Language(identifier: "ja-JP"))
+        XCTAssertEqual(TranslationTargets.next(after: Locale.Language(identifier: "ja"), of: ["sv-SE", "ja-JP"],
+                                               offered: offered),
+                       Locale.Language(identifier: "en-US"))
+    }
+
+    func testATranslationIntoALanguageIsMadeInTheRegionThePersonWants() {
+        // Translation lists British English first.
+        let offered = ["en-GB", "en-US", "pt-BR", "zh-Hans-CN"].map(Locale.Language.init(identifier:))
+        let english = Locale.Language(identifier: "en")
+        // British English for a person whose list names it; else the language's usual region.
+        XCTAssertEqual(TranslationTargets.variant(of: english, preferred: ["zh-Hans-CN", "en-GB"], offered: offered),
+                       Locale.Language(identifier: "en-GB"))
+        XCTAssertEqual(TranslationTargets.variant(of: english, preferred: ["en-AU"], offered: offered),
+                       Locale.Language(identifier: "en-US"))
+        XCTAssertEqual(TranslationTargets.variant(of: english, preferred: [], offered: offered),
+                       Locale.Language(identifier: "en-US"))
+        XCTAssertEqual(TranslationTargets.first(of: ["en-GB"], offered: offered), Locale.Language(identifier: "en-GB"))
+        // However the language is named, its usual region is the language's own.
+        XCTAssertEqual(TranslationTargets.first(of: ["en-AU"], offered: offered), Locale.Language(identifier: "en-US"))
+        XCTAssertEqual(TranslationTargets.variant(of: Locale.Language(identifier: "en-AU"), preferred: [],
+                                                  offered: offered),
+                       Locale.Language(identifier: "en-US"))
+        // A language Translation has in one region is in that one; before anything is known, as the person names it.
+        XCTAssertEqual(TranslationTargets.variant(of: Locale.Language(identifier: "pt"), preferred: ["pt-PT"],
+                                                  offered: offered),
+                       Locale.Language(identifier: "pt-BR"))
+        XCTAssertEqual(TranslationTargets.variant(of: english, preferred: ["en-GB"], offered: []),
+                       Locale.Language(identifier: "en-GB"))
+        // A code names a language without its region, and only a language.
+        XCTAssertEqual(TranslationTargets.code(of: "ja-JP"), "ja")
+        XCTAssertEqual(TranslationTargets.code(of: "zh-Hans-CN"), "zh-Hans")
+        XCTAssertNil(TranslationTargets.code(of: "zz"))
+        XCTAssertNil(TranslationTargets.code(of: "123"))
+        XCTAssertNil(TranslationTargets.code(of: " "))
+    }
+
+    // MARK: Translation languages
+
+    func testTheLanguageMenuListsThePersonsLanguagesFirstAndSaysWhatEachNeedsFromTheText() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR", "de-DE", "en-GB"],
+                          statuses: [("en", "ja-JP", .needsDownload), ("en", "fr-FR", .unsupported)])
+        let (state, _) = try await makeTranslationPanel(translator)
+        // Translation's languages are read as the panel opens; nothing is said of what they need before the text shows.
+        try await SearchTestSupport.waitUntil { state.knownTranslationLanguages.count == 6 }
+        XCTAssertEqual(state.translationLanguageMenu.preferred.map(\.code), ["zh-Hans", "en"])
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.code), ["fr", "de", "ja"], "English once, by name")
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.note), [nil, nil, nil])
+
+        state.showTranslation()
+
+        try await SearchTestSupport.waitUntil { state.translationLanguageMenu.others.contains { $0.note != nil } }
+        XCTAssertEqual(state.translationLanguageMenu.preferred, [
+            TranslationLanguageMenu.Item(code: "zh-Hans", name: "Chinese (Simplified)", note: nil, isChosen: true),
+            TranslationLanguageMenu.Item(code: "en", name: "English", note: nil, isChosen: false),
+        ])
+        // The others by name, each marked for what translating the text's English into it needs.
+        XCTAssertEqual(state.translationLanguageMenu.others, [
+            TranslationLanguageMenu.Item(code: "fr", name: "French", note: .notAvailable, isChosen: false),
+            TranslationLanguageMenu.Item(code: "de", name: "German", note: nil, isChosen: false),
+            TranslationLanguageMenu.Item(code: "ja", name: "Japanese", note: .notDownloaded, isChosen: false),
+        ])
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.spokenName),
+                       ["French, not available on this Mac", "German", "Japanese, not downloaded"])
+        // The language the column shows is the one checked, though the column's own offer of a language leaves the
+        // one translations are made in as it was.
+        state.translate(into: Locale.Language(identifier: "de"))
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(state.translationLanguageMenu.preferred.map(\.isChosen), [false, false])
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.isChosen), [false, true, false])
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "zh-Hans-CN"))
+        // A clip whose language isn't told yet is marked for nothing, never for another clip's language.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.note), [nil, nil, nil])
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.code), ["fr", "de", "ja"])
+    }
+
+    func testALanguageThePersonPrefersIsListedFirstOnlyWhereItCanBeTranslatedInto() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP", "fr-FR"])
+        let (fixture, _) = try await makeTextFixture(translator: translator)
+        try await insert("Quarterly plan", body: "The quarterly plan is due on Friday.", at: 0, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["sv-SE", "ja-JP"] })
+        state.open()
+        try await settled(state)
+
+        try await SearchTestSupport.waitUntil { !state.knownTranslationLanguages.isEmpty }
+
+        // Swedish can't be translated into; Japanese leads, then English, then the rest, and translations are made in
+        // Japanese.
+        XCTAssertEqual(state.translationLanguageMenu.preferred.map(\.code), ["ja", "en"])
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.code), ["fr"])
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja-JP"))
+        XCTAssertEqual(state.translationLanguageMenu.preferred.map(\.isChosen), [true, false])
+        // So is a language chosen before that Translation no longer offers.
+        state.restoreTranslationTarget("sv")
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja-JP"))
+    }
+
+    func testATranslationIntoEnglishIsInTheEnglishThePersonUses() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "en-GB", "zh-Hans-CN"],
+                          statuses: [("zh-Hans", "en-GB", .needsDownload)])
+        let (fixture, _) = try await makeTextFixture(translator: translator)
+        try await insert("Plan", body: "季度计划已经准备好了，团队将在星期四开会讨论预算和下一步的计划。", at: 0, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["en-GB", "zh-Hans-CN"] })
+        state.open()
+        try await settled(state)
+        try await SearchTestSupport.waitUntil { state.knownTranslationLanguages.count == 3 }
+
+        state.showTranslation()
+
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "en-GB"),
+                       "British English, which is downloaded apart from US English")
+        // English is listed once, marked for what British English needs.
+        try await SearchTestSupport.waitUntil { state.translationLanguageMenu.preferred.contains { $0.note != nil } }
+        XCTAssertEqual(state.translationLanguageMenu.preferred, [
+            TranslationLanguageMenu.Item(code: "en", name: "English", note: .notDownloaded, isChosen: true),
+            TranslationLanguageMenu.Item(code: "zh-Hans", name: "Chinese (Simplified)", note: nil, isChosen: false),
+        ])
+        XCTAssertEqual(state.translationLanguageMenu.others, [])
+        // It fails for want of British English, and trying again asks for British English again, as does the column's
+        // offer of English.
+        let missing = GenerationError(kind: .languageNotDownloaded,
+                                      message: "Download Chinese (Simplified) and English to translate between them.")
+        try await startedTranslation(translator, 0).end(throwing: missing)
+        try await SearchTestSupport.waitUntil {
+            if case .failed? = state.translationColumn { return true }
+            return false
+        }
+        state.translate()
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "en-GB"), "Trying again")
+        state.translate(into: Locale.Language(identifier: "en"))
+        _ = try await startedTranslation(translator, 2)
+        XCTAssertEqual(translator.request(2)?.target, Locale.Language(identifier: "en-GB"))
+        // Chosen from the menu, English is British English too.
+        state.chooseTranslationLanguage("zh-Hans")
+        _ = try await startedTranslation(translator, 3)
+        state.chooseTranslationLanguage("en")
+        _ = try await startedTranslation(translator, 4)
+        XCTAssertEqual(translator.request(4)?.target, Locale.Language(identifier: "en-GB"))
+    }
+
+    func testEnglishInARegionTranslationLacksIsInEnglishsUsualRegionEverywhere() async throws {
+        let translator = ScriptedTranslator()
+        // Translation lists British English first.
+        translator.script(languages: ["en-GB", "en-US", "zh-Hans-CN"],
+                          statuses: [("zh-Hans", "en-US", .needsDownload)])
+        let (fixture, _) = try await makeTextFixture(translator: translator)
+        try await insert("Plan", body: "季度计划已经准备好了，团队将在星期四开会讨论预算和下一步的计划。", at: 0, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["en-AU", "zh-Hans-CN"] })
+        state.open()
+        try await settled(state)
+        try await SearchTestSupport.waitUntil { state.knownTranslationLanguages.count == 3 }
+
+        state.showTranslation()
+
+        // Translation has no Australian English: translations are in US English, and so are the menu's marks and a
+        // choice of English.
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "en-US"))
+        try await SearchTestSupport.waitUntil { state.translationLanguageMenu.preferred.first?.note != nil }
+        XCTAssertEqual(state.translationLanguageMenu.preferred.first?.code, "en")
+        XCTAssertEqual(state.translationLanguageMenu.preferred.first?.note, .notDownloaded, "US English's")
+        state.restoreTranslationTarget("en")
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "en-US"))
+    }
+
+    func testAnImagesLanguageIsToldFromItsTextOnceThatIsKnown() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR", "de-DE"],
+                          statuses: [("fr", "de-DE", .needsDownload), ("de", "fr-FR", .unsupported)])
+        let (fixture, recognizer) = try await makeTextFixture(translator: translator)
+        try await insert("Poster", types: [("public.png", try png(width: 40, height: 30))], at: 0, into: fixture)
+        try await insert("Sign", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.open()
+        try await settled(state)
+        try await SearchTestSupport.waitUntil { state.knownTranslationLanguages.count == 4 }
+        func note(_ code: String) -> TranslationLanguageMenu.Note? {
+            let menu = state.translationLanguageMenu
+            return (menu.preferred + menu.others).first { $0.code == code }?.note
+        }
+        // The newest image's text is recognized now, in German; nothing is said of it until it is.
+        XCTAssertEqual(state.selection.selectedRow?.title, "Sign")
+        state.showTextInImage()
+        let recognition = try await startedSource(recognizer, 0)
+        XCTAssertNil(note("fr"))
+        recognition.send(.started(GenerationInfo(engine: "On this Mac")),
+                         .delta("Das Museum ist täglich von neun bis achtzehn Uhr geöffnet, außer am Montag."),
+                         .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumnResult != nil }
+        // The panel asks again as it updates.
+        state.readTranslationLanguages()
+        try await SearchTestSupport.waitUntil { note("fr") != nil }
+        XCTAssertEqual(note("fr"), .notAvailable)
+        XCTAssertNil(note("de"), "Nothing is said of the text's own language")
+        // The other image's text was kept from before, in French: it is read with its preview.
+        let poster = try XCTUnwrap(state.selection.rows.first { $0.title == "Poster" })
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"), texts: [
+                .main: "Le rapport trimestriel est prêt, et l'équipe se réunira jeudi pour en discuter.",
+            ]),
+            for: DerivedTextRequest(source: poster.ref, operation: .extractText, keepsLineBreaks: true))
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Poster")
+        try await SearchTestSupport.waitUntil { note("de") != nil }
+        XCTAssertEqual(note("de"), .notDownloaded)
+    }
+
+    func testChoosingALanguageTranslatesIntoItAndEveryTranslationFromThen() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP"])
+        let (state, _) = try await makeTranslationPanel(translator)
+        try await SearchTestSupport.waitUntil { !state.knownTranslationLanguages.isEmpty }
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("季度计划周五截止。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
+
+        XCTAssertEqual(state.chooseTranslationLanguage("ja"), "ja", "The choice, for the panel to keep")
+
+        let japanese = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "ja-JP"), "As Translation has it")
+        XCTAssertEqual(state.translationLanguageMenu.preferred.map(\.isChosen), [false, false])
+        XCTAssertEqual(state.translationLanguageMenu.others.map(\.isChosen), [true], "The language translated into")
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja-JP"))
+        // Choosing it again while it is made translates nothing more.
+        state.chooseTranslationLanguage("ja")
+        japanese.send(.started(GenerationInfo(engine: "On this Mac")), .delta("四半期計画"), .finished(.completed))
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .translation("四半期計画", into: "ja", status: .complete)
+        }
+        state.chooseTranslationLanguage("ja")
+        // The next clip's translation is made in it, and an image's text is recognized first, as for ⌘T.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.kind, .image)
+        state.showTranslation()
+        try await SearchTestSupport.waitUntil {
+            if case .recognizingText(into: "ja", _)? = state.translationColumn { return true }
+            return false
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(2), "Nothing more was translated")
+    }
+
+    func testChoosingALanguageForAClipWithoutItsColumnShowsTheColumnTranslatingIntoIt() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        XCTAssertFalse(state.isPreviewExpanded)
+
+        state.chooseTranslationLanguage("fr")
+
+        XCTAssertTrue(state.isPreviewExpanded)
+        XCTAssertEqual(state.resultColumn, .translation)
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "fr"))
+        // For an image, its text is recognized first, then translated into the language chosen.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.kind, .image)
+        state.chooseTranslationLanguage("de")
+        try await SearchTestSupport.waitUntil {
+            if case .recognizingText(into: "de", _)? = state.translationColumn { return true }
+            return false
+        }
+        XCTAssertNil(translator.request(1), "Not before the image's text is known")
+    }
+
+    func testTheLanguageChosenBeforeIsTheOneTranslationsAreMadeIn() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+
+        state.restoreTranslationTarget("fr")
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "fr"))
+        state.showTranslation()
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "fr"))
+        // Without a choice, or with one that names no language, the first the person prefers.
+        state.restoreTranslationTarget(nil)
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "zh-Hans-CN"))
+        for nothing in ["", "zz", "123"] {
+            state.restoreTranslationTarget(nothing)
+            XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "zh-Hans-CN"), nothing)
+        }
+        // A choice is kept as translations name the language, and one that names none chooses nothing.
+        XCTAssertEqual(state.chooseTranslationLanguage("ja-JP"), "ja")
+        XCTAssertNil(state.chooseTranslationLanguage("zz"))
+        XCTAssertEqual(state.translationTarget, Locale.Language(identifier: "ja"))
     }
 
     func testFindingNoTextInTheOtherLayoutReplacesTheTextMadeBefore() async throws {

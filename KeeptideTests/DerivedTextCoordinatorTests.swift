@@ -1126,6 +1126,82 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.translationWaitingForText(source))
     }
 
+    // MARK: Languages to translate into
+
+    func testTheLanguagesToTranslateIntoSayWhatEachNeedsFromTheTextsLanguage() async throws {
+        let (controller, store) = try await makeStore()
+        let translator = ScriptedTranslator()
+        // Translation names languages with their regions, and English in two, which are downloaded apart.
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "en-GB", "fr-FR", "ja-JP"],
+                          statuses: [("en", "ja-JP", .needsDownload), ("en", "fr-FR", .unsupported)])
+        let coordinator = try await makeCoordinator(controller, store, ScriptedRecognizer(), translator: translator)
+
+        let fromEnglish = await coordinator.translationLanguages(from: Locale.Language(identifier: "en"))
+
+        // Each language in each of its regions, once, asked about as Translation names it.
+        XCTAssertEqual(fromEnglish.map(\.language),
+                       ["en-US", "zh-Hans-CN", "ja-JP", "en-GB", "fr-FR"].map(Locale.Language.init(identifier:)))
+        XCTAssertEqual(fromEnglish.map(\.status), [nil, .installed, .needsDownload, nil, .unsupported],
+                       "Nothing is said of the text's own language, in either region")
+        // Without the text's language, what each needs isn't known.
+        let unknown = await coordinator.translationLanguages(from: nil)
+        XCTAssertEqual(unknown.count, 5)
+        XCTAssertEqual(unknown.map(\.status), [nil, nil, nil, nil, nil])
+        // A text in a language this Mac doesn't translate from can be translated into none.
+        let fromSwedish = await coordinator.translationLanguages(from: Locale.Language(identifier: "sv"))
+        XCTAssertEqual(fromSwedish.map(\.status), Array(repeating: .unsupported, count: 5))
+    }
+
+    func testTheLanguageOfATextIsTheOneMostOfItIsIn() async throws {
+        let (controller, store) = try await makeStore()
+        let coordinator = try await makeCoordinator(controller, store, ScriptedRecognizer())
+
+        let inEnglish = await coordinator.language(
+            of: "The quarterly report is ready for review, and the team will meet on Thursday to discuss it.")
+        XCTAssertEqual(inEnglish?.translationCode, "en")
+        let mostlyChinese = await coordinator.language(
+            of: "季度报告已经准备好了，团队将在星期四开会讨论预算和下一步的计划。\n\nThe budget is attached.")
+        XCTAssertEqual(mostlyChinese?.translationCode, "zh-Hans", "The language most of it is in")
+        let ofCode = await coordinator.language(of: "let total = items.reduce(0) { $0 + $1.price }\nprint(total)")
+        XCTAssertNil(ofCode, "Code is in no language to tell")
+        let ofNothing = await coordinator.language(of: "")
+        XCTAssertNil(ofNothing)
+        // A reader that stopped waiting is told nothing.
+        let stopped = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await coordinator.language(
+                of: "The quarterly report is ready for review, and the team will meet on Thursday to discuss it.")
+        }
+        let toldNothing = await stopped.value
+        XCTAssertNil(toldNothing)
+    }
+
+    func testTheTextRecognizedInAnImageIsKnownOnceItIsRecognized() async throws {
+        let (controller, store) = try await makeStore()
+        let sign = try await insertClip("Sign", into: controller)
+        let blank = try await insertClip("Blank", into: controller)
+        let kept = try await insertClip("Poster", into: controller)
+        _ = try await store.save(GenerationSnapshot(phase: .finished(.completed), info: info, texts: [.main: "Kept"]),
+                                 for: DerivedTextRequest(source: kept, operation: .extractText, keepsLineBreaks: true))
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        XCTAssertNil(coordinator.recognizedText(in: sign), "Nothing was recognized yet")
+
+        coordinator.extractText(from: sign, keepingLineBreaks: true)
+        let recognition = try await startedSource(recognizer, 0)
+        recognition.send(.started(info), .delta("Open daily"))
+        XCTAssertNil(coordinator.recognizedText(in: sign), "Not while it is recognized")
+        recognition.send(.finished(.completed))
+        await waitUntil("the text is recognized") { hasSettled(coordinator, sign) }
+
+        XCTAssertEqual(coordinator.recognizedText(in: sign), "Open daily")
+        coordinator.extractText(from: blank, keepingLineBreaks: true)
+        try await startedSource(recognizer, 1).send(.started(info), .finished(.completed))
+        await waitUntil("no text is found") { hasSettled(coordinator, blank) }
+        XCTAssertNil(coordinator.recognizedText(in: blank), "None was found")
+        XCTAssertNil(coordinator.recognizedText(in: kept), "What the library kept is read apart, with the preview")
+    }
+
     // MARK: Helpers
 
     private func makeStore() async throws -> (PersistenceController, DerivedTextStore) {

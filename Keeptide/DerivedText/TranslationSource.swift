@@ -154,18 +154,10 @@ struct TranslationSource: GenerationSource {
         var judgements: [LanguageJudgement] = []
         for paragraph in paragraphs {
             try Task.checkCancellation()
-            judgements.append(judgement(of: paragraph, supported: supported))
+            judgements.append(Self.judgement(of: paragraph, supported: supported, judge: judge))
         }
-        var main = Self.mainLanguage(of: zip(paragraphs, judgements).compactMap { paragraph, judgement in
-            if case .detected(let language, _) = judgement { (paragraph, language) } else { nil }
-        })
-        if main == nil {
-            // Together, the prose paragraphs may say what none of them says alone.
-            let prose = zip(paragraphs, judgements).filter { $0.1 != .notProse }.map(\.0)
-            if !prose.isEmpty,
-               case .detected(let language, _) = judgement(of: prose.joined(separator: "\n\n"), supported: supported) {
-                main = language
-            }
+        let main = Self.mainLanguage(of: paragraphs, judged: judgements) {
+            Self.judgement(of: $0, supported: supported, judge: judge)
         }
         return try zip(paragraphs, judgements).map { paragraph, judgement in
             guard let language = try language(of: judgement, main: main, supported: supported) else {
@@ -180,9 +172,43 @@ struct TranslationSource: GenerationSource {
         }
     }
 
+    /// The language most of `text` is in, as a translation of it tells, paragraph by paragraph among `supported`, the
+    /// languages Translation knows: nil where it can't tell, or once its task is cancelled. A language Translation
+    /// doesn't know is named as itself.
+    static func mainLanguage(of text: String, supported: [Locale.Language]) -> Locale.Language? {
+        let judge: (String, [Locale.Language]?) -> LanguageJudgement = { LanguageDetection.judge($0, constraints: $1) }
+        let paragraphs = StreamAccumulator.paragraphs(of: text)
+        var judgements: [LanguageJudgement] = []
+        for paragraph in paragraphs {
+            guard !Task.isCancelled else { return nil }
+            judgements.append(judgement(of: paragraph, supported: supported, judge: judge))
+        }
+        return mainLanguage(of: paragraphs, judged: judgements) {
+            judgement(of: $0, supported: supported, judge: judge)
+        }
+    }
+
+    /// The language most of the paragraphs judged sure are in; where none is, the language of all the prose paragraphs
+    /// together, as `judging` tells it.
+    private static func mainLanguage(of paragraphs: [String], judged judgements: [LanguageJudgement],
+                                     judging judgement: (String) -> LanguageJudgement) -> Locale.Language? {
+        if let main = mainLanguage(of: zip(paragraphs, judgements).compactMap({ paragraph, judgement in
+            if case .detected(let language, _) = judgement { (paragraph, language) } else { nil }
+        })) {
+            return main
+        }
+        // Together, the prose paragraphs may say what none of them says alone.
+        let prose = zip(paragraphs, judgements).filter { $0.1 != .notProse }.map(\.0)
+        guard !prose.isEmpty, case .detected(let language, _) = judgement(prose.joined(separator: "\n\n")) else {
+            return nil
+        }
+        return language
+    }
+
     /// A paragraph's language among all languages first, so that one Translation doesn't know is named as itself.
     /// Only when that is unsure, and the likeliest is a language Translation knows, among those.
-    private func judgement(of paragraph: String, supported: [Locale.Language]) -> LanguageJudgement {
+    private static func judgement(of paragraph: String, supported: [Locale.Language],
+                                  judge: (String, [Locale.Language]?) -> LanguageJudgement) -> LanguageJudgement {
         let judgement = judge(paragraph, nil)
         guard case .uncertain(let candidates) = judgement, let top = candidates.first,
               supported.contains(where: { $0.isSameLanguage(as: top) }) else { return judgement }

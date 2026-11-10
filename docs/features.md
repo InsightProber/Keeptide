@@ -52,26 +52,36 @@ tag and VoiceOver say which.
 
 ⌘T, or **Translation** in the preview's bar, shows a translation of the selected
 text beside its preview: the text on the left and, on the right, a translation
-made on this Mac with Apple's Translation into the first language in the
-person's language list, each paragraph as it is done. Code, links and parts
-already in that language stay as they are. Both languages must be downloaded on
-this Mac, and Keeptide names any that is missing before it translates; a text
-already in that language offers the next one. Nothing is translated until it is
-asked for, and the translation is kept beside its text on this Mac, one per
-item, not in iCloud or in exports. ⌘. stops a translation and shows what was
-made, marked incomplete, which is kept unless a whole translation was kept
-before. Escape closes the translation before the preview. For an image, ⌘T,
-or **Translation** beside **Text** in the bar, translates the text recognized in
-it, with the image on the left: text recognized or kept from before is
-translated as it is, and otherwise the image's text is recognized first, which
-⌘. stops too; an image with no text in it says so.
-When translating again fails, the earlier translation stays and the column says
-why; the same holds for the text in an image. While a whole translation that was
-kept shows, Return pastes it instead of the clip, through the same checks as a
-clip; ⌘C copies a whole translation, or the part selected, and leaves quick
-access open, and ⌘S saves it as a snippet of its own. A card in quick access
-carries a "文A" mark while its translation is made or waits its turn,
-once it is translated, when the translation was stopped part way, or when
+made on this Mac with Apple's Translation into the language chosen last, at
+first the first one in the person's language list that Translation offers, each
+paragraph as it is done.
+The language's name above the translation is a menu of the languages Translation
+offers, the person's own first; ⌥⌘T opens it too, and **Translate To** in the
+actions menu lists the same languages. Choosing one translates into it, and
+every translation after, in this and later sessions. Once quick access shows the
+text and its language can be told, the menu marks the languages it can't be
+translated into yet: **Not Downloaded** where a language must be downloaded
+first, and **Not Available on This Mac** where this Mac can't translate between
+the two. A language Translation offers in more than one region, as it does
+English, is listed once, in the region the person's language list names for it,
+else its usual one. Code, links and parts already in that language stay as they
+are. Both languages must be downloaded on this Mac, and Keeptide names any that
+is missing before it translates; a text already in that language offers the next
+one. Nothing is translated until it is asked for, and the translation is kept
+beside its text on this Mac, one per item, not in iCloud or in exports. ⌘. stops
+a translation and shows what was made, marked incomplete, which is kept unless a
+whole translation was kept before. Escape closes the translation before the
+preview. For an image, ⌘T, or **Translation** beside **Text** in the bar,
+translates the text recognized in it, with the image on the left: text
+recognized or kept from before is translated as it is, and otherwise the image's
+text is recognized first, which ⌘. stops too; an image with no text in it says
+so. When translating again fails, the earlier translation stays and the column
+says why; the same holds for the text in an image. While a whole translation
+that was kept shows, Return pastes it instead of the clip, through the same
+checks as a clip; ⌘C copies a whole translation, or the part selected, and
+leaves quick access open, and ⌘S saves it as a snippet of its own. A card in
+quick access carries a "文A" mark while its translation is made or waits its
+turn, once it is translated, when the translation was stopped part way, or when
 translating it failed; its help tag and VoiceOver say which, with the language
 of a translation or why it failed.
 
@@ -111,7 +121,7 @@ planned.
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
 | Text in images | Text recognized on this Mac in a copied image, shown beside its preview and kept locally |
-| Translation | A text clip, or the text in an image, translated on this Mac, shown beside its preview and kept locally |
+| Translation | A text clip, or the text in an image, translated on this Mac into the language chosen, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |
 | Recovery | Recently deleted content, clear storage errors and protection against partial writes |

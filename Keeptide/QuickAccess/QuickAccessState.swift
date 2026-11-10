@@ -216,18 +216,103 @@ extension TranslationColumn {
     }
 }
 
-/// The language translations are made in until the column has a menu for one: the first the person prefers, as the
-/// system lists them; and the one to try where a text is in that language already.
+/// The languages translations are made in. `offered` is what Translation lists, a language in each of its regions, as
+/// English is in two; empty until it is read, when any language may be offered.
 enum TranslationTargets {
-    static func first(of preferred: [String]) -> Locale.Language {
-        Locale.Language(identifier: preferred.first ?? "en")
+    /// The first language the person prefers that is offered, else English, in the region the person wants it in.
+    static func first(of preferred: [String], offered: [Locale.Language] = []) -> Locale.Language {
+        let first = preferred.map(Locale.Language.init(identifier:)).first { isOffered($0, offered) }
+        return variant(of: first ?? Locale.Language(identifier: "en"), preferred: preferred, offered: offered)
     }
 
-    /// The first preferred language other than `language`, else English; nil where that is `language` too.
-    static func next(after language: Locale.Language, of preferred: [String]) -> Locale.Language? {
-        let candidates = preferred.map(Locale.Language.init(identifier:)) + [Locale.Language(identifier: "en")]
-        return candidates.first { !$0.isSameLanguage(as: language) }
+    /// The first such language other than `language`, else English; nil where that is `language` too.
+    static func next(after language: Locale.Language, of preferred: [String],
+                     offered: [Locale.Language] = []) -> Locale.Language? {
+        let candidates = preferred.map(Locale.Language.init(identifier:)).filter { isOffered($0, offered) }
+            + [Locale.Language(identifier: "en")]
+        guard let next = candidates.first(where: { !$0.isSameLanguage(as: language) }) else { return nil }
+        return variant(of: next, preferred: preferred, offered: offered)
     }
+
+    /// Whether translations can be made in `language`, as far as is known.
+    static func isOffered(_ language: Locale.Language, _ offered: [Locale.Language]) -> Bool {
+        offered.isEmpty || offered.contains { $0.isSameLanguage(as: language) }
+    }
+
+    /// The region translations into `language` are made in: the one the person's own list names for that language,
+    /// where Translation offers it or nothing is known of what it offers; else the language's usual region where
+    /// Translation offers that, as US English is for English; else the first it offers. British English and US English
+    /// are downloaded apart.
+    static func variant(of language: Locale.Language, preferred: [String],
+                        offered: [Locale.Language]) -> Locale.Language {
+        // The language alone, so that its usual region is the language's own, not that of a region named with it.
+        let language = Locale.Language(identifier: language.translationCode)
+        let wanted = preferred.map(Locale.Language.init(identifier:)).filter { $0.isSameLanguage(as: language) }
+        let regions = offered.filter { $0.isSameLanguage(as: language) }
+        guard let first = regions.first else { return wanted.first ?? language }
+        for want in wanted {
+            if let match = regions.first(where: { $0.region == want.region }) { return match }
+        }
+        let usual = Locale.Language(identifier: language.maximalIdentifier).region
+        return regions.first { $0.region == usual } ?? first
+    }
+
+    /// A language's code as the language menu and kept translations name it, without a region: "zh-Hans", "en". Nil
+    /// for one that names no language, as "zz" or "123" don't.
+    static func code(of identifier: String) -> String? {
+        let language = Locale.Language(identifier: identifier.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard language.languageCode?.isISOLanguage == true else { return nil }
+        return language.translationCode
+    }
+}
+
+/// The language menu: the languages translations can be made in, the ones the person prefers first.
+struct TranslationLanguageMenu: Equatable {
+    struct Item: Equatable {
+        /// The language's code, as translations name it, without a region: "zh-Hans", "en".
+        let code: String
+        let name: String
+        /// What translating the clip's text into it needs, where that is known and it needs anything.
+        let note: Note?
+        /// Whether it is the language the column shows, or else the one translations are made in.
+        let isChosen: Bool
+
+        /// What VoiceOver reads: the name, with what it needs after it, as in "Japanese, not downloaded".
+        var spokenName: String { note.map { "\(name), \($0.spoken)" } ?? name }
+    }
+
+    /// What translating into a language needs, said after its name.
+    enum Note: Equatable {
+        /// Its languages are to be downloaded first.
+        case notDownloaded
+        /// This Mac can't translate between them.
+        case notAvailable
+
+        init?(_ status: TranslationPairStatus?) {
+            switch status {
+            case .needsDownload?: self = .notDownloaded
+            case .unsupported?: self = .notAvailable
+            case .installed?, nil: return nil
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .notDownloaded: "Not Downloaded"
+            case .notAvailable: "Not Available on This Mac"
+            }
+        }
+
+        var spoken: String {
+            switch self {
+            case .notDownloaded: "not downloaded"
+            case .notAvailable: "not available on this Mac"
+            }
+        }
+    }
+
+    var preferred: [Item] = []
+    var others: [Item] = []
 }
 
 enum QuickAccessPhase: Equatable {
@@ -337,6 +422,21 @@ final class QuickAccessState {
     @ObservationIgnored private var readingSavedTranslation: Task<Void, Never>?
     /// The languages the person prefers, first first, as the system lists them.
     @ObservationIgnored private let preferredLanguages: () -> [String]
+    /// The language last chosen from the language menu, by its code without a region: translations are made in it.
+    /// Nil until one is, and translations are made in the first language the person prefers.
+    private var chosenTranslationTarget: String?
+    /// The languages translations can be made in, a language in each of its regions, as Translation last listed them:
+    /// read again each time the panel opens. Empty until then; kept from one showing to the next.
+    private(set) var knownTranslationLanguages: [Locale.Language] = []
+    @ObservationIgnored private var readingKnownLanguages: Task<Void, Never>?
+    /// What translating from a language into each language needs, by the code of the language translated from, as
+    /// read in this showing: read again in the next, as a language may be downloaded or removed meanwhile.
+    private var pairStatuses: [String: [TranslationLanguage]] = [:]
+    @ObservationIgnored private var readingPairStatuses: [String: Task<Void, Never>] = [:]
+    /// The language each clip's text was told to be in, in this showing, from the text quick access had of it: nil
+    /// where it couldn't be told.
+    private var textLanguages: [ContentRef: Locale.Language?] = [:]
+    @ObservationIgnored private var tellingLanguage: (ref: ContentRef, task: Task<Void, Never>)?
     private(set) var preview: PreviewContent?
     private(set) var isLoadingOriginalPreview = false
     private(set) var previewMessage: String?
@@ -508,6 +608,10 @@ final class QuickAccessState {
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
         savedTexts = []
+        cancelLanguageReads()
+        textLanguages = [:]
+        pairStatuses = [:]
+        readKnownTranslationLanguages()
         keptResults = [:]
         keptAnswered = [:]
         keptAsked = [:]
@@ -529,6 +633,7 @@ final class QuickAccessState {
 
     func close() {
         isOpen = false
+        cancelLanguageReads()
         // A list changed just before closing is not announced later.
         announcesList = false
         cancelLoads()
@@ -562,6 +667,10 @@ final class QuickAccessState {
         keptResults = [:]
         keptAnswered = [:]
         keptAsked = [:]
+        cancelLanguageReads()
+        textLanguages = [:]
+        pairStatuses = [:]
+        readKnownTranslationLanguages()
         startSession(recordingTarget: false)
     }
 
@@ -984,14 +1093,170 @@ final class QuickAccessState {
     /// Whether a clip of this kind can be translated: a text, or the text in an image.
     static func isTranslatable(_ kind: ContentKind) -> Bool { kind == .text || kind == .image }
 
-    /// The language translations are made in: the first the person prefers.
+    /// The language translations are made in: the one last chosen from the language menu while Translation offers
+    /// it, or else the first the person prefers that it offers, each in the region the person wants it in.
     var translationTarget: Locale.Language {
-        TranslationTargets.first(of: preferredLanguages())
+        let offered = knownTranslationLanguages
+        if let chosenTranslationTarget {
+            let chosen = Locale.Language(identifier: chosenTranslationTarget)
+            if TranslationTargets.isOffered(chosen, offered) {
+                return TranslationTargets.variant(of: chosen, preferred: preferredLanguages(), offered: offered)
+            }
+        }
+        return TranslationTargets.first(of: preferredLanguages(), offered: offered)
     }
 
     /// The language to offer where the text is in the one asked for already; nil without another.
     func translationTarget(after language: Locale.Language) -> Locale.Language? {
-        TranslationTargets.next(after: language, of: preferredLanguages())
+        TranslationTargets.next(after: language, of: preferredLanguages(), offered: knownTranslationLanguages)
+    }
+
+    /// The language menu for the selected clip.
+    var translationLanguageMenu: TranslationLanguageMenu {
+        translationLanguageMenu(for: selection.selectedRow?.ref)
+    }
+
+    /// The language menu for a clip: the languages the person prefers that translations can be made in, then English,
+    /// then the others by name, each once whatever its regions, in the region translations into it are made in. Once
+    /// the clip's text was told to be in a language in this showing, each is marked for what translating from that
+    /// language into it needs. Until Translation's languages are read, the person's own and English. The language the
+    /// clip's column shows, or else the one translations are made in, is chosen.
+    func translationLanguageMenu(for ref: ContentRef?) -> TranslationLanguageMenu {
+        let shown = ref != nil && ref == translationColumnRef ? translationColumn?.language : nil
+        let chosen = shown.map(Locale.Language.init(identifier:)) ?? translationTarget
+        let offered = knownTranslationLanguages
+        let preferredLanguages = preferredLanguages()
+        // The marks are for this clip's own language, never another clip's.
+        var statuses: [TranslationLanguage] = []
+        if let ref, let entry = textLanguages[ref], let told = entry {
+            statuses = pairStatuses[told.translationCode] ?? []
+        }
+        var preferred: [Locale.Language] = []
+        for language in preferredLanguages.map(Locale.Language.init(identifier:)) + [Locale.Language(identifier: "en")]
+            where TranslationTargets.isOffered(language, offered)
+            && !preferred.contains(where: { $0.isSameLanguage(as: language) }) {
+            preferred.append(TranslationTargets.variant(of: language, preferred: preferredLanguages, offered: offered))
+        }
+        var others: [Locale.Language] = []
+        for language in offered where !(preferred + others).contains(where: { $0.isSameLanguage(as: language) }) {
+            others.append(TranslationTargets.variant(of: language, preferred: preferredLanguages, offered: offered))
+        }
+        others.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        func item(_ language: Locale.Language) -> TranslationLanguageMenu.Item {
+            let status = statuses.first {
+                $0.language.isSameLanguage(as: language) && $0.language.region == language.region
+            }?.status
+            return TranslationLanguageMenu.Item(code: language.translationCode, name: language.displayName,
+                                                note: TranslationLanguageMenu.Note(status),
+                                                isChosen: language.isSameLanguage(as: chosen))
+        }
+        return TranslationLanguageMenu(preferred: preferred.map(item), others: others.map(item))
+    }
+
+    /// Tells the selected clip's language from the text quick access has of it, unless that was done in this showing,
+    /// and reads what translating from that language needs, unless that was read: what the language menu marks.
+    /// Without text at hand, as before a text's preview is read or while an image's text is unknown, it does nothing
+    /// yet; the panel asks again as it updates.
+    func readTranslationLanguages() {
+        guard let row = selection.selectedRow, Self.isTranslatable(row.kind),
+              let derivedText = services()?.derivedText else { return }
+        let ref = row.ref
+        if let entry = textLanguages[ref] {
+            if let told = entry { readPairStatuses(from: told, derivedText) }
+            return
+        }
+        guard tellingLanguage?.ref != ref, let text = textAtHand(for: row, derivedText) else { return }
+        tellingLanguage?.task.cancel()
+        tellingLanguage = (ref, Task { [weak self] in
+            let language = await derivedText.language(of: text)
+            guard !Task.isCancelled, let self else { return }
+            tellingLanguage = nil
+            textLanguages.updateValue(language, forKey: ref)
+            if let language { readPairStatuses(from: language, derivedText) }
+        })
+    }
+
+    /// Reads what translating from `source` into each language needs, unless that was read in this showing or is
+    /// being read.
+    private func readPairStatuses(from source: Locale.Language, _ derivedText: DerivedTextCoordinator) {
+        let code = source.translationCode
+        guard pairStatuses[code] == nil, readingPairStatuses[code] == nil else { return }
+        readingPairStatuses[code] = Task { [weak self] in
+            let languages = await derivedText.translationLanguages(from: source)
+            guard !Task.isCancelled, let self else { return }
+            readingPairStatuses[code] = nil
+            pairStatuses[code] = languages
+            if knownTranslationLanguages.isEmpty { knownTranslationLanguages = languages.map(\.language) }
+        }
+    }
+
+    /// The text a clip's language is told from, as quick access already has it: a text's preview, or an image's text,
+    /// recognized in this session or kept from before. Nil until it is at hand: a clip is never read again for it.
+    private func textAtHand(for row: QuickAccessRow, _ derivedText: DerivedTextCoordinator) -> String? {
+        if row.kind == .image {
+            if let recognized = derivedText.recognizedText(in: row.ref) { return recognized }
+            return savedTextRef == row.ref ? savedText?.text : nil
+        }
+        guard previewedRef == row.ref, case .text(let text, _) = TranslationOriginal(preview) else { return nil }
+        return text
+    }
+
+    /// Reads the languages Translation lists, as the panel opens. Those read before stand until then, and where it
+    /// lists none.
+    private func readKnownTranslationLanguages() {
+        readingKnownLanguages?.cancel()
+        guard let derivedText = services()?.derivedText else { return }
+        readingKnownLanguages = Task { [weak self] in
+            let languages = await derivedText.translationLanguages(from: nil).map(\.language)
+            guard !Task.isCancelled, let self, !languages.isEmpty else { return }
+            knownTranslationLanguages = languages
+        }
+    }
+
+    /// Stops telling languages and reading what they need: the panel closed or opened again, or its library changed.
+    private func cancelLanguageReads() {
+        readingKnownLanguages?.cancel()
+        readingKnownLanguages = nil
+        tellingLanguage?.task.cancel()
+        tellingLanguage = nil
+        readingPairStatuses.values.forEach { $0.cancel() }
+        readingPairStatuses = [:]
+    }
+
+    /// Chooses the language translations are made in, by its code, from the language menu. The selected clip's
+    /// translation shows beside it, made in that language, in the region the person wants it in, unless the column
+    /// shows a whole one in it or one is being made in it. Returns the code, without a region, for the panel to keep;
+    /// a code that names no language chooses nothing and returns nil.
+    @discardableResult
+    func chooseTranslationLanguage(_ code: String) -> String? {
+        guard let code = TranslationTargets.code(of: code) else { return nil }
+        chosenTranslationTarget = code
+        let language = TranslationTargets.variant(of: Locale.Language(identifier: code), preferred: preferredLanguages(),
+                                                  offered: knownTranslationLanguages)
+        guard let row = selection.selectedRow, Self.isTranslatable(row.kind),
+              let derivedText = services()?.derivedText else { return code }
+        resultColumn = .translation
+        if !isPreviewExpanded {
+            isPreviewExpanded = true
+            loadPreview()
+        }
+        readTranslationLanguages()
+        if let column = translationColumn, column.isTranslating || column.wholeText != nil,
+           column.language.map(Locale.Language.init(identifier:))?.isSameLanguage(as: language) == true {
+            return code
+        }
+        if row.kind == .image {
+            derivedText.translateText(inImage: row.ref, to: language, keepingLineBreaks: keepsLineBreaks)
+        } else {
+            derivedText.translate(row.ref, to: language)
+        }
+        return code
+    }
+
+    /// The person's choice of language, as the panel opens: without one, or with one that names no language,
+    /// translations are made in the first language the person prefers. It changes nothing shown.
+    func restoreTranslationTarget(_ code: String?) {
+        chosenTranslationTarget = code.flatMap(TranslationTargets.code(of:))
     }
 
     /// What the translation column shows, while it shows: a job under way, then how the latest job ended, and
@@ -1087,6 +1352,7 @@ final class QuickAccessState {
             isPreviewExpanded = true
             loadPreview()
         }
+        readTranslationLanguages()
         if row.kind == .image {
             derivedText.translateImageUnlessMade(row.ref, to: translationTarget, keepingLineBreaks: keepsLineBreaks)
         } else {
@@ -1105,6 +1371,9 @@ final class QuickAccessState {
            let next = translationTarget(after: asked) {
             target = next
         }
+        // A language the column names is kept without its region: it is made in the region the person wants it in.
+        target = TranslationTargets.variant(of: target, preferred: preferredLanguages(),
+                                            offered: knownTranslationLanguages)
         // The text in an image is translated again as it was recognized, and recognized first only where it never was.
         if selection.selectedRow?.kind == .image {
             services()?.derivedText?.translateText(inImage: ref, to: target, keepingLineBreaks: keepsLineBreaks)
@@ -1252,6 +1521,7 @@ final class QuickAccessState {
             guard !Task.isCancelled, let self, selection.selection == ref else { return }
             savedTextRef = ref
             savedText = saved
+            readTranslationLanguages()
         }
     }
 
@@ -2158,6 +2428,7 @@ final class QuickAccessState {
                   self.previewGeneration == generation,
                   self.isPreviewExpanded else { return }
             self.preview = content
+            self.readTranslationLanguages()
         }
     }
 

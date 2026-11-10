@@ -199,6 +199,23 @@ final class SettingsTests: XCTestCase {
         XCTAssertFalse(QuickAccessPreferences(defaults: defaults).fadesStripEnds)
     }
 
+    func testTheLanguageChosenToTranslateIntoIsKept() throws {
+        let defaults = try makeDefaults()
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        XCTAssertNil(preferences.translationTarget, "None until one is chosen")
+        XCTAssertEqual(QuickAccessPreferences.translationTargetKey, "translation.targetLanguage")
+
+        preferences.translationTarget = "ja"
+
+        XCTAssertEqual(defaults.string(forKey: QuickAccessPreferences.translationTargetKey), "ja")
+        XCTAssertEqual(QuickAccessPreferences(defaults: defaults).translationTarget, "ja")
+        // What is stored is not trusted: anything but a code reads as no choice.
+        defaults.set(3, forKey: QuickAccessPreferences.translationTargetKey)
+        XCTAssertNil(QuickAccessPreferences(defaults: defaults).translationTarget)
+        defaults.set("", forKey: QuickAccessPreferences.translationTargetKey)
+        XCTAssertNil(QuickAccessPreferences(defaults: defaults).translationTarget)
+    }
+
     func testTheFadeSwitchReadsWithItsTitle() throws {
         let preferences = QuickAccessPreferences(defaults: try makeDefaults())
         let hosting = NSHostingView(rootView: SettingsView(preferences: preferences))
