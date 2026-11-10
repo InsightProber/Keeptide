@@ -1721,8 +1721,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         ("f", .command), ("f", [.command, .shift]), ("c", [.command, .shift]),
         // View: Show Sidebar, Show Inspector, Previous List, Next List and Choose List….
         ("s", [.control, .command]), ("i", [.control, .command]), ("[", .command), ("]", .command), ("l", .command),
-        // Item: Add to Favorites, Add to Collection… and Move to Recently Deleted, ⌘⌫, which types a backspace with ⌘.
-        ("d", .command), ("m", [.command, .shift]), ("\u{8}", .command),
+        // Item: Add to Favorites, Add to Collection…, Extract Text and Move to Recently Deleted, ⌘⌫, which types a
+        // backspace with ⌘.
+        ("d", .command), ("m", [.command, .shift]), ("t", [.command, .shift]), ("\u{8}", .command),
     ]
 
     /// Edit's Cut, Copy, Paste and Select All, by their keys with ⌘. Their items have no target either: each goes to

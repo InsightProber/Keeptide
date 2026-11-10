@@ -101,6 +101,29 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[revisedTitle].firstMatch.waitForExistence(timeout: 8), app.debugDescription)
     }
 
+    func testExtractTextShowsTheTextBesideTheImageAndEscapeInTheListClosesIt() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true, fakesTextRecognition: true)
+        _ = requireLibrary(in: app)
+        let image = app.staticTexts["Image content"].firstMatch
+        XCTAssertTrue(image.waitForExistence(timeout: 8), app.debugDescription)
+        image.click()
+
+        // ⇧⌘T, Item › Extract Text: the text in the image beside it, recognized as quick access recognizes it.
+        app.typeKey("t", modifierFlags: [.command, .shift])
+        let column = app.descendants(matching: .any)["LibraryTextInImage"]
+        XCTAssertTrue(column.waitForExistence(timeout: 8), app.debugDescription)
+        let text = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Synthetic text in image"))
+            .firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 8), app.debugDescription)
+        waitUntil(app.buttons["LibrarySaveText"], isEnabled: true)
+
+        // The list still has the keyboard: Escape there closes the column, and the image stays.
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(column.waitForNonExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(image.exists, app.debugDescription)
+    }
+
     func testFavoriteOnAClipSavesItFirst() {
         continueAfterFailure = false
         let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
@@ -337,7 +360,8 @@ final class LibraryUITests: XCTestCase {
 
     // MARK: - Isolated launch and interaction helpers
 
-    private func launchKeeptide(sessionID: UUID, seedSyntheticClips: Bool = false) -> XCUIApplication {
+    private func launchKeeptide(sessionID: UUID, seedSyntheticClips: Bool = false,
+                                fakesTextRecognition: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         var arguments = [
             "--ui-testing",
@@ -347,6 +371,8 @@ final class LibraryUITests: XCTestCase {
             sessionID.uuidString,
         ]
         if seedSyntheticClips { arguments.append("--seed-synthetic-clips") }
+        // Text in images is recognized by a stand-in that finds the same synthetic text in every image.
+        if fakesTextRecognition { arguments.append("--fake-text-recognition") }
         app.launchArguments = arguments
         self.sessionID = sessionID
         application = app

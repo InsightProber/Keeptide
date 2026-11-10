@@ -13,8 +13,10 @@ final class LibraryWindowController: NSWindowController {
     private var closePreparationTask: Task<Void, Never>?
     private var isOpen = false
 
+    /// `preferences` are quick access's, which Settings edits.
     init(
         session: CaptureSession,
+        preferences: QuickAccessPreferences? = nil,
         autosaveName: String? = "KeeptideLibraryWindow",
         setActivationPolicy: @escaping (NSApplication.ActivationPolicy) -> Void = { NSApp.setActivationPolicy($0) },
         shouldRestoreAccessory: @escaping () -> Bool = { true }
@@ -24,7 +26,7 @@ final class LibraryWindowController: NSWindowController {
         self.session = session
         self.setActivationPolicy = setActivationPolicy
         self.shouldRestoreAccessory = shouldRestoreAccessory
-        let window = NSWindow(
+        let window = LibraryWindow(
             contentRect: NSRect(origin: .zero, size: Self.defaultSize),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -35,11 +37,20 @@ final class LibraryWindowController: NSWindowController {
         window.setAccessibilityIdentifier("KeeptideLibraryWindow")
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
+        window.onCancel = { [weak commands] in commands?.cancelResultColumn(isCommandPeriod: $0) ?? false }
+        // What the library says to VoiceOver, it says from its own window, and only while the window shows.
+        commands.announce = { [weak window] words in
+            guard let window, window.isVisible else { return }
+            NSAccessibility.post(element: window, notification: .announcementRequested, userInfo: [
+                .announcement: words,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+            ])
+        }
         // The title stays the app's; the subtitle names the list, as a document window names its document. The view
         // reports the list as soon as it exists, which can be while its content is made, so this comes first.
         commands.showListTitle = { [weak window] subtitle in window?.subtitle = subtitle }
         window.contentViewController = WindowContentController(
-            rootView: LibraryView(session: session, commands: commands),
+            rootView: LibraryView(session: session, commands: commands, preferences: preferences),
             size: Self.defaultSize,
             sceneBridgingOptions: .toolbars
         )
@@ -116,6 +127,9 @@ final class LibraryWindowController: NSWindowController {
     }
 
     @objc func removeFromCollection(_ sender: Any?) { commands.requestRemoveFromCollection() }
+    @objc func extractText(_ sender: Any?) { commands.requestExtractText() }
+    @objc func copyResultText(_ sender: Any?) { commands.requestCopyResultText() }
+    @objc func saveResultTextAsSnippet(_ sender: Any?) { commands.requestSaveResultText() }
 
     /// ⇧⌘M: the collection menu, under the open item's title; a keyboard has no toolbar button to open it from.
     @objc func chooseCollection(_ sender: Any?) {
@@ -310,6 +324,12 @@ extension LibraryWindowController: NSMenuItemValidation {
             return commands.itemContext.deleted?.canRestore == true
         case #selector(deleteDeletedItemPermanently(_:)):
             return commands.itemContext.deleted != nil
+        case #selector(extractText(_:)):
+            // An input method keeps ⇧⌘T while it composes.
+            if let text = window?.firstResponder as? NSTextView, text.hasMarkedText() { return false }
+            return commands.itemContext.canExtractText
+        case #selector(copyResultText(_:)), #selector(saveResultTextAsSnippet(_:)):
+            return commands.itemContext.resultColumnIsOpen && commands.resultColumnHasText()
         case #selector(moveToRecentlyDeleted(_:)):
             // In the editor ⌘⌫ deletes to the start of the line; items move only from the list or the sidebar.
             guard window?.firstResponder is NSTableView else { return false }
@@ -356,6 +376,7 @@ extension LibraryWindowController: NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         isOpen = false
+        commands.requestCloseResultColumn()
         if shouldRestoreAccessory() { setActivationPolicy(.accessory) }
     }
 }
@@ -383,6 +404,15 @@ final class LibraryWindowCommands {
     private(set) var inspectorToggleRequest = 0
     private(set) var recoverRequest = 0
     private(set) var permanentDeleteRequest = 0
+    private(set) var extractTextRequest = 0
+    private(set) var closeResultColumnRequest = 0
+    private(set) var stopResultColumnRequest = 0
+    private(set) var copyResultTextRequest = 0
+    private(set) var saveResultTextRequest = 0
+    /// Whether the result column beside the detail shows a whole text; the view sets it, and the menus ask it.
+    @ObservationIgnored var resultColumnHasText: @MainActor () -> Bool = { false }
+    /// Says something to VoiceOver from the library's window; the window controller sets it.
+    @ObservationIgnored var announce: @MainActor (String) -> Void = { _ in }
     private(set) var focusGeneration = 0
     private(set) var newSnippetFocusGeneration = 0
     /// Whether the search is open, as the view last reported it.
@@ -464,6 +494,19 @@ final class LibraryWindowCommands {
     func requestRecover() { recoverRequest &+= 1 }
     /// Delete Permanently… asks first; the view holds the question.
     func requestPermanentDelete() { permanentDeleteRequest &+= 1 }
+    func requestExtractText() { extractTextRequest &+= 1 }
+
+    /// Escape closes the result column beside the detail while one shows, and ⌘. stops its recognition, never closing
+    /// it, so that one pressed just as the recognition ends isn't taken as Escape. Returns whether the column took it.
+    func cancelResultColumn(isCommandPeriod: Bool) -> Bool {
+        guard itemContext.resultColumnIsOpen else { return false }
+        if isCommandPeriod { stopResultColumnRequest &+= 1 } else { closeResultColumnRequest &+= 1 }
+        return true
+    }
+
+    func requestCloseResultColumn() { closeResultColumnRequest &+= 1 }
+    func requestCopyResultText() { copyResultTextRequest &+= 1 }
+    func requestSaveResultText() { saveResultTextRequest &+= 1 }
 
     /// A row chosen from the collection menu ⇧⌘M opens: a collection to add the selection to, or take it out of, or
     /// a new collection (`collectionID` nil).
@@ -499,6 +542,35 @@ struct LibraryItemContext: Equatable {
     var isRecentlyDeleted = false
     /// The deleted facet selected in Recently Deleted.
     var deleted: TrashFacetSnapshot?
+    /// Whether the text in the open image can be extracted: one readable image, in a library that recognizes text.
+    var canExtractText = false
+    /// Whether the detail shows a result column beside the item: Escape closes it.
+    var resultColumnIsOpen = false
+}
+
+/// The library's window, where Escape closes the result column beside the detail while one shows, and ⌘. stops its
+/// recognition without closing it. NSWindow takes them itself otherwise, and they never reach the window's
+/// controller.
+final class LibraryWindow: NSWindow {
+    /// Takes Escape, or ⌘. when `isCommandPeriod`, for the result column; returns whether it took it.
+    var onCancel: ((_ isCommandPeriod: Bool) -> Bool)?
+
+    override func cancelOperation(_ sender: Any?) {
+        let key = Self.cancelKey(NSApp.currentEvent)
+        // Held down, it has acted already: its repeats close nothing more, and never leave full screen.
+        if key.isRepeat { return }
+        if onCancel?(key.isCommandPeriod) == true { return }
+        super.cancelOperation(sender)
+    }
+
+    /// Which key asked to cancel: ⌘., or ⇧⌘. where the keyboard needs Shift for the full stop, else Escape; and
+    /// whether it is held down.
+    static func cancelKey(_ event: NSEvent?) -> (isCommandPeriod: Bool, isRepeat: Bool) {
+        guard let event, event.type == .keyDown else { return (false, false) }
+        let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let isCommandPeriod = event.charactersIgnoringModifiers == "." && modifiers.subtracting(.shift) == .command
+        return (isCommandPeriod, event.isARepeat)
+    }
 }
 
 struct LibraryCollectionRequest: Equatable {
