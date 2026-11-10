@@ -58,10 +58,27 @@ final class DerivedTextCoordinator {
     /// asked for last.
     private var waiting: [GenerationKey: (source: ContentRef, asked: Asked)] = [:]
 
+    /// Translations of the text in images that wait for the image's recognition under way to end: for each image, the
+    /// content the recognition is for and the language asked for.
+    private var afterText: [GenerationKey: (source: ContentRef, target: Locale.Language)] = [:]
+
     /// What a request waiting on the store starts, if the store kept nothing.
     private enum Asked {
         case extractText(keepingLineBreaks: Bool)
         case translate(to: Locale.Language)
+        /// A translation of the text in an image, whose text is recognized first, in this layout, when none is known.
+        case translateImage(to: Locale.Language, keepingLineBreaks: Bool)
+    }
+
+    /// What this session knows of the text in an image.
+    private enum TextInImage {
+        case text(String)
+        /// A recognition found none.
+        case none
+        /// A recognition is under way.
+        case underWay
+        /// Nothing yet, or a failure: the store may have kept text from before.
+        case unknown
     }
 
     @ObservationIgnored private let store: DerivedTextStore
@@ -219,6 +236,106 @@ final class DerivedTextCoordinator {
         startUnlessMade(source, operation: .translate, asked: .translate(to: target))
     }
 
+    /// Translates the text in an image into `target` unless something was made of it, as `translateUnlessMade` does a
+    /// text's: a translation kept from before shows as it is. Without one, it translates the text recognized in the
+    /// image, as `translateText(inImage:to:keepingLineBreaks:)` does.
+    func translateImageUnlessMade(_ source: ContentRef, to target: Locale.Language, keepingLineBreaks: Bool) {
+        startUnlessMade(source, operation: .translate,
+                        asked: .translateImage(to: target, keepingLineBreaks: keepingLineBreaks))
+    }
+
+    /// Translates the text in an image into `target`: the text recognized in this session, or else kept from before,
+    /// and otherwise the text a recognition finds first, in this layout. A recognition under way is waited for. The
+    /// translation starts in place of any under way for the image. An image with no text in it, or whose recognition
+    /// fails, is said to be so as how its translation ended.
+    func translateText(inImage source: ContentRef, to target: Locale.Language, keepingLineBreaks: Bool) {
+        guard !isClosed else { return }
+        let key = Self.key(for: source, operation: .translate)
+        let textKey = Self.key(for: source, operation: .extractText)
+        afterText[textKey] = nil
+        switch textInImage(source) {
+        case .text(let text): startTranslation(source, text: text, to: target)
+        case .none: endTranslationWithoutText(.noText, of: source, into: target)
+        case .underWay: afterText[textKey] = (source, target)
+        case .unknown:
+            waiting[key] = (source, .translateImage(to: target, keepingLineBreaks: keepingLineBreaks))
+            Task { [weak self] in
+                let kept = await self?.savedResult(for: source, operation: .extractText)
+                // Stopped meanwhile, or asked for again for other content, it starts nothing.
+                guard let self, let request = waiting[key], request.source == source else { return }
+                waiting[key] = nil
+                // Asked for again meanwhile, it translates into the language asked for last.
+                let (target, keepsLineBreaks) = switch request.asked {
+                case .translateImage(let target, let keepsLineBreaks): (target, keepsLineBreaks)
+                case .translate(let target): (target, keepingLineBreaks)
+                case .extractText: (target, keepingLineBreaks)
+                }
+                guard job(for: source, operation: .translate) == nil else { return }
+                switch textInImage(source) {
+                case .text(let text): startTranslation(source, text: text, to: target)
+                case .none: endTranslationWithoutText(.noText, of: source, into: target)
+                case .underWay: afterText[textKey] = (source, target)
+                case .unknown:
+                    if let kept, !kept.text.isEmpty {
+                        startTranslation(source, text: kept.text, to: target)
+                    } else {
+                        afterText[textKey] = (source, target)
+                        extractText(from: source, keepingLineBreaks: keepsLineBreaks)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Whether a translation of exactly this content of an image waits for its text to be recognized, and into what
+    /// language; nil when none does.
+    func translationWaitingForText(_ source: ContentRef) -> Locale.Language? {
+        guard let waiting = afterText[Self.key(for: source, operation: .extractText)], waiting.source == source else {
+            return nil
+        }
+        return waiting.target
+    }
+
+    private func textInImage(_ source: ContentRef) -> TextInImage {
+        if job(for: source, operation: .extractText) != nil { return .underWay }
+        switch outcome(for: source, operation: .extractText) {
+        case .saving(let text, _, _)?, .notSaved(let text, _, _)?: return .text(text)
+        case .saved(let result)?: return .text(result.text)
+        case .noText?: return .none
+        case .failed?, nil: return .unknown
+        }
+    }
+
+    /// A recognition that a translation of the image's text waited for ended: what it found is translated. One that
+    /// found nothing, or failed, says so as how the translation ended; one stopped or replaced starts no translation.
+    private func follow(_ snapshot: GenerationSnapshot, of source: ContentRef, into target: Locale.Language) {
+        switch snapshot.phase {
+        case .finished(.completed) where !snapshot.hasText:
+            endTranslationWithoutText(.noText, of: source, into: target)
+        case .finished(.completed), .finished(.truncated):
+            startTranslation(source, text: snapshot.text(), to: target)
+        case .failed(let error):
+            endTranslationWithoutText(.failed(error), of: source, into: target)
+        case .finished(.refused), .stopped, .queued, .waiting, .streaming:
+            break
+        }
+    }
+
+    /// Ends a translation of the text in an image that didn't start, as a job's ending would: there is nothing in the
+    /// image to translate, or why its text couldn't be recognized. A failure leaves what was made of this content
+    /// before, and says why.
+    private func endTranslationWithoutText(_ outcome: Outcome, of source: ContentRef, into target: Locale.Language) {
+        let key = Self.key(for: source, operation: .translate)
+        let token = UUID()
+        let request = DerivedTextRequest(source: source, operation: .translate, targetLanguage: target.translationCode)
+        lastEnded[key] = token
+        if case .failed(let error) = outcome, hasMade(source, key) {
+            outcomes[key]?.failure = (error, token, request)
+        } else {
+            show(outcome, for: key, request: request, token: token)
+        }
+    }
+
     private func startUnlessMade(_ source: ContentRef, operation: DerivedTextOperation, asked: Asked) {
         let key = Self.key(for: source, operation: operation)
         guard !isClosed, job(for: source, operation: operation) == nil else { return }
@@ -238,6 +355,8 @@ final class DerivedTextCoordinator {
             switch request.asked {
             case .extractText(let keepsLineBreaks): extractText(from: source, keepingLineBreaks: keepsLineBreaks)
             case .translate(let target): translate(source, to: target)
+            case .translateImage(let target, let keepsLineBreaks):
+                translateText(inImage: source, to: target, keepingLineBreaks: keepsLineBreaks)
             }
         }
     }
@@ -248,9 +367,19 @@ final class DerivedTextCoordinator {
     @discardableResult
     func translate(_ source: ContentRef, from language: Locale.Language? = nil,
                    to target: Locale.Language) -> GenerationJob? {
+        startTranslation(source, text: nil, from: language, to: target)
+    }
+
+    /// Starts translating `given` text of an item, or the item's own text without it.
+    @discardableResult
+    private func startTranslation(_ source: ContentRef, text given: String?, from language: Locale.Language? = nil,
+                                  to target: Locale.Language) -> GenerationJob? {
         guard !isClosed else { return nil }
         let text = text
-        let generation = translator.translate({ try await text(source) }, from: language, to: target)
+        let generation = translator.translate({
+            if let given { return given }
+            return try await text(source)
+        }, from: language, to: target)
         let request = DerivedTextRequest(source: source, operation: .translate, sourceLanguage: language?.translationCode,
                                          targetLanguage: target.translationCode)
         var options = GenerationJob.Options()
@@ -265,11 +394,17 @@ final class DerivedTextCoordinator {
         waiting[Self.key(for: source, operation: operation)]?.source == source
     }
 
-    /// Stops the job under way for an item, or the request still waiting on the store.
+    /// Stops the job under way for an item, or the request still waiting on the store. A translation of the text in an
+    /// image that waits for its recognition stops that recognition too.
     func stop(_ source: ContentRef, operation: DerivedTextOperation) {
         let key = Self.key(for: source, operation: operation)
         waiting[key] = nil
         jobs.stop(key)
+        let textKey = Self.key(for: source, operation: .extractText)
+        if operation == .translate, afterText[textKey]?.source == source {
+            afterText[textKey] = nil
+            jobs.stop(textKey)
+        }
     }
 
     /// Stops every job and waits for the saves under way, as Keeptide does before it closes the library. Nothing
@@ -312,6 +447,10 @@ final class DerivedTextCoordinator {
         // A newer request, or the library closing, decides what the item shows.
         guard !isClosed, latest[key]?.token == token else { return }
         lastEnded[key] = token
+        if request.operation == .extractText, let waiting = afterText[key], waiting.source == request.source {
+            afterText[key] = nil
+            follow(snapshot, of: request.source, into: waiting.target)
+        }
         let decision = snapshot.saveDecision
         guard decision != .discard else {
             latest[key] = nil

@@ -953,6 +953,179 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         XCTAssertNil(saved)
     }
 
+    // MARK: Translating the text in an image
+
+    func testTranslatingAnImageRecognizesItsTextFirstThenTranslatesThatText() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+
+        let recognition = try await startedSource(recognizer, 0)
+        XCTAssertEqual(recognizer.layouts, [true], "In the layout asked for")
+        XCTAssertNil(translator.request(0), "Not before the text is known")
+        recognition.send(.started(info), .delta("Open daily"), .finished(.completed))
+        let translation = try await startedTranslation(translator, 0)
+        let text = try await XCTUnwrap(translator.request(0)).text()
+        XCTAssertEqual(text, "Open daily", "The text recognized in the image")
+        translation.send(.started(info), .delta("Ouvert tous les jours"), .finished(.completed))
+        await waitUntil("the translation is saved") { hasSettled(coordinator, source, .translate) }
+        // Both are kept beside the image.
+        let recognized = try await store.result(for: source, operation: .extractText)
+        XCTAssertEqual(recognized?.text, "Open daily")
+        let translated = try await store.result(for: source, operation: .translate)
+        XCTAssertEqual(translated?.text, "Ouvert tous les jours")
+        XCTAssertEqual(translated?.targetLanguage, "fr")
+    }
+
+    func testTextRecognizedBeforeIsTranslatedWithoutRecognizingAgain() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Poster", into: controller)
+        _ = try await store.save(GenerationSnapshot(phase: .finished(.completed), info: info,
+                                                    texts: [.main: "Kept text"]),
+                                 for: DerivedTextRequest(source: source, operation: .extractText,
+                                                         keepsLineBreaks: true))
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: false)
+
+        _ = try await startedTranslation(translator, 0)
+        let text = try await XCTUnwrap(translator.request(0)).text()
+        XCTAssertEqual(text, "Kept text")
+        XCTAssertNil(recognizer.source(0), "The text kept from before, in whatever layout it is in")
+    }
+
+    func testAnImageWithNoTextHasNothingToTranslate() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Blank", into: controller)
+
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        try await startedSource(recognizer, 0).send(.started(info), .finished(.completed))
+
+        await waitUntil("the translation says there is nothing to translate") {
+            coordinator.outcome(for: source, operation: .translate) == .noText
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(0), "Nothing to translate")
+    }
+
+    func testARecognitionThatFailsLeavesNoTranslationAndSaysWhy() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        try await startedSource(recognizer, 0).end(throwing: failure)
+
+        await waitUntil("the translation says why") {
+            coordinator.outcome(for: source, operation: .translate) == .failed(failure)
+        }
+        XCTAssertNil(translator.request(0))
+    }
+
+    func testStoppingWhileTheTextIsRecognizedStartsNoTranslation() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        let recognition = try await startedSource(recognizer, 0)
+        recognition.send(.started(info))
+        coordinator.stop(source, operation: .translate)
+
+        await waitUntil("the recognition is stopped") { recognition.wasCancelled }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(0), "No translation follows a stopped recognition")
+        XCTAssertNil(coordinator.job(for: source, operation: .extractText))
+    }
+
+    func testATranslationAskedForWhileTheTextIsRecognizedFollowsThatRecognition() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+
+        coordinator.extractText(from: source, keepingLineBreaks: false)
+        let recognition = try await startedSource(recognizer, 0)
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(recognizer.source(1), "The recognition under way is the one translated")
+        recognition.send(.started(info), .delta("Open daily"), .finished(.completed))
+
+        _ = try await startedTranslation(translator, 0)
+        let text = try await XCTUnwrap(translator.request(0)).text()
+        XCTAssertEqual(text, "Open daily")
+    }
+
+    func testATranslationWaitingForTheTextFollowsTheRecognitionThatReplacesTheOneItWaitedFor() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        _ = try await startedSource(recognizer, 0)
+
+        // Recognized again in the other layout, as Keep Line Breaks does.
+        coordinator.extractText(from: source, keepingLineBreaks: false)
+        try await startedSource(recognizer, 1).send(.started(info), .delta("Open daily"), .finished(.completed))
+
+        _ = try await startedTranslation(translator, 0)
+        let request = try XCTUnwrap(translator.request(0))
+        let text = try await request.text()
+        XCTAssertEqual(text, "Open daily", "The text of the recognition that ended")
+    }
+
+    func testStoppingTheRecognitionATranslationWaitsForStartsNoTranslation() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        let recognition = try await startedSource(recognizer, 0)
+        XCTAssertNotNil(coordinator.translationWaitingForText(source))
+
+        // Stopped where the text is shown, as ⌘. does in its column.
+        coordinator.stop(source, operation: .extractText)
+
+        await waitUntil("the recognition is stopped") { recognition.wasCancelled }
+        await waitUntil("no translation waits") { coordinator.translationWaitingForText(source) == nil }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(0))
+    }
+
+    func testStoppingATranslationOfAnImageBeforeItsTextIsReadStartsNothing() async throws {
+        let (controller, store) = try await makeStore()
+        let recognizer = ScriptedRecognizer()
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, recognizer, translator: translator)
+        let source = try await insertClip("Poster", into: controller)
+
+        coordinator.translateImageUnlessMade(source, to: Locale.Language(identifier: "fr"), keepingLineBreaks: true)
+        XCTAssertTrue(coordinator.isWaitingToStart(source, operation: .translate), "What was kept is read first")
+        coordinator.stop(source, operation: .translate)
+
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(recognizer.source(0), "Nothing is recognized")
+        XCTAssertNil(translator.request(0), "Nothing is translated")
+        XCTAssertNil(coordinator.translationWaitingForText(source))
+    }
+
     // MARK: Helpers
 
     private func makeStore() async throws -> (PersistenceController, DerivedTextStore) {

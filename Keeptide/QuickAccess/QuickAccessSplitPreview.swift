@@ -237,6 +237,8 @@ private struct ImageColumn: View {
         .padding(.top, 8)
         .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("QuickAccessSplitImage")
     }
 
     /// Why the image isn't shown, where it would be.
@@ -468,7 +470,8 @@ struct TrayRoundButton: View {
     }
 }
 
-/// Segments on the tray, as the band's All | Snippets: Preview, and Text for an image.
+/// Segments on the tray, as the band's All | Snippets: Preview, then Text for an image and Translation for a text or an
+/// image.
 struct TraySegments: View {
     struct Segment: Identifiable {
         let id: String
@@ -514,14 +517,13 @@ struct TraySegments: View {
 
 // MARK: Translation
 
-/// A text clip with its translation beside it, on the card's tray, laid out as the text in an image is beside the
-/// image: the text on the left in smaller, dimmer type, the translation on the right, with a thin line between them and
-/// nothing of their own under either. Where the card is narrow, the translation goes under the text.
 /// The text a translation is of, as the column beside it shows it: still being read, the text, perhaps only its start,
-/// or why it can't be shown.
+/// the image whose text it is, or why it can't be shown.
 enum TranslationOriginal: Equatable {
     case loading
     case text(String, isTruncated: Bool)
+    /// The text is the one recognized in the image the preview shows.
+    case image
     case unavailable(String)
 
     init(_ preview: PreviewContent?) {
@@ -530,13 +532,20 @@ enum TranslationOriginal: Equatable {
         case .markdown(let document, let isTruncated)?: self = .text(document.source, isTruncated: isTruncated)
         case .failed(let refusal)?: self = .unavailable(refusal.message)
         case nil: self = .loading
-        case .url?, .image?, .files?, .info?: self = .unavailable(TranslationColumnWords.originalUnavailable)
+        case .image?: self = .image
+        case .url?, .files?, .info?: self = .unavailable(TranslationColumnWords.originalUnavailable)
         }
     }
 }
 
+/// A text clip with its translation beside it, on the card's tray, laid out as the text in an image is beside the
+/// image: the text on the left in smaller, dimmer type, the translation on the right, with a thin line between them and
+/// nothing of their own under either; for an image, the image on the left. Where the card is narrow, the translation
+/// goes under the text.
 struct QuickAccessTranslationSplit: View {
     let original: TranslationOriginal
+    /// The preview of the clip translated: for an image, the image the column beside is the translation of.
+    var preview: PreviewContent? = nil
     /// The app the text was copied from, when it is known.
     let applicationName: String?
     let column: TranslationColumn
@@ -559,7 +568,13 @@ struct QuickAccessTranslationSplit: View {
             let sideBySide = geometry.size.width >= QuickAccessSplitPreview.sideBySideWidth
             let layout = sideBySide ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
             layout {
-                OriginalColumn(text: original, applicationName: applicationName, onCommand: onCommand)
+                // An image stands beside the translation of its text, with the line passing over it while the text is
+                // recognized; a text beside its own.
+                if original == .image {
+                    ImageColumn(preview: preview, applicationName: applicationName, isScanning: column.isScanningForText)
+                } else {
+                    OriginalColumn(text: original, applicationName: applicationName, onCommand: onCommand)
+                }
                 Group {
                     ColumnDivider(vertical: sideBySide)
                     TranslationColumnView(column: column, target: target, nextTarget: nextTarget,
@@ -601,6 +616,9 @@ private struct OriginalColumn: View {
                                 .font(.system(size: 11)).foregroundStyle(.tertiary)
                         }
                     }
+                case .image:
+                    // The split shows the image itself in this column's place.
+                    EmptyView()
                 case .unavailable(let message):
                     Text(message).font(.system(size: 14)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -648,9 +666,10 @@ private struct TranslationColumnView: View {
         .padding(.top, 8)
         .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        // While the translation runs, a thin line moves along under the column's title, as on the clip's card.
+        // While the translation runs, a thin line moves along under the column's title, as on the clip's card. While an
+        // image's text is recognized first, the line passing over the image is the one that moves.
         .overlay(alignment: .top) {
-            if column.isTranslating {
+            if case .translating = column {
                 StripProgressLine(color: .accentColor, isDark: colorScheme == .dark,
                                   increasedContrast: contrast == .increased)
                     .frame(height: 2)
@@ -698,6 +717,8 @@ private struct TranslationColumnView: View {
                 .help("\(TranslationColumnWords.translate(into: target)) (⌘T)")
             case .nothingToTranslate, .failedAgain(.nothingToTranslate, _, _):
                 Text(TranslationColumnWords.nothingToTranslate).font(.system(size: 14)).foregroundStyle(.secondary)
+            case .noTextInImage, .failedAgain(.noTextInImage, _, _):
+                Text(TextColumnWords.noText).font(.system(size: 14)).foregroundStyle(.secondary)
             case .failed(let error, _):
                 Text(error.message).font(.system(size: 14)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -709,7 +730,7 @@ private struct TranslationColumnView: View {
                 } else {
                     tryAgain
                 }
-            case .translating, .translation, .unsaved, .failedAgain:
+            case .translating, .recognizingText, .translation, .unsaved, .failedAgain:
                 EmptyView()
             }
         }
@@ -728,7 +749,8 @@ private struct TranslationColumnView: View {
             noteLine(TranslationColumnWords.stopped, help: nil, offersTryAgain: true)
         case .unsaved:
             noteLine(TranslationColumnWords.notSaved, help: nil, offersTryAgain: false)
-        case .loading, .notStarted, .translating, .translation, .nothingToTranslate, .failed:
+        case .loading, .notStarted, .translating, .recognizingText, .translation, .nothingToTranslate, .noTextInImage,
+             .failed:
             EmptyView()
         }
     }
@@ -765,7 +787,7 @@ private struct TranslationColumnView: View {
         case .failedAgain(.translation(let text, _, let status), _, _),
              .failedAgain(.unsaved(let text, _, let status), _, _):
             return (text, .still, status == .complete)
-        case .loading, .notStarted, .nothingToTranslate, .failed, .failedAgain:
+        case .loading, .notStarted, .recognizingText, .nothingToTranslate, .noTextInImage, .failed, .failedAgain:
             return nil
         }
     }
@@ -777,6 +799,8 @@ enum TranslationColumnWords {
     static let original = "Original"
     static let tryAgain = "Try Again"
     static let stopped = "Stopped. This translation is incomplete."
+    /// What VoiceOver hears as the text in an image is recognized before it is translated.
+    static let recognizingFirst = "Recognizing the text in the image first"
     static let notSaved = "The translation couldn't be saved."
     static let nothingToTranslate = "Nothing in this text to translate."
     static let originalUnavailable = "This text can't be shown here."
@@ -791,10 +815,12 @@ enum TranslationColumnWords {
         switch column {
         case .translating(let snapshot, _) where snapshot.phase == .queued: "Waiting to translate on this Mac…"
         case .translating: "Translating on this Mac…"
+        case .recognizingText(_, false): "Waiting to recognize the text first on this Mac…"
+        case .recognizingText: "Recognizing the text first on this Mac…"
         case .translation(_, _, .complete), .unsaved(_, _, .complete): "Translated on this Mac"
         case .translation, .unsaved: "Stopped on this Mac"
         case .failedAgain(let kept, _, _): subtitle(for: kept)
-        case .loading, .notStarted, .nothingToTranslate, .failed: "On this Mac"
+        case .loading, .notStarted, .nothingToTranslate, .noTextInImage, .failed: "On this Mac"
         }
     }
 
@@ -814,7 +840,8 @@ enum TranslationColumnWords {
         switch kept {
         case .translation(_, let language?, _), .unsaved(_, let language?, _):
             return what + " The \(Locale.Language(identifier: language).displayName) translation is unchanged."
-        case .loading, .notStarted, .translating, .translation, .unsaved, .nothingToTranslate, .failed, .failedAgain:
+        case .loading, .notStarted, .translating, .recognizingText, .translation, .unsaved, .nothingToTranslate,
+             .noTextInImage, .failed, .failedAgain:
             return what
         }
     }
@@ -826,12 +853,13 @@ extension TranslationColumn {
     var endingWords: String? {
         switch self {
         case .nothingToTranslate: TranslationColumnWords.nothingToTranslate
+        case .noTextInImage: TextColumnWords.noText
         case .failed(let error, _): error.message
         case .failedAgain(let kept, let error, let asked):
             TranslationColumnWords.failedAgain(leaving: kept, because: error, asked: asked)
         case .translation(_, _, .stopped), .translation(_, _, .truncated), .unsaved(_, _, .stopped),
              .unsaved(_, _, .truncated): TranslationColumnWords.stopped
-        case .loading, .notStarted, .translating, .translation, .unsaved: nil
+        case .loading, .notStarted, .translating, .recognizingText, .translation, .unsaved: nil
         }
     }
 

@@ -54,10 +54,10 @@ enum ActionMenu {
         }
     }
 
-    /// What the menu offers for a translation. Every card has Translate, which only a text's makes use of for now.
-    /// While the preview shows a translation beside a text, the menu starts with what can be done with it.
+    /// What the menu offers for a translation. Every card has Translate, which a text's and an image's make use of.
+    /// While the preview shows a translation beside a clip, the menu starts with what can be done with it.
     struct Translation: Equatable {
-        /// Whether the clip is text whose translation can be shown.
+        /// Whether the clip is a text, or an image, whose translation can be shown.
         var isOffered = false
         /// The translation column, while the preview shows it beside the clip.
         var column: Column?
@@ -77,7 +77,7 @@ enum ActionMenu {
 
     static let noCollectionsHelp = "Create a collection first."
     static let noTextToExtractHelp = "Only images have text to extract."
-    static let noTextToTranslateHelp = "Only text can be translated."
+    static let noTextToTranslateHelp = "Only text, and the text in images, can be translated."
     /// The undo's action name, which Undo Move to Recently Deleted names.
     static let moveToRecentlyDeletedName = "Move to Recently Deleted"
 
@@ -126,7 +126,7 @@ enum ActionMenu {
         if translation.column == nil {
             let translate = ActionMenuItem("Translate", key: "t", modifiers: .command) { perform(.showTranslation) }
             translate.isEnabled = translation.isOffered && row != nil && !isReviewing
-            if let row, row.kind != .text { translate.toolTip = noTextToTranslateHelp }
+            if let row, !QuickAccessState.isTranslatable(row.kind) { translate.toolTip = noTextToTranslateHelp }
             menu.addItem(translate)
         }
         menu.addItem(.separator())

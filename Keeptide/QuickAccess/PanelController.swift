@@ -114,6 +114,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// What `update()` says as a recognition ends without text.
     private var textColumnEndings = ResultColumnEndings()
     private var translationColumnEndings = ResultColumnEndings()
+    /// The image whose text VoiceOver last heard is recognized before it is translated, while the column says so.
+    private var announcedRecognizingFirst: ContentRef?
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
     /// to count the calls.
     var fieldCharactersMoved: (NSTextView) -> Void = { $0.inputContext?.invalidateCharacterCoordinates() }
@@ -242,6 +244,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         searchReachedByKeyboard = false
         textColumnEndings.reset()
         translationColumnEndings.reset()
+        announcedRecognizingFirst = nil
         state.close()
         // The undo stack is the showing's: a move stays in Recently Deleted, where the library recovers it.
         window?.undoManager?.removeAllActions()
@@ -374,6 +377,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if let words = translationColumnEndings.words(for: translationColumn, isOpen: isSessionOpen) {
             announce(words)
         }
+        // And, once as it begins, that an image's text is recognized before it is translated: nothing else is said
+        // until the translation starts.
+        let recognizingFirst = state.translationColumn?.isRecognizingText == true ? state.translationColumnRef : nil
+        if isSessionOpen, let ref = recognizingFirst, ref != announcedRecognizingFirst {
+            announce(TranslationColumnWords.recognizingFirst)
+        }
+        announcedRecognizingFirst = recognizingFirst
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }
@@ -1057,9 +1067,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 keepsLineBreaks: state.isKeepLineBreaksOn, canStop: state.canStopTextRecognition,
                 canExtract: column == .notStarted || column.isFailed, failed: column.isFailed)
         }
-        // And the translation beside the selected text.
+        // And the translation beside the selected text, or the text in the selected image.
         let showsTranslation = isSelected && state.translationColumnRef != nil
-        var translation = ActionMenu.Translation(isOffered: row?.kind == .text && state.canRecognizeText)
+        var translation = ActionMenu.Translation(
+            isOffered: row.map { QuickAccessState.isTranslatable($0.kind) } == true && state.canRecognizeText)
         if showsTranslation, let column = state.translationColumn {
             translation.column = ActionMenu.Translation.Column(
                 canTake: state.actionTarget != nil, hasText: state.translationColumnText != nil,
@@ -1512,7 +1523,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if !isComposing, !event.isARepeat, state.offersTextInImage { perform(.showTextInImage) }
             return true
         }
-        // ⌘T shows the translation of the selected text beside its preview, in the same way.
+        // ⌘T shows the translation of the selected text, or of the text in the selected image, beside its preview, in
+        // the same way.
         if key == "t", modifiers == .command {
             if !isComposing, !event.isARepeat, state.commandReview == nil, state.offersTranslation {
                 perform(.showTranslation)
