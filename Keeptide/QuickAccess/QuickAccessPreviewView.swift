@@ -14,6 +14,9 @@ struct QuickAccessPreviewView: View {
     var isLoadingOriginal = false
     var previewMessage: String? = nil
     var onRequestOriginal: (() -> Void)? = nil
+    /// Whether the preview lies straight on quick access's tray, with no background of its own, and its scrollers
+    /// stop short of the tray's round corners. In the Library it lies on a text background.
+    var isOnTray = false
 
     var body: some View {
         Group {
@@ -22,7 +25,7 @@ struct QuickAccessPreviewView: View {
                 ProgressView().controlSize(.small)
             case .text(let text, let isTruncated)?:
                 VStack(spacing: 0) {
-                    PreviewText(text: text, onCommand: onCommand)
+                    PreviewText(text: text, scrollerBottomInset: scrollerBottomInset, onCommand: onCommand)
                     if isTruncated {
                         Text("Preview shows the first 256 KB.")
                             .font(.caption)
@@ -42,6 +45,7 @@ struct QuickAccessPreviewView: View {
             case .markdown(let document, let isTruncated)?:
                 VStack(spacing: 0) {
                     ScrollView { MarkdownPreviewView(document: document).padding(16) }
+                        .contentMargins(.bottom, scrollerBottomInset, for: .scrollIndicators)
                     if isTruncated {
                         Text("Preview shows the first 256 KB.")
                             .font(.caption).foregroundStyle(.secondary).padding(6)
@@ -52,7 +56,7 @@ struct QuickAccessPreviewView: View {
                     URLPreview(title: title, url: url) { NSWorkspace.shared.open($0) }
                         .padding(16)
                 } else {
-                    PreviewText(text: address, onCommand: onCommand)
+                    PreviewText(text: address, scrollerBottomInset: scrollerBottomInset, onCommand: onCommand)
                 }
             case .files(let references)?:
                 FilePreviewPane(references: references, store: fileAccessStore, identity: fileAccessIdentity)
@@ -70,10 +74,13 @@ struct QuickAccessPreviewView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Color(nsColor: .textBackgroundColor).opacity(isOnTray ? 0 : 1))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("QuickAccessPreview")
     }
+
+    /// On the tray, a scroller ends this far above the card's bottom edge, clear of most of its round corner.
+    private var scrollerBottomInset: CGFloat { isOnTray ? StripLayout.cornerRadius / 2 : 0 }
 
     /// "Image, from <App>", or "Image" when the source app is not known.
     private var imageLabel: String {
@@ -91,12 +98,15 @@ struct PreviewText: NSViewRepresentable {
     /// What VoiceOver calls the text, and the identifier UI tests find it by.
     var accessibilityName = "Preview text"
     var accessibilityID: String?
+    /// How far above the view's bottom edge the scroller ends.
+    var scrollerBottomInset: CGFloat = 0
     let onCommand: (QuickAccessCommand) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
+        scroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: scrollerBottomInset, right: 0)
         let textView = PreviewTextView()
         textView.isEditable = false
         textView.isSelectable = true

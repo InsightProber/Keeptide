@@ -156,6 +156,8 @@ enum StripLayout {
     static let screenMargin: CGFloat = 24
     static let previewGap: CGFloat = 16
     static let previewMaximum = CGSize(width: 760, height: 470)
+    /// The bar along the top of the preview card, laid out as the band's toolbar is: its row and the room above it.
+    static let previewBarHeight = toolbarTop + toolbarHeight
     /// The preview card is never lower than this, however low the screen.
     static let previewMinimumHeight: CGFloat = 160
 

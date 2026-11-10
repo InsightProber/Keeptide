@@ -6,6 +6,9 @@ import SwiftUI
 /// cancel it. Nothing is written or sent before it is confirmed. ⌘Return confirms and Escape cancels, as the panel
 /// handles them; Return alone does neither.
 struct CommandReviewView: View {
+    /// The card's corners, which the panel clips it to.
+    static let cornerRadius: CGFloat = 20
+
     let review: CommandReview
     /// What confirming does: "Confirm Paste into Terminal" or "Confirm Copy Command".
     let confirmTitle: String
