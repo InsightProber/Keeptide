@@ -24,6 +24,8 @@ struct StreamAccumulator: Sendable {
     private(set) var texts: [OutputChannel: String] = [:]
     private(set) var info: GenerationInfo?
     private(set) var usage: GenerationUsage?
+    /// How many paragraphs the source said it will write, once it said.
+    private(set) var expectedParagraphs: Int?
     private(set) var finishReason: FinishReason?
     /// True when a tagged response put its text in `fallback` because its tags didn't hold it.
     private(set) var separationFailed = false
@@ -73,6 +75,8 @@ struct StreamAccumulator: Sendable {
             }
         case .usage(let usage):
             self.usage = usage
+        case .expecting(let paragraphs):
+            expectedParagraphs = paragraphs
         case .finished(let reason):
             finishReason = reason
         }

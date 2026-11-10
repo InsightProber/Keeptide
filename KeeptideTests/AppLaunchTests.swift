@@ -6216,7 +6216,8 @@ final class AppLaunchTests: XCTestCase {
             : current
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: harness.controller), identity: identity,
-            recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
+            recognizer: recognizer, translator: ScriptedTranslator(),
+            image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
         textPanelHarness = harness
         addTeardownBlock { await derivedText.stopAndDrain() }
         let controller = try makePanel(over: harness, pasteboard: board,
