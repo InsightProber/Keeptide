@@ -559,6 +559,8 @@ struct QuickAccessTranslationSplit: View {
     let onCommand: (QuickAccessCommand) -> Void
     /// Copies what the translation's own Copy takes: the selection, or all of it.
     let onCopy: (String) -> Void
+    /// Where the translation's title is, in the band, as it is laid out: the language menu opens below it.
+    var onLanguageTitleMoved: (CGRect) -> Void = { _ in }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whether the translation has faded in beside the text: the one movement as the preview splits.
     @State private var showsTranslation = false
@@ -578,7 +580,8 @@ struct QuickAccessTranslationSplit: View {
                 Group {
                     ColumnDivider(vertical: sideBySide)
                     TranslationColumnView(column: column, target: target, nextTarget: nextTarget,
-                                          isJustMade: isJustMade, onCommand: onCommand, onCopy: onCopy)
+                                          isJustMade: isJustMade, onCommand: onCommand, onCopy: onCopy,
+                                          onLanguageTitleMoved: onLanguageTitleMoved)
                         .id(ref)
                 }
                 .opacity(showsTranslation || reduceMotion ? 1 : 0)
@@ -651,12 +654,13 @@ private struct TranslationColumnView: View {
     let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
     let onCopy: (String) -> Void
+    let onLanguageTitleMoved: (CGRect) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(language.displayName).font(.system(size: 12, weight: .bold))
+            languageTitle
             Text(TranslationColumnWords.subtitle(for: column)).font(.system(size: 11)).foregroundStyle(.secondary)
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -687,6 +691,25 @@ private struct TranslationColumnView: View {
     /// The language the column's translation is in, or is to be in.
     private var language: Locale.Language {
         column.language.map(Locale.Language.init(identifier:)) ?? target
+    }
+
+    /// The language's name is the menu of languages to translate into, as ⌥⌘T is: "Chinese (Simplified) ⌄".
+    private var languageTitle: some View {
+        Button { onCommand(.chooseTranslationLanguage) } label: {
+            HStack(spacing: 3) {
+                Text(language.displayName).font(.system(size: 12, weight: .bold))
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(TranslationColumnWords.languageMenuHelp)
+        .accessibilityLabel(language.displayName)
+        .accessibilityHint(TranslationColumnWords.languageMenuHint)
+        .accessibilityIdentifier("QuickAccessTranslationLanguage")
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onLanguageTitleMoved($0) }
     }
 
     private var content: some View {
@@ -805,6 +828,9 @@ enum TranslationColumnWords {
     static let nothingToTranslate = "Nothing in this text to translate."
     static let originalUnavailable = "This text can't be shown here."
     static let originalTruncated = "Only the start of this text is shown here."
+    /// The help, and what VoiceOver hears, of the language's name above the translation, which is its menu.
+    static let languageMenuHelp = "Translate into another language (⌥⌘T)"
+    static let languageMenuHint = "Chooses the language to translate into."
 
     /// "Translate to Chinese (Simplified)".
     static func translate(into language: Locale.Language) -> String {

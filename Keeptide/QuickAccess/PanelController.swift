@@ -90,6 +90,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var presentToolbarMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
     }
+    /// Shows the language menu. Tests replace it, as they do the actions menu.
+    var presentLanguageMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
+        menu.popUp(positioning: nil, at: point, in: view)
+    }
+    /// Where the translation's title is in the band, as SwiftUI last laid it out: the language menu opens below it.
+    private var languageTitleFrame: CGRect?
     /// Shows the ⋯ menu. Tests replace it, as they do the actions menu.
     var presentMoreMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
@@ -211,6 +217,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
             state.restoreKeepsLineBreaks(preferences.keepsLineBreaks)
+            state.restoreTranslationTarget(preferences.translationTarget)
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics
@@ -384,6 +391,11 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             announce(TranslationColumnWords.recognizingFirst)
         }
         announcedRecognizingFirst = recognizingFirst
+        // What the language menu marks follows the text quick access has of the selected clip, which can come with no
+        // action of the panel's, as an image's text does when it is recognized.
+        if isSessionOpen, state.isPreviewExpanded { state.readTranslationLanguages() }
+        // The translation's title is where the language menu opens only while it is laid out.
+        if state.translationColumnRef == nil { languageTitleFrame = nil }
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }
@@ -498,7 +510,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
                                                  confirmCommand: { [weak self] in self?.confirmFromCard() },
                                                  cancelCommandReview: { [weak self] in self?.cancelFromCard() },
-                                                 copyText: { [weak self] in self?.copyShownText($0) })
+                                                 copyText: { [weak self] in self?.copyShownText($0) },
+                                                 languageTitleMoved: { [weak self] in self?.languageTitleFrame = $0 })
         )
     }
 
@@ -584,6 +597,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             state.translate(into: language.map(Locale.Language.init(identifier:)))
         case .stopTranslation:
             state.stopTranslation()
+        case .chooseTranslationLanguage:
+            openLanguageMenu()
         }
     }
 
@@ -1038,6 +1053,48 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
     }
 
+    /// ⌥⌘T, or a click on the translation's title: the languages to translate the selected clip into, below that title
+    /// while the column shows, and otherwise beside the clip, where ⌘K shows its actions. It shows what is known of
+    /// each language now, and reads what isn't for the next time.
+    func openLanguageMenu() {
+        guard state.offersTranslation, state.commandReview == nil else { return }
+        state.readTranslationLanguages()
+        let menu = NSMenu(title: "Translate To")
+        menu.autoenablesItems = false
+        // For the clip it opened for, whatever the list does while it is open.
+        let id = state.selection.selectedID
+        ActionMenu.addLanguageItems(state.translationLanguageMenu, to: menu) { [weak self] in
+            self?.chooseTranslationLanguage($0, for: id)
+        }
+        if state.translationColumnRef != nil, let frame = languageTitleFrame, let hosting {
+            presentLanguageMenu(menu, NSPoint(x: frame.minX, y: frame.maxY + 4), hosting)
+            return
+        }
+        let size = metrics.frameSize
+        let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,
+                            width: size.width, height: size.height)
+        presentLanguageMenu(menu, ActionMenu.anchor(beside: strip.selectionAnchorFrame ?? centre, in: strip), strip)
+    }
+
+    /// A language chosen from a language menu, for the clip the menu opened for: that clip's translation is made in it,
+    /// and so is every one after, in this panel and the next. A clip that left the list while the menu was open gets no
+    /// translation at all, never another clip's, as with ⌘K's actions.
+    private func chooseTranslationLanguage(_ code: String, for id: QuickAccessRow.ID?) {
+        if let id, id != state.selection.selectedID {
+            state.select(id)
+            update()
+            guard state.selection.selectedID == id else { return }
+        }
+        let focus = currentFocus
+        let wasShowing = state.translationColumnRef != nil
+        if let kept = state.chooseTranslationLanguage(code) { preferences.translationTarget = kept }
+        update()
+        keepFocus(focus)
+        if !wasShowing, state.translationColumnRef != nil {
+            announce("\(TranslationColumnWords.title), on this Mac")
+        }
+    }
+
     /// ⌘K: the selected clip's actions, beside it where it rests; with the selection vanished, beside the empty slot
     /// where the newest clip rests as the strip opens, past the divider or, without a frequent wing, at the left dock;
     /// with no clips, beside the middle of the strip.
@@ -1070,7 +1127,14 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // And the translation beside the selected text, or the text in the selected image.
         let showsTranslation = isSelected && state.translationColumnRef != nil
         var translation = ActionMenu.Translation(
-            isOffered: row.map { QuickAccessState.isTranslatable($0.kind) } == true && state.canRecognizeText)
+            isOffered: row.map { QuickAccessState.isTranslatable($0.kind) } == true && state.canRecognizeText,
+            languages: state.translationLanguageMenu(for: row?.ref))
+        if isSelected { state.readTranslationLanguages() }
+        // Translate To lists its languages again as it opens, with what was read since.
+        let rowRef = row?.ref
+        translation.currentLanguages = { [weak self] in
+            self?.state.translationLanguageMenu(for: rowRef) ?? TranslationLanguageMenu()
+        }
         if showsTranslation, let column = state.translationColumn {
             translation.column = ActionMenu.Translation.Column(
                 canTake: state.actionTarget != nil, hasText: state.translationColumnText != nil,
@@ -1119,6 +1183,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .showTranslation: perform(.showTranslation)
             case .translate: perform(.translate(into: nil))
             case .stopTranslation: perform(.stopTranslation)
+            case .translateInto(let code): chooseTranslationLanguage(code, for: nil)
             }
         }
     }
@@ -1471,11 +1536,14 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // shortcut here with Shift.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
-        let isShiftCommandT = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "t"
+        let isT = event.charactersIgnoringModifiers?.lowercased() == "t"
+        let isShiftCommandT = modifiers == [.command, .shift] && isT
+        let isOptionCommandT = modifiers == [.command, .option] && isT
         // ⌘. comes with Shift where "." needs it.
         let isCommandPeriod = event.charactersIgnoringModifiers == "."
             && (modifiers == .command || modifiers == [.command, .shift])
-        guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT || isCommandPeriod else {
+        guard isSessionOpen,
+              modifiers == .command || isShiftCommandM || isShiftCommandT || isOptionCommandT || isCommandPeriod else {
             return false
         }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
@@ -1524,10 +1592,16 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             return true
         }
         // ⌘T shows the translation of the selected text, or of the text in the selected image, beside its preview, in
-        // the same way.
+        // the same way, and ⌥⌘T the menu of languages to translate it into.
         if key == "t", modifiers == .command {
             if !isComposing, !event.isARepeat, state.commandReview == nil, state.offersTranslation {
                 perform(.showTranslation)
+            }
+            return true
+        }
+        if isOptionCommandT {
+            if !isComposing, !event.isARepeat, state.commandReview == nil, state.offersTranslation {
+                perform(.chooseTranslationLanguage)
             }
             return true
         }

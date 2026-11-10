@@ -16,6 +16,17 @@ final class TranslationSourceTests: XCTestCase {
     private let ja = Locale.Language(identifier: "ja")
     private let simplified = Locale.Language(identifier: "zh-Hans")
 
+    func testTheMainLanguageOfATextIsToldOnlyWhileItIsWaitedFor() async {
+        let text = "季度报告已经准备好了，团队将在星期四开会讨论预算和下一步的计划。\n\nThe budget is attached."
+        XCTAssertEqual(TranslationSource.mainLanguage(of: text, supported: [])?.translationCode, "zh-Hans")
+        let cancelled = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TranslationSource.mainLanguage(of: text, supported: [])
+        }
+        let told = await cancelled.value
+        XCTAssertNil(told, "Nothing is told once its task is cancelled")
+    }
+
     func testParagraphsArriveInOrderAfterHowManyThereAre() async throws {
         let translator = FakePairTranslator()
         let source = makeSource([english, english2, english3], to: simplified, translator: translator,

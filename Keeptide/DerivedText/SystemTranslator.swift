@@ -6,6 +6,10 @@ struct OnDeviceTranslationEngine: TranslationEngine {
     let tier = EngineTier.onThisMac
     var translator: any PairTranslator = SystemTranslator()
 
+    func supportedLanguages() async -> [Locale.Language] { await translator.supportedLanguages() }
+
+    func status(of pair: TranslationPair) async -> TranslationPairStatus { await translator.status(of: pair) }
+
     func translate(_ text: @escaping @Sendable () async throws -> String, from source: Locale.Language?,
                    to target: Locale.Language) -> any GenerationSource {
         TranslationSource(info: GenerationInfo(engine: "On this Mac", model: "Translation"), source: source,

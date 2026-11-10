@@ -62,8 +62,10 @@ snippets in a native library.
   its text is being recognized or has been found.
 - **Translation.** ⌘T shows a translation of the selected text, or of the
   text in an image, beside its preview, made on this Mac with Apple's
-  Translation into the first language in your language list. An image's text
-  is recognized first when it hasn't been. Code, links and parts already in
+  Translation into the language you chose last, at first the first one in your
+  language list that it offers. The language's name above the translation, or
+  ⌥⌘T, opens a menu of languages that marks the ones to download first. An
+  image's text is recognized first when it hasn't been. Code, links and parts already in
   that language stay as they are. Nothing is translated until you ask, a card
   shows when it is being translated or has been, and when translating again
   fails, the earlier translation stays.
@@ -123,6 +125,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | Space or ⌘Y | Show or hide a larger preview |
 | ⇧⌘T | Show the text in the selected image beside its preview |
 | ⌘T | Show the translation of the selected text, or of the text in the selected image, beside its preview |
+| ⌥⌘T | Choose the language to translate into |
 | ⌘. | Stop recognizing the text in an image, or translating |
 | Return, ⌘C, ⌘S beside the text in an image or a translation | Paste it, copy it (or the part you selected), or save it as a snippet |
 | ⌘K or right-click | Show every action for the selected clip |
