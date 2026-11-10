@@ -1302,11 +1302,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// What `event`'s key types with ⌘, and Shift if it is held, in lower case: the key a ⌘ shortcut is known by, in
+    /// the menu bar and in the panel alike. It is not always what the key types alone: the D key types “в” on a
+    /// Russian layout and “e” on Dvorak – QWERTY ⌘, and “d” on both with ⌘.
+    private static func commandKey(of event: NSEvent) -> String? {
+        event.characters(byApplyingModifiers: event.modifierFlags.intersection(.shift).union(.command))?.lowercased()
+    }
+
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
         // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M is the one
         // shortcut here with Shift.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
+        // The panel knows its commands' keys as the menu bar knows its items' keys, apart from ⌘Return, keypad Enter
+        // and ⌘⌫, which it knows by the key.
+        let key = Self.commandKey(of: event)
+        let isShiftCommandM = modifiers == [.command, .shift] && key == "m"
         guard isSessionOpen, modifiers == .command || isShiftCommandM else { return false }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
         // review card, and nothing else: a preview is not a review, and while an input method composes in the search
@@ -1346,7 +1356,6 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             }
             return true
         }
-        let key = event.charactersIgnoringModifiers?.lowercased()
         // ⌘Z undoes a move to Recently Deleted or the search field's typing, whichever `undoFromKeyboard` finds; a
         // composition has it as a key.
         if key == "z", modifiers == .command {
@@ -1432,9 +1441,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ]
 
     /// Keeps a key equivalent from the menu bar, once neither the panel's commands nor its views have taken it, and
-    /// says whether it did. It knows the key as the menu bar does, by what the key types with ⌘, and Shift if it is
-    /// held: on a layout such as Russian or Dvorak – QWERTY ⌘, that is not what the key types alone, which the panel's
-    /// own commands go by.
+    /// says whether it did. It knows the key as the menu bar and the panel's commands do, by `commandKey(of:)`.
     /// - The library's keys stop here and do nothing. While an input method composes, its text gets them, as keys.
     /// - Cut, Copy, Paste and Select All go on while something in the panel takes them, as the search field's text and
     ///   the preview's do, and stop here while the strip, the lists or the filter button have the keys.
@@ -1448,7 +1455,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// System Settings, and any the menu bar moves to another key for a keyboard layout.
     private func keepFromMenuBar(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let key = event.characters(byApplyingModifiers: modifiers.intersection(.shift).union(.command))?.lowercased()
+        let key = Self.commandKey(of: event)
         if modifiers == [.command, .option], key == "w" {
             window?.performClose(nil)
             return true

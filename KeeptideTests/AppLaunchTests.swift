@@ -618,6 +618,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandFUnfoldsTheSearch() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -644,6 +645,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAClickAnywhereOnTheOpenSearchGivesItsFieldTheKeys() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -717,6 +719,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testEscapeFoldsAnEmptySearchBeforeClosing() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -1296,6 +1299,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandFKeepsTheEditingSession() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -1320,6 +1324,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testLibraryShortcutsDoNotInterruptMarkedSearchText() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["alpha note"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -1493,6 +1498,66 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testThePanelsCommandsAreKnownByWhatTheirKeysTypeWithCommand() async throws {
+        try requireANSICommandLayer()
+        // The panel knows its own commands' keys as the menu bar knows its items' keys. On a layout such as Russian the
+        // keys type Cyrillic letters, and with ⌘ Latin ones. These events type Cyrillic letters; their key codes type
+        // Latin ones with ⌘ here.
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus: [String] = []
+        controller.presentActionMenu = { menu, _, _ in menus.append(menu.title) }
+
+        // ⌘K opens the actions menu, and ⇧⌘M, whose key types a capital with Shift, the collections.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "л", modifiers: .command)))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_M, "Ь", modifiers: [.command, .shift])))
+        XCTAssertEqual(menus, ["Actions", "Save to Collection"])
+        // ⌘D saves the clip as a favorite.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_D, "в", modifiers: .command)))
+        try await SearchTestSupport.waitUntil {
+            controller.state.saveMessage == "Saved as Snippet · Added to Favorites"
+        }
+        // ⌘] and ⌘[ step through the lists while the keys stay in the search, and ⌘L takes the keys to the lists.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_RightBracket, "ъ", modifiers: .command)))
+        XCTAssertEqual(controller.state.list, .snippets)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_LeftBracket, "х", modifiers: .command)))
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_L, "д", modifiers: .command)))
+        XCTAssertTrue(window.firstResponder === toolbar.lists)
+    }
+
+    func testOnDvorakQwertyCommandTheKeysRunWhatTheyTypeWithCommand() async throws {
+        try requireANSICommandLayer()
+        // On Dvorak – QWERTY ⌘ the keys type Dvorak's letters, and with ⌘ QWERTY's, by which the menu bar knows its
+        // items' keys. These events type Dvorak's letters; their key codes type QWERTY's with ⌘ here.
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus = 0
+        controller.presentActionMenu = { _, _, _ in menus += 1 }
+        var handedOver = 0
+        controller.onOpenInLibrary = { _, _ in handedOver += 1 }
+        controller.onNewSnippet = { _ in handedOver += 1 }
+
+        // The V key types “k”. With ⌘ it is Paste, which goes on to the search field's text, and not ⌘K's menu.
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_V, "k", modifiers: .command)))
+        XCTAssertTrue(isEditing(field, in: window))
+        // The D key types “e”. With ⌘ it saves the clip as a favorite, and does not show it in the library.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_D, "e", modifiers: .command)))
+        try await SearchTestSupport.waitUntil {
+            controller.state.saveMessage == "Saved as Snippet · Added to Favorites"
+        }
+        // The L key types “n”. With ⌘ it takes the keys to the lists, and starts no new snippet.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_L, "n", modifiers: .command)))
+        XCTAssertTrue(window.firstResponder === toolbar.lists)
+        XCTAssertEqual(menus, 0)
+        XCTAssertEqual(handedOver, 0)
+    }
+
     func testOptionCommandWClosesOnlyThePanel() async throws {
         try requireANSICommandLayer()
         // AppKit adds Close All to the app's Window menu, as Close's alternate with ⌥⌘W. From the panel it would close
@@ -1602,6 +1667,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheFocusRingsStayInsideTheBandsCorners() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -1696,6 +1762,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTabIntoTheFoldedSearchRingsItsCircle() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -1887,6 +1954,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandKBesideTheEmptyDock() async throws {
+        try requireANSICommandLayer()
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -2250,6 +2318,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAHeldCommandYTogglesThePreviewOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2272,6 +2341,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAHeldCommandSSavesOnceAndAHeldCommandEOrNHandsOverOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeSavingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2344,6 +2414,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCopyButtonCopiesAndContextMenuMatchesCommandK() async throws {
+        try requireANSICommandLayer()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2401,6 +2472,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testSaveAsSnippetSaysSoInTheToolbarAndTheActionsMenuUndoesIt() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeSavingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2453,6 +2525,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDeleteMovesTheSelectedClipToRecentlyDeletedAndCommandZPutsItBack() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["oldest", "older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -2505,6 +2578,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDeleteWithTextInTheSearchFieldDeletesTheTextAndThenTheStripsClips() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer", "newest"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -2550,6 +2624,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandZUndoesMovesInTheOrderTheyWereAskedFor() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer", "newest"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2580,6 +2655,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandZUndoesTheSearchFieldsTypingWhenNothingWasMoved() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -2597,6 +2673,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandZUndoesTypingDoneAfterAMoveBeforeTheMove() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -2810,6 +2887,7 @@ final class AppLaunchTests: XCTestCase {
     // MARK: Lists
 
     func testCommandBracketsStepTheListsAndCommandLTakesTheKeysToThem() async throws {
+        try requireANSICommandLayer()
         let (controller, _, made) = try await showPanelWithLists(clips: ["older", "newer"],
                                                                  collections: ["Prompts", "Shell"])
         let window = try XCTUnwrap(controller.window)
@@ -2865,6 +2943,7 @@ final class AppLaunchTests: XCTestCase {
     // MARK: Saving into collections, favorites and the library
 
     func testShiftCommandMShowsTheCollectionsBesideTheCardAndSavesIntoTheOneChosen() async throws {
+        try requireANSICommandLayer()
         let (controller, harness, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts", "Shell"])
         let window = try XCTUnwrap(controller.window)
         var shown: [(menu: NSMenu, point: NSPoint)] = []
@@ -2896,6 +2975,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDAndShiftCommandMWaitForTheComposition() async throws {
+        try requireANSICommandLayer()
         let (controller, harness, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -2920,6 +3000,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testShiftCommandMWithoutCollectionsSaysWhatItTakes() async throws {
+        try requireANSICommandLayer()
         let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: [])
         let window = try XCTUnwrap(controller.window)
         var shown = 0
@@ -2930,6 +3011,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDSavesTheClipAsAFavoriteAndTurnsASnippetsMarkOver() async throws {
+        try requireANSICommandLayer()
         let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         let commandD = try key(kVK_ANSI_D, "d", modifiers: .command)
@@ -2956,6 +3038,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testShowInLibraryAsksForTheSnippetOfASnippetOrASavedClip() async throws {
+        try requireANSICommandLayer()
         let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         var opened: [(ref: ContentRef, showsSnippet: Bool)] = []
@@ -2985,6 +3068,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testNewSnippetGoesIntoTheCollectionListed() async throws {
+        try requireANSICommandLayer()
         let (controller, _, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         var asked: [CollectionID?] = []
@@ -3826,6 +3910,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testMenuOffersCopyAsIsAndEnableDirectPasteForATerminal() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         fake.permitted = false
@@ -3911,6 +3996,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testReturnShiftReturnAndTheMenuOpenTheSameReviewAndEscapeCancelsIt() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, board) = try await makePanelWithClips(
@@ -4265,6 +4351,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAPasteChosenFromTheMenuWithReturnWaitsForItToComeUp() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true, system: fake.system)
         let window = try XCTUnwrap(controller.window)
@@ -4336,6 +4423,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAPasteItemChosenNeitherWithThePointerNorWithReturnTakesReturnForDown() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true, system: fake.system)
         let window = try XCTUnwrap(controller.window)
@@ -4386,6 +4474,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAGuessedReturnGoesWithTheMenuChoiceItWasGuessedFor() async throws {
+        try requireANSICommandLayer()
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -4462,6 +4551,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAReviewFromAGuessedReturnConfirmsAtOnceWithTheCardsButton() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, board) = try await makePanelWithClips(
@@ -4484,6 +4574,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAClickEndsAWaitOnlyAGuessedReturnHeldUp() async throws {
+        try requireANSICommandLayer()
         // Without direct paste, Copy copies at once.
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -4524,6 +4615,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAnActionThatEndsWithReturnDownKeepsThePanelUntilReturnIsUp() async throws {
+        try requireANSICommandLayer()
         // Without direct paste, Return copies at once, while it is still down.
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -4594,6 +4686,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testFinderInFrontIsNoTargetAndOnlyCopies() async throws {
+        try requireANSICommandLayer()
         // The window check cannot tell Finder's desktop from a Finder window on top, and a paste there copies files:
         // Finder is no target, so the panel is as it was before direct paste and says nothing more.
         let fake = FakeDirectPasteSystem()
@@ -4740,6 +4833,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testWhileAReviewShowsOnlyTheCardConfirmsIt() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, _) = try await makePanelWithClips(
@@ -4779,6 +4873,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheShortcutsWorkWithCapsLockOn() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, board) = try await makePanelWithClips(
@@ -4888,6 +4983,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testOpenInLibraryWaitsForTheChoosingReturnAndKeepsTheChosenClip() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -4912,6 +5008,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testNewSnippetChosenWithHeldReturnLapsesWithoutOpeningTheEditor() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -4933,6 +5030,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testLibraryHandoffsFromThePointerAndCommandShortcutsAreImmediate() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -4995,6 +5093,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testEnableDirectPasteExplainsWhatItTakesBeforeAskingForAccess() async throws {
+        try requireANSICommandLayer()
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -5143,7 +5242,8 @@ final class AppLaunchTests: XCTestCase {
         return toolbar
     }
 
-    /// The menu ⌘K opens for the selected clip.
+    /// The menu ⌘K opens for the selected clip. The panel knows ⌘K by what its key types with ⌘, so a test that calls
+    /// this starts with `requireANSICommandLayer()`.
     private func actionMenu(of controller: PanelController) throws -> NSMenu {
         let window = try XCTUnwrap(controller.window)
         var shown: NSMenu?
@@ -5719,12 +5819,14 @@ final class AppLaunchTests: XCTestCase {
     }
 
     /// Skips a test whose keys must type, with ⌘, what their ANSI key codes name, as on the US and ABC layouts: the
-    /// panel knows the menu bar's keys as the menu bar does, by what they type with ⌘ on this Mac's layout.
+    /// panel knows its own commands' keys and the menu bar's as the menu bar does, by what they type with ⌘ on this
+    /// Mac's layout.
     private func requireANSICommandLayer() throws {
-        let keys = [(kVK_ANSI_A, "a"), (kVK_ANSI_C, "c"), (kVK_ANSI_D, "d"), (kVK_ANSI_F, "f"), (kVK_ANSI_I, "i"),
-                    (kVK_ANSI_L, "l"), (kVK_ANSI_M, "m"), (kVK_ANSI_N, "n"), (kVK_ANSI_Q, "q"), (kVK_ANSI_S, "s"),
-                    (kVK_ANSI_V, "v"), (kVK_ANSI_W, "w"), (kVK_ANSI_X, "x"), (kVK_ANSI_Z, "z"), (kVK_ANSI_Comma, ","),
-                    (kVK_ANSI_LeftBracket, "["), (kVK_ANSI_RightBracket, "]")]
+        let keys = [(kVK_ANSI_A, "a"), (kVK_ANSI_C, "c"), (kVK_ANSI_D, "d"), (kVK_ANSI_E, "e"), (kVK_ANSI_F, "f"),
+                    (kVK_ANSI_I, "i"), (kVK_ANSI_K, "k"), (kVK_ANSI_L, "l"), (kVK_ANSI_M, "m"), (kVK_ANSI_N, "n"),
+                    (kVK_ANSI_Q, "q"), (kVK_ANSI_S, "s"), (kVK_ANSI_V, "v"), (kVK_ANSI_W, "w"), (kVK_ANSI_X, "x"),
+                    (kVK_ANSI_Y, "y"), (kVK_ANSI_Z, "z"), (kVK_ANSI_Comma, ","), (kVK_ANSI_LeftBracket, "["),
+                    (kVK_ANSI_RightBracket, "]")]
         for (code, character) in keys {
             let typed = try key(code, character, modifiers: .command).characters(byApplyingModifiers: .command)
             guard typed == character else {
