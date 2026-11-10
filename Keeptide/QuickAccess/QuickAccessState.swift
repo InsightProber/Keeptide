@@ -86,6 +86,9 @@ enum TextColumn: Equatable {
     /// The image has no text.
     case noText
     case failed(GenerationError)
+    /// Recognizing the image again failed and left what the column had: text, text the library couldn't keep, or that
+    /// there was none. The column says so, and why.
+    indirect case failedAgain(TextColumn, GenerationError)
 }
 
 extension TextColumn {
@@ -93,7 +96,18 @@ extension TextColumn {
     var keepsLineBreaks: Bool? {
         switch self {
         case .text(_, let keeps, _), .unsaved(_, let keeps): keeps
+        case .failedAgain(let kept, _): kept.keepsLineBreaks
         case .loading, .notStarted, .recognizing, .noText, .failed: nil
+        }
+    }
+
+    /// The whole text shown, made now or kept from before, whether or not the library could keep it. Nil for part of a
+    /// text, as a stopped or cut-off one is, and without text.
+    var wholeText: String? {
+        switch self {
+        case .text(let text, _, .complete), .unsaved(let text, _): text
+        case .failedAgain(let kept, _): kept.wholeText
+        case .text, .loading, .notStarted, .recognizing, .noText, .failed: nil
         }
     }
 }
@@ -178,6 +192,10 @@ final class QuickAccessState {
     /// Whether text recognized from now on keeps the image's line breaks or joins lines into paragraphs: the person's
     /// choice, which the panel gives as it opens and keeps as Keep Line Breaks changes it.
     private(set) var keepsLineBreaks = true
+    /// The listed images known to have whole text kept from earlier, read with the cards' details.
+    private(set) var keptTextSources: Set<ContentRef> = []
+    /// The images whose kept text has been read for, or is being read for, in this showing.
+    @ObservationIgnored private var keptTextAsked: Set<ContentRef> = []
     /// The image whose text was copied just now: the preview's bar says so for a moment, beside that image's text.
     private var copiedTextRef: ContentRef?
     static let textCopiedNoteDuration: Duration = .seconds(1.5)
@@ -351,6 +369,8 @@ final class QuickAccessState {
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
         savedTexts = []
+        keptTextSources = []
+        keptTextAsked = []
         hiddenFacets = []
         leftCollections = [:]
         isOpen = true
@@ -398,6 +418,9 @@ final class QuickAccessState {
     /// again, from the library it now has.
     func servicesDidChange() {
         guard isOpen else { return }
+        // What another library kept says nothing of this one's.
+        keptTextSources = []
+        keptTextAsked = []
         startSession(recordingTarget: false)
     }
 
@@ -538,6 +561,27 @@ final class QuickAccessState {
         waitingDetails = refs.filter { details[$0] == nil && detailLoads[$0] == nil }
         detailFrameSize = frameSize
         startDetailReads()
+        readKeptText(for: refs)
+    }
+
+    /// Reads, in one go, which of the framed images not asked about yet have text kept from earlier, for their cards.
+    private func readKeptText(for refs: [ContentRef]) {
+        guard let derivedText = services()?.derivedText, let asking = session else { return }
+        let images = Set(selection.rows.lazy.filter { $0.kind == .image }.map(\.ref))
+        let asked = refs.filter { images.contains($0) && !keptTextAsked.contains($0) }
+        guard !asked.isEmpty else { return }
+        keptTextAsked.formUnion(asked)
+        Task { [weak self] in
+            let kept = await derivedText.sourcesWithSavedResults(asked, operation: .extractText)
+            // Another showing, or another library, asks for itself.
+            guard let self, isOpen, session === asking else { return }
+            guard let kept else {
+                // Unread, they are asked about again with the cards' next details.
+                keptTextAsked.subtract(asked)
+                return
+            }
+            keptTextSources.formUnion(kept)
+        }
     }
 
     /// Starts the next waiting reads while fewer than `detailReadLimit` run; each read starts the next as it
@@ -595,6 +639,33 @@ final class QuickAccessState {
         return row.ref
     }
 
+    /// What a card says of the text in its image: a recognition under way or waiting its turn, text made or kept,
+    /// or why making it failed. Nothing for a clip that isn't an image, an image whose text was never made, or one
+    /// with none in it.
+    func textMark(for row: QuickAccessRow) -> StripTextMark? {
+        textMarker()(row)
+    }
+
+    /// `textMark(for:)` for many rows at once, as the panel asks for every card, with the library's coordinator
+    /// looked up once. A job is told apart as waiting or running by whether it started, which changes once, so the
+    /// panel doesn't follow every snapshot it publishes.
+    func textMarker() -> (QuickAccessRow) -> StripTextMark? {
+        guard let derivedText = services()?.derivedText else { return { _ in nil } }
+        let kept = keptTextSources
+        return { row in
+            guard row.kind == .image else { return nil }
+            let (job, outcome) = derivedText.cardState(for: row.ref, operation: .extractText)
+            if let job { return job.hasStarted ? .recognizing : .waiting }
+            switch outcome {
+            case .saving?, .saved?, .notSaved?: return .hasText
+            // A failure leaves the text kept from before.
+            case .failed(let error)?: return kept.contains(row.ref) ? .hasText : .failed(error.message)
+            case .noText?: return nil
+            case nil: return kept.contains(row.ref) ? .hasText : nil
+            }
+        }
+    }
+
     /// Whether the selected clip is an image whose text the preview can show beside it.
     var offersTextInImage: Bool {
         selection.selectedRow?.kind == .image && canRecognizeText
@@ -613,42 +684,63 @@ final class QuickAccessState {
         return result
     }
 
-    /// What the text column shows, and the saved result behind it when that is what it shows.
+    /// What the text column shows, and the saved result behind it when that is what it shows. A recognition that
+    /// failed leaves what was made before, in this session or an earlier one, and says so while it is the latest
+    /// recognition's ending.
     private var textColumnContents: (column: TextColumn, result: DerivedText?)? {
         guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return nil }
         if let job = derivedText.job(for: ref, operation: .extractText) { return (.recognizing(job.snapshot), nil) }
+        let made: (column: TextColumn, result: DerivedText?)
         switch derivedText.outcome(for: ref, operation: .extractText) {
         // Recognition on this Mac ends whole or not at all, so the text being saved is whole.
-        case .saving(let made, let request)?:
-            return (.text(made, keepsLineBreaks: request.keepsLineBreaks, status: .complete), nil)
-        case .saved(let result)?: return (Self.column(showing: result), result)
-        case .noText?: return (.noText, nil)
-        case .notSaved(let made, let request)?: return (.unsaved(made, keepsLineBreaks: request.keepsLineBreaks), nil)
-        case .failed(let error)?: return (.failed(error), nil)
-        case nil: break
+        case .saving(let text, let request)?:
+            made = (.text(text, keepsLineBreaks: request.keepsLineBreaks, status: .complete), nil)
+        case .saved(let result)?: made = (Self.column(showing: result), result)
+        case .noText?: made = (.noText, nil)
+        case .notSaved(let text, let request)?: made = (.unsaved(text, keepsLineBreaks: request.keepsLineBreaks), nil)
+        case .failed(let error)?:
+            guard savedTextRef == ref else { return (.loading, nil) }
+            guard let savedText else {
+                // Tried again once the store has said it kept none.
+                return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .failed(error), nil)
+            }
+            let kept = Self.column(showing: savedText)
+            let isLatest = derivedText.showsLatestEnding(for: ref, operation: .extractText)
+            return (isLatest ? .failedAgain(kept, error) : kept, savedText)
+        case nil:
+            guard savedTextRef == ref else { return (.loading, nil) }
+            if let savedText { return (Self.column(showing: savedText), savedText) }
+            // Text the person asked for starts once the store has said it kept none.
+            return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted, nil)
         }
-        guard savedTextRef == ref else { return (.loading, nil) }
-        if let savedText { return (Self.column(showing: savedText), savedText) }
-        // Text the person asked for starts once the store has said it kept none.
-        return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted, nil)
+        guard let failure = derivedText.failure(for: ref, operation: .extractText) else { return made }
+        return (.failedAgain(made.column, failure), made.result)
     }
 
     private static func column(showing result: DerivedText) -> TextColumn {
         .text(result.text, keepsLineBreaks: result.keepsLineBreaks, status: result.status)
     }
 
-    /// Whether the text in the column is what the latest recognition of its image just made, rather than text kept from
-    /// before or brought back by stopping a recognition.
-    var isTextColumnJustMade: Bool {
-        guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return false }
-        return derivedText.showsLatestEnding(for: ref, operation: .extractText)
+    /// Whether the column shows how the latest recognition of its image just ended: the text it made, that it found
+    /// none, or why it failed, rather than text kept from before or brought back by stopping a recognition.
+    var isTextColumnJustMade: Bool { textColumnEnding != nil }
+
+    /// The latest recognition's ending that the column shows, which tells one ending from another so that each is
+    /// said once; nil while the column shows something else.
+    var textColumnEnding: UUID? {
+        guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return nil }
+        return derivedText.latestEnding(for: ref, operation: .extractText)
     }
 
     /// Opens the preview with the text in the selected image beside it, and recognizes the text unless something was
-    /// made of it already; a failure is tried again. The recognition starts whatever the selection does next. Nothing
-    /// happens for a clip that isn't an image.
+    /// made of it already; a failure is tried again. Asked for while the column says a recognition failed, it tries
+    /// again. The recognition starts whatever the selection does next. Nothing happens for a clip that isn't an image.
     func showTextInImage() {
         guard let row = selection.selectedRow, row.kind == .image, let derivedText = services()?.derivedText else {
+            return
+        }
+        if textColumnRef == row.ref, textColumn?.isFailed == true {
+            extractText()
             return
         }
         resultColumn = .text
@@ -684,12 +776,7 @@ final class QuickAccessState {
     /// The whole text the column shows, made now or kept from before, whether or not the library could keep it: what
     /// copying all of it and Save Text as Snippet take. Part of a text, as a stopped or cut-off one is, can only be
     /// copied by selecting it.
-    var textColumnText: String? {
-        switch textColumn {
-        case .text(let text, _, .complete)?, .unsaved(let text, _)?: text
-        case .text?, .loading?, .notStarted?, .recognizing?, .noText?, .failed?, nil: nil
-        }
-    }
+    var textColumnText: String? { textColumn?.wholeText }
 
     /// Whether the text beside the image was copied just now.
     var isTextCopied: Bool { copiedTextRef != nil && copiedTextRef == textColumnRef }
@@ -770,14 +857,14 @@ final class QuickAccessState {
         let column = textColumn
         keepsLineBreaks = !(column?.keepsLineBreaks ?? keepsLineBreaks)
         switch column {
-        case .text?, .unsaved?, .recognizing?:
+        case .text?, .unsaved?, .recognizing?, .failedAgain(.text, _)?, .failedAgain(.unsaved, _)?:
             extractText()
         case .loading?:
             if let ref = textColumnRef, let derivedText = services()?.derivedText,
                derivedText.isWaitingToStart(ref, operation: .extractText) {
                 derivedText.extractTextUnlessMade(from: ref, keepingLineBreaks: keepsLineBreaks)
             }
-        case .notStarted?, .noText?, .failed?, nil:
+        case .notStarted?, .noText?, .failed?, .failedAgain?, nil:
             break
         }
         return keepsLineBreaks

@@ -50,7 +50,9 @@ final class GenerationJob {
     /// The task reading the source, kept where `deinit` can cancel it, so a dropped job doesn't run on.
     @ObservationIgnored private let producer = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     @ObservationIgnored private var stopReason: GenerationSnapshot.StopReason?
-    @ObservationIgnored private(set) var hasStarted = false
+    /// Whether it has left its lane's queue. Observed, so that a card can tell a running job from a waiting one
+    /// without following every snapshot.
+    private(set) var hasStarted = false
     @ObservationIgnored private var hasEnded = false
 
     /// `onEnd` is called once, on the main thread, when the job has ended and `snapshot` is final.

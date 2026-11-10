@@ -720,35 +720,105 @@ final class QuickAccessBandTests: XCTestCase {
         var endings = TextColumnEndings()
         let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
         let failure = GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")
-        func say(_ column: TextColumn?, justMade: Bool = true, ref: ContentRef = image, open: Bool = true) -> String? {
-            endings.words(for: column.map { (ref, $0) }, isJustMade: justMade, isOpen: open)
+        func say(_ column: TextColumn?, _ ending: UUID? = nil, ref: ContentRef = image, open: Bool = true) -> String? {
+            endings.words(for: column.map { (ref, $0, ending) }, isOpen: open)
         }
 
-        XCTAssertNil(say(.loading, justMade: false))
+        XCTAssertNil(say(.loading))
         // A recognition that fails at once, before it was seen under way, says why as it ends, once.
-        XCTAssertEqual(say(.failed(failure)), failure.message)
-        XCTAssertNil(say(.failed(failure)))
-        // Text that was made, then couldn't be kept, says why too.
-        XCTAssertNil(say(.text("Synthetic", keepsLineBreaks: true, status: .complete)))
-        XCTAssertEqual(say(.failed(.contentUnavailable)), GenerationError.contentUnavailable.message)
-        // An image without text says so.
-        XCTAssertNil(say(.loading, justMade: false))
-        XCTAssertEqual(say(.noText), TextColumnWords.noText)
+        let failed = UUID()
+        XCTAssertEqual(say(.failed(failure), failed), failure.message)
+        XCTAssertNil(say(.failed(failure), failed))
+        // Text that was made, then couldn't be kept, says why too: the same ending, in other words.
+        let made = UUID()
+        XCTAssertNil(say(.text("Synthetic", keepsLineBreaks: true, status: .complete), made))
+        XCTAssertEqual(say(.failed(.contentUnavailable), made), GenerationError.contentUnavailable.message)
+        // An image without text says so, and so does the next recognition that finds none.
+        XCTAssertEqual(say(.noText, UUID()), TextColumnWords.noText)
+        XCTAssertEqual(say(.noText, UUID()), TextColumnWords.noText)
 
-        // An ending from before, shown for another image, says nothing again.
+        // An ending shown for another image says nothing, nor does one the column comes back to, while what the image
+        // has is read again.
         let other = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
-        XCTAssertNil(say(.noText, ref: other))
+        XCTAssertNil(say(.noText, UUID(), ref: other))
+        let shownBefore = UUID()
+        XCTAssertNil(say(.loading, shownBefore))
+        XCTAssertNil(say(.failed(failure), shownBefore))
         // Nor does an ending that isn't the latest recognition's, such as text brought back by stopping one.
-        XCTAssertNil(say(.loading, justMade: false))
-        XCTAssertNil(say(.failed(failure), justMade: false))
+        XCTAssertNil(say(.failed(failure), nil))
+        // Arriving at an image while its text is still being saved, then the store doesn't take it: that is said.
+        XCTAssertNil(say(.noText, UUID(), ref: other))
+        let arriving = UUID()
+        XCTAssertNil(say(.text("Synthetic", keepsLineBreaks: true, status: .complete), arriving))
+        XCTAssertEqual(say(.failed(.contentUnavailable), arriving), GenerationError.contentUnavailable.message)
         // With the panel closed nothing is said, and an ending seen as it opens is only shown.
-        XCTAssertNil(say(.loading, justMade: false))
-        XCTAssertNil(say(.noText, open: false))
+        XCTAssertNil(say(.noText, UUID(), open: false))
         endings.reset()
-        XCTAssertNil(say(.failed(failure)))
+        XCTAssertNil(say(.failed(failure), UUID()))
         // Without a column, nothing is said, and the next column starts afresh.
         XCTAssertNil(say(nil))
-        XCTAssertNil(say(.noText))
+        XCTAssertNil(say(.noText, UUID()))
+    }
+
+    func testTheTextColumnSaysOnceThatRecognizingAgainFailedAndLeftWhatItHad() {
+        var endings = TextColumnEndings()
+        let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        let made = TextColumn.text("Synthetic", keepsLineBreaks: true, status: .complete)
+        let recognizing = TextColumn.recognizing(GenerationSnapshot(phase: .waiting, info: nil))
+        let (madeEnding, failedEnding) = (UUID(), UUID())
+        func say(_ column: TextColumn, _ ending: UUID?, ref: ContentRef = image) -> String? {
+            endings.words(for: (ref, column, ending), isOpen: true)
+        }
+
+        XCTAssertNil(say(recognizing, nil))
+        XCTAssertNil(say(made, madeEnding))
+        XCTAssertNil(say(recognizing, madeEnding))
+        XCTAssertEqual(say(.failedAgain(made, failure), failedEnding),
+                       TextColumnWords.failedAgain(leaving: made, because: failure))
+        XCTAssertNil(say(.failedAgain(made, failure), failedEnding), "Once")
+        // The text under it couldn't be kept after all: the same ending, with nothing new to say.
+        XCTAssertNil(say(.failedAgain(.unsaved("Synthetic", keepsLineBreaks: true), failure), failedEnding))
+        // Then the text under it went, as when the store didn't take it: the failure alone, in its own words.
+        XCTAssertEqual(say(.failed(failure), failedEnding), failure.message)
+        // A recognition stopped since leaves the text without the failure, and nothing is said.
+        XCTAssertNil(say(recognizing, failedEnding))
+        XCTAssertNil(say(made, nil))
+        // Coming back to the image, the failure it showed before isn't said again.
+        let other = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        XCTAssertNil(say(.noText, UUID(), ref: other))
+        XCTAssertNil(say(.loading, failedEnding))
+        XCTAssertNil(say(.failedAgain(made, failure), failedEnding))
+        // What it says doesn't claim text it never had.
+        XCTAssertEqual(say(.failedAgain(.noText, failure), UUID()),
+                       TextColumnWords.failedAgain(leaving: .noText, because: failure))
+        XCTAssertNotEqual(TextColumnWords.failedAgain(leaving: .noText, because: failure),
+                          TextColumnWords.failedAgain(leaving: made, because: failure))
+        // An item that became unavailable meanwhile says so, rather than that recognizing failed.
+        let unavailable = TextColumnWords.failedAgain(leaving: made, because: .contentUnavailable)
+        XCTAssertTrue(unavailable.hasPrefix(GenerationError.contentUnavailable.message), unavailable)
+        XCTAssertNotEqual(unavailable, TextColumnWords.failedAgain(leaving: made, because: failure))
+        XCTAssertEqual(TextColumnWords.subtitle(for: .failedAgain(made, failure)), TextColumnWords.subtitle(for: made))
+    }
+
+    func testTextLeftByAFailedRecognitionShowsAsItWas() throws {
+        let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 400), styleMask: [.borderless],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        addTeardownBlock { window.close() }
+        let made = TextColumn.text("A whole text", keepsLineBreaks: true, status: .complete)
+        let hosting = NSHostingView(rootView: QuickAccessSplitPreview(
+            preview: nil, applicationName: nil, column: .failedAgain(made, failure), ref: image, isJustMade: true,
+            onCommand: { _ in }, onCopy: { _ in }))
+        window.contentView = hosting
+        settle(window)
+
+        let display = try XCTUnwrap(views(StreamingTextDisplay.self, in: hosting).first)
+        XCTAssertEqual(display.shownText, "A whole text", "Shown at once, not typed out again")
+        XCTAssertEqual(display.mode, .still)
+        XCTAssertTrue(display.allowsCopyingAll)
     }
 
     func testOnlyAWholeTextCanBeCopiedWithoutSelectingIt() throws {

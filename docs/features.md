@@ -45,7 +45,10 @@ shows, Return pastes it instead of the image, through the same checks as a
 clip; in a terminal it is a command, reviewed first when it has several lines
 or control or invisible characters. ⌘C copies it, or the part selected, and
 leaves quick access open; ⌘S saves it as a snippet of its own. A double-click
-on a card, or a right-click on another card, still acts on that clip.
+on a card, or a right-click on another card, still acts on that clip. An
+image's card in quick access carries a small mark while its text is recognized
+or waits its turn, once it has text, or when recognizing it failed; its help
+tag and VoiceOver say which.
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,

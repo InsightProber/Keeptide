@@ -75,15 +75,20 @@ final class DerivedTextStore: @unchecked Sendable {
     }
 
     /// Saves the final snapshot of a generation for `request`, once, as `snapshot.saveDecision` says: a whole result
-    /// replaces any earlier one; a result a person stopped, or one cut off, is kept only while the item has no whole
-    /// result for this content, whatever language that result is in, so a new translation that does not finish leaves
-    /// the earlier one; anything else is not kept. Nothing is kept for an item that changed or went while it was
-    /// generated, nor under another store generation than `expectedIdentity`, the one the content was read in: a late
-    /// result never lands on other content. Returns what was saved, or nil.
+    /// replaces any earlier one, and a whole result with nothing in it leaves none; a result a person stopped, or one
+    /// cut off, is kept only while the item has no whole result for this content, whatever language that result is in,
+    /// so a new translation that does not finish leaves the earlier one; anything else is not kept. Nothing is kept or
+    /// removed for an item that changed or went while it was generated, nor under another store generation than
+    /// `expectedIdentity`, the one the content was read in: a late result never lands on other content. Returns what
+    /// was saved, or nil.
     @discardableResult
     func save(_ snapshot: GenerationSnapshot, for request: DerivedTextRequest, channel: OutputChannel = .main,
               at now: Date = Date(), expecting expectedIdentity: StoreIdentity? = nil) async throws -> DerivedText? {
         let decision = snapshot.saveDecision
+        guard decision != .clear else {
+            try await clear(request.source, operation: request.operation, expecting: expectedIdentity)
+            return nil
+        }
         let text = snapshot.text(channel)
         guard decision != .discard, !text.isEmpty else { return nil }
         guard let info = snapshot.info, now.timeIntervalSinceReferenceDate.isFinite else {
@@ -129,6 +134,34 @@ final class DerivedTextStore: @unchecked Sendable {
         }
     }
 
+    /// A whole result with nothing in it: the item's results of the operation go, as a whole result with text would
+    /// replace them, while the item has this content in this store generation. Returns whether it has: false when the
+    /// item changed or went, as to Recently Deleted, or the content was read in another store generation, and nothing
+    /// went.
+    @discardableResult
+    func clear(_ source: ContentRef, operation: DerivedTextOperation,
+               expecting expectedIdentity: StoreIdentity? = nil) async throws -> Bool {
+        let controller = controller
+        return try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            try StoreSafetyGate.validate(.projection, runtime: controller.runtime)
+            if let expectedIdentity, expectedIdentity != controller.runtime.identity { return false }
+            guard try Self.isCurrent(source, in: context) else { return false }
+            let existing = try Self.objects(itemID: source.itemID, facet: source.facet, operation: operation,
+                                            in: context)
+            guard !existing.isEmpty else { return true }
+            do {
+                existing.forEach(context.delete)
+                try context.save()
+            } catch {
+                context.rollback()
+                throw error
+            }
+            return true
+        }
+    }
+
     /// The result of `operation` for exactly this content of an item, while the item is current: not in Recently
     /// Deleted, not expired, and unchanged since the result was made. Nil otherwise.
     func result(for source: ContentRef, operation: DerivedTextOperation) async throws -> DerivedText? {
@@ -146,6 +179,33 @@ final class DerivedTextStore: @unchecked Sendable {
                 if result.source == source { return result }
             }
             return nil
+        }
+    }
+
+    /// Which of these sources have a whole result of the operation, for exactly their content, in this store
+    /// generation: what the cards say of their items, read for the cards on screen at once. One fetch finds the rows of
+    /// all the items; only an item with a whole result is checked for being current. A row that can't be read, or an
+    /// item that can't be checked, is no result, and the others still count.
+    func sourcesWithWholeResults(_ sources: [ContentRef],
+                                 operation: DerivedTextOperation) async throws -> Set<ContentRef> {
+        let wanted = Set(sources)
+        guard !wanted.isEmpty else { return [] }
+        let itemIDs = Set(wanted.map(\.itemID.rawValue)).map { $0 as NSUUID }
+        let controller = controller
+        return try await controller.perform { context in
+            context.reset()
+            defer { context.reset() }
+            let identity = controller.runtime.identity
+            let request = NSFetchRequest<NSManagedObject>(entityName: "DerivedText")
+            request.predicate = NSPredicate(format: "itemID IN %@ AND operation == %@", itemIDs, operation.rawValue)
+            var found: Set<ContentRef> = []
+            for object in try context.fetch(request) {
+                guard let kept = try? Self.result(from: object), wanted.contains(kept.source),
+                      !found.contains(kept.source), Self.isWholeResult(object, of: kept.source, under: identity),
+                      (try? Self.isCurrent(kept.source, in: context)) == true else { continue }
+                found.insert(kept.source)
+            }
+            return found
         }
     }
 
