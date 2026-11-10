@@ -136,17 +136,19 @@ above it is the menu of languages to translate into, marked, once the text's
 language is known, for what each needs, and the language chosen is the one
 quick access translates into too, unless Settings fixes one. A snippet is saved
 before it is translated, and once edited, its translation is to be made again. A
-link or a file is not translated. Full input-method and accessibility
-acceptance remains a release gate. History now has configurable retention, a
-seven-day Recently Deleted window and explicit permanent removal. Settings
-report allocated storage and let users configure or disable advisory warnings.
-Saved snippets protect referenced content; permanent retention has no hidden
-count or size quota. Local export creates a new directory containing portable
-originals, readable derivatives and an independently verified manifest. It
-preserves exact selected versions, supports cancellation before publication, and
-never overwrites an existing destination. File references carry relocation
-metadata without local paths or permissions. Archives are local snapshots; cloud
-recovery remains planned.
+link or a file is not translated. A row in the library is marked, as its card in
+quick access is, while the text in its image or its translation is being made,
+once it has been, and when making it failed, on a selected row too. Full
+input-method and accessibility acceptance remains a release gate. History now
+has configurable retention, a seven-day Recently Deleted window and explicit
+permanent removal. Settings report allocated storage and let users configure or
+disable advisory warnings. Saved snippets protect referenced content; permanent
+retention has no hidden count or size quota. Local export creates a new
+directory containing portable originals, readable derivatives and an
+independently verified manifest. It preserves exact selected versions, supports
+cancellation before publication, and never overwrites an existing destination.
+File references carry relocation metadata without local paths or permissions.
+Archives are local snapshots; cloud recovery remains planned.
 
 ## First release
 
