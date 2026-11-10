@@ -40,6 +40,9 @@ supports recoverable editing, document find, search, and explicit saving. Persis
 file authorization is local and explicit. ⇧⌘T shows the text recognized on this Mac
 in a copied image beside its preview, and keeps it locally beside the image; Return,
 ⌘C and ⌘S then paste, copy or save that text instead of the image.
+⌘T shows a translation of a text clip beside its preview, made on this Mac with
+Apple's Translation and kept locally; translating or recognizing again that fails
+leaves the earlier result.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
 Planned capabilities must stay labelled until implemented and verified.
@@ -108,11 +111,11 @@ Planned capabilities must stay labelled until implemented and verified.
   adding Xcode files. Check API availability on the minimum supported macOS.
 - Prefer a small, clear implementation over speculative abstractions.
 - On-device model inference uses only Apple's frameworks: Vision for text
-  recognition, with Translation and Natural Language planned. Also planned:
-  Apple Intelligence on Macs that have it, and cloud models a person chooses
-  explicitly with their own API key, reached only through a dedicated cloud
-  module. The first release does not include embeddings, vector storage or
-  input monitoring.
+  recognition, Natural Language to tell languages apart, and Translation. Also
+  planned: Apple Intelligence on Macs that have it, and cloud models a person
+  chooses explicitly with their own API key, reached only through a dedicated
+  cloud module. The first release does not include embeddings, vector storage
+  or input monitoring.
 
 ## Storage and privacy invariants
 

@@ -112,7 +112,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
     /// What `update()` says as a recognition ends without text.
-    private var textColumnEndings = TextColumnEndings()
+    private var textColumnEndings = ResultColumnEndings()
+    private var translationColumnEndings = ResultColumnEndings()
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
     /// to count the calls.
     var fieldCharactersMoved: (NSTextView) -> Void = { $0.inputContext?.invalidateCharacterCoordinates() }
@@ -241,6 +242,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         isHiddenForPaste = false
         searchReachedByKeyboard = false
         textColumnEndings.reset()
+        translationColumnEndings.reset()
         state.close()
         // The undo stack is the showing's: a move stays in Recently Deleted, where the library recovers it.
         window?.undoManager?.removeAllActions()
@@ -360,10 +362,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
         toolbar.captureNotice = notice
         // And why a recognition that just ended left the text column without text.
-        let column = state.textColumnRef.flatMap { ref in
-            state.textColumn.map { (ref: ref, column: $0, ending: state.textColumnEnding) }
+        let textColumn = state.textColumnRef.flatMap { ref in
+            state.textColumn.map { (ref: ref, ending: state.textColumnEnding, words: $0.endingWords, isRead: $0.isRead) }
         }
-        if let words = textColumnEndings.words(for: column, isOpen: isSessionOpen) { announce(words) }
+        if let words = textColumnEndings.words(for: textColumn, isOpen: isSessionOpen) { announce(words) }
+        // And how a translation that just ended left its column.
+        let translationColumn = state.translationColumnRef.flatMap { ref in
+            state.translationColumn.map {
+                (ref: ref, ending: state.translationColumnEnding, words: $0.endingWords, isRead: $0.isRead)
+            }
+        }
+        if let words = translationColumnEndings.words(for: translationColumn, isOpen: isSessionOpen) {
+            announce(words)
+        }
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }
@@ -545,6 +556,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             copyShownText(nil)
         case .saveTextAsSnippet:
             saveShownText()
+        case .showTranslation:
+            let focus = currentFocus
+            let wasShowing = state.translationColumnRef != nil
+            state.showTranslation()
+            update()
+            keepFocus(focus)
+            // VoiceOver hears the column once, as it opens.
+            if !wasShowing, state.translationColumnRef != nil {
+                announce("\(TranslationColumnWords.title), on this Mac")
+            }
+        case .translate(let language):
+            state.translate(into: language.map(Locale.Language.init(identifier:)))
+        case .stopTranslation:
+            state.stopTranslation()
         }
     }
 
@@ -1469,6 +1494,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if !isComposing, !event.isARepeat, state.offersTextInImage { perform(.showTextInImage) }
             return true
         }
+        // ⌘T shows the translation of the selected text beside its preview, in the same way.
+        if key == "t", modifiers == .command {
+            if !isComposing, !event.isARepeat, state.commandReview == nil, state.offersTranslation {
+                perform(.showTranslation)
+            }
+            return true
+        }
         // ⌘. stops the recognition beside the preview. While the preview is split, every ⌘. is taken here, so that one
         // pressed just as the recognition ends never becomes Escape. Elsewhere it becomes Escape, once: held down, ⌘.
         // has acted already, as Escape or as Stop, and its repeats peel nothing.
@@ -1476,6 +1508,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if event.isARepeat { return true }
             guard state.isPreviewSplit else { return false }
             if state.canStopTextRecognition { perform(.stopTextRecognition) }
+            if state.canStopTranslation { perform(.stopTranslation) }
             return true
         }
         // ⌘C while the preview shows the text beside an image copies that text: what is selected in it, or with the

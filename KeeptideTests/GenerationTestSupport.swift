@@ -185,3 +185,13 @@ func startedSource(_ recognizer: ScriptedRecognizer, _ index: Int, file: StaticS
     await waitUntil("source \(index) is read", file: file, line: line) { (recognizer.source(index)?.startCount ?? 0) > 0 }
     return try XCTUnwrap(recognizer.source(index), file: file, line: line)
 }
+
+/// The translator's `index`th source, once its job has started reading it.
+@MainActor
+func startedTranslation(_ translator: ScriptedTranslator, _ index: Int, file: StaticString = #filePath,
+                        line: UInt = #line) async throws -> ControlledSource {
+    await waitUntil("translation \(index) is read", file: file, line: line) {
+        (translator.request(index)?.generation.startCount ?? 0) > 0
+    }
+    return try XCTUnwrap(translator.request(index)?.generation, file: file, line: line)
+}

@@ -129,7 +129,7 @@ line, or act on such a character, as soon as it arrives. **Copy As-Is** in the
 actions menu copies the clip complete. The application does not execute saved
 commands: the paste is the only keystroke it sends.
 
-## Text recognition
+## Text recognition and translation
 
 Text in an image is recognized on this Mac with Apple's Vision framework, from
 the image's full-size original rather than a card's thumbnail, and off the main
@@ -143,12 +143,23 @@ text is derived data, kept beside its item in the local store: it follows the
 item into Recently Deleted and back, is removed with it, is bound to the item's
 exact content, and is never mirrored to iCloud or exported.
 
+Translation runs on this Mac with Apple's Translation framework. Natural
+Language tells each paragraph's language first, after code, links and numbers,
+which it misreads, are set aside; paragraphs already in the target language stay
+as they are. Every language pair is checked before any text is translated, so a
+language to download is named at the start, and the paragraphs in one language
+are translated in one session, each sent as it is done. A translation is kept as
+recognized text is, one per item whatever its language. A whole result replaces
+the one before, even one with nothing in it; a job that fails, or whose result
+the store turns away, leaves the earlier one, and so does a stopped one when the
+earlier one is whole.
+
 ## Extension boundary
 
 Stable content identities, versions, change consumption and a shared search
 interface allow future semantic retrieval to be added as a derived capability.
-On-device model inference uses only Apple's frameworks, for text recognition
-today. The first release does not include embeddings or background input
+On-device model inference uses only Apple's frameworks, for text recognition,
+language identification and translation today. The first release does not include embeddings or background input
 monitoring. Future suggestions must preserve the same permission and
 content-validation boundaries.
 

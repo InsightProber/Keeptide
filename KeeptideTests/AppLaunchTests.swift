@@ -2371,6 +2371,43 @@ final class AppLaunchTests: XCTestCase {
         _ = try await startedSource(recognizer, 2)
     }
 
+    func testCommandTShowsTheTranslationBesideTheTextAndCommandPeriodAndEscapeComeFirst() async throws {
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        XCTAssertEqual(announced, ["\(TranslationColumnWords.title), on this Mac"])
+        let engine = try await startedTranslation(translator, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("翻译"))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.views(StreamingTextDisplay.self, in: window.contentView).first?.shownText.isEmpty == false
+        }
+
+        // ⌘. stops it, and nothing closes; VoiceOver hears the translation is incomplete.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TranslationColumnWords.stopped)
+        }
+
+        // Escape closes the column first, then the preview.
+        controller.perform(.escape)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        controller.perform(.escape)
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
     func testVoiceOverHearsWhyARecognitionFailedOnceWhereverTheSelectionGoes() async throws {
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
@@ -5698,6 +5735,27 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(fake.sent, [])
     }
 
+    func testCommandTTranslatesNothingWhileAReviewShows() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makePanelWithClips(
+            ["older", "gamma"], bodies: ["gamma": Self.multiLineCommand], shown: true, system: fake.system,
+            translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        _ = try await toolbarSaying(.action(title: "Paste Command", enabled: true, hint: nil), in: controller)
+        controller.perform(.primary)
+        try await waitForReview(Self.reviewedCommand, in: window)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(translator.request(0), "The card is what the keys are for")
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertNotNil(controller.state.commandReview)
+    }
+
     func testTheShortcutsWorkWithCapsLockOn() async throws {
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
@@ -6116,14 +6174,25 @@ final class AppLaunchTests: XCTestCase {
     /// does, and the window stays off screen. `visibleFrame` stands in for the screen's visible area when given, and
     /// `system` is what direct paste asks of the system: by default nothing is in front, and the panel only copies.
     private func makePanelWithClips(_ titles: [String], bodies: [String: String] = [:], shown: Bool = false,
-                                    visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable) async throws
+                                    visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
+                                    translator: ScriptedTranslator? = nil) async throws
         -> (PanelController, NSPasteboard) {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         try await insertClips(titles, bodies: bodies, into: harness)
         try await harness.consumer.synchronize()
-        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: visibleFrame, system: system)
+        var derivedText: DerivedTextCoordinator?
+        if let translator {
+            let coordinator = DerivedTextCoordinator(
+                store: DerivedTextStore(controller: harness.controller), identity: try await harness.controller.identity(),
+                recognizer: ScriptedRecognizer(), translator: translator,
+                image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
+            addTeardownBlock { await coordinator.stopAndDrain() }
+            derivedText = coordinator
+        }
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: visibleFrame, system: system,
+                                       derivedText: derivedText)
         if shown {
             controller.show()
             addTeardownBlock { controller.close() }
@@ -6383,7 +6452,8 @@ final class AppLaunchTests: XCTestCase {
     /// library is another generation than the one the text is made for, so nothing made is kept.
     private func makeTextPanel(newestIsImage: Bool = true, imageData: Data? = nil,
                                keepsUnderAnotherGeneration: Bool = false, system: DirectPasteSystem = .unavailable,
-                               secondImage: [(String, Data)]? = nil)
+                               secondImage: [(String, Data)]? = nil,
+                               translator: ScriptedTranslator = ScriptedTranslator())
         async throws -> (PanelController, ScriptedRecognizer) {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
@@ -6404,7 +6474,7 @@ final class AppLaunchTests: XCTestCase {
             : current
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: harness.controller), identity: identity,
-            recognizer: recognizer, translator: ScriptedTranslator(),
+            recognizer: recognizer, translator: translator,
             image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
         textPanelHarness = harness
         addTeardownBlock { await derivedText.stopAndDrain() }

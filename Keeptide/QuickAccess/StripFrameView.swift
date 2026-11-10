@@ -832,7 +832,7 @@ private struct StripTextMarkView: View {
 
 /// The 2 pt line under a card's header while the text in its image is recognized: a segment that moves across it, and
 /// holds still at its start with Reduce Motion. Core Animation moves it, so the card is never drawn again for it.
-private struct StripProgressLine: NSViewRepresentable {
+struct StripProgressLine: NSViewRepresentable {
     let color: Color
     let isDark: Bool
     let increasedContrast: Bool
