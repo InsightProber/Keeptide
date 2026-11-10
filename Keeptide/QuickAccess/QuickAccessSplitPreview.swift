@@ -47,7 +47,7 @@ struct QuickAccessSplitPreview: View {
 /// Why a recognition or a translation that just ended left its column without new text, said to VoiceOver as it ends:
 /// there is none, or why it failed, and whether that left what was made before. The panel asks on every change it
 /// sees, and not the column's view: SwiftUI doesn't always deliver a view's `onChange`. The Library asks from a view of
-/// its own (`LibraryTextColumnAnnouncer`), on every change of what its column shows or of the ending it shows. An ending is told by `ending`,
+/// its own (`LibraryResultColumnAnnouncer`), on every change of what its column shows or of the ending it shows. An ending is told by `ending`,
 /// the latest job's while the column shows it. What the column says of an ending, `words`, is said once, as it
 /// changes: a new ending, or the same one in other words, as when text it made can't be kept. What the column shows
 /// as it begins to show a clip, as the panel opens or the selection comes to it, is only shown, even once it has read
@@ -466,6 +466,20 @@ extension TextInImageColumn where Accessory == EmptyView {
     }
 }
 
+extension TranslationColumnView where Accessory == EmptyView {
+    /// The column in quick access, whose text takes the panel's keys.
+    init(column: TranslationColumn, target: Locale.Language, nextTarget: Locale.Language?, isJustMade: Bool,
+         onCommand: @escaping (QuickAccessCommand) -> Void, onCopy: @escaping (String) -> Void,
+         onLanguageTitleMoved: @escaping (CGRect) -> Void) {
+        self.init(column: column, target: target, nextTarget: nextTarget, isJustMade: isJustMade,
+                  identifiers: .init(column: "QuickAccessTranslation", translate: "QuickAccessTranslate",
+                                     language: "QuickAccessTranslationLanguage"),
+                  onCommand: onCommand, onCopy: onCopy, onLanguageTitleMoved: onLanguageTitleMoved,
+                  onKeyDown: { PreviewTextKeys.handle($0, hasMarkedText: false, onCommand: onCommand) },
+                  accessory: { EmptyView() })
+    }
+}
+
 /// A capsule on the tray, in the toolbar's colours: the column's Extract Text and Try Again, and the bar's own.
 struct TrayCapsuleButtonStyle: ButtonStyle {
     var isOn = false
@@ -689,21 +703,61 @@ private struct OriginalColumn: View {
 /// translation under way, or why there is none. One display shows the translation from the moment it starts until it
 /// is made, so it is typed out as it comes; one kept from before, or brought back by stopping a translation, shows at
 /// once. Why a translation left no new text, the panel says as it ends (`ResultColumnEndings`).
-private struct TranslationColumnView: View {
+struct TranslationColumnView<Accessory: View>: View {
+    /// What the column, its Translate and its language menu are called to assistive apps and UI tests.
+    struct Identifiers {
+        let column: String
+        let translate: String
+        let language: String
+    }
+
+    /// What the language's name says it does, with its key where it has one.
+    let languageMenuHelp: String
+
     let column: TranslationColumn
     let target: Locale.Language
     let nextTarget: Locale.Language?
     let isJustMade: Bool
+    let identifiers: Identifiers
     let onCommand: (QuickAccessCommand) -> Void
     let onCopy: (String) -> Void
     let onLanguageTitleMoved: (CGRect) -> Void
+    /// Takes a key pressed in the column's text before the text does: true when it took it.
+    let onKeyDown: @MainActor (NSEvent) -> Bool
+    /// What stands at the end of the column's title.
+    let accessory: Accessory
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
 
+    init(column: TranslationColumn, target: Locale.Language, nextTarget: Locale.Language?, isJustMade: Bool,
+         identifiers: Identifiers, onCommand: @escaping (QuickAccessCommand) -> Void,
+         onCopy: @escaping (String) -> Void, onLanguageTitleMoved: @escaping (CGRect) -> Void,
+         languageMenuHelp: String = TranslationColumnWords.languageMenuHelp,
+         onKeyDown: @escaping @MainActor (NSEvent) -> Bool, @ViewBuilder accessory: () -> Accessory) {
+        self.column = column
+        self.target = target
+        self.nextTarget = nextTarget
+        self.isJustMade = isJustMade
+        self.identifiers = identifiers
+        self.languageMenuHelp = languageMenuHelp
+        self.onCommand = onCommand
+        self.onCopy = onCopy
+        self.onLanguageTitleMoved = onLanguageTitleMoved
+        self.onKeyDown = onKeyDown
+        self.accessory = accessory()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            languageTitle
-            Text(TranslationColumnWords.subtitle(for: column)).font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    languageTitle
+                    Text(TranslationColumnWords.subtitle(for: column)).font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                accessory
+            }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.top, 12)
@@ -727,7 +781,7 @@ private struct TranslationColumnView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(TranslationColumnWords.title), on this Mac")
-        .accessibilityIdentifier("QuickAccessTranslation")
+        .accessibilityIdentifier(identifiers.column)
     }
 
     /// The language the column's translation is in, or is to be in.
@@ -747,10 +801,10 @@ private struct TranslationColumnView: View {
         }
         .buttonStyle(.plain)
         .fixedSize()
-        .help(TranslationColumnWords.languageMenuHelp)
+        .help(languageMenuHelp)
         .accessibilityLabel(language.displayName)
         .accessibilityHint(TranslationColumnWords.languageMenuHint)
-        .accessibilityIdentifier("QuickAccessTranslationLanguage")
+        .accessibilityIdentifier(identifiers.language)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onLanguageTitleMoved($0) }
     }
 
@@ -762,9 +816,7 @@ private struct TranslationColumnView: View {
                                   announcements: .init(start: "Translating", finish: "Translated"),
                                   allowsCopyingAll: shown.mode != .writing && shown.isWhole,
                                   onCopy: { [onCopy] in onCopy($0) },
-                                  onKeyDown: { [onCommand] event in
-                                      PreviewTextKeys.handle(event, hasMarkedText: false, onCommand: onCommand)
-                                  })
+                                  onKeyDown: onKeyDown)
             }
             switch column {
             case .loading:
@@ -778,7 +830,7 @@ private struct TranslationColumnView: View {
                 }
                 .buttonStyle(TrayCapsuleButtonStyle())
                 .accessibilityLabel(TranslationColumnWords.translate(into: target))
-                .accessibilityIdentifier("QuickAccessTranslate")
+                .accessibilityIdentifier(identifiers.translate)
                 .help("\(TranslationColumnWords.translate(into: target)) (⌘T)")
             case .nothingToTranslate, .failedAgain(.nothingToTranslate, _, _):
                 Text(TranslationColumnWords.nothingToTranslate).font(.system(size: 14)).foregroundStyle(.secondary)

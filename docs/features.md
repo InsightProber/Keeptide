@@ -126,12 +126,19 @@ of an image's row, shows the text in the open image beside it, side by side
 where the detail is wide enough and under the image where it isn't: the same
 text quick access shows, recognized and kept the same way, with Copy, Save as
 Snippet and Close, which Item › Copy Text and Save Text as Snippet repeat for
-the keyboard; Escape closes it, and ⌘. stops a recognition. Full input-method
-and accessibility acceptance remains a release gate. History now has
-configurable retention, a seven-day Recently Deleted window and explicit
-permanent removal. Settings report allocated storage and let users configure or
-disable advisory warnings. Saved snippets protect referenced content; permanent
-retention has no hidden count or size quota.
+the keyboard; Escape closes it, and ⌘. stops a recognition. Item › Translate
+(⌘T) and Translate To, the toolbar's Translate, or the same in a row's menu show
+the translation of a text, or of the text in an image, beside it in the same
+way: the language's name above it is the menu of languages to translate into,
+marked, once the text's language is known, for what each needs, and the language
+chosen is the one quick access translates into too, unless Settings fixes one. A
+snippet is saved before it is translated, and once edited, its translation is to
+be made again. A link or a file is not translated. Full input-method and
+accessibility acceptance remains a release gate. History now has configurable
+retention, a seven-day Recently Deleted window and explicit permanent removal.
+Settings report allocated storage and let users configure or disable advisory
+warnings. Saved snippets protect referenced content; permanent retention has no
+hidden count or size quota.
 Local export creates a new directory containing portable originals, readable
 derivatives and an independently verified manifest. It preserves exact selected
 versions, supports cancellation before publication, and never overwrites an
