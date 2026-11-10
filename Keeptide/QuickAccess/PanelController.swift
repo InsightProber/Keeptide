@@ -1420,8 +1420,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// The keys of the panel's commands with ⌘ alone, as `commandKey(of:)` gives them: ⌘S, ⌘E, ⌘N, ⌘D, ⌘F, ⌘[, ⌘],
-    /// ⌘L, ⌘K, ⌘Y and ⌘Z, each run by `handleKeyEquivalent(_:)`.
-    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z"]
+    /// ⌘L, ⌘K, ⌘Y, ⌘Z and, while the text beside an image shows, ⌘C, each run by `handleKeyEquivalent(_:)`.
+    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z", "c"]
 
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
         // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M and ⇧⌘T

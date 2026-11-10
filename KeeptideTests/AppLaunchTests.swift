@@ -2417,6 +2417,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testVoiceOverHearsThatRecognizingAgainFailedAndLeftTheText() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2450,6 +2451,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testVoiceOverHearsWhyARecognitionFailedOnceWhereverTheSelectionGoes() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2505,6 +2507,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testReturnTakesTheTextBesideTheImageOnceItIsMade() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2534,6 +2537,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAReviewedCommandMadeOfTheTextPastesTheTextNotTheImage() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, recognizer) = try await makeTextPanel(system: fake.system)
@@ -2556,6 +2560,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandCCopiesTheTextAndThePanelStays() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         let board = try XCTUnwrap(textPanelBoard)
@@ -2589,7 +2594,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testCommandCCopiesTheTextFromTheKeyThatTypesCWithCommand() async throws {
+        try requireANSICommandLayer()
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        controller.perform(.focusResults)
+
+        // On Dvorak – QWERTY ⌘ the I key types "c" alone and "i" with ⌘: it is no ⌘C.
+        _ = window.performKeyEquivalent(with: try key(kVK_ANSI_I, "c", modifiers: .command))
+        XCTAssertFalse(controller.state.isTextCopied)
+        XCTAssertNotEqual(board.string(forType: .string), "Synthetic text in image")
+
+        // On a Russian layout the C key types "с" alone and "c" with ⌘: it is ⌘C.
+        board.clearContents()
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "\u{441}", modifiers: .command)))
+        XCTAssertEqual(board.string(forType: .string), "Synthetic text in image")
+        XCTAssertTrue(controller.state.isTextCopied)
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
     func testCommandSSavesTheTextAsASnippet() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2608,6 +2639,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandKOffersTheTextsActionsWhileItShowsAndExtractTextOtherwise() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2669,6 +2701,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandKNamesThePasteOfTheTextAndItsCopy() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2691,6 +2724,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheBarsCopyAndSaveTakeTheText() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2717,6 +2751,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testARightClickOnAnotherImageActsOnThatImageNotOnItsText() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system,
                                                                secondImage: [("public.png", try pngData())])
@@ -2756,6 +2791,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCopyAsIsOnAnotherImageKeepsThatClipWhole() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, _) = try await makeTextPanel(system: fake.system, secondImage: [
@@ -2783,6 +2819,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testADoubleClickOnTheImageTakesTheImageEvenWhileItsTextShows() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2805,6 +2842,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testReturnInTheRecognizedTextPastesTheText() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2829,6 +2867,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandCOnTheReviewCardIsTheCardsOwn() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, recognizer) = try await makeTextPanel(system: fake.system)
@@ -2855,6 +2894,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testHeldCommandCCopiesOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         let board = try XCTUnwrap(textPanelBoard)
@@ -2878,6 +2918,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandCLeavesASelectionInTheSearchFieldToTheField() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -2895,6 +2936,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testSavingTheTextNeverSavesTheImageInstead() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2921,6 +2963,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheTextsTakeItemTakesNothingOnceTheColumnHasClosed() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2944,6 +2987,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheMenusSaveAsSnippetStillSavesTheImage() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2962,6 +3006,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheImagesCardSaysItHasTextOnceItIsMade() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
