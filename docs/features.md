@@ -60,13 +60,17 @@ already in that language offers the next one. Nothing is translated until it is
 asked for, and the translation is kept beside its text on this Mac, one per
 item, not in iCloud or in exports. ⌘. stops a translation and shows what was
 made, marked incomplete, which is kept unless a whole translation was kept
-before. Escape closes the translation before the preview.
+before. Escape closes the translation before the preview. For an image, ⌘T,
+or **Translation** beside **Text** in the bar, translates the text recognized in
+it, with the image on the left: text recognized or kept from before is
+translated as it is, and otherwise the image's text is recognized first, which
+⌘. stops too; an image with no text in it says so.
 When translating again fails, the earlier translation stays and the column says
 why; the same holds for the text in an image. While a whole translation that was
-kept shows, Return pastes it instead of the text, through the same checks as a
+kept shows, Return pastes it instead of the clip, through the same checks as a
 clip; ⌘C copies a whole translation, or the part selected, and leaves quick
-access open, and ⌘S saves it as a snippet of its own. A text's card in quick
-access carries a "文A" mark while its translation is made or waits its turn,
+access open, and ⌘S saves it as a snippet of its own. A card in quick access
+carries a "文A" mark while its translation is made or waits its turn,
 once it is translated, when the translation was stopped part way, or when
 translating it failed; its help tag and VoiceOver say which, with the language
 of a translation or why it failed.
@@ -107,7 +111,7 @@ planned.
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
 | Text in images | Text recognized on this Mac in a copied image, shown beside its preview and kept locally |
-| Translation | A text clip translated on this Mac, shown beside its preview and kept locally |
+| Translation | A text clip, or the text in an image, translated on this Mac, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |
 | Recovery | Recently deleted content, clear storage errors and protection against partial writes |

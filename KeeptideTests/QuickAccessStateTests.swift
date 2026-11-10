@@ -1166,7 +1166,8 @@ final class QuickAccessStateTests: XCTestCase {
         let store = DerivedTextStore(controller: fixture.harness.controller)
         for (title, phase, text) in [("Kept", GenerationSnapshot.Phase.finished(.completed), "Note gardée."),
                                      ("Cut off", .finished(.truncated), "Note coup"),
-                                     ("Stopped before", .stopped(.person), "Note arrê")] {
+                                     ("Stopped before", .stopped(.person), "Note arrê"),
+                                     ("Screenshot", .finished(.completed), "Capture gardée.")] {
             let source = try XCTUnwrap(rows.first { $0.title == title }?.ref)
             _ = try await store.save(
                 GenerationSnapshot(phase: phase, info: GenerationInfo(engine: "On this Mac"), texts: [.main: text]),
@@ -1182,7 +1183,7 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { mark("Kept") == .translated(into: "fr") }
         XCTAssertEqual(mark("Stopped before"), .stopped)
         XCTAssertEqual(mark("Cut off"), .stopped, "Cut off at its length limit, it is incomplete too")
-        XCTAssertNil(mark("Screenshot"), "Only text is translated")
+        XCTAssertEqual(mark("Screenshot"), .translated(into: "fr"), "The translation of an image's text too")
         XCTAssertNil(mark("Newer"))
         XCTAssertNil(mark("Older"))
 
@@ -1277,22 +1278,25 @@ final class QuickAccessStateTests: XCTestCase {
                        "translation failed: Translation isn't available on this Mac.")
     }
 
-    func testOnlyTextHasATranslationColumnAndItFollowsTheSelectionWithoutTranslating() async throws {
+    func testTheTranslationColumnFollowsTheSelectionWithoutTranslating() async throws {
         let translator = ScriptedTranslator()
-        let (state, _) = try await makeTranslationPanel(translator)
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        state.moveSelection(by: -1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Quarterly plan")
         state.showTranslation()
         try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
                                                          .delta("译文"), .finished(.completed))
         try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
 
-        // An image has no translation here: its preview shows alone in the same place.
+        // An image's text is translated too: its column offers to, and nothing is recognized or translated.
         state.moveSelection(by: 1)
         XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
-        XCTAssertFalse(state.offersTranslation)
+        XCTAssertTrue(state.offersTranslation)
         XCTAssertTrue(state.isPreviewSplit)
-        XCTAssertNil(state.translationColumnRef)
-        state.showTranslation()
-        XCTAssertNil(state.translationColumnRef)
+        XCTAssertEqual(state.translationColumnRef, state.selection.selectedRow?.ref)
+        try await SearchTestSupport.waitUntil { state.translationColumn == .notStarted }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(recognizer.source(0), "Nothing is recognized")
 
         // Another text shows its column, with nothing translated until asked.
         state.moveSelection(by: 1)
@@ -1300,6 +1304,166 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.translationColumn == .notStarted }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNil(translator.request(1))
+    }
+
+    /// The panel of `makeTranslationPanel` with the screenshot selected, and the recognizer that reads its text.
+    private func makeImageTranslationPanel(_ translator: ScriptedTranslator) async throws
+        -> (QuickAccessState, Fixture, ScriptedRecognizer) {
+        let (fixture, recognizer) = try await makeTextFixture(translator: translator)
+        try await insert("Notes", body: "Second synthetic note.", at: 0, into: fixture)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        try await insert("Quarterly plan", body: "The quarterly plan is due on Friday.", at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.open()
+        try await settled(state)
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
+        return (state, fixture, recognizer)
+    }
+
+    func testAnImagesTranslationRecognizesItsTextFirstThenTranslatesIt() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        XCTAssertTrue(state.offersTranslation)
+
+        state.showTranslation()
+
+        XCTAssertEqual(state.resultColumn, .translation)
+        XCTAssertEqual(state.translationColumnRef, row.ref)
+        let recognition = try await startedSource(recognizer, 0)
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .recognizingText(into: "zh-Hans", hasStarted: true)
+        }
+        XCTAssertTrue(state.canStopTranslation)
+        XCTAssertEqual(state.translationOriginal, .image, "The image stands beside its translation")
+        // Its card says its text is recognized, and that a translation waits for it.
+        XCTAssertEqual(state.textMark(for: row), .recognizing)
+        XCTAssertEqual(state.translationMark(for: row), .waiting)
+        recognition.send(.started(GenerationInfo(engine: "On this Mac")), .delta("Open daily"), .finished(.completed))
+
+        let translation = try await startedTranslation(translator, 0)
+        let request = try XCTUnwrap(translator.request(0))
+        let text = try await request.text()
+        XCTAssertEqual(text, "Open daily", "The text recognized in the image")
+        translation.send(.started(GenerationInfo(engine: "On this Mac")), .delta("每天营业"), .finished(.completed))
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .translation("每天营业", into: "zh-Hans", status: .complete)
+        }
+        try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
+        XCTAssertEqual(state.translationColumnText, "每天营业")
+        XCTAssertEqual(state.textMark(for: row), .hasText)
+        XCTAssertEqual(state.translationMark(for: row), .translated(into: "zh-Hans"))
+    }
+
+    func testAnImageWithNoTextHasNothingToTranslateAndSaysSo() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+
+        state.showTranslation()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { state.translationColumn == .noTextInImage(into: "zh-Hans") }
+        XCTAssertEqual(state.translationColumn?.endingWords, TextColumnWords.noText)
+        XCTAssertTrue(state.isTranslationColumnJustMade, "VoiceOver hears why there is no translation")
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(0))
+        XCTAssertNil(state.translationMark(for: try XCTUnwrap(state.selection.selectedRow)))
+    }
+
+    func testStoppingAnImagesTranslationWhileItsTextIsRecognizedStopsTheRecognition() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        state.showTranslation()
+        let recognition = try await startedSource(recognizer, 0)
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .recognizingText(into: "zh-Hans", hasStarted: true)
+        }
+
+        state.stopTranslation()
+
+        try await SearchTestSupport.waitUntil { recognition.wasCancelled }
+        try await SearchTestSupport.waitUntil { state.translationColumn == .notStarted }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(0))
+    }
+
+    func testAnImagesTextWaitingItsTurnIsSaidToWaitAndScansOnlyOnceItRuns() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        // A text's translation holds this Mac's one lane.
+        state.moveSelection(by: -1)
+        state.showTranslation()
+        let text = try await startedTranslation(translator, 0)
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
+
+        state.showTranslation()
+
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .recognizingText(into: "zh-Hans", hasStarted: false)
+        }
+        text.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度计划"), .finished(.completed))
+        _ = try await startedSource(recognizer, 0)
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .recognizingText(into: "zh-Hans", hasStarted: true)
+        }
+    }
+
+    func testAnImagesTextThatCantBeRecognizedIsWhyThereIsNoTranslation() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 200, height: 200))
+        state.showTranslation()
+
+        try await startedSource(recognizer, 0).end(throwing: failure)
+
+        try await SearchTestSupport.waitUntil { state.translationColumn == .failed(failure, asked: "zh-Hans") }
+        XCTAssertTrue(state.isTranslationColumnJustMade, "VoiceOver hears why")
+        XCTAssertEqual(state.translationColumn?.endingWords, failure.message)
+        try await SearchTestSupport.waitUntil { state.translationMark(for: row) == .failed(failure.message) }
+        // Tried again, the text is recognized again: none was ever made.
+        state.translate()
+        _ = try await startedSource(recognizer, 1)
+        XCTAssertNil(translator.request(0))
+    }
+
+    func testCopiedIsSaidBesideTheColumnItWasCopiedFrom() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Open daily"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumnResult != nil }
+        XCTAssertTrue(state.copyText())
+        XCTAssertTrue(state.isTextCopied)
+
+        state.showTranslation()
+
+        XCTAssertEqual(state.resultColumn, .translation)
+        XCTAssertFalse(state.isTextCopied, "The image's text was copied, not its translation")
+    }
+
+    func testTryingAgainTranslatesAnImagesTextWithoutRecognizingItAgain() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, recognizer) = try await makeImageTranslationPanel(translator)
+        state.showTranslation()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Open daily"), .finished(.completed))
+        let failure = GenerationError(kind: .engineUnavailable, message: "Translation isn't available on this Mac.")
+        try await startedTranslation(translator, 0).end(throwing: failure)
+        try await SearchTestSupport.waitUntil { state.translationColumn == .failed(failure, asked: "zh-Hans") }
+
+        state.translate()
+
+        _ = try await startedTranslation(translator, 1)
+        let request = try XCTUnwrap(translator.request(1))
+        let text = try await request.text()
+        XCTAssertEqual(text, "Open daily")
+        XCTAssertNil(recognizer.source(1), "Not recognized again")
     }
 
     func testCopyingTheTranslationLeavesThePanelOpenAndSkipsCapture() async throws {

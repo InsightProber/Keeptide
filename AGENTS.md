@@ -40,9 +40,10 @@ supports recoverable editing, document find, search, and explicit saving. Persis
 file authorization is local and explicit. ⇧⌘T shows the text recognized on this Mac
 in a copied image beside its preview, and keeps it locally beside the image; Return,
 ⌘C and ⌘S then paste, copy or save that text instead of the image.
-⌘T shows a translation of a text clip beside its preview, made on this Mac with
-Apple's Translation and kept locally, which Return, ⌘C and ⌘S then take in the
-same way; translating or recognizing again that fails leaves the earlier result.
+⌘T shows a translation of a text clip, or of the text in an image, recognized
+first when needed, beside its preview, made on this Mac with Apple's Translation
+and kept locally, which Return, ⌘C and ⌘S then take in the same way; translating
+or recognizing again that fails leaves the earlier result.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
 Planned capabilities must stay labelled until implemented and verified.

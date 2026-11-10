@@ -3012,6 +3012,57 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { textLabel()?.hasSuffix(", translated") == true }
     }
 
+    func testCommandTTranslatesTheTextInAnImageBesideTheImage() async throws {
+        let translator = ScriptedTranslator()
+        let (controller, recognizer) = try await makeTextPanel(translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        func pictureLabel() -> String? {
+            framesOnScreen(in: strip).compactMap { $0.accessibilityLabel() }.first { $0.contains("Picture") }
+        }
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        // ⌘K offers to translate the image's text.
+        XCTAssertEqual(try actionMenu(of: controller).items.first { $0.title == "Translate" }?.isEnabled, true)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        let recognition = try await startedSource(recognizer, 0)
+        // VoiceOver hears that the image's text is recognized first.
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TranslationColumnWords.recognizingFirst)
+        }
+        try await SearchTestSupport.waitUntil {
+            pictureLabel()?.hasSuffix(", recognizing text, waiting to translate") == true
+        }
+        // The bar offers the image's text and its translation, and the image stands beside the translation.
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        let elements = try swiftUIAccessibilityElements(in: content) {
+            $0.contains(where: identified("QuickAccessPreviewSegment.Translation"))
+                && $0.contains(where: identified("QuickAccessSplitImage"))
+        }
+        for segment in ["Preview", "Text", "Translation"] {
+            XCTAssertTrue(elements.contains(where: identified("QuickAccessPreviewSegment.\(segment)")), segment)
+        }
+        XCTAssertTrue(elements.contains(where: identified("QuickAccessSplitImage")), "The image beside its translation")
+
+        recognition.send(.started(GenerationInfo(engine: "On this Mac")), .delta("Synthetic text in image"),
+                         .finished(.completed))
+        let translation = try await startedTranslation(translator, 0)
+        translation.send(.started(GenerationInfo(engine: "On this Mac")), .delta("图中的文字"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", has text, translated") == true }
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.views(StreamingTextDisplay.self, in: window.contentView).contains { $0.shownText == "图中的文字" }
+        }
+    }
+
     func testThePreviewIsOneCardWhetherItIsSplitOrNot() async throws {
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
@@ -3084,6 +3135,10 @@ final class AppLaunchTests: XCTestCase {
         func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
         let elements = try swiftUIAccessibilityElements(in: content) {
             $0.contains(where: identified("QuickAccessPreviewSegment.Preview"))
+        }
+        // The text the image column was chosen for stays in the bar, beside the translation a text has.
+        for segment in ["Preview", "Text", "Translation"] {
+            XCTAssertTrue(elements.contains(where: identified("QuickAccessPreviewSegment.\(segment)")), segment)
         }
 
         press(try XCTUnwrap(elements.first(where: identified("QuickAccessPreviewSegment.Preview"))))

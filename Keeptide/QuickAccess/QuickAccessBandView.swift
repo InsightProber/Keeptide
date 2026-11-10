@@ -148,24 +148,22 @@ struct QuickAccessBandView: View {
         .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
     }
 
-    /// What the preview's bar holds after the close button: Preview | Text for an image and Preview | Translation for
-    /// text, and while the text in an image shows, Stop or Keep Line Breaks at the end, or Stop while a translation is
-    /// made. While the preview is split, the segments stay for a clip without such a column too, with the column
-    /// chosen and dimmed, and Preview leaves the split.
+    /// What the preview's bar holds after the close button: the columns the clip has beside its preview, Preview | Text
+    /// | Translation for an image and Preview | Translation for text, and while the text in an image shows, Stop or Keep
+    /// Line Breaks at the end, or Stop while a translation is made. While the preview is split, the column chosen stays
+    /// for a clip without it too, dimmed, and Preview leaves the split.
     @ViewBuilder
     private var previewBar: some View {
-        if state.resultColumn == .translation && state.isPreviewSplit {
-            previewSegments(.translation, chosen: true, enabled: state.offersTranslation)
-        } else if state.resultColumn == .text && state.isPreviewSplit {
-            previewSegments(.text, chosen: true, enabled: state.offersTextInImage)
-        } else if state.offersTextInImage {
-            previewSegments(.text, chosen: false, enabled: true)
-        } else if state.offersTranslation {
-            previewSegments(.translation, chosen: false, enabled: true)
-        } else {
+        let chosen = state.isPreviewSplit ? state.resultColumn : nil
+        let columns = [(column: ResultColumn.text, enabled: state.offersTextInImage),
+                       (column: ResultColumn.translation, enabled: state.offersTranslation)]
+            .filter { $0.enabled || $0.column == chosen }
+        if columns.isEmpty {
             Text("Preview")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+        } else {
+            previewSegments(columns, chosen: chosen)
         }
         Spacer()
         if let column = state.textColumn {
@@ -249,8 +247,9 @@ struct QuickAccessBandView: View {
                                     onCopy: actions.copyText)
         } else if let ref = state.translationColumnRef, let column = state.translationColumn {
             let asked = column.askedLanguage.map(Locale.Language.init(identifier:)) ?? state.translationTarget
-            QuickAccessTranslationSplit(original: state.translationOriginal, applicationName: applicationName,
-                                        column: column, target: state.translationTarget,
+            QuickAccessTranslationSplit(original: state.translationOriginal, preview: state.preview,
+                                        applicationName: applicationName, column: column,
+                                        target: state.translationTarget,
                                         nextTarget: state.translationTarget(after: asked), ref: ref,
                                         isJustMade: state.isTranslationColumnJustMade,
                                         onCommand: actions.previewCommand, onCopy: actions.copyText)
@@ -269,28 +268,33 @@ struct QuickAccessBandView: View {
         }
     }
 
-    /// Preview | Text, or Preview | Translation: the column shows the text in an image, or the translation of a text,
-    /// beside it, and Preview leaves the split.
-    private func previewSegments(_ column: ResultColumn, chosen: Bool, enabled: Bool) -> some View {
-        let segment: TraySegments.Segment = switch column {
-        case .text:
-            .init(id: "Text", title: "Text", isChosen: chosen, isEnabled: enabled,
-                  help: enabled ? "\(TextColumnWords.title) (⇧⌘T)" : "\(TextColumnWords.title), for an image") {
-                if !chosen { actions.previewCommand(.showTextInImage) }
-            }
-        case .translation:
-            .init(id: "Translation", title: TranslationColumnWords.title, isChosen: chosen, isEnabled: enabled,
-                  help: enabled ? "\(TranslationColumnWords.title) (⌘T)"
-                      : "\(TranslationColumnWords.title), for text") {
-                if !chosen { actions.previewCommand(.showTranslation) }
+    /// Preview, then a segment for each column: the text in an image, or the translation of a text or of the text in an
+    /// image, beside it. Preview leaves the split.
+    private func previewSegments(_ columns: [(column: ResultColumn, enabled: Bool)],
+                                 chosen: ResultColumn?) -> some View {
+        let segments = columns.map { column, enabled -> TraySegments.Segment in
+            let isChosen = column == chosen
+            switch column {
+            case .text:
+                return .init(id: "Text", title: "Text", isChosen: isChosen, isEnabled: enabled,
+                             help: enabled ? "\(TextColumnWords.title) (⇧⌘T)"
+                                 : "\(TextColumnWords.title), for an image") {
+                    if !isChosen { actions.previewCommand(.showTextInImage) }
+                }
+            case .translation:
+                return .init(id: "Translation", title: TranslationColumnWords.title, isChosen: isChosen,
+                             isEnabled: enabled,
+                             help: enabled ? "\(TranslationColumnWords.title) (⌘T)"
+                                 : "\(TranslationColumnWords.title), for text or an image") {
+                    if !isChosen { actions.previewCommand(.showTranslation) }
+                }
             }
         }
-        return TraySegments(segments: [
-            .init(id: "Preview", title: "Preview", isChosen: !chosen, help: chosen ? "Preview Alone (Esc)" : nil) {
-                if chosen { actions.previewCommand(.closeResultColumn) }
-            },
-            segment,
-        ])
+        let preview = TraySegments.Segment(id: "Preview", title: "Preview", isChosen: chosen == nil,
+                                           help: chosen != nil ? "Preview Alone (Esc)" : nil) {
+            if chosen != nil { actions.previewCommand(.closeResultColumn) }
+        }
+        return TraySegments(segments: [preview] + segments)
     }
 }
 

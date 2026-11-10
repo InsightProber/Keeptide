@@ -130,6 +130,11 @@ enum TranslationColumn: Equatable {
     case unsaved(String, into: String?, status: DerivedTextStatus)
     /// There was nothing in the text to translate into the language with this code.
     case nothingToTranslate(into: String?)
+    /// The text in an image is recognized first, to be translated into the language with this code: under way, or
+    /// waiting its turn.
+    case recognizingText(into: String?, hasStarted: Bool)
+    /// A recognition found no text in the image to translate into the language with this code.
+    case noTextInImage(into: String?)
     /// Nothing was made, and why, with the language it was asked for.
     case failed(GenerationError, asked: String?)
     /// Translating again came to nothing and left what the column had: why, and the language it was asked for.
@@ -141,7 +146,8 @@ extension TranslationColumn {
     var language: String? {
         switch self {
         case .translating(_, let into), .translation(_, let into, _), .unsaved(_, let into, _),
-             .nothingToTranslate(let into), .failed(_, let into): into
+             .nothingToTranslate(let into), .recognizingText(let into, _), .noTextInImage(let into),
+             .failed(_, let into): into
         case .failedAgain(let kept, _, _): kept.language
         case .loading, .notStarted: nil
         }
@@ -153,13 +159,29 @@ extension TranslationColumn {
         switch self {
         case .translation(let text, _, .complete), .unsaved(let text, _, .complete): text
         case .failedAgain(let kept, _, _): kept.wholeText
-        case .translation, .unsaved, .loading, .notStarted, .translating, .nothingToTranslate, .failed: nil
+        case .translation, .unsaved, .loading, .notStarted, .translating, .nothingToTranslate, .recognizingText,
+             .noTextInImage, .failed: nil
         }
     }
 
-    /// Translation is waiting or under way: it can be stopped.
+    /// Translation is waiting or under way, the text in an image being recognized first included: it can be stopped.
     var isTranslating: Bool {
-        if case .translating = self { return true }
+        switch self {
+        case .translating, .recognizingText: true
+        case .loading, .notStarted, .translation, .unsaved, .nothingToTranslate, .noTextInImage, .failed, .failedAgain:
+            false
+        }
+    }
+
+    /// The text in an image is recognized before it is translated, or waits its turn to be.
+    var isRecognizingText: Bool {
+        if case .recognizingText = self { return true }
+        return false
+    }
+
+    /// The text in an image is being recognized, not waiting its turn: a line passes over the image.
+    var isScanningForText: Bool {
+        if case .recognizingText(_, true) = self { return true }
         return false
     }
 
@@ -167,7 +189,8 @@ extension TranslationColumn {
     var isFailed: Bool {
         switch self {
         case .failed, .failedAgain: true
-        case .loading, .notStarted, .translating, .translation, .unsaved, .nothingToTranslate: false
+        case .loading, .notStarted, .translating, .translation, .unsaved, .nothingToTranslate, .recognizingText,
+             .noTextInImage: false
         }
     }
 
@@ -175,7 +198,8 @@ extension TranslationColumn {
     var isIncomplete: Bool {
         switch self {
         case .translation(_, _, let status), .unsaved(_, _, let status): status != .complete
-        case .loading, .notStarted, .translating, .nothingToTranslate, .failed, .failedAgain: false
+        case .loading, .notStarted, .translating, .nothingToTranslate, .recognizingText, .noTextInImage, .failed,
+             .failedAgain: false
         }
     }
 
@@ -186,7 +210,8 @@ extension TranslationColumn {
     var askedLanguage: String? {
         switch self {
         case .failed(_, let asked), .failedAgain(_, _, let asked): asked ?? language
-        case .loading, .notStarted, .translating, .translation, .unsaved, .nothingToTranslate: language
+        case .loading, .notStarted, .translating, .translation, .unsaved, .nothingToTranslate, .recognizingText,
+             .noTextInImage: language
         }
     }
 }
@@ -293,8 +318,9 @@ final class QuickAccessState {
     private(set) var keptAnswered: [DerivedTextOperation: Set<ContentRef>] = [:]
     /// The clips whose kept results of each operation have been read for, or are being read for, in this showing.
     @ObservationIgnored private var keptAsked: [DerivedTextOperation: Set<ContentRef>] = [:]
-    /// The image whose text was copied just now: the preview's bar says so for a moment, beside that image's text.
-    private var copiedTextRef: ContentRef?
+    /// The clip, and the column beside it, whose result was copied just now: the preview's bar says so for a moment,
+    /// beside that result.
+    private var copied: (ref: ContentRef, column: ResultColumn)?
     static let textCopiedNoteDuration: Duration = .seconds(1.5)
     @ObservationIgnored private var textCopiedNote: Task<Void, Never>?
     /// The texts saved as snippets in this showing: saving one again says it is there already.
@@ -678,7 +704,7 @@ final class QuickAccessState {
         startDetailReads()
         let kinds = Dictionary(selection.rows.map { ($0.ref, $0.kind) }, uniquingKeysWith: { first, _ in first })
         readKeptResults(of: refs.filter { kinds[$0] == .image }, operation: .extractText)
-        readKeptResults(of: refs.filter { kinds[$0] == .text }, operation: .translate)
+        readKeptResults(of: refs.filter { kinds[$0].map(Self.isTranslatable) == true }, operation: .translate)
     }
 
     /// Reads, in one go, what earlier jobs of the operation kept for the framed clips not asked about yet, for their
@@ -759,12 +785,11 @@ final class QuickAccessState {
         return row.ref
     }
 
-    /// The text clip whose translation the column shows: the selected clip, while the preview is split for
-    /// translations and the clip is text.
+    /// The clip whose translation the column shows: the selected clip, while the preview is split for translations
+    /// and the clip is a text, or an image whose text is translated.
     var translationColumnRef: ContentRef? {
-        guard isPreviewSplit, resultColumn == .translation, let row = selection.selectedRow, row.kind == .text else {
-            return nil
-        }
+        guard isPreviewSplit, resultColumn == .translation, let row = selection.selectedRow,
+              Self.isTranslatable(row.kind) else { return nil }
         return row.ref
     }
 
@@ -799,9 +824,10 @@ final class QuickAccessState {
         }
     }
 
-    /// What a text's card says of its translation: one under way or waiting its turn, one made or kept from before,
-    /// whole or stopped part way, or why making it failed. Nothing for a clip that isn't text, a text never translated,
-    /// or one with nothing in it to translate.
+    /// What a card says of the translation of its text, or of the text in its image: one under way or waiting its turn,
+    /// waiting for the image's text to be recognized included, one made or kept from before, whole or stopped part way,
+    /// or why making it failed. Nothing for a clip that can't be translated, one never translated, or one with nothing
+    /// in it to translate.
     func translationMark(for row: QuickAccessRow) -> StripTranslationMark? {
         translationMarker()(row)
     }
@@ -815,12 +841,15 @@ final class QuickAccessState {
             status == .complete ? .translated(into: language) : .stopped
         }
         return { row in
-            guard row.kind == .text else { return nil }
+            guard Self.isTranslatable(row.kind) else { return nil }
             let (job, outcome) = derivedText.cardState(for: row.ref, operation: .translate)
             if let job {
                 guard job.hasStarted else { return .waiting }
-                return .translating(into: derivedText.runningRequest(for: row.ref, operation: .translate)?.targetLanguage)
+                let into = derivedText.runningRequest(for: row.ref, operation: .translate)?.targetLanguage
+                return .translating(into: into)
             }
+            // A translation of the text in an image waits for the text to be recognized.
+            if derivedText.translationWaitingForText(row.ref) != nil { return .waiting }
             let before = kept[row.ref].map { made($0.status, into: $0.targetLanguage) }
             switch outcome {
             case .saving(_, let request, let status)?, .notSaved(_, let request, let status)?:
@@ -946,10 +975,14 @@ final class QuickAccessState {
 
     // MARK: Translation
 
-    /// Whether the selected clip is text whose translation the preview can show beside it.
+    /// Whether the selected clip is a text, or an image, whose translation the preview can show beside it.
     var offersTranslation: Bool {
-        selection.selectedRow?.kind == .text && services()?.derivedText != nil
+        guard let kind = selection.selectedRow?.kind else { return false }
+        return Self.isTranslatable(kind) && services()?.derivedText != nil
     }
+
+    /// Whether a clip of this kind can be translated: a text, or the text in an image.
+    static func isTranslatable(_ kind: ContentKind) -> Bool { kind == .text || kind == .image }
 
     /// The language translations are made in: the first the person prefers.
     var translationTarget: Locale.Language {
@@ -971,8 +1004,11 @@ final class QuickAccessState {
         return result
     }
 
-    /// The text the translation is of, as the preview shows it, for the column beside the translation.
-    var translationOriginal: TranslationOriginal { TranslationOriginal(preview) }
+    /// The text the translation is of, as the preview shows it, for the column beside the translation. An image's text
+    /// is translated beside the image itself, while its preview loads too.
+    var translationOriginal: TranslationOriginal {
+        selection.selectedRow?.kind == .image ? .image : TranslationOriginal(preview)
+    }
 
     /// What the translation column shows, and the saved result behind it when that is what it shows. A translation
     /// that failed leaves what was made before, in this session or an earlier one, and says so while it is the latest
@@ -983,6 +1019,11 @@ final class QuickAccessState {
             let into = derivedText.runningRequest(for: ref, operation: .translate)?.targetLanguage
             return (.translating(job.snapshot, into: into), nil)
         }
+        // The text in an image is recognized first, as soon as this Mac's lane has room.
+        if let target = derivedText.translationWaitingForText(ref) {
+            let hasStarted = derivedText.job(for: ref, operation: .extractText)?.hasStarted == true
+            return (.recognizingText(into: target.translationCode, hasStarted: hasStarted), nil)
+        }
         let made: (column: TranslationColumn, result: DerivedText?)
         switch derivedText.outcome(for: ref, operation: .translate) {
         case .saving(let text, let request, let status)?:
@@ -990,7 +1031,8 @@ final class QuickAccessState {
         case .saved(let result)?: made = (Self.translationColumn(showing: result), result)
         case .noText?:
             let into = derivedText.shownRequest(for: ref, operation: .translate)?.targetLanguage
-            made = (.nothingToTranslate(into: into), nil)
+            let isImage = selection.selectedRow?.kind == .image
+            made = (isImage ? .noTextInImage(into: into) : .nothingToTranslate(into: into), nil)
         case .notSaved(let text, let request, let status)?:
             made = (.unsaved(text, into: request.targetLanguage, status: status), nil)
         case .failed(let error)?:
@@ -1029,13 +1071,13 @@ final class QuickAccessState {
     /// Whether the column shows how the latest translation of its clip just ended.
     var isTranslationColumnJustMade: Bool { translationColumnEnding != nil }
 
-    /// Opens the preview with the translation of the selected text beside it, and translates the text unless something
-    /// was made of it already; a failure is tried again. Asked for while the column says a translation failed, it
-    /// tries again. Nothing happens for a clip that isn't text.
+    /// Opens the preview with the translation of the selected text, or of the text in the selected image, beside it,
+    /// and translates unless something was made of it already, recognizing an image's text first where none is known;
+    /// a failure is tried again. Asked for while the column says a translation failed, it tries again. Nothing happens
+    /// for a clip that can't be translated.
     func showTranslation() {
-        guard let row = selection.selectedRow, row.kind == .text, let derivedText = services()?.derivedText else {
-            return
-        }
+        guard let row = selection.selectedRow, Self.isTranslatable(row.kind),
+              let derivedText = services()?.derivedText else { return }
         if translationColumnRef == row.ref, translationColumn?.offersTryAgain == true {
             translate()
             return
@@ -1045,7 +1087,11 @@ final class QuickAccessState {
             isPreviewExpanded = true
             loadPreview()
         }
-        derivedText.translateUnlessMade(row.ref, to: translationTarget)
+        if row.kind == .image {
+            derivedText.translateImageUnlessMade(row.ref, to: translationTarget, keepingLineBreaks: keepsLineBreaks)
+        } else {
+            derivedText.translateUnlessMade(row.ref, to: translationTarget)
+        }
     }
 
     /// Translates the text the column shows again: into `language` when given; else, where the text is in the
@@ -1059,7 +1105,12 @@ final class QuickAccessState {
            let next = translationTarget(after: asked) {
             target = next
         }
-        services()?.derivedText?.translate(ref, to: target)
+        // The text in an image is translated again as it was recognized, and recognized first only where it never was.
+        if selection.selectedRow?.kind == .image {
+            services()?.derivedText?.translateText(inImage: ref, to: target, keepingLineBreaks: keepsLineBreaks)
+        } else {
+            services()?.derivedText?.translate(ref, to: target)
+        }
     }
 
     /// Whether there is a translation to stop in the column: one under way or waiting its turn, or one asked for that
@@ -1080,7 +1131,10 @@ final class QuickAccessState {
     var textColumnText: String? { textColumn?.wholeText }
 
     /// Whether the text beside the image, or the translation beside the text, was copied just now.
-    var isTextCopied: Bool { copiedTextRef != nil && copiedTextRef == resultColumnRef }
+    var isTextCopied: Bool {
+        guard let copied, let column = resultColumn else { return false }
+        return copied.ref == resultColumnRef && copied.column == column
+    }
 
     /// The clip the preview shows a result beside: an image with its text, or a text with its translation.
     var resultColumnRef: ContentRef? { textColumnRef ?? translationColumnRef }
@@ -1099,14 +1153,14 @@ final class QuickAccessState {
     /// written.
     @discardableResult
     func copyText(_ part: String? = nil) -> Bool {
-        guard let ref = resultColumnRef, let text = part ?? resultColumnText, let paste = services()?.paste,
-              paste.copyText(text) else { return false }
-        copiedTextRef = ref
+        guard let ref = resultColumnRef, let column = resultColumn, let text = part ?? resultColumnText,
+              let paste = services()?.paste, paste.copyText(text) else { return false }
+        copied = (ref, column)
         textCopiedNote?.cancel()
         textCopiedNote = Task { [weak self] in
             try? await Task.sleep(for: Self.textCopiedNoteDuration)
             guard !Task.isCancelled else { return }
-            self?.copiedTextRef = nil
+            self?.copied = nil
         }
         return true
     }
@@ -1201,13 +1255,13 @@ final class QuickAccessState {
         }
     }
 
-    /// Reads what an earlier job saved of the previewed text's translation, for the translation column.
+    /// Reads what an earlier job saved of the previewed clip's translation, for the translation column.
     private func readSavedTranslation() {
         readingSavedTranslation?.cancel()
         readingSavedTranslation = nil
         savedTranslationRef = nil
         savedTranslation = nil
-        guard isPreviewExpanded, let row = selection.selectedRow, row.kind == .text,
+        guard isPreviewExpanded, let row = selection.selectedRow, Self.isTranslatable(row.kind),
               let derivedText = services()?.derivedText else { return }
         let ref = row.ref
         readingSavedTranslation = Task { [weak self] in
