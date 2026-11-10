@@ -73,7 +73,7 @@ final class LibraryLayoutTests: XCTestCase {
         var noteField: NSTextField?
         if !readOnly {
             // The inspector slides in from the trailing edge.
-            controller.toggleInspector(nil)
+            controller.toggleLibraryInspector(nil)
             try await SearchTestSupport.waitUntil {
                 window.contentView?.layoutSubtreeIfNeeded()
                 guard let field = noteFields().first, let content = window.contentView else { return false }

@@ -1570,7 +1570,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ]
 
     /// Edit's Cut, Copy, Paste and Select All, by their keys with ⌘. Their items have no target either: each goes to
-    /// the first responder that takes it, in the panel and then in the library window behind it.
+    /// the first responder in the panel that takes it, and otherwise ends at the panel's window, off.
     private static let textActions: [String: Selector] = [
         "x": #selector(NSText.cut(_:)), "c": #selector(NSText.copy(_:)), "v": #selector(NSText.paste(_:)),
         "a": #selector(NSText.selectAll(_:)),
@@ -1589,8 +1589,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ///   panel's window takes Close, Undo and Redo, and the app the keys AppKit adds for dictation and Emoji & Symbols.
     ///   So do keys the menu bar has no item for, such as ⌘← in the search field.
     ///
-    /// Not known here, and still taken to the library by the menu bar: shortcuts a person gives the library's items in
-    /// System Settings, and any the menu bar moves to another key for a keyboard layout.
+    /// Not known here: shortcuts a person gives the menu bar's items in System Settings, and any the menu bar moves to
+    /// another key for a keyboard layout. The menu bar finds those items off while the panel has the keys: the
+    /// library's (`NSWindow.isQuickAccess`), and the text commands that nothing in the panel takes.
     private func keepFromMenuBar(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.characters(byApplyingModifiers: modifiers.intersection(.shift).union(.command))?.lowercased()
@@ -1688,6 +1689,23 @@ private final class QuickAccessPanel: NSPanel {
     /// close button; ⌘W would then only beep.
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         menuItem.action == #selector(performClose(_:)) || super.validateMenuItem(menuItem)
+    }
+
+    /// Text that cannot be edited, selected or searched, where the menu bar's text commands end when nothing in the
+    /// panel takes them, so the menu bar shows them off. AppKit would otherwise send them on to the main window, which
+    /// is the library window behind the panel, and paste or find in the snippet open there. Text in the panel, such as
+    /// the search field's and the preview's, takes them before they get here.
+    private let inertText: NSTextView = {
+        let text = NSTextView(frame: .zero)
+        text.isEditable = false
+        text.isSelectable = false
+        text.usesFindBar = false
+        text.usesFindPanel = false
+        return text
+    }()
+
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        inertText.responds(to: action) ? inertText : super.supplementalTarget(forAction: action, sender: sender)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

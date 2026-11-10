@@ -4,6 +4,15 @@ import XCTest
 
 @MainActor
 final class LibraryCommandsTests: XCTestCase {
+    /// The library's commands read the key window as they validate: quick access left open by another test would turn
+    /// them off in every test here.
+    override func setUp() async throws {
+        try await super.setUp()
+        await MainActor.run {
+            XCTAssertNotEqual(NSApp.keyWindow?.isQuickAccess, true, "Quick access is open from another test")
+        }
+    }
+
     func testFileMenuExposesNewAndSaveWithoutReplacingNativeEditCommands() throws {
         let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
         let file = try XCTUnwrap(menu.items.first { $0.title == "File" }?.submenu)
@@ -196,7 +205,7 @@ final class LibraryCommandsTests: XCTestCase {
 
         let view = try XCTUnwrap(menu.items.first { $0.title == "View" }?.submenu)
         let inspector = try XCTUnwrap(view.items.first {
-            $0.action == #selector(LibraryWindowController.toggleInspector(_:))
+            $0.action == #selector(LibraryWindowController.toggleLibraryInspector(_:))
         })
         XCTAssertEqual(inspector.keyEquivalent, "i")
         XCTAssertEqual(inspector.keyEquivalentModifierMask, [.control, .command])
@@ -225,7 +234,7 @@ final class LibraryCommandsTests: XCTestCase {
         let markdown = item(#selector(LibraryWindowController.setSnippetKind(_:)), tag: 3)
         let code = item(#selector(LibraryWindowController.setSnippetKind(_:)), tag: 2)
         let linked = item(#selector(LibraryWindowController.showLinkedItem(_:)))
-        let inspector = item(#selector(LibraryWindowController.toggleInspector(_:)))
+        let inspector = item(#selector(LibraryWindowController.toggleLibraryInspector(_:)))
 
         // Nothing selected: nothing to act on.
         XCTAssertFalse(controller.validateMenuItem(favorite))
@@ -368,7 +377,6 @@ final class LibraryCommandsTests: XCTestCase {
         }
 
         // Nothing in quick access has the keys: the commands follow the library.
-        XCTAssertNotEqual(NSApp.keyWindow?.isQuickAccess, true, "Quick access is open from another test")
         let on = enabled()
         XCTAssertTrue(Set(on).isSuperset(of: [
             "newDocument:", "newCollection:", "saveDocument:", "exportLibrary:", "exportSelected:", "searchLibrary:",
@@ -401,7 +409,6 @@ final class LibraryCommandsTests: XCTestCase {
         addTeardownBlock { @MainActor in libraryWindow.close() }
         let app = AppDelegate()
         let items = menuItems(in: ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide"))
-        XCTAssertNotEqual(NSApp.keyWindow?.isQuickAccess, true, "Quick access is open from another test")
         let on = enabledCommands(in: items, library: library, app: app)
         XCTAssertTrue(Set(on).isSuperset(of: [
             "newDocument:", "searchLibrary:", "toggleLibrarySidebar:", "App newDocument:", "App searchLibrary:",
@@ -434,6 +441,51 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(enabledCommands(in: items, library: library, app: app), on)
     }
 
+    func testNoMenuCommandActsOnTheLibraryBehindQuickAccess() async throws {
+        // A snippet is open in the library, its text has the window's keys, and the window shows. Once quick access has
+        // the keys, the library window is the main one behind it.
+        let session = try await makeSession()
+        let service = try XCTUnwrap(session.libraryService)
+        let workspace = try XCTUnwrap(session.libraryWorkspace)
+        await workspace.open(try await service.create(MemoDraft(title: "Synthetic", body: "Synthetic body")))
+        let library = LibraryWindowController(session: session, autosaveName: nil, setActivationPolicy: { _ in })
+        let libraryWindow = try XCTUnwrap(library.window)
+        addTeardownBlock { @MainActor in libraryWindow.close() }
+        libraryWindow.makeKeyAndOrderFront(nil)
+        try await SearchTestSupport.waitUntil(timeout: .seconds(10)) {
+            libraryWindow.contentView?.layoutSubtreeIfNeeded()
+            return Self.snippetText(in: libraryWindow) != nil
+        }
+        let text = try XCTUnwrap(Self.snippetText(in: libraryWindow))
+        XCTAssertTrue(libraryWindow.makeFirstResponder(text))
+        let panel = PanelController()
+        panel.show()
+        addTeardownBlock { @MainActor in panel.close() }
+        try await SearchTestSupport.waitUntil {
+            NSApp.keyWindow?.isQuickAccess == true && NSApp.mainWindow === libraryWindow
+        }
+
+        // The lists have the panel's keys, and nothing in the panel takes text commands. Each item in the menu bar with
+        // no target of its own goes where AppKit sends it; none that is on is the library's, Paste and Find in Note…
+        // into the snippet's text and Show Inspector among them.
+        panel.perform(.cycleFocus(forward: true))
+        XCTAssertFalse(panel.window?.firstResponder is NSTextView)
+        XCTAssertTrue(libraryWindow.firstResponder === text)
+        let on = try menuItems(in: XCTUnwrap(NSApp.mainMenu)).filter { item in
+            guard item.target == nil, let action = item.action else { return false }
+            let target = NSApp.target(forAction: action, to: nil, from: item)
+            guard Self.validates(item, at: target) else { return false }
+            XCTAssertFalse(Self.belongs(target, to: libraryWindow), "\(item.title) acts on the library")
+            return true
+        }.compactMap(\.action)
+        for action in [#selector(NSText.paste(_:)), #selector(NSText.selectAll(_:)),
+                       #selector(NSTextView.performFindPanelAction(_:)),
+                       #selector(LibraryWindowController.toggleLibraryInspector(_:))] {
+            XCTAssertFalse(on.contains(action), NSStringFromSelector(action))
+        }
+        XCTAssertTrue(on.contains(#selector(AppDelegate.showSettings(_:))))
+    }
+
     func testItemCommandsAreForwardedAsRequests() throws {
         let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         let prompts = CollectionID()
@@ -445,7 +497,7 @@ final class LibraryCommandsTests: XCTestCase {
         ]))
 
         controller.toggleFavorite(nil)
-        controller.toggleInspector(nil)
+        controller.toggleLibraryInspector(nil)
         controller.showLinkedItem(nil)
         let code = NSMenuItem(title: "Code", action: #selector(LibraryWindowController.setSnippetKind(_:)),
                               keyEquivalent: "")
@@ -562,6 +614,35 @@ final class LibraryCommandsTests: XCTestCase {
         let appOn = commands.filter { $0.action.map(app.responds(to:)) == true && app.validateMenuItem($0) }
         return libraryOn.compactMap(\.action).map(NSStringFromSelector)
             + appOn.compactMap(\.action).map { "App " + NSStringFromSelector($0) }
+    }
+
+    /// Whether the menu bar would show `item` on, with `target` the object AppKit sends its action to.
+    private static func validates(_ item: NSMenuItem, at target: Any?) -> Bool {
+        guard let target else { return false }
+        if let validating = target as? NSMenuItemValidation { return validating.validateMenuItem(item) }
+        if let validating = target as? NSUserInterfaceValidations { return validating.validateUserInterfaceItem(item) }
+        return true
+    }
+
+    /// Whether `target` is `window`'s: a view in it, the window itself, or a controller of either.
+    private static func belongs(_ target: Any?, to window: NSWindow) -> Bool {
+        switch target {
+        case let view as NSView: view.window === window
+        case let other as NSWindow: other === window
+        case let controller as NSWindowController: controller.window === window
+        case let controller as NSViewController: controller.viewIfLoaded?.window === window
+        default: false
+        }
+    }
+
+    /// The open snippet's text in the library window.
+    private static func snippetText(in window: NSWindow) -> NSTextView? {
+        views(NSTextView.self, in: window.contentView).first { $0.accessibilityIdentifier() == "SnippetBodyTextView" }
+    }
+
+    private static func views<View: NSView>(_ type: View.Type, in root: NSView?) -> [View] {
+        guard let root else { return [] }
+        return ((root as? View).map { [$0] } ?? []) + root.subviews.flatMap { views(type, in: $0) }
     }
 
     private static func ref(_ facet: ContentFacet, of itemID: ItemID = ItemID()) -> ContentRef {

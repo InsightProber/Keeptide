@@ -105,7 +105,8 @@ final class LibraryWindowController: NSWindowController {
     @objc func toggleFavorite(_ sender: Any?) { commands.requestFavorite() }
     @objc func showLinkedItem(_ sender: Any?) { commands.requestShowLinked() }
     @objc func moveToRecentlyDeleted(_ sender: Any?) { commands.requestDelete() }
-    @objc func toggleInspector(_ sender: Any?) { commands.requestInspectorToggle() }
+    /// Not `toggleInspector:`: SwiftUI's split view controller, in the editor's responder chain, takes that one first.
+    @objc func toggleLibraryInspector(_ sender: Any?) { commands.requestInspectorToggle() }
     @objc func recoverDeletedItem(_ sender: Any?) { commands.requestRecover() }
     @objc func deleteDeletedItemPermanently(_ sender: Any?) { commands.requestPermanentDelete() }
 
@@ -247,11 +248,12 @@ final class LibraryWindowController: NSWindowController {
 }
 
 extension LibraryWindowController: NSMenuItemValidation {
-    /// While quick access, or a sheet over it, has the keys, every library command stays off, its title still following
-    /// the library. The panel never becomes the main window, so the library window stays the main one behind it, and a
-    /// command that nothing in quick access takes comes here. The panel stops the menu bar's keys for these commands
-    /// itself; a shortcut given to one in System Settings, a key the menu bar moves for a keyboard layout, or a key
-    /// pressed in the file-access sheet still reaches the menu bar.
+    /// While quick access, or a sheet over it, has the keys, the library's commands stay off, their titles still
+    /// following the library. The panel never becomes the main window, so the library window stays the main one behind
+    /// it, and a command that nothing in quick access takes comes here. The panel stops the menu bar's keys for these
+    /// commands itself, but not a shortcut given to one in System Settings, a key the menu bar moves for a keyboard
+    /// layout, or a key pressed in the file-access sheet. Text commands, Find in Note… among them, go to the text with
+    /// the library's keys instead; the panel keeps those that nothing in it takes.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         let isEnabled = validateCommand(menuItem)
         return isEnabled && NSApp.keyWindow?.isQuickAccess != true
@@ -279,7 +281,7 @@ extension LibraryWindowController: NSMenuItemValidation {
         case #selector(saveDocument(_:)):
             menuItem.title = session.libraryWorkspace?.editor?.isReadOnly == true ? "Save as Snippet" : "Save"
             return session.libraryWorkspace != nil
-        case #selector(toggleInspector(_:)):
+        case #selector(toggleLibraryInspector(_:)):
             menuItem.title = commands.itemContext.inspectorIsPresented ? "Hide Inspector" : "Show Inspector"
             return true
         case #selector(toggleFavorite(_:)):
