@@ -2,7 +2,8 @@ import CoreGraphics
 import Foundation
 import Observation
 
-/// Makes text from items and keeps it beside them on this Mac: for now, the text recognized in images.
+/// Makes text from items and keeps it beside them on this Mac: the text recognized in images, and translations of
+/// items' text.
 ///
 /// It starts one job per item and operation in `jobs`, so a newer request stops the one under way, and saves each
 /// job's final snapshot once in the store, as the snapshot's `saveDecision` says, under the store generation the
@@ -57,7 +58,9 @@ final class DerivedTextCoordinator {
     @ObservationIgnored private let store: DerivedTextStore
     @ObservationIgnored private let identity: StoreIdentity
     @ObservationIgnored private let recognizer: any TextRecognitionEngine
+    @ObservationIgnored private let translator: any TranslationEngine
     @ObservationIgnored private let image: @Sendable (ContentRef) async throws -> CGImage
+    @ObservationIgnored private let text: @Sendable (ContentRef) async throws -> String
     /// The latest request for each item and operation, while its job runs or its result is saved. Only its ending
     /// changes what the item shows.
     @ObservationIgnored private var latest: [GenerationKey: (token: UUID, source: ContentRef)] = [:]
@@ -69,13 +72,16 @@ final class DerivedTextCoordinator {
     @ObservationIgnored private var isClosed = false
 
     /// `identity` is the store generation the library opened with; results are kept only under it. `image` reads an
-    /// item's image at its full size.
+    /// item's image at its full size, and `text` an item's text, as plain text.
     init(store: DerivedTextStore, identity: StoreIdentity, recognizer: any TextRecognitionEngine,
-         image: @escaping @Sendable (ContentRef) async throws -> CGImage) {
+         translator: any TranslationEngine, image: @escaping @Sendable (ContentRef) async throws -> CGImage,
+         text: @escaping @Sendable (ContentRef) async throws -> String) {
         self.store = store
         self.identity = identity
         self.recognizer = recognizer
+        self.translator = translator
         self.image = image
+        self.text = text
     }
 
     /// The job under way for exactly this content of an item. Nil when the job is for content it had before.
@@ -183,6 +189,24 @@ final class DerivedTextCoordinator {
             guard kept == nil, job(for: source, operation: .extractText) == nil, !hasMade(source, key) else { return }
             extractText(from: source, keepingLineBreaks: request.keepsLineBreaks)
         }
+    }
+
+    /// Starts translating an item's text into `target`, in place of any translation under way for it: from `language`
+    /// when a person chose it, which the result keeps, or else from the languages detected in the text. Nil once the
+    /// library has closed.
+    @discardableResult
+    func translate(_ source: ContentRef, from language: Locale.Language? = nil,
+                   to target: Locale.Language) -> GenerationJob? {
+        guard !isClosed else { return nil }
+        let text = text
+        let generation = translator.translate({ try await text(source) }, from: language, to: target)
+        let request = DerivedTextRequest(source: source, operation: .translate, sourceLanguage: language?.translationCode,
+                                         targetLanguage: target.translationCode)
+        var options = GenerationJob.Options()
+        // A first translation loads its languages, and a long paragraph takes some seconds, the first or any other.
+        options.firstTextTimeout = .seconds(90)
+        options.idleTimeout = .seconds(90)
+        return start(request, lane: translator.tier.lane, options: options, generation: generation)
     }
 
     /// Whether a request for exactly this content waits on what the store kept, which decides whether it starts.

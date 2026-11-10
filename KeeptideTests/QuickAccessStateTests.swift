@@ -3043,7 +3043,8 @@ final class QuickAccessStateTests: XCTestCase {
             : current
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: controller), identity: identity,
-            recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
+            recognizer: recognizer, translator: ScriptedTranslator(),
+            image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
         addTeardownBlock { await derivedText.stopAndDrain() }
         var services = fixture.services
         services.derivedText = derivedText
