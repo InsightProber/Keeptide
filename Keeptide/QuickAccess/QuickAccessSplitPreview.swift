@@ -16,6 +16,8 @@ struct QuickAccessSplitPreview: View {
     /// Whether the text in the column is what the latest recognition just made.
     let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
+    /// Copies what the text's own Copy takes: the selection, or all of it.
+    let onCopy: (String) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     /// Whether the text has faded in beside the image: the one movement as the preview splits.
     @State private var showsText = false
@@ -30,7 +32,7 @@ struct QuickAccessSplitPreview: View {
                     ColumnDivider(vertical: sideBySide)
                     // A column of its own for each image: the text and its selection never carry over.
                     TextInImageColumn(column: column, pixelSize: preview?.pixelSize, isJustMade: isJustMade,
-                                      onCommand: onCommand)
+                                      onCommand: onCommand, onCopy: onCopy)
                         .id(ref)
                 }
                 .opacity(showsText || reduceMotion ? 1 : 0)
@@ -127,6 +129,11 @@ extension TextColumn {
     /// Recognition is under way, not waiting for its turn.
     var isScanning: Bool {
         if case .recognizing(let snapshot) = self { return snapshot.phase != .queued }
+        return false
+    }
+
+    var isFailed: Bool {
+        if case .failed = self { return true }
         return false
     }
 }
@@ -251,6 +258,7 @@ private struct TextInImageColumn: View {
     /// Whether what the column shows is how the latest recognition of its image just ended.
     let isJustMade: Bool
     let onCommand: (QuickAccessCommand) -> Void
+    let onCopy: (String) -> Void
     /// Whether the recognition has run long enough to say what it is doing.
     @State private var saysWhatItDoes = false
 
@@ -287,7 +295,8 @@ private struct TextInImageColumn: View {
             if let shown {
                 StreamingTextView(text: shown.text, mode: shown.mode,
                                   announcements: .init(start: "Recognizing text", finish: "Text recognized"),
-                                  allowsCopyingAll: shown.mode != .writing,
+                                  allowsCopyingAll: shown.mode != .writing && shown.isWhole,
+                                  onCopy: { [onCopy] in onCopy($0) },
                                   onKeyDown: { [onCommand] event in
                                       PreviewTextKeys.handle(event, hasMarkedText: false, onCommand: onCommand)
                                   })
@@ -323,15 +332,20 @@ private struct TextInImageColumn: View {
         }
     }
 
-    /// The text the display shows, and how: typed out while it is made, then finished, or at once.
-    private var shown: (text: String, mode: StreamingTextDisplay.Mode)? {
+    /// The text the display shows, how: typed out while it is made, then finished, or at once, and whether it is whole,
+    /// so that copying it all, with nothing selected, takes it. Part of a text is copied by selecting it.
+    private var shown: (text: String, mode: StreamingTextDisplay.Mode, isWhole: Bool)? {
         switch column {
         case .recognizing(let snapshot):
             let mode = StreamingTextDisplay.Mode(snapshot.phase)
             // A recognition that found nothing has nothing to finish; why there is no text is said instead.
-            return (snapshot.text(), mode == .finishing && !snapshot.hasText ? .still : mode)
-        case .text(let text, _, _), .unsaved(let text, _):
-            return (text, isJustMade ? .finishing : .still)
+            return (snapshot.text(), mode == .finishing && !snapshot.hasText ? .still : mode,
+                    snapshot.phase == .finished(.completed))
+        case .text(let text, _, let status):
+            return (text, isJustMade ? .finishing : .still, status == .complete)
+        case .unsaved(let text, _):
+            // Recognition on this Mac ends whole or not at all.
+            return (text, isJustMade ? .finishing : .still, true)
         case .loading, .notStarted, .noText, .failed:
             return nil
         }
@@ -355,6 +369,32 @@ struct TrayCapsuleButtonStyle: ButtonStyle {
     private func fill(pressed: Bool) -> NSColor {
         if pressed { return ToolbarPalette.pressedFill }
         return isOn ? ToolbarPalette.chosenFilterFill : ToolbarPalette.foldedSearchFill
+    }
+}
+
+/// A round button on the tray, as the preview's close button: the bar's Copy and Save as Snippet.
+struct TrayRoundButton: View {
+    let symbol: String
+    let label: String
+    let help: String
+    let identifier: String
+    let action: () -> Void
+    @Environment(\.isEnabled) private var isEnabled
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color(nsColor: ToolbarPalette.glyph))
+                .frame(width: QuickAccessSearchControl.foldedWidth, height: QuickAccessSearchControl.foldedWidth)
+                .background(Color(nsColor: ToolbarPalette.foldedSearchFill), in: Circle())
+                .contentShape(Circle())
+                .opacity(isEnabled ? 1 : 0.4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier(identifier)
+        .help(help)
     }
 }
 

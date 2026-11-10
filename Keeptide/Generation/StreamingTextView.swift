@@ -194,6 +194,7 @@ final class StreamingTextDisplay: NSView {
     }
 
     private func setUp() {
+        textView.wholeText = { [weak self] in self?.target ?? "" }
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
@@ -407,6 +408,8 @@ final class GeneratedTextView: NSTextView {
     var copyHandler: (@MainActor (String) -> Void)?
     /// Whether Copy with nothing selected takes the whole text.
     var copiesWholeText = false
+    /// The whole text, which may be more than the text view shows while it is still typed out.
+    var wholeText: (@MainActor () -> String)?
     /// Takes a key before the text does: true when it took it.
     var keyHandler: (@MainActor (NSEvent) -> Bool)?
 
@@ -420,7 +423,8 @@ final class GeneratedTextView: NSTextView {
         let text = string as NSString
         let selected = selectedRanges.map(\.rangeValue).filter { $0.length > 0 }.map { text.substring(with: $0) }
         if !selected.isEmpty { return selected.joined(separator: "\n") }
-        return copiesWholeText && text.length > 0 ? string : nil
+        let whole = wholeText?() ?? string
+        return copiesWholeText && !whole.isEmpty ? whole : nil
     }
 
     override func copy(_ sender: Any?) {

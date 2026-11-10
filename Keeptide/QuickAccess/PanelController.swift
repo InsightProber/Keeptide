@@ -421,8 +421,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard state.selection.selection != nil else { return .none }
         let actions = state.actions
         // While a command waits on the review card, only the card confirms it.
-        return .action(title: actions.primaryTitle,
-                       enabled: state.selection.executableSelection != nil && state.commandReview == nil,
+        return .action(title: actions.primaryTitle, enabled: state.actionTarget != nil && state.commandReview == nil,
                        hint: actions.hint)
     }
 
@@ -469,7 +468,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             layout: layout, state: state, toolbar: toolbar, strip: strip, glow: glow, applicationNames: applicationNames,
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
                                                  confirmCommand: { [weak self] in self?.confirmFromCard() },
-                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() })
+                                                 cancelCommandReview: { [weak self] in self?.cancelFromCard() },
+                                                 copyText: { [weak self] in self?.copyShownText($0) })
         )
     }
 
@@ -537,6 +537,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             state.stopTextRecognition()
         case .toggleKeepLineBreaks:
             preferences.keepsLineBreaks = state.toggleKeepLineBreaks()
+        case .copyText:
+            copyShownText(nil)
+        case .saveTextAsSnippet:
+            saveShownText()
         }
     }
 
@@ -814,8 +818,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// `guessesReturn` says that the menu choice that asks for the action may have left Return down unseen: the action
     /// takes Return for down (`returnMayBeDown`) until the guess goes, at the latest when the action ends with the
     /// panel still open, as when a review card shows, the clip is refused or the selection has moved on.
-    private func act(_ mode: PasteMode, guessesReturn: Bool = false) {
-        guard state.commandReview == nil, let target = state.copyTarget else { return }
+    private func act(_ mode: PasteMode, guessesReturn: Bool = false, subject: ActionSubject = .asReturn) {
+        guard state.commandReview == nil else { return }
+        guard let target = target(for: subject) else {
+            // The text beside the image has nothing to take yet; the image is not taken in its place.
+            if subject != .clip, state.textColumnRef != nil { NSSound.beep() }
+            return
+        }
         if guessesReturn { heldReturnKeys.insert(Self.returnMayBeDown) }
         let delivery = state.preferredDelivery
         Task {
@@ -825,17 +834,32 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// A double click on a clip does what Return does, or ⇧Return with ⇧, once the clip it chose is the selected one:
-    /// the state may have refused to select it, and then nothing acts.
-    private func activate(_ row: QuickAccessRow.ID, plainText: Bool) {
-        guard state.selection.selectedID == row else { return }
-        act(plainText ? .plainText : .original)
+    /// What an action takes: what Return takes now, which is the text beside an image while the preview shows it; the
+    /// clip itself, as a double-click on its card or a menu made for the clip offers it; or the text, as a menu made
+    /// while it showed offers it, and nothing once it no longer shows.
+    private enum ActionSubject { case asReturn, clip, text }
+
+    private func target(for subject: ActionSubject) -> QuickAccessState.CopyTarget? {
+        switch subject {
+        case .asReturn: state.actionTarget
+        case .clip: state.copyTarget
+        case .text: state.actionTarget.flatMap { $0.derivedText == nil ? nil : $0 }
+        }
     }
 
-    /// The menu's copy that never pastes: "Copy", or "Copy As-Is" in a terminal's session.
+    /// A double click on a clip does what Return does with that clip, or ⇧Return with ⇧, once the clip it chose is the
+    /// selected one: the state may have refused to select it, and then nothing acts. It takes the clip, not text
+    /// shown beside it.
+    private func activate(_ row: QuickAccessRow.ID, plainText: Bool) {
+        guard state.selection.selectedID == row else { return }
+        act(plainText ? .plainText : .original, subject: .clip)
+    }
+
+    /// The menu's copy that never pastes: "Copy", or "Copy As-Is" in a terminal's session, as the clip's own actions
+    /// name it.
     private func copyOnly() {
         guard let target = state.copyTarget else { return }
-        let mode = state.actions.copyOnlyMode
+        let mode = state.actions(for: target.ref).copyOnlyMode
         Task { await state.act(on: target, mode: mode, delivery: .copy) }
     }
 
@@ -990,14 +1014,24 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     private func actionMenu(for id: QuickAccessRow.ID?) -> NSMenu {
         let row = id.flatMap { id in state.selection.rows.first { $0.id == id } }
         let canUndoSave = state.canUndoSave && id == state.selection.selectedID
-        return ActionMenu.make(actions: state.actions(for: id?.ref), row: row,
+        // The text beside the selected image, while the preview shows it.
+        let showsText = id != nil && id == state.selection.selectedID && state.textColumnRef != nil
+        var textInImage = ActionMenu.TextInImage(isOffered: row?.kind == .image && state.canRecognizeText)
+        if showsText, let column = state.textColumn {
+            textInImage.column = ActionMenu.TextInImage.Column(
+                canTake: state.actionTarget != nil, hasText: state.textColumnText != nil,
+                keepsLineBreaks: state.isKeepLineBreaksOn, canStop: state.canStopTextRecognition,
+                canExtract: column == .notStarted || column.isFailed, failed: column.isFailed)
+        }
+        return ActionMenu.make(actions: showsText ? state.actions : state.actions(for: id?.ref), row: row,
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded,
                                canUndoSave: canUndoSave, collections: state.collections,
                                canMoveToRecentlyDeleted: state.canMoveToRecentlyDeleted,
                                listedCollection: state.listedCollection(of: row),
-                               canUndoMoveToRecentlyDeleted: canUndoMoveToRecentlyDeleted) { [weak self] command in
+                               canUndoMoveToRecentlyDeleted: canUndoMoveToRecentlyDeleted,
+                               textInImage: textInImage) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -1006,11 +1040,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 guard state.selection.selectedID == id else { return }
             }
             switch command {
-            case .primary: act(.original, guessesReturn: returnMayBeDown)
-            case .plainText: act(.plainText, guessesReturn: returnMayBeDown)
+            // What the menu named when it was made: the text that showed, or the clip.
+            case .primary: act(.original, guessesReturn: returnMayBeDown, subject: showsText ? .text : .clip)
+            case .plainText: act(.plainText, guessesReturn: returnMayBeDown, subject: .clip)
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
-            case .saveSnippet: saveSelectedSnippet()
+            case .saveSnippet: saveSelectedClipAsSnippet()
             case .saveToCollection(let collection): saveSelected(into: collection)
             case .undoSave: undoSave()
             case .toggleFavorite: toggleFavoriteOfSelected()
@@ -1020,6 +1055,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .undoMoveToRecentlyDeleted: undoLastMove()
             case .removeFromCollection: removeSelectedFromListedCollection()
             case .moveToRecentlyDeleted: moveSelectedToRecentlyDeleted()
+            case .showTextInImage: perform(.showTextInImage)
+            case .extractText: perform(.extractText)
+            case .copyText: perform(.copyText)
+            case .saveTextAsSnippet: perform(.saveTextAsSnippet)
+            case .toggleKeepLineBreaks: perform(.toggleKeepLineBreaks)
+            case .stopTextRecognition: perform(.stopTextRecognition)
             }
         }
     }
@@ -1121,13 +1162,37 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
-    /// ⌘S and the menu's Save as Snippet. The toolbar shows what the save came to, and VoiceOver reads it.
+    /// ⌘S: the selected clip, or while the preview shows the text beside an image, that text. The toolbar shows what
+    /// the save came to, and VoiceOver reads it.
     private func saveSelectedSnippet() {
+        guard state.textColumnRef != nil else { return saveSelectedClipAsSnippet() }
+        saveShownText()
+    }
+
+    /// Save Text as Snippet, from ⌘S, the preview's bar or the menu: the text beside an image, and never the image in
+    /// its place. With no whole text to keep, nothing is kept and nothing is said again.
+    private func saveShownText() {
+        Task {
+            switch await state.saveTextAsSnippet() {
+            case .nothingToSave: NSSound.beep()
+            case .said(let message): if isSessionOpen { announce(message) }
+            case .interrupted: break
+            }
+        }
+    }
+
+    /// The menu's Save as Snippet: the selected clip itself, whatever the preview shows beside it.
+    private func saveSelectedClipAsSnippet() {
         guard let target = state.copyTarget else { return }
         Task {
             await state.saveSelection(target)
             announceSaveMessage()
         }
+    }
+
+    /// Copies the text beside an image, or `part` of it, and keeps the panel open; VoiceOver hears that it copied.
+    private func copyShownText(_ part: String?) {
+        if state.copyText(part) { announce("Copied") } else { NSSound.beep() }
     }
 
     /// ⇧⌘M's menu and the actions menu's Save to Collection or Add to Collection: the collection chosen. A collection
@@ -1407,6 +1472,20 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if event.isARepeat { return true }
             guard state.isPreviewSplit else { return false }
             if state.canStopTextRecognition { perform(.stopTextRecognition) }
+            return true
+        }
+        // ⌘C while the preview shows the text beside an image copies that text: what is selected in it, or with the
+        // keys elsewhere, all of it. A selection in another text, the search field's or a review's command, is that
+        // text's to copy, and so is everything while a review shows. The panel stays. Held down, it has copied already.
+        if key == "c", modifiers == .command, !isComposing, state.textColumnRef != nil, state.commandReview == nil {
+            if event.isARepeat { return true }
+            let responder = window?.firstResponder
+            if let text = responder as? GeneratedTextView {
+                text.copy(nil)
+                return true
+            }
+            if let other = responder as? NSTextView, other.selectedRange().length > 0 { return false }
+            copyShownText(nil)
             return true
         }
         // ⌘Z undoes a move to Recently Deleted or the search field's typing, whichever `undoFromKeyboard` finds; a

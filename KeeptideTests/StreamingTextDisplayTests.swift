@@ -157,6 +157,21 @@ final class StreamingTextDisplayTests: XCTestCase {
         XCTAssertEqual(copied, ["A stopped translation"])
     }
 
+    func testCopyingEverythingWhileItIsTypedOutTakesTheWholeText() {
+        let display = makeDisplay()
+        var copied: [String] = []
+        display.onCopy = { copied.append($0) }
+        display.allowsCopyingAll = true
+        display.update(text: "", mode: .writing)
+        display.update(text: "Hello, world. This arrives in one burst.", mode: .finishing)
+        display.tick(at: 0.05)
+        XCTAssertLessThan(display.shownText.count, 40, "Still being typed out")
+
+        display.textView.copy(nil)
+
+        XCTAssertEqual(copied, ["Hello, world. This arrives in one burst."])
+    }
+
     func testCopyTakesEverySelectedRange() {
         let display = makeDisplay()
         var copied: [String] = []

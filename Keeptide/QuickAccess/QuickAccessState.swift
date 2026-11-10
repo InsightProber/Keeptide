@@ -178,6 +178,12 @@ final class QuickAccessState {
     /// Whether text recognized from now on keeps the image's line breaks or joins lines into paragraphs: the person's
     /// choice, which the panel gives as it opens and keeps as Keep Line Breaks changes it.
     private(set) var keepsLineBreaks = true
+    /// The image whose text was copied just now: the preview's bar says so for a moment, beside that image's text.
+    private var copiedTextRef: ContentRef?
+    static let textCopiedNoteDuration: Duration = .seconds(1.5)
+    @ObservationIgnored private var textCopiedNote: Task<Void, Never>?
+    /// The texts saved as snippets in this showing: saving one again says it is there already.
+    @ObservationIgnored private var savedTexts: Set<String> = []
     /// The image the saved text below was read for. Until it is the previewed image, the column is still reading.
     private var savedTextRef: ContentRef?
     /// What an earlier job saved of the previewed image's text, if anything.
@@ -305,15 +311,23 @@ final class QuickAccessState {
         !showsRecentClips && !pagingStopped && totalMatches > selection.rows.count - selection.frequentCount
     }
 
-    /// What the panel offers for the selected row.
-    var actions: QuickAccessActions { actions(for: selection.selection) }
+    /// What the panel offers for the selected row, or for the text beside it while the preview shows that.
+    var actions: QuickAccessActions {
+        textColumnRef == nil ? actions(for: selection.selection) : textActions
+    }
 
     /// What Return can do in this session, whatever clip is selected: the toolbar keeps room for the widest.
     var possibleActions: [QuickAccessActions] {
         ([nil] + [ContentKind.text, .url, .image, .file, .other]).map { kind in
             QuickAccessActions.make(target: pasteTarget, availability: directPaste, kind: kind,
                                     awaitsReopen: directPasteAwaitsReopen)
-        }
+        } + [textActions]
+    }
+
+    /// What Return does with text made of the selected clip, such as the text recognized in an image.
+    private var textActions: QuickAccessActions {
+        QuickAccessActions.make(target: pasteTarget, availability: directPaste, kind: .text,
+                                awaitsReopen: directPasteAwaitsReopen, takesText: true)
     }
 
     /// What the panel offers for a listed row, such as the one a right-click is on, which need not be the selected one.
@@ -336,6 +350,7 @@ final class QuickAccessState {
     /// without the clips the band shows whole; nil lists no wing.
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
+        savedTexts = []
         hiddenFacets = []
         leftCollections = [:]
         isOpen = true
@@ -582,31 +597,44 @@ final class QuickAccessState {
 
     /// Whether the selected clip is an image whose text the preview can show beside it.
     var offersTextInImage: Bool {
-        selection.selectedRow?.kind == .image && services()?.derivedText != nil
+        selection.selectedRow?.kind == .image && canRecognizeText
     }
+
+    /// Whether the text in images can be recognized and shown here: the library is open.
+    var canRecognizeText: Bool { services()?.derivedText != nil }
 
     /// What the text column shows, while it shows: a job under way, then how the latest job ended, and otherwise what
     /// an earlier one saved.
-    var textColumn: TextColumn? {
+    var textColumn: TextColumn? { textColumnContents?.column }
+
+    /// The whole result the text column shows, as it was saved: what Return takes.
+    var textColumnResult: DerivedText? {
+        guard let result = textColumnContents?.result, result.status == .complete else { return nil }
+        return result
+    }
+
+    /// What the text column shows, and the saved result behind it when that is what it shows.
+    private var textColumnContents: (column: TextColumn, result: DerivedText?)? {
         guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return nil }
-        if let job = derivedText.job(for: ref, operation: .extractText) { return .recognizing(job.snapshot) }
+        if let job = derivedText.job(for: ref, operation: .extractText) { return (.recognizing(job.snapshot), nil) }
         switch derivedText.outcome(for: ref, operation: .extractText) {
         // Recognition on this Mac ends whole or not at all, so the text being saved is whole.
         case .saving(let made, let request)?:
-            return .text(made, keepsLineBreaks: request.keepsLineBreaks, status: .complete)
-        case .saved(let result)?:
-            return .text(result.text, keepsLineBreaks: result.keepsLineBreaks, status: result.status)
-        case .noText?: return .noText
-        case .notSaved(let made, let request)?: return .unsaved(made, keepsLineBreaks: request.keepsLineBreaks)
-        case .failed(let error)?: return .failed(error)
+            return (.text(made, keepsLineBreaks: request.keepsLineBreaks, status: .complete), nil)
+        case .saved(let result)?: return (Self.column(showing: result), result)
+        case .noText?: return (.noText, nil)
+        case .notSaved(let made, let request)?: return (.unsaved(made, keepsLineBreaks: request.keepsLineBreaks), nil)
+        case .failed(let error)?: return (.failed(error), nil)
         case nil: break
         }
-        guard savedTextRef == ref else { return .loading }
-        if let savedText {
-            return .text(savedText.text, keepsLineBreaks: savedText.keepsLineBreaks, status: savedText.status)
-        }
+        guard savedTextRef == ref else { return (.loading, nil) }
+        if let savedText { return (Self.column(showing: savedText), savedText) }
         // Text the person asked for starts once the store has said it kept none.
-        return derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted
+        return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted, nil)
+    }
+
+    private static func column(showing result: DerivedText) -> TextColumn {
+        .text(result.text, keepsLineBreaks: result.keepsLineBreaks, status: result.status)
     }
 
     /// Whether the text in the column is what the latest recognition of its image just made, rather than text kept from
@@ -651,6 +679,76 @@ final class QuickAccessState {
     func stopTextRecognition() {
         guard let ref = textColumnRef else { return }
         services()?.derivedText?.stop(ref, operation: .extractText)
+    }
+
+    /// The whole text the column shows, made now or kept from before, whether or not the library could keep it: what
+    /// copying all of it and Save Text as Snippet take. Part of a text, as a stopped or cut-off one is, can only be
+    /// copied by selecting it.
+    var textColumnText: String? {
+        switch textColumn {
+        case .text(let text, _, .complete)?, .unsaved(let text, _)?: text
+        case .text?, .loading?, .notStarted?, .recognizing?, .noText?, .failed?, nil: nil
+        }
+    }
+
+    /// Whether the text beside the image was copied just now.
+    var isTextCopied: Bool { copiedTextRef != nil && copiedTextRef == textColumnRef }
+
+    /// Copies the text beside an image, or `part` of it as the text's own Copy hands it over, as plain text that
+    /// capture skips. The panel stays open, and says for a moment that it copied. Returns whether the clipboard was
+    /// written.
+    @discardableResult
+    func copyText(_ part: String? = nil) -> Bool {
+        guard let ref = textColumnRef, let text = part ?? textColumnText, let paste = services()?.paste,
+              paste.copyText(text) else { return false }
+        copiedTextRef = ref
+        textCopiedNote?.cancel()
+        textCopiedNote = Task { [weak self] in
+            try? await Task.sleep(for: Self.textCopiedNoteDuration)
+            guard !Task.isCancelled else { return }
+            self?.copiedTextRef = nil
+        }
+        return true
+    }
+
+    /// What Save Text as Snippet came to: no whole text to keep; a message the toolbar now shows; or a save that went
+    /// on while the column it was asked for closed or moved on, which says nothing.
+    enum TextSaveOutcome: Equatable {
+        case nothingToSave, said(String), interrupted
+    }
+
+    /// ⌘S while the preview shows the text beside an image: that text becomes a snippet of its own, a new item, and
+    /// the image stays as it was. Saved again in this showing, it is there already. What the save came to is said
+    /// only while the same image's text shows.
+    @discardableResult
+    func saveTextAsSnippet() async -> TextSaveOutcome {
+        guard isOpen, !saving, let ref = textColumnRef, let text = textColumnText, let currentSession = session,
+              let library = services()?.library else { return .nothingToSave }
+        failure = nil
+        guard !savedTexts.contains(text) else { return say("Already in Snippets") }
+        saving = true
+        defer { saving = false }
+        func stillAsked() -> Bool { isOpen && session === currentSession && textColumnRef == ref }
+        do {
+            let identity = try await library.controller.identity()
+            guard stillAsked() else { return .interrupted }
+            _ = try await library.create(MemoDraft(body: text), expecting: identity)
+            // Saved, whatever the column does meanwhile: saving it again in this showing says so.
+            savedTexts.insert(text)
+            guard stillAsked() else { return .interrupted }
+            // Undo Save takes back a clip saved as a snippet; this is a snippet of its own.
+            savedUndo = nil
+            canUndoSave = false
+            return say("Text saved to Snippets")
+        } catch {
+            guard stillAsked() else { return .interrupted }
+            return say("The text couldn't be saved. Try again.")
+        }
+    }
+
+    private func say(_ message: String) -> TextSaveOutcome {
+        saveMessage = message
+        return .said(message)
     }
 
     /// The person's choice of layout, as the panel opens. It changes nothing shown.
@@ -766,10 +864,24 @@ final class QuickAccessState {
     struct CopyTarget: Equatable {
         let ref: ContentRef
         let generation: UInt64
+        /// The saved text made of the clip that is taken in the clip's place, such as the text recognized in an image.
+        var derivedText: DerivedTextPaste? = nil
     }
 
+    /// The selected clip.
     var copyTarget: CopyTarget? {
         selection.executableSelection.map { CopyTarget(ref: $0, generation: selection.generation) }
+    }
+
+    /// What Return takes: while the preview shows the text beside an image, that text once it is made and kept, and
+    /// otherwise the selected clip. Nil when there is nothing to take, as while the text is still being made: then
+    /// Return takes neither the text nor the image.
+    var actionTarget: CopyTarget? {
+        guard let ref = textColumnRef else { return copyTarget }
+        guard selection.executableSelection == ref, let result = textColumnResult else { return nil }
+        return CopyTarget(ref: ref, generation: selection.generation,
+                          derivedText: DerivedTextPaste(id: result.id, operation: result.operation,
+                                                        textDigest: result.textDigest))
     }
 
     /// Acts on what was selected when the key was pressed, never a row selected later: writes the clipboard and, for
@@ -785,7 +897,8 @@ final class QuickAccessState {
         failure = nil
         let outcome = await paste.execute(PasteRequest(ref: target.ref, queryGeneration: target.generation, mode: mode,
                                                        session: session, delivery: delivery, dismiss: dismissForPaste,
-                                                       returnIsDown: returnIsDown, confirmation: confirmation))
+                                                       returnIsDown: returnIsDown, confirmation: confirmation,
+                                                       derivedText: target.derivedText))
         // A reopened panel or a newer selection owns the screen now.
         guard isOpen, self.session === session else { return }
         switch outcome {
