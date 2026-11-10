@@ -62,7 +62,10 @@ item, not in iCloud or in exports. ⌘. stops a translation and shows what was
 made, marked incomplete, which is kept unless a whole translation was kept
 before. Escape closes the translation before the preview.
 When translating again fails, the earlier translation stays and the column says
-why; the same holds for the text in an image.
+why; the same holds for the text in an image. While a whole translation that was
+kept shows, Return pastes it instead of the text, through the same checks as a
+clip; ⌘C copies a whole translation, or the part selected, and leaves quick
+access open, and ⌘S saves it as a snippet of its own.
 
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,

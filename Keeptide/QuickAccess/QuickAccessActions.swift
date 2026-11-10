@@ -24,10 +24,11 @@ struct QuickAccessActions: Equatable {
     /// selected row's, nil with nothing selected. `awaitsReopen` says that this run asked for access, which Keeptide
     /// can use only once it reopens. `takesText` says that Return takes text made of the clip, such as the text
     /// recognized in an image, rather than the clip: that text is plain, so ⇧Return takes it the same way and has no
-    /// item of its own, and copying it is an item of its own.
+    /// item of its own, and copying it is an item of its own. `resultName` names that text: "Text", or "Translation".
     static func make(target: PasteTarget?, availability: DirectPasteAvailability?, kind: ContentKind?,
-                     awaitsReopen: Bool = false, takesText: Bool = false) -> QuickAccessActions {
-        var actions = QuickAccessActions(primaryTitle: takesText ? "Copy Text" : "Copy",
+                     awaitsReopen: Bool = false, takesText: Bool = false,
+                     resultName: String = "Text") -> QuickAccessActions {
+        var actions = QuickAccessActions(primaryTitle: takesText ? "Copy \(resultName)" : "Copy",
                                          plainTextTitle: takesText ? nil : "Copy as Plain Text", copyOnlyTitle: nil,
                                          copyOnlyMode: .original, offersEnableDirectPaste: false, hint: nil)
         // With no target, or no library to check it, the panel copies as it did before direct paste.
@@ -40,7 +41,7 @@ struct QuickAccessActions: Equatable {
         actions.offersEnableDirectPaste = fallback == .notPermitted
         actions.hint = fallback.flatMap { hint(for: $0, awaitsReopen: awaitsReopen) }
         // Beside a paste of the text, its copy, which leaves the panel open.
-        if takesText, fallback == nil { actions.copyOnlyTitle = "Copy Text" }
+        if takesText, fallback == nil { actions.copyOnlyTitle = "Copy \(resultName)" }
         if target.isTerminal, takesText || kind == .text || kind == .url {
             actions.primaryTitle = fallback == nil ? "Paste Command" : "Copy Command"
             actions.plainTextTitle = nil
@@ -51,7 +52,7 @@ struct QuickAccessActions: Equatable {
             return actions
         }
         if takesText {
-            if fallback == nil { actions.primaryTitle = "Paste Text into \(target.name)" }
+            if fallback == nil { actions.primaryTitle = "Paste \(resultName) into \(target.name)" }
             return actions
         }
         if fallback == nil {

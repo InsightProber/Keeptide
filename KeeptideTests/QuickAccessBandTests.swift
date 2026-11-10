@@ -833,6 +833,25 @@ final class QuickAccessBandTests: XCTestCase {
                        "Translate to Chinese (Simplified)")
     }
 
+    func testTheTranslationsMenuItemsWaitForAReviewCardAndKeepCommandSForThemselves() {
+        let actions = QuickAccessActions.make(target: nil, availability: nil, kind: .text, takesText: true,
+                                              resultName: "Translation")
+        func menu(reviewing: Bool) -> NSMenu {
+            ActionMenu.make(actions: actions, row: nil, canAct: true, isReviewing: reviewing, isPreviewExpanded: true,
+                            translation: ActionMenu.Translation(
+                                isOffered: true, column: .init(canTake: true, hasText: true, canStop: false,
+                                                               canTranslate: true, failed: true))) { _ in }
+        }
+        func item(_ title: String, in menu: NSMenu) -> NSMenuItem? { menu.items.first { $0.title == title } }
+
+        XCTAssertEqual(item("Try Again", in: menu(reviewing: false))?.isEnabled, true)
+        XCTAssertEqual(item("Try Again", in: menu(reviewing: true))?.isEnabled, false, "Nothing starts behind the card")
+        XCTAssertEqual(item("Copy Translation", in: menu(reviewing: true))?.isEnabled, false)
+        // ⌘S keeps the translation; the clip's own Save as Snippet stays without it.
+        XCTAssertEqual(item("Save Translation as Snippet", in: menu(reviewing: false))?.keyEquivalent, "s")
+        XCTAssertEqual(item("Save as Snippet", in: menu(reviewing: false))?.keyEquivalent, "")
+    }
+
     func testPartOfATranslationTheLibraryCouldNotKeepIsStillPartOfOne() {
         let part = TranslationColumn.unsaved("季度", into: "zh-Hans", status: .stopped)
         XCTAssertNil(part.wholeText, "Part of a translation is copied by selecting it")

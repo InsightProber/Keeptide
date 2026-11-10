@@ -2399,6 +2399,10 @@ final class AppLaunchTests: XCTestCase {
             window.contentView?.layoutSubtreeIfNeeded()
             return announced.contains(TranslationColumnWords.stopped)
         }
+        // ⌘K offers to try again, as the column does.
+        let stopped = try actionMenu(of: controller)
+        XCTAssertEqual(stopped.items.first { $0.title == "Try Again" }?.isEnabled, true,
+                       "\(stopped.items.map(\.title))")
 
         // Escape closes the column first, then the preview.
         controller.perform(.escape)
@@ -2406,6 +2410,59 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.state.isPreviewExpanded)
         controller.perform(.escape)
         XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
+    func testTheTranslationIsCopiedSavedAndOfferedInTheActionsMenu() async throws {
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        func titles(_ menu: NSMenu) -> [String] { menu.items.map(\.title) }
+        func item(_ title: String, in menu: NSMenu) throws -> NSMenuItem {
+            try XCTUnwrap(menu.items.first { $0.title == title }, "No \(title) in \(titles(menu))")
+        }
+        // Before the column opens, every card offers Translate.
+        let closed = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Translate", in: closed).isEnabled)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        let engine = try await startedTranslation(translator, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("翻译"))
+        try await SearchTestSupport.waitUntil { controller.state.translationColumn?.isTranslating == true }
+        let translating = try actionMenu(of: controller)
+        XCTAssertEqual(Array(titles(translating).prefix(4)),
+                       ["Copy Translation", "Save Translation as Snippet", "Stop", "Translate"])
+        XCTAssertFalse(try item("Copy Translation", in: translating).isEnabled)
+        XCTAssertTrue(try item("Stop", in: translating).isEnabled)
+
+        engine.send(.delta("好的译文"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.translationColumnResult != nil }
+
+        // ⌘C copies the whole translation, and the panel stays.
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        XCTAssertEqual(board.string(forType: .string), "翻译好的译文")
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(announced.last, "Copied")
+
+        // ⌘S keeps it as a snippet of its own.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Translation saved to Snippets" }
+        let made = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Copy Translation", in: made).isEnabled)
+        XCTAssertTrue(try item("Save Translation as Snippet", in: made).isEnabled)
+        XCTAssertFalse(try item("Stop", in: made).isEnabled)
+        // The clip's own Save as Snippet stays, without ⌘S, which belongs to the translation.
+        XCTAssertEqual(try item("Save as Snippet", in: made).keyEquivalent, "")
+
+        // The menu's first item takes the translation, as Return does, and never the text in its place.
+        board.clearContents()
+        made.performActionForItem(at: try XCTUnwrap(made.items.firstIndex { $0.title == "Copy Translation" }))
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "翻译好的译文")
     }
 
     func testVoiceOverHearsWhyARecognitionFailedOnceWhereverTheSelectionGoes() async throws {
@@ -2587,12 +2644,12 @@ final class AppLaunchTests: XCTestCase {
         // While the text shows, the menu starts with what can be done with it; the rest is the image's.
         let recognizing = try actionMenu(of: controller)
         XCTAssertEqual(titles(recognizing), [
-            "Copy Text", "Save Text as Snippet", "Keep Line Breaks", "Stop", "Extract Text", "", "Hide Preview", "",
-            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
-            "", "Move to Recently Deleted",
+            "Copy Text", "Save Text as Snippet", "Keep Line Breaks", "Stop", "Extract Text", "", "Hide Preview",
+            "Translate", "", "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
+            "New Snippet", "", "Move to Recently Deleted",
         ])
         XCTAssertEqual(recognizing.items.map(\.keyEquivalent),
-                       ["\r", "s", "", ".", "t", "", " ", "", "", "", "d", "", "e", "n", "", "\u{8}"])
+                       ["\r", "s", "", ".", "t", "", " ", "t", "", "", "", "d", "", "e", "n", "", "\u{8}"])
         XCTAssertFalse(try item("Copy Text", in: recognizing).isEnabled)
         XCTAssertFalse(try item("Save Text as Snippet", in: recognizing).isEnabled)
         XCTAssertEqual(try item("Keep Line Breaks", in: recognizing).state, .on)
@@ -3298,17 +3355,18 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
         XCTAssertEqual(commandK.point.y, selected.maxY, accuracy: 1)
         XCTAssertEqual(commandK.menu.items.map(\.title), [
-            "Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "",
+            "Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "Translate", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
         // Save to Collection has its submenu instead of a key: AppKit keeps none on such an item, and ⇧⌘M is the
         // panel's own.
         XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent),
-                       ["\r", "\r", "", " ", "t", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
+                       ["\r", "\r", "", " ", "t", "t", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
         XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem && !$0.hasSubmenu }
             .map(\.keyEquivalentModifierMask),
-                       [[], .shift, [], [.command, .shift], .command, .command, .command, .command, .command])
+                       [[], .shift, [], [.command, .shift], .command, .command, .command, .command, .command,
+                        .command])
         // A clip that isn't an image has no text to extract, and the item says why.
         let extract = try XCTUnwrap(commandK.menu.items.first { $0.title == "Extract Text" })
         XCTAssertFalse(extract.isEnabled)
@@ -3320,8 +3378,11 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(saveTo.toolTip, "Create a collection first.")
         let delete = try XCTUnwrap(commandK.menu.items.last)
         XCTAssertFalse(delete.isEnabled)
+        // Translate, too, needs the library, which keeps translations.
+        let translate = try XCTUnwrap(commandK.menu.items.first { $0.title == "Translate" })
+        XCTAssertFalse(translate.isEnabled)
         XCTAssertTrue(commandK.menu.items.allSatisfy {
-            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete || $0 === extract
+            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete || $0 === extract || $0 === translate
         })
         // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
@@ -4782,16 +4843,16 @@ final class AppLaunchTests: XCTestCase {
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview", "Extract Text",
-                        "Save as Snippet", "Save to Collection", "Add to Favorites", "Show in Library", "New Snippet",
-                        "Enable Direct Paste…", "Move to Recently Deleted"])
+                        "Translate", "Save as Snippet", "Save to Collection", "Add to Favorites", "Show in Library",
+                        "New Snippet", "Enable Direct Paste…", "Move to Recently Deleted"])
         XCTAssertEqual(menu.items.map(\.isSeparatorItem),
-                       [false, false, true, false, false, true, false, false, false, true, false, false, true, false,
-                        true, false])
+                       [false, false, true, false, false, false, true, false, false, false, true, false, false, true,
+                        false, true, false])
         XCTAssertEqual(menu.items[0].keyEquivalent, "\r")
         XCTAssertEqual(menu.items[0].keyEquivalentModifierMask, [])
         XCTAssertTrue(menu.items.allSatisfy {
             $0.isSeparatorItem || $0.isEnabled
-                || ["Save to Collection", "Move to Recently Deleted", "Extract Text"].contains($0.title)
+                || ["Save to Collection", "Move to Recently Deleted", "Extract Text", "Translate"].contains($0.title)
         })
 
         // Copy As-Is copies the clip as captured, its trailing line break too, and sends nothing.
@@ -4807,7 +4868,7 @@ final class AppLaunchTests: XCTestCase {
         _ = try searchEditor(in: other)
         let pasteMenu = try actionMenu(of: other)
         XCTAssertEqual(pasteMenu.items.map(\.title), [
-            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "Extract Text", "",
+            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "Extract Text", "Translate", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -4847,7 +4908,8 @@ final class AppLaunchTests: XCTestCase {
             clickCount: 1, pressure: 1
         ))))
         XCTAssertEqual(menu.items.map(\.title), [
-            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "Extract Text", "",
+            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "Extract Text",
+            "Translate", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -5559,7 +5621,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNil(controller.state.pasteTarget)
         _ = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
         XCTAssertEqual(try actionMenu(of: controller).items.map(\.title),
-                       ["Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "",
+                       ["Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "Translate", "",
                         "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
                         "New Snippet", "", "Move to Recently Deleted"])
 
@@ -5714,7 +5776,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(toolbar.copyHint.isEnabled)
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.map(\.title), [
-            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "Extract Text", "",
+            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "Extract Text",
+            "Translate", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -5722,10 +5785,11 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(menu.items[1].isEnabled)
         XCTAssertTrue(menu.items[3].isEnabled)
         XCTAssertFalse(menu.items[4].isEnabled, "A command has no text in an image")
-        XCTAssertTrue(menu.items[6].isEnabled)
-        XCTAssertTrue(menu.items[8].isEnabled)
-        XCTAssertTrue(menu.items[10].isEnabled)
+        XCTAssertFalse(menu.items[5].isEnabled, "Nor is it translated while it waits on the card")
+        XCTAssertTrue(menu.items[7].isEnabled)
+        XCTAssertTrue(menu.items[9].isEnabled)
         XCTAssertTrue(menu.items[11].isEnabled)
+        XCTAssertTrue(menu.items[12].isEnabled)
 
         // Without the card, Return's actions are offered again.
         controller.perform(.escape)
