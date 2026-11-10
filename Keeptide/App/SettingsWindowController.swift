@@ -67,6 +67,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         if isOpening {
             isOpen = true
             setActivationPolicy(.regular)
+            // Opened again while Keeptide is active, nothing else tells the AI page that anything changed.
+            let ai = model.ai
+            Task { await ai.refresh() }
         }
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)
@@ -76,6 +79,14 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             window.initialFirstResponder = nil
             window.makeFirstResponder(nil)
         }
+    }
+
+    /// Reads Settings › AI again while the window shows, as when Keeptide becomes active coming back from System
+    /// Settings; a closed window reads nothing, and reads it all as it opens again.
+    func refreshIfOpen() {
+        guard isOpen else { return }
+        let ai = model.ai
+        Task { await ai.refresh() }
     }
 
     func windowWillClose(_ notification: Notification) {

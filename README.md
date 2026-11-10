@@ -60,15 +60,15 @@ snippets in a native library.
   into paragraphs. Tall screenshots are read in strips, so their small text is
   found. Nothing is recognized until you ask, and an image's card shows when
   its text is being recognized or has been found.
-- **Translation.** ⌘T shows a translation of the selected text, or of the
-  text in an image, beside its preview, made on this Mac with Apple's
-  Translation into the language you chose last, at first the first one in your
-  language list that it offers. The language's name above the translation, or
-  ⌥⌘T, opens a menu of languages that marks the ones to download first. An
-  image's text is recognized first when it hasn't been. Code, links and parts already in
-  that language stay as they are. Nothing is translated until you ask, a card
-  shows when it is being translated or has been, and when translating again
-  fails, the earlier translation stays.
+- **Translation.** ⌘T shows a translation of the selected text, or of the text
+  in an image, beside its preview, made on this Mac with Apple's Translation
+  into the language fixed in **Settings › AI**, or else the one you chose last,
+  at first the first one in your language list that it offers. The language's
+  name above the translation, or ⌥⌘T, opens a menu of languages that marks the
+  ones to download first. An image's text is recognized first when it hasn't
+  been. Code, links and parts already in that language stay as they are. Nothing
+  is translated until you ask, a card shows when it is being translated or has
+  been, and when translating again fails, the earlier translation stays.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
 - **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
@@ -174,6 +174,7 @@ Choose **Settings…** from the menu-bar menu.
 | General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, whether direct paste is on, opening at login, the welcome window and library export |
 | Shortcuts | The quick access shortcut: ⇧⌘V, ⌥⌘V, ⌃⌘V or off |
 | Privacy | Ignored apps, how long to keep clipboard history (from one day to forever) and storage warnings |
+| AI | Whether recognized text keeps its line breaks, the language to translate into (the last one chosen, or one you fix), what translating from each of your languages into it needs on this Mac, and whether Apple Intelligence is available (Keeptide doesn't use it yet) |
 | iCloud | Shows that iCloud saving is not available in this build |
 
 ## Privacy

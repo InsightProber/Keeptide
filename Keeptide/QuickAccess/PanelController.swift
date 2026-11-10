@@ -217,7 +217,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
             state.restoreKeepsLineBreaks(preferences.keepsLineBreaks)
-            state.restoreTranslationTarget(preferences.translationTarget)
+            state.restoreTranslationTarget(preferences.translationTarget, fixed: preferences.fixedTranslationTarget)
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics
@@ -1077,8 +1077,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// A language chosen from a language menu, for the clip the menu opened for: that clip's translation is made in it,
-    /// and so is every one after, in this panel and the next. A clip that left the list while the menu was open gets no
-    /// translation at all, never another clip's, as with ⌘K's actions.
+    /// and it is kept as the last used language, which every translation after is made in, in this panel and the next,
+    /// unless Settings fixes one. A clip that left the list while the menu was open gets no translation at all, never
+    /// another clip's, as with ⌘K's actions.
     private func chooseTranslationLanguage(_ code: String, for id: QuickAccessRow.ID?) {
         if let id, id != state.selection.selectedID {
             state.select(id)

@@ -2277,6 +2277,36 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(board.string(forType: .string), "翻译好的译文")
     }
 
+    func testALanguageFixedInSettingsIsTheOneThePanelTranslatesInto() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR", "de-DE"])
+        let preferences = try makePreferences(.medium)
+        preferences.translationTarget = "fr"
+        preferences.fixedTranslationTarget = "ja"
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator,
+                                                      textBody: "The quarterly plan is due on Friday.",
+                                                      preferences: preferences)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        // Translation's languages, and so its regions, are read as the panel opens.
+        try await SearchTestSupport.waitUntil { controller.state.knownTranslationLanguages.count == 5 }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "ja-JP"),
+                       "The fixed language, not the last used one")
+        // Another language chosen in the actions menu translates the clip into it and is kept as the last used one;
+        // the fixed language stays the one translations are made in.
+        let languages = try XCTUnwrap(try actionMenu(of: controller).items.first { $0.title == "Translate To" }?.submenu)
+        languages.performActionForItem(at: try XCTUnwrap(languages.items.firstIndex { $0.title == "German" }))
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "de-DE"))
+        XCTAssertEqual(preferences.translationTarget, "de")
+        XCTAssertEqual(preferences.fixedTranslationTarget, "ja")
+        XCTAssertEqual(controller.state.translationTarget, Locale.Language(identifier: "ja-JP"))
+    }
+
     func testOptionCommandTOffersTheLanguagesToTranslateIntoAndSaysWhatEachNeeds() async throws {
         let translator = ScriptedTranslator()
         translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR"],

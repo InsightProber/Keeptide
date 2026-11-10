@@ -52,13 +52,15 @@ tag and VoiceOver say which.
 
 ⌘T, or **Translation** in the preview's bar, shows a translation of the selected
 text beside its preview: the text on the left and, on the right, a translation
-made on this Mac with Apple's Translation into the language chosen last, at
-first the first one in the person's language list that Translation offers, each
-paragraph as it is done.
-The language's name above the translation is a menu of the languages Translation
-offers, the person's own first; ⌥⌘T opens it too, and **Translate To** in the
-actions menu lists the same languages. Choosing one translates into it, and
-every translation after, in this and later sessions. Once quick access shows the
+made on this Mac with Apple's Translation into the language fixed in Settings ›
+AI, or else the one chosen last, at first the first one in the person's language
+list that Translation offers, each paragraph as it is done. The language's name
+above the translation is a menu of the languages Translation offers, the
+person's own first; ⌥⌘T opens it too, and **Translate To** in the actions menu
+lists the same languages. Choosing one translates into it, and every translation
+after, in this and later sessions; where Settings › AI fixes a language, it
+translates that clip into it once and is kept for when Settings goes back to
+Last Used. Once quick access shows the
 text and its language can be told, the menu marks the languages it can't be
 translated into yet: **Not Downloaded** where a language must be downloaded
 first, and **Not Available on This Mac** where this Mac can't translate between
@@ -164,9 +166,14 @@ and performance. They are not first-release promises.
 
 ## Application preferences and welcome
 
-The native Settings window groups appearance, keyboard shortcuts, privacy, and
-cloud availability. Keeptide saves new copies from first launch; the welcome
-says what it saves and what it skips, and there is no switch to turn it off.
-Shortcut changes preserve the last working registration if a new choice
-fails. Login-item controls reflect the operating system status. iCloud is
-explicitly unavailable in the current build.
+The native Settings window groups appearance, keyboard shortcuts, privacy, AI
+and cloud availability. Settings › AI sets whether recognized text keeps its
+line breaks and the language translations are made in: Last Used, the one last
+chosen in quick access, or one fixed there. It lists what translating from each
+of the person's languages into that one needs on this Mac, opens Language &
+Region in System Settings to download more, and says whether Apple Intelligence
+is available, which Keeptide doesn't use yet. Keeptide saves new copies from
+first launch; the welcome says what it saves and what it skips, and there is no
+switch to turn it off. Shortcut changes preserve the last working registration
+if a new choice fails. Login-item controls reflect the operating system status.
+iCloud is explicitly unavailable in the current build.
