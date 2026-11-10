@@ -315,18 +315,21 @@ final class GenerationJobTests: XCTestCase {
         XCTAssertEqual(StreamingTextDisplay.Mode(.failed(.interrupted)), .still)
     }
 
-    func testOnlyAWholeResultWithTextReplacesAnEarlierOne() {
+    func testAWholeResultReplacesAnEarlierOneWithTextOrWithout() {
         func decision(_ phase: GenerationSnapshot.Phase, text: String = "Text") -> SaveDecision {
             GenerationSnapshot(phase: phase, texts: [.main: text]).saveDecision
         }
         XCTAssertEqual(decision(.finished(.completed)), .replace)
-        XCTAssertEqual(decision(.finished(.completed), text: ""), .discard)
+        // Finding nothing, as in an image without text, is a whole result too: it leaves no earlier one.
+        XCTAssertEqual(decision(.finished(.completed), text: ""), .clear)
         XCTAssertEqual(decision(.finished(.truncated)), .keepIfNoCompleteResult)
         XCTAssertEqual(decision(.stopped(.person)), .keepIfNoCompleteResult)
+        XCTAssertEqual(decision(.stopped(.person), text: ""), .discard)
         XCTAssertEqual(decision(.stopped(.superseded)), .discard)
         XCTAssertEqual(decision(.stopped(.shutdown)), .discard)
         XCTAssertEqual(decision(.finished(.refused)), .discard)
         XCTAssertEqual(decision(.failed(.interrupted)), .discard)
+        XCTAssertEqual(decision(.failed(.interrupted), text: ""), .discard)
     }
 
     /// A center whose jobs stop when the test ends, with snapshots published for every event unless a test says

@@ -359,11 +359,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
         toolbar.captureNotice = notice
         // And why a recognition that just ended left the text column without text.
-        let column = state.textColumnRef.flatMap { ref in state.textColumn.map { (ref: ref, column: $0) } }
-        if let words = textColumnEndings.words(for: column, isJustMade: state.isTextColumnJustMade,
-                                               isOpen: isSessionOpen) {
-            announce(words)
+        let column = state.textColumnRef.flatMap { ref in
+            state.textColumn.map { (ref: ref, column: $0, ending: state.textColumnEnding) }
         }
+        if let words = textColumnEndings.words(for: column, isOpen: isSessionOpen) { announce(words) }
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }

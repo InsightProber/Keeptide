@@ -88,6 +88,45 @@ final class DerivedTextStoreTests: XCTestCase {
         XCTAssertEqual(thirdRows, 0)
     }
 
+    func testAWholeResultWithoutTextLeavesNoResultForTheContentTheItemHas() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Screenshot", into: controller)
+        let recognition = DerivedTextRequest(source: source, operation: .extractText)
+        _ = try await store.save(snapshot("Made before"), for: recognition)
+        _ = try await store.save(snapshot("Traduit"),
+                                 for: DerivedTextRequest(source: source, operation: .translate, targetLanguage: "fr"))
+
+        // Nothing found under another store generation, or for content the item no longer has, and nothing made by a
+        // job that failed or was stopped: the text made before stays.
+        let current = try await controller.identity()
+        let earlier = StoreIdentity(storeID: current.storeID, generation: UUID())
+        _ = try await store.save(snapshot(""), for: recognition, expecting: earlier)
+        var stale = source
+        stale.version = ContentVersion()
+        _ = try await store.save(snapshot(""), for: DerivedTextRequest(source: stale, operation: .extractText))
+        let clearedOtherGeneration = try await store.clear(source, operation: .extractText, expecting: earlier)
+        let clearedStale = try await store.clear(stale, operation: .extractText)
+        XCTAssertFalse(clearedOtherGeneration, "It says the store didn't take it")
+        XCTAssertFalse(clearedStale)
+        _ = try await store.save(snapshot("", phase: .failed(.interrupted)), for: recognition)
+        _ = try await store.save(snapshot("", phase: .stopped(.person)), for: recognition)
+        var kept = try await store.result(for: source, operation: .extractText)
+        XCTAssertEqual(kept?.text, "Made before")
+
+        // Nothing found for the content the item has: the item has no text now, and keeps its translation.
+        let cleared = try await store.save(snapshot(""), for: recognition, expecting: current)
+
+        XCTAssertNil(cleared)
+        let clearedAgain = try await store.clear(source, operation: .extractText, expecting: current)
+        XCTAssertTrue(clearedAgain, "Nothing left to clear is cleared all the same")
+        kept = try await store.result(for: source, operation: .extractText)
+        XCTAssertNil(kept)
+        let translation = try await store.result(for: source, operation: .translate)
+        XCTAssertEqual(translation?.text, "Traduit")
+        let rows = try await rowCount(for: source.itemID, in: controller)
+        XCTAssertEqual(rows, 1)
+    }
+
     func testTheRecognizedTextAndTheTranslationOfOneItemAreKeptApart() async throws {
         let (controller, store) = try await makeStore()
         let source = try await insertClip("Hello", into: controller)

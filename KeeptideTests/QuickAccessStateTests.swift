@@ -981,6 +981,133 @@ final class QuickAccessStateTests: XCTestCase {
         try await SearchTestSupport.waitUntil { state.textColumn == made }
     }
 
+    func testAFailedRecognitionInTheOtherLayoutLeavesTheTextMadeBeforeAndSaysSo() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Line one\nline two"), .finished(.completed))
+        let made = TextColumn.text("Line one\nline two", keepsLineBreaks: true, status: .complete)
+        try await SearchTestSupport.waitUntil { state.textColumn == made && state.textColumnResult != nil }
+        state.toggleKeepLineBreaks()
+        let again = try await startedSource(recognizer, 1)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        again.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        again.end(throwing: failure)
+
+        try await SearchTestSupport.waitUntil { state.textColumn == .failedAgain(made, failure) }
+        XCTAssertTrue(state.isTextColumnJustMade, "It is how the latest recognition ended")
+        XCTAssertTrue(state.isKeepLineBreaksOn, "The switch shows the layout of the text on screen")
+        XCTAssertFalse(state.keepsLineBreaks, "The choice stays the person's")
+        XCTAssertEqual(state.textColumnText, "Line one\nline two")
+        XCTAssertEqual(state.textColumnResult?.text, "Line one\nline two", "Return still takes the text")
+        XCTAssertEqual(state.textMark(for: row), .hasText)
+
+        // ⇧⌘T tries again, in the layout asked for.
+        state.showTextInImage()
+        _ = try await startedSource(recognizer, 2)
+        XCTAssertEqual(recognizer.layouts, [true, false, false])
+    }
+
+    func testAFailedRecognitionLeavesTheTextKeptFromBeforeAndSaysSo() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Joined from before"]),
+            for: DerivedTextRequest(source: row.ref, operation: .extractText, keepsLineBreaks: false))
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 200, height: 200))
+        state.showTextInImage()
+        let kept = TextColumn.text("Joined from before", keepsLineBreaks: false, status: .complete)
+        try await SearchTestSupport.waitUntil { state.textColumn == kept }
+        state.toggleKeepLineBreaks()
+        let again = try await startedSource(recognizer, 0)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+
+        again.end(throwing: failure)
+
+        try await SearchTestSupport.waitUntil { state.textColumn == .failedAgain(kept, failure) }
+        XCTAssertTrue(state.isTextColumnJustMade)
+        XCTAssertEqual(state.textColumnResult?.text, "Joined from before")
+        try await SearchTestSupport.waitUntil { state.textMark(for: row) == .hasText }
+
+        // Shown again, the text kept from before stands: nothing is recognized on its own.
+        state.closeResultColumn()
+        state.showTextInImage()
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(recognizer.layouts, [true])
+        XCTAssertEqual(state.textColumn, .failedAgain(kept, failure))
+
+        // A recognition stopped since leaves the text, without saying the failure again.
+        state.extractText()
+        _ = try await startedSource(recognizer, 1)
+        state.stopTextRecognition()
+        try await SearchTestSupport.waitUntil { state.textColumn == kept }
+        XCTAssertFalse(state.isTextColumnJustMade)
+    }
+
+    func testTextTheStoreDidntTakeLeavesTheTextKeptFromBeforeAndSaysSo() async throws {
+        let (fixture, recognizer) = try await makeTextFixture(keepsUnderAnotherGeneration: true)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Joined from before"]),
+            for: DerivedTextRequest(source: row.ref, operation: .extractText, keepsLineBreaks: false))
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 200, height: 200))
+        state.showTextInImage()
+        try await SearchTestSupport.waitUntil {
+            state.textColumn == .text("Joined from before", keepsLineBreaks: false, status: .complete)
+        }
+        try await SearchTestSupport.waitUntil { state.textMark(for: row) == .hasText }
+        state.toggleKeepLineBreaks()
+
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Made now"), .finished(.completed))
+
+        // The library didn't take it: as with any failure, the text kept from before stays, and the column says why.
+        let kept = TextColumn.text("Joined from before", keepsLineBreaks: false, status: .complete)
+        try await SearchTestSupport.waitUntil { state.textColumn == .failedAgain(kept, .contentUnavailable) }
+        XCTAssertEqual(state.textColumnResult?.text, "Joined from before")
+        XCTAssertEqual(state.textMark(for: row), .hasText)
+    }
+
+    func testFindingNoTextInTheOtherLayoutReplacesTheTextMadeBefore() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        state.showTextInImage()
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Line one\nline two"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.textColumnResult != nil }
+        state.toggleKeepLineBreaks()
+
+        try await startedSource(recognizer, 1).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { state.textColumn == .noText }
+        XCTAssertNil(state.textColumnText)
+        XCTAssertNil(state.textColumnResult)
+        XCTAssertNil(state.textMark(for: row))
+        let store = DerivedTextStore(controller: fixture.harness.controller)
+        try await SearchTestSupport.waitUntil { try await store.result(for: row.ref, operation: .extractText) == nil }
+    }
+
     func testTheTextAskedForIsRecognizedOnceWhereverTheSelectionGoes() async throws {
         let (fixture, recognizer) = try await makeTextFixture()
         try await insert("Notes", at: 1, into: fixture)
@@ -2904,12 +3031,18 @@ final class QuickAccessStateTests: XCTestCase {
         return busy
     }
 
-    private func makeTextFixture() async throws -> (Fixture, ScriptedRecognizer) {
+    /// A fixture whose library recognizes text with a recognizer the test drives. Under another store generation, as
+    /// when the library has since become another, nothing it makes is kept.
+    private func makeTextFixture(keepsUnderAnotherGeneration: Bool = false) async throws
+        -> (Fixture, ScriptedRecognizer) {
         var fixture = try makeFixture()
         let recognizer = ScriptedRecognizer()
         let controller = fixture.harness.controller
+        let current = try await controller.identity()
+        let identity = keepsUnderAnotherGeneration ? StoreIdentity(storeID: current.storeID, generation: UUID())
+            : current
         let derivedText = DerivedTextCoordinator(
-            store: DerivedTextStore(controller: controller), identity: try await controller.identity(),
+            store: DerivedTextStore(controller: controller), identity: identity,
             recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
         addTeardownBlock { await derivedText.stopAndDrain() }
         var services = fixture.services

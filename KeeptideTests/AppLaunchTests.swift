@@ -2150,6 +2150,71 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(controller.state.textColumn, .failed(.contentUnavailable))
     }
 
+    func testVoiceOverHearsThatRecognizingAgainFailedAndLeftTheText() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        let made = TextColumn.text("Synthetic text in image", keepsLineBreaks: true, status: .complete)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == made
+        }
+        controller.perform(.toggleKeepLineBreaks)
+        let again = try await startedSource(recognizer, 1)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+
+        again.end(throwing: failure)
+
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TextColumnWords.failedAgain(leaving: made, because: failure))
+        }
+        XCTAssertEqual(controller.state.textColumn, .failedAgain(made, failure))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let display = try XCTUnwrap(views(StreamingTextDisplay.self, in: window.contentView).first)
+        XCTAssertEqual(display.shownText, "Synthetic text in image")
+        // ⇧⌘T tries again.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        _ = try await startedSource(recognizer, 2)
+    }
+
+    func testVoiceOverHearsWhyARecognitionFailedOnceWhereverTheSelectionGoes() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        try await startedSource(recognizer, 0).end(throwing: failure)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(failure.message)
+        }
+
+        // To the text clip and back: the column shows the failure again once what the image has is read, quietly.
+        controller.perform(.move(1))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumnRef == nil
+        }
+        controller.perform(.move(-1))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == .failed(failure)
+        }
+        for _ in 0..<5 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        XCTAssertEqual(announced, ["\(TextColumnWords.title), on this Mac", failure.message])
+    }
+
     func testExtractTextShowsTheRecognitionAtOnce() async throws {
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)

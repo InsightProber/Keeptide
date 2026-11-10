@@ -44,31 +44,62 @@ struct QuickAccessSplitPreview: View {
     }
 }
 
-/// Why a recognition that just ended left the text column without text, said to VoiceOver as it ends: there is none in
-/// the image, or why it failed. The panel asks on every change it sees, and not the column's view: SwiftUI doesn't
-/// always deliver a view's `onChange`. Each ending is said once, as the column changes to it for the same image; an
-/// ending shown for another image, as the panel opens, or that isn't the latest recognition's, says nothing.
+/// Why a recognition that just ended left the text column without new text, said to VoiceOver as it ends: there is
+/// none in the image, or why it failed, and whether that left the text from before. The panel asks on every change it
+/// sees, and not the column's view: SwiftUI doesn't always deliver a view's `onChange`. An ending is told by `ending`,
+/// the latest recognition's while the column shows it. What the column says of an ending is said once, as it changes:
+/// a new ending, or the same one in other words, as when text it made can't be kept. What the column shows as it
+/// begins to show an image, as the panel opens or the selection comes to it, is only shown, even once it has read
+/// what it needs; so is an ending that isn't the latest.
 struct TextColumnEndings {
-    /// The column as it was last shown.
-    private var shown: (ref: ContentRef, column: TextColumn)?
+    /// The image the column shows, and the ending it showed as it began to show it.
+    private var shown: (ref: ContentRef, ending: UUID?)?
+    /// What the column last showed of the image once it had read what it needs: the ending and its words. Nil while it
+    /// still reads, as it began to show the image.
+    private var known: (ending: UUID?, words: String?)?
+    /// The ending said last, and what was said of it.
+    private var said: (ending: UUID, words: String)?
 
-    /// The words for the column now shown, if any, given the column shown before; it remembers this one.
-    mutating func words(for column: (ref: ContentRef, column: TextColumn)?, isJustMade: Bool,
-                        isOpen: Bool) -> String? {
-        let before = shown
-        shown = column
-        guard isOpen, isJustMade, let column, let before, before.ref == column.ref,
-              before.column != column.column else { return nil }
-        switch column.column {
-        case .noText: return TextColumnWords.noText
-        case .failed(let error): return error.message
-        case .loading, .notStarted, .recognizing, .text, .unsaved: return nil
+    /// The words for the column now shown, if any; it remembers what the column shows.
+    mutating func words(for column: (ref: ContentRef, column: TextColumn, ending: UUID?)?, isOpen: Bool) -> String? {
+        guard let column else {
+            shown = nil
+            known = nil
+            return nil
         }
+        let now = (ending: column.ending, words: Self.words(for: column.column))
+        let isRead = column.column != .loading
+        guard isOpen, let before = shown, before.ref == column.ref else {
+            shown = (column.ref, column.ending)
+            known = isRead ? now : nil
+            return nil
+        }
+        guard isRead else { return nil }
+        let was = known
+        known = now
+        // Read as the column began to show the image, an ending it had then is only shown.
+        if was == nil, now.ending == before.ending { return nil }
+        if let was, was == now { return nil }
+        guard let ending = now.ending, let words = now.words,
+              said?.ending != ending || said?.words != words else { return nil }
+        said = (ending, words)
+        return words
     }
 
-    /// Forgets the column shown before, as the panel closes.
+    /// Forgets what the column showed and what was said, as the panel closes.
     mutating func reset() {
         shown = nil
+        known = nil
+        said = nil
+    }
+
+    private static func words(for column: TextColumn) -> String? {
+        switch column {
+        case .noText: TextColumnWords.noText
+        case .failed(let error): error.message
+        case .failedAgain(let kept, let error): TextColumnWords.failedAgain(leaving: kept, because: error)
+        case .loading, .notStarted, .recognizing, .text, .unsaved: nil
+        }
     }
 }
 
@@ -81,6 +112,17 @@ enum TextColumnWords {
     static let tryAgain = "Try Again"
     static let unreadableImage = "This image couldn't be read."
 
+    /// What the column says as recognizing an image again comes to nothing and leaves what it had, its text or that it
+    /// had none: that the recognition failed, or, where the item became unavailable meanwhile, as when it went to
+    /// Recently Deleted, that.
+    static func failedAgain(leaving kept: TextColumn, because error: GenerationError) -> String {
+        let what = error.kind == .contentUnavailable ? error.message : "Couldn't recognize the text again."
+        switch kept {
+        case .text, .unsaved: return what + " The earlier text is unchanged."
+        case .loading, .notStarted, .recognizing, .noText, .failed, .failedAgain: return what
+        }
+    }
+
     static func subtitle(for column: TextColumn) -> String {
         switch column {
         case .recognizing(let snapshot) where snapshot.phase == .queued: "Waiting to recognize on this Mac…"
@@ -88,6 +130,7 @@ enum TextColumnWords {
         case .text(let text, let keepsLineBreaks, _), .unsaved(let text, let keepsLineBreaks):
             "Recognized on this Mac, \(amount(of: text, keepingLineBreaks: keepsLineBreaks))"
         case .noText: "Recognized on this Mac"
+        case .failedAgain(let kept, _): subtitle(for: kept)
         case .loading, .notStarted, .failed: "On this Mac"
         }
     }
@@ -132,9 +175,12 @@ extension TextColumn {
         return false
     }
 
+    /// The latest recognition failed, whether or not it left text from before: it can be tried again.
     var isFailed: Bool {
-        if case .failed = self { return true }
-        return false
+        switch self {
+        case .failed, .failedAgain: true
+        case .loading, .notStarted, .recognizing, .text, .unsaved, .noText: false
+        }
     }
 }
 
@@ -291,6 +337,18 @@ private struct TextInImageColumn: View {
                 Text(TextColumnWords.recognizing(pixelSize: pixelSize))
                     .font(.system(size: 13)).foregroundStyle(.secondary)
             }
+            // Recognizing again failed: what the column had stays, under why.
+            if case .failedAgain(let kept, let error) = column {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text(TextColumnWords.failedAgain(leaving: kept, because: error))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .help(error.message)
+                    Button(TextColumnWords.tryAgain) { onCommand(.extractText) }
+                        .buttonStyle(TrayCapsuleButtonStyle())
+                        .help("\(TextColumnWords.tryAgain) (⇧⌘T)")
+                }
+            }
             // The one display, in the same place while the recognition runs and once its text is made.
             if let shown {
                 StreamingTextView(text: shown.text, mode: shown.mode,
@@ -315,9 +373,9 @@ private struct TextInImageColumn: View {
                 .accessibilityLabel(TextColumnWords.extract)
                 .accessibilityIdentifier("QuickAccessExtractText")
                 .help("\(TextColumnWords.extract) (⇧⌘T)")
-            case .unsaved:
+            case .unsaved, .failedAgain(.unsaved, _):
                 Text(TextColumnWords.notSaved).font(.system(size: 11)).foregroundStyle(.secondary)
-            case .noText:
+            case .noText, .failedAgain(.noText, _):
                 Text(TextColumnWords.noText).font(.system(size: 14)).foregroundStyle(.secondary)
             case .failed(let error):
                 Text(error.message).font(.system(size: 14)).foregroundStyle(.secondary)
@@ -326,7 +384,7 @@ private struct TextInImageColumn: View {
                 Button(TextColumnWords.tryAgain) { onCommand(.extractText) }
                     .buttonStyle(TrayCapsuleButtonStyle())
                     .help("\(TextColumnWords.tryAgain) (⇧⌘T)")
-            case .recognizing, .text:
+            case .recognizing, .text, .failedAgain:
                 EmptyView()
             }
         }
@@ -346,7 +404,12 @@ private struct TextInImageColumn: View {
         case .unsaved(let text, _):
             // Recognition on this Mac ends whole or not at all.
             return (text, isJustMade ? .finishing : .still, true)
-        case .loading, .notStarted, .noText, .failed:
+        // What a failed recognition left, as it was: not typed out again.
+        case .failedAgain(.text(let text, _, let status), _):
+            return (text, .still, status == .complete)
+        case .failedAgain(.unsaved(let text, _), _):
+            return (text, .still, true)
+        case .loading, .notStarted, .noText, .failed, .failedAgain:
             return nil
         }
     }
