@@ -96,6 +96,8 @@ final class QuickAccessStripView: NSView {
     private var details: [ContentRef: ClipDetail] = [:]
     /// What each image's card says of the text in it.
     private var textMarks: [ContentRef: StripTextMark] = [:]
+    /// What each text's card says of its translation.
+    private var translationMarks: [ContentRef: StripTranslationMark] = [:]
     private var metrics: StripMetrics?
     private var applicationNames: ApplicationNames?
     /// The collections a memo's card may name.
@@ -183,7 +185,8 @@ final class QuickAccessStripView: NSView {
     func show(_ rows: [QuickAccessRow], selection: QuickAccessRow.ID?, details: [ContentRef: ClipDetail],
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true,
               collections: [CollectionID: CollectionSummary] = [:], collectionColors: [CollectionID: String] = [:],
-              slides: Bool = true, textMarks: [ContentRef: StripTextMark] = [:]) {
+              slides: Bool = true, textMarks: [ContentRef: StripTextMark] = [:],
+              translationMarks: [ContentRef: StripTranslationMark] = [:]) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
         // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
@@ -206,6 +209,7 @@ final class QuickAccessStripView: NSView {
         self.selection = selection
         self.details = details
         self.textMarks = textMarks
+        self.translationMarks = translationMarks
         self.metrics = metrics
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
@@ -432,7 +436,8 @@ final class QuickAccessStripView: NSView {
                                     tint: row.sourceApp.map { HeaderTint.tint(forIconOf: $0, icon: icon) })
             let view = StripFrameView(
                 content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize,
-                                                collections: collections, textMark: textMarks[row.ref]),
+                                                collections: collections, textMark: textMarks[row.ref],
+                                                translationMark: translationMarks[row.ref]),
                 applicationIcon: icon, metrics: metrics, accent: accent, isSelected: row.id == selection
             )
             let retained = frames[row.id] != nil
@@ -1127,14 +1132,18 @@ private final class StripFrameHost: NSView {
         let card = [what, when, applicationName.map { "from \($0)" }, content.info.map(ClipInfoFormatter.spoken)]
         let marks = [(row.savedAsMemo, "Saved as Snippet"), (row.isPartiallyIndexed, "Partially indexed"),
                      (row.isTextUnavailable, "Text unavailable")].filter { $0.0 }.map { $0.1 }
-            + (content.textMark.map { [$0.spoken] } ?? [])
+            + [content.textMark?.spoken, content.translationMark?.spoken].compactMap { $0 }
         return ([card.compactMap { $0 }.joined(separator: ", ") + ": " + content.accessibilityTitle] + marks)
             .joined(separator: ", ")
     }
 
-    /// The help tag of the mark for the text in the card's image, which VoiceOver reads on request, such as how to
-    /// show the text.
-    override func accessibilityHelp() -> String? { drawing.rootView.content.textMark?.help }
+    /// The help tags of the card's marks, for the text in its image and for its translation, which VoiceOver reads on
+    /// request, such as how to show the text.
+    override func accessibilityHelp() -> String? {
+        let content = drawing.rootView.content
+        let helps = [content.textMark?.help, content.translationMark?.help].compactMap { $0 }
+        return helps.isEmpty ? nil : helps.joined(separator: " ")
+    }
 
     override func isAccessibilitySelected() -> Bool { drawing.rootView.isSelected }
 

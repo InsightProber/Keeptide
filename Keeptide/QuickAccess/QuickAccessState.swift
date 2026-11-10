@@ -285,10 +285,14 @@ final class QuickAccessState {
     /// Whether text recognized from now on keeps the image's line breaks or joins lines into paragraphs: the person's
     /// choice, which the panel gives as it opens and keeps as Keep Line Breaks changes it.
     private(set) var keepsLineBreaks = true
-    /// The listed images known to have whole text kept from earlier, read with the cards' details.
-    private(set) var keptTextSources: Set<ContentRef> = []
-    /// The images whose kept text has been read for, or is being read for, in this showing.
-    @ObservationIgnored private var keptTextAsked: Set<ContentRef> = []
+    /// What earlier jobs kept for the listed clips, read with the cards' details: the text in images and the
+    /// translations of texts, how whole each is and its language.
+    private(set) var keptResults: [DerivedTextOperation: [ContentRef: DerivedTextSummary]] = [:]
+    /// The clips the store has said what it keeps for, for each operation, in this showing: until it has, a failure
+    /// that a result kept from before may outweigh says nothing.
+    private(set) var keptAnswered: [DerivedTextOperation: Set<ContentRef>] = [:]
+    /// The clips whose kept results of each operation have been read for, or are being read for, in this showing.
+    @ObservationIgnored private var keptAsked: [DerivedTextOperation: Set<ContentRef>] = [:]
     /// The image whose text was copied just now: the preview's bar says so for a moment, beside that image's text.
     private var copiedTextRef: ContentRef?
     static let textCopiedNoteDuration: Duration = .seconds(1.5)
@@ -478,8 +482,9 @@ final class QuickAccessState {
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
         savedTexts = []
-        keptTextSources = []
-        keptTextAsked = []
+        keptResults = [:]
+        keptAnswered = [:]
+        keptAsked = [:]
         hiddenFacets = []
         leftCollections = [:]
         isOpen = true
@@ -528,8 +533,9 @@ final class QuickAccessState {
     func servicesDidChange() {
         guard isOpen else { return }
         // What another library kept says nothing of this one's.
-        keptTextSources = []
-        keptTextAsked = []
+        keptResults = [:]
+        keptAnswered = [:]
+        keptAsked = [:]
         startSession(recordingTarget: false)
     }
 
@@ -670,26 +676,29 @@ final class QuickAccessState {
         waitingDetails = refs.filter { details[$0] == nil && detailLoads[$0] == nil }
         detailFrameSize = frameSize
         startDetailReads()
-        readKeptText(for: refs)
+        let kinds = Dictionary(selection.rows.map { ($0.ref, $0.kind) }, uniquingKeysWith: { first, _ in first })
+        readKeptResults(of: refs.filter { kinds[$0] == .image }, operation: .extractText)
+        readKeptResults(of: refs.filter { kinds[$0] == .text }, operation: .translate)
     }
 
-    /// Reads, in one go, which of the framed images not asked about yet have text kept from earlier, for their cards.
-    private func readKeptText(for refs: [ContentRef]) {
+    /// Reads, in one go, what earlier jobs of the operation kept for the framed clips not asked about yet, for their
+    /// cards: the text in images, or the translations of texts.
+    private func readKeptResults(of refs: [ContentRef], operation: DerivedTextOperation) {
         guard let derivedText = services()?.derivedText, let asking = session else { return }
-        let images = Set(selection.rows.lazy.filter { $0.kind == .image }.map(\.ref))
-        let asked = refs.filter { images.contains($0) && !keptTextAsked.contains($0) }
+        let asked = refs.filter { keptAsked[operation]?.contains($0) != true }
         guard !asked.isEmpty else { return }
-        keptTextAsked.formUnion(asked)
+        keptAsked[operation, default: []].formUnion(asked)
         Task { [weak self] in
-            let kept = await derivedText.sourcesWithSavedResults(asked, operation: .extractText)
+            let kept = await derivedText.savedSummaries(of: asked, operation: operation)
             // Another showing, or another library, asks for itself.
             guard let self, isOpen, session === asking else { return }
             guard let kept else {
                 // Unread, they are asked about again with the cards' next details.
-                keptTextAsked.subtract(asked)
+                keptAsked[operation]?.subtract(asked)
                 return
             }
-            keptTextSources.formUnion(kept)
+            if !kept.isEmpty { keptResults[operation, default: [:]].merge(kept) { _, read in read } }
+            keptAnswered[operation, default: []].formUnion(asked)
         }
     }
 
@@ -771,17 +780,58 @@ final class QuickAccessState {
     /// panel doesn't follow every snapshot it publishes.
     func textMarker() -> (QuickAccessRow) -> StripTextMark? {
         guard let derivedText = services()?.derivedText else { return { _ in nil } }
-        let kept = keptTextSources
+        // Text cut off at its length limit is text, as it is when made in this showing.
+        let kept = Set((keptResults[.extractText] ?? [:]).keys)
+        let answered = keptAnswered[.extractText] ?? []
         return { row in
             guard row.kind == .image else { return nil }
             let (job, outcome) = derivedText.cardState(for: row.ref, operation: .extractText)
             if let job { return job.hasStarted ? .recognizing : .waiting }
             switch outcome {
             case .saving?, .saved?, .notSaved?: return .hasText
-            // A failure leaves the text kept from before.
-            case .failed(let error)?: return kept.contains(row.ref) ? .hasText : .failed(error.message)
+            // A failure leaves the text kept from before, which the store is asked for first.
+            case .failed(let error)?:
+                if kept.contains(row.ref) { return .hasText }
+                return answered.contains(row.ref) ? .failed(error.message) : nil
             case .noText?: return nil
             case nil: return kept.contains(row.ref) ? .hasText : nil
+            }
+        }
+    }
+
+    /// What a text's card says of its translation: one under way or waiting its turn, one made or kept from before,
+    /// whole or stopped part way, or why making it failed. Nothing for a clip that isn't text, a text never translated,
+    /// or one with nothing in it to translate.
+    func translationMark(for row: QuickAccessRow) -> StripTranslationMark? {
+        translationMarker()(row)
+    }
+
+    /// `translationMark(for:)` for many rows at once, as `textMarker()` is for the text in images.
+    func translationMarker() -> (QuickAccessRow) -> StripTranslationMark? {
+        guard let derivedText = services()?.derivedText else { return { _ in nil } }
+        let kept = keptResults[.translate] ?? [:]
+        let answered = keptAnswered[.translate] ?? []
+        func made(_ status: DerivedTextStatus, into language: String?) -> StripTranslationMark {
+            status == .complete ? .translated(into: language) : .stopped
+        }
+        return { row in
+            guard row.kind == .text else { return nil }
+            let (job, outcome) = derivedText.cardState(for: row.ref, operation: .translate)
+            if let job {
+                guard job.hasStarted else { return .waiting }
+                return .translating(into: derivedText.runningRequest(for: row.ref, operation: .translate)?.targetLanguage)
+            }
+            let before = kept[row.ref].map { made($0.status, into: $0.targetLanguage) }
+            switch outcome {
+            case .saving(_, let request, let status)?, .notSaved(_, let request, let status)?:
+                return made(status, into: request.targetLanguage)
+            case .saved(let result)?: return made(result.status, into: result.targetLanguage)
+            // A failure leaves the translation kept from before, which the store is asked for first.
+            case .failed(let error)?:
+                guard answered.contains(row.ref) else { return nil }
+                return before ?? .failed(error.message)
+            case .noText?: return nil
+            case nil: return before
             }
         }
     }

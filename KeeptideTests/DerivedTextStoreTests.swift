@@ -396,19 +396,23 @@ final class DerivedTextStoreTests: XCTestCase {
         XCTAssertEqual(read, saved)
     }
 
-    func testWhichSourcesHaveAWholeResultIsReadForManyAtOnce() async throws {
+    func testWhatIsKeptOfManySourcesIsReadAtOnce() async throws {
         let (controller, store) = try await makeStore()
         let whole = try await insertClip("Whole", into: controller)
         let partial = try await insertClip("Partial", into: controller)
+        let cutOff = try await insertClip("Cut off", into: controller)
         let none = try await insertClip("None", into: controller)
         let changed = try await insertClip("Changed", into: controller)
         let deleted = try await insertClip("Deleted", into: controller)
         let otherGeneration = try await insertClip("Other generation", into: controller)
+        let unreadable = try await insertClip("Unreadable", into: controller)
         for (source, phase) in [(whole, GenerationSnapshot.Phase.finished(.completed)), (partial, .stopped(.person)),
-                                (changed, .finished(.completed)), (deleted, .finished(.completed)),
-                                (otherGeneration, .finished(.completed))] {
+                                (cutOff, .finished(.truncated)), (changed, .finished(.completed)),
+                                (deleted, .finished(.completed)), (otherGeneration, .finished(.completed)),
+                                (unreadable, .finished(.completed))] {
             _ = try await store.save(snapshot("Made of \(source.itemID)", phase: phase),
-                                     for: DerivedTextRequest(source: source, operation: .extractText))
+                                     for: DerivedTextRequest(source: source, operation: .translate,
+                                                             targetLanguage: source == partial ? "ja" : "fr"))
         }
         var later = changed
         later.version = ContentVersion()
@@ -417,22 +421,30 @@ final class DerivedTextStoreTests: XCTestCase {
         _ = try await LifecycleService(controller: controller).remove(ref: deleted, at: Date(), expecting: identity,
                                                                       permit: permit)
         let otherItemID = otherGeneration.itemID.rawValue
+        let unreadableItemID = unreadable.itemID.rawValue
         try await controller.perform { context in
             let request = NSFetchRequest<NSManagedObject>(entityName: "DerivedText")
             request.predicate = NSPredicate(format: "itemID == %@", otherItemID as NSUUID)
             try context.fetch(request).forEach { $0.setValue(UUID(), forKey: "storeGeneration") }
+            // A row whose text no longer matches its digest can't be read.
+            request.predicate = NSPredicate(format: "itemID == %@", unreadableItemID as NSUUID)
+            try context.fetch(request).forEach { $0.setValue(Data(repeating: 0, count: 32), forKey: "textDigest") }
             try context.save()
             context.reset()
         }
 
-        let found = try await store.sourcesWithWholeResults([whole, partial, none, later, deleted, otherGeneration],
-                                                            operation: .extractText)
+        let found = try await store.summaries(of: [whole, partial, cutOff, none, later, deleted, otherGeneration,
+                                                   unreadable], operation: .translate)
 
-        XCTAssertEqual(found, [whole], "Whole, current, and for exactly the content it was made from")
-        let nothingAsked = try await store.sourcesWithWholeResults([], operation: .extractText)
-        XCTAssertEqual(nothingAsked, [])
-        let otherOperation = try await store.sourcesWithWholeResults([whole], operation: .translate)
-        XCTAssertEqual(otherOperation, [])
+        // How whole each is, and the language it is in, for a card to say.
+        XCTAssertEqual(found, [whole: DerivedTextSummary(status: .complete, targetLanguage: "fr"),
+                               partial: DerivedTextSummary(status: .stopped, targetLanguage: "ja"),
+                               cutOff: DerivedTextSummary(status: .truncated, targetLanguage: "fr")],
+                       "Current, readable, and for exactly the content it was made from; one that isn't hides no other")
+        let nothingAsked = try await store.summaries(of: [], operation: .translate)
+        XCTAssertEqual(nothingAsked, [:])
+        let otherOperation = try await store.summaries(of: [whole], operation: .extractText)
+        XCTAssertEqual(otherOperation, [:])
     }
 
     // MARK: Helpers

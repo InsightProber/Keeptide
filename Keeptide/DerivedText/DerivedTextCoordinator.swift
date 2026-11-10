@@ -172,10 +172,11 @@ final class DerivedTextCoordinator {
         try? await store.result(for: source, operation: operation)
     }
 
-    /// Which of these items have whole results of the operation kept from earlier jobs, for exactly their content;
-    /// nil when the store couldn't be read.
-    func sourcesWithSavedResults(_ sources: [ContentRef], operation: DerivedTextOperation) async -> Set<ContentRef>? {
-        try? await store.sourcesWithWholeResults(sources, operation: operation)
+    /// What earlier jobs kept of the operation for these items, for exactly their content: how whole each result is and
+    /// its language. Nil when the store couldn't be read.
+    func savedSummaries(of sources: [ContentRef],
+                        operation: DerivedTextOperation) async -> [ContentRef: DerivedTextSummary]? {
+        try? await store.summaries(of: sources, operation: operation)
     }
 
     /// The job under way and the outcome shown for exactly this content, as `job(for:operation:)` and
