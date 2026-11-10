@@ -422,7 +422,10 @@ final class QuickAccessState {
     }
     /// The column beside the preview, while one is chosen. It shows only for a clip that has one, and stays chosen
     /// while the selection moves through clips that don't.
-    private(set) var resultColumn: ResultColumn?
+    private(set) var resultColumn: ResultColumn? {
+        // A translation made in the background for the card the column showed stops as the column closes.
+        didSet { if resultColumn != .translation { dropTranslationWhileViewed() } }
+    }
     /// Whether text recognized from now on keeps the image's line breaks or joins lines into paragraphs: the person's
     /// choice, which the panel gives as it opens and keeps as Keep Line Breaks changes it.
     private(set) var keepsLineBreaks = true
@@ -457,6 +460,15 @@ final class QuickAccessState {
     /// unless Settings fixes one. Nil until one is, and translations are made in the first language the person
     /// prefers.
     private var chosenTranslationTarget: String?
+    /// Whether the card moved to while the translation column shows is translated in the background, as Settings'
+    /// Translate automatically says; the panel gives it as it opens.
+    var translatesAutomatically = false
+    /// How long a card shows in the translation column before Translate automatically translates it, so cards passed
+    /// over while moving through the list cost nothing.
+    var viewedTranslationDelay: Duration = .milliseconds(600)
+    /// The card the column shows whose translation is made in the background while it shows.
+    @ObservationIgnored private var viewedTranslation: ContentRef?
+    @ObservationIgnored private var viewedTranslationWait: Task<Void, Never>?
     /// The language Settings fixes translations in; nil for the last used one.
     private var fixedTranslationTarget: String?
     /// The languages translations can be made in, a language in each of its regions, as Translation last listed them:
@@ -1564,7 +1576,36 @@ final class QuickAccessState {
             guard !Task.isCancelled, let self, selection.selection == ref else { return }
             savedTranslationRef = ref
             savedTranslation = saved
+            translateWhileViewed(ref, kept: saved)
         }
+    }
+
+    /// With Translate automatically on, the text card the translation column shows is translated in the background
+    /// when nothing was kept of it; leaving it stops that.
+    private func translateWhileViewed(_ ref: ContentRef, kept: DerivedText?) {
+        guard translatesAutomatically, kept == nil, translationColumnRef == ref, selection.selectedRow?.kind == .text,
+              let derivedText = services()?.derivedText else { return }
+        dropTranslationWhileViewed(keeping: ref)
+        // Read again for the card it is already for, as a search's keystrokes read it again, it goes on as it was.
+        guard viewedTranslation != ref else { return }
+        viewedTranslation = ref
+        let delay = viewedTranslationDelay
+        let fixed = fixedTranslationTarget
+        let lastUsed = chosenTranslationTarget
+        viewedTranslationWait = Task { [weak self] in
+            if delay > .zero { try? await Task.sleep(for: delay) }
+            guard !Task.isCancelled, let self, viewedTranslation == ref, translationColumnRef == ref else { return }
+            derivedText.translateAutomatically(ref, fixed: fixed, lastUsed: lastUsed, whileViewed: true)
+        }
+    }
+
+    /// Stops what was translated in the background for a card the column no longer shows.
+    private func dropTranslationWhileViewed(keeping ref: ContentRef? = nil) {
+        guard let viewed = viewedTranslation, viewed != ref else { return }
+        viewedTranslation = nil
+        viewedTranslationWait?.cancel()
+        viewedTranslationWait = nil
+        services()?.derivedText?.stopTranslationWhileViewed(viewed)
     }
 
     func togglePreview() {
@@ -2393,6 +2434,9 @@ final class QuickAccessState {
     /// gone.
     private func followSelection() {
         if let reviewedAction, selection.selection != reviewedAction.target.ref { dropCommandReview() }
+        // A translation made in the background for a card the column no longer shows stops, however the card went: a
+        // list that leaves nothing selected loads no preview.
+        dropTranslationWhileViewed(keeping: translationColumnRef)
         guard isPreviewExpanded else { return }
         if selection.selectionLost {
             isPreviewExpanded = false

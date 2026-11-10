@@ -70,8 +70,9 @@ snippets in a native library.
   been. Code, links and parts already in that language stay as they are. Nothing
   is translated until you ask, unless **Translate automatically** is on in
   **Settings › AI**: then new text in another language is translated on this Mac
-  as you copy it. A card shows when a translation you asked for is under way,
-  and once a text has been translated; when translating again fails, the earlier
+  as you copy it, and so is a text card you move to while the translation column
+  is open. A card shows when a translation you asked for is under way, and once
+  a text has been translated; when translating again fails, the earlier
   translation stays.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.

@@ -1204,6 +1204,253 @@ final class QuickAccessStateTests: XCTestCase {
         }
     }
 
+    /// Two synthetic text clips, Older and Newer, in a panel that translates automatically, with Newer's translation
+    /// shown in the column and made.
+    private func makeAutomaticTranslationPanel(_ translator: ScriptedTranslator, translatesAutomatically: Bool = true,
+                                               delay: Duration = .zero, lastUsed: String? = nil)
+        async throws -> (QuickAccessState, Fixture, DerivedTextCoordinator) {
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR", "ja-JP"])
+        let (fixture, _) = try await makeTextFixture(translator: translator, text: { _ in
+            "Le rapport trimestriel est attendu vendredi, avec les chiffres définitifs de chaque équipe."
+        })
+        try await insert("Older", body: "Older synthetic note.", at: 0, into: fixture)
+        try await insert("Newer", body: "Newer synthetic note.", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.translatesAutomatically = translatesAutomatically
+        state.viewedTranslationDelay = delay
+        state.restoreTranslationTarget(lastUsed, fixed: nil)
+        state.open()
+        try await settled(state)
+        let derivedText = try XCTUnwrap(fixture.services.derivedText)
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("较新的笔记。"), .finished(.completed))
+        let newer = try XCTUnwrap(state.selection.selectedRow?.ref)
+        try await SearchTestSupport.waitUntil {
+            guard case .saved? = derivedText.outcome(for: newer, operation: .translate) else { return false }
+            return true
+        }
+        return (state, fixture, derivedText)
+    }
+
+    func testWithTheTranslationColumnOpenACardMovedToIsTranslatedInTheBackgroundAndDroppedWhenLeft() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture, derivedText) = try await makeAutomaticTranslationPanel(translator)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+
+        // Moved to with the column open, a card with no translation is translated in the background.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Older")
+        let background = try await startedTranslation(translator, 1)
+        XCTAssertEqual(derivedText.job(for: older.ref, operation: .translate)?.priority, .automatic)
+        XCTAssertNil(state.translationMark(for: older))
+        background.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度报告"))
+
+        // Left before it is made, it stops, and nothing of it is kept or said, not even the part made.
+        state.moveSelection(by: -1)
+        try await SearchTestSupport.waitUntil { background.wasCancelled }
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate) == nil }
+        XCTAssertNil(derivedText.outcome(for: older.ref, operation: .translate))
+        XCTAssertNil(state.translationMark(for: older))
+        let kept = try await DerivedTextStore(controller: fixture.harness.controller).result(for: older.ref,
+                                                                                          operation: .translate)
+        XCTAssertNil(kept)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(translator.request(2), "It isn't asked for again")
+    }
+
+    func testACardMovedToIsTranslatedIntoTheLanguageLastUsed() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, _) = try await makeAutomaticTranslationPanel(translator, lastUsed: "ja")
+
+        state.moveSelection(by: 1)
+
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "ja-JP"))
+    }
+
+    func testACardOnlyPassedOverIsntTranslated() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, _) = try await makeAutomaticTranslationPanel(translator, delay: .milliseconds(300))
+
+        // Moving through the list, a card shown only for a moment costs nothing, even once what it kept is read.
+        state.moveSelection(by: 1)
+        try await Task.sleep(for: .milliseconds(100))
+        state.moveSelection(by: -1)
+
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertNil(translator.request(1))
+        // One that stays is translated once it has shown a moment.
+        state.moveSelection(by: 1)
+        _ = try await startedTranslation(translator, 1)
+    }
+
+    func testAListThatLeavesTheCardStopsItsTranslationMadeInTheBackground() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture, derivedText) = try await makeAutomaticTranslationPanel(translator)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+        let background = try await startedTranslation(translator, 1)
+        background.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度报告"))
+
+        // A search that finds nothing takes the card away: its translation stops, and nothing of it is kept.
+        state.setQuery("zzzz no synthetic match")
+
+        try await SearchTestSupport.waitUntil { background.wasCancelled }
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate) == nil }
+        XCTAssertNil(derivedText.outcome(for: older.ref, operation: .translate))
+        let kept = try await DerivedTextStore(controller: fixture.harness.controller).result(for: older.ref,
+                                                                                          operation: .translate)
+        XCTAssertNil(kept)
+    }
+
+    func testCollapsingThePreviewStopsTheCardsTranslationMadeInTheBackground() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, derivedText) = try await makeAutomaticTranslationPanel(translator)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+        let background = try await startedTranslation(translator, 1)
+
+        state.togglePreview()
+
+        try await SearchTestSupport.waitUntil { background.wasCancelled }
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate) == nil }
+        XCTAssertNil(derivedText.outcome(for: older.ref, operation: .translate))
+    }
+
+    func testATranslationThePersonAsksForOnTheCardGoesOnWhenTheCardIsLeft() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, derivedText) = try await makeAutomaticTranslationPanel(translator)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+        _ = try await startedTranslation(translator, 1)
+
+        // ⌘T on the card makes it the person's: it goes on once the card is left.
+        state.showTranslation()
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate)?.priority == .user }
+        let asked = try await startedTranslation(translator, 2)
+        state.moveSelection(by: -1)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(asked.wasCancelled)
+        XCTAssertEqual(derivedText.job(for: older.ref, operation: .translate)?.priority, .user)
+    }
+
+    func testATranslationMadeForTheCardBeforeItIsLeftIsKeptAndShown() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture, _) = try await makeAutomaticTranslationPanel(translator)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+
+        try await startedTranslation(translator, 1).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("较旧的笔记。"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { state.translationMark(for: older) == .translated(into: "zh-Hans") }
+        state.moveSelection(by: -1)
+        let kept = try await DerivedTextStore(controller: fixture.harness.controller).result(for: older.ref,
+                                                                                          operation: .translate)
+        XCTAssertEqual(kept?.text, "较旧的笔记。")
+    }
+
+    func testACardWhoseTranslationThePersonAskedForFailedIsntTranslatedAgainWhenMovedTo() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, derivedText) = try await makeAutomaticTranslationPanel(translator, translatesAutomatically: false)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+        state.showTranslation()
+        try await startedTranslation(translator, 1).end(throwing: GenerationError(
+            kind: .languageNotDownloaded, message: "To translate from French to Chinese on this Mac, download both languages."))
+        func failed() -> Bool {
+            guard case .failed? = derivedText.outcome(for: older.ref, operation: .translate) else { return false }
+            return true
+        }
+        try await SearchTestSupport.waitUntil { failed() }
+
+        // Moved away and back, what the person was told stays: nothing is tried again in the background.
+        state.translatesAutomatically = true
+        state.moveSelection(by: -1)
+        state.moveSelection(by: 1)
+
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(translator.request(2))
+        XCTAssertTrue(failed())
+    }
+
+    func testOnlyATextCardTheTranslationColumnShowsIsTranslatedWhenMovedTo() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR"])
+        let (fixture, _) = try await makeTextFixture(translator: translator, text: { _ in
+            "Le rapport trimestriel est attendu vendredi, avec les chiffres définitifs de chaque équipe."
+        })
+        try await insert("Older", body: "Older synthetic note.", at: 0, into: fixture)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        try await insert("Newer", body: "Newer synthetic note.", at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.translatesAutomatically = true
+        state.viewedTranslationDelay = .zero
+        state.open()
+        try await settled(state)
+
+        // The preview alone, without the translation column, translates nothing as the selection moves.
+        state.togglePreview()
+        state.moveSelection(by: 2)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(translator.request(0))
+        // Nor does an image moved to with the column open: its text is recognized only when asked.
+        state.moveSelection(by: -2)
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("较新的笔记。"), .finished(.completed))
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(translator.request(1))
+    }
+
+    func testACardMovedToIsTranslatedOnlyWhereTranslateAutomaticallyIsOnAndNothingWasKept() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture, _) = try await makeAutomaticTranslationPanel(translator, translatesAutomatically: false)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(translator.request(1), "Off, a card moved to is translated only when asked")
+
+        // On, a card with a translation kept from before shows it, and isn't translated again.
+        state.moveSelection(by: -1)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Note gardée."]),
+            for: DerivedTextRequest(source: older.ref, operation: .translate, targetLanguage: "fr"))
+        state.translatesAutomatically = true
+        state.moveSelection(by: 1)
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(translator.request(1))
+    }
+
+    func testClosingTheColumnOrThePanelDropsTheCardsTranslationMadeInTheBackground() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _, derivedText) = try await makeAutomaticTranslationPanel(translator)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        state.moveSelection(by: 1)
+        let first = try await startedTranslation(translator, 1)
+
+        // Escape closes the column first: the translation it was making in the background goes.
+        state.closeResultColumn()
+
+        try await SearchTestSupport.waitUntil { first.wasCancelled }
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate) == nil }
+        XCTAssertNil(derivedText.outcome(for: older.ref, operation: .translate))
+        // So does closing the panel: back on the newer clip, its translation shows again, and the older one is
+        // translated in the background once more as it is moved to.
+        state.moveSelection(by: -1)
+        state.showTranslation()
+        state.moveSelection(by: 1)
+        _ = try await startedTranslation(translator, 2)
+        XCTAssertEqual(derivedText.job(for: older.ref, operation: .translate)?.priority, .automatic)
+        state.close()
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate) == nil }
+        XCTAssertNil(derivedText.outcome(for: older.ref, operation: .translate))
+    }
+
     func testEachTextCardSaysWhatIsKnownOfItsTranslation() async throws {
         let translator = ScriptedTranslator()
         let (fixture, _) = try await makeTextFixture(translator: translator)
@@ -4035,7 +4282,7 @@ final class QuickAccessStateTests: XCTestCase {
             : current
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: controller), identity: identity,
-            recognizer: recognizer, translator: translator,
+            recognizer: recognizer, translator: translator, preferredLanguages: { ["zh-Hans-CN", "en-US"] },
             image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: text)
         addTeardownBlock { await derivedText.stopAndDrain() }
         var services = fixture.services

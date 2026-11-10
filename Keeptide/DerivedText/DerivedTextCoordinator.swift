@@ -87,6 +87,10 @@ final class DerivedTextCoordinator {
     @ObservationIgnored private let translator: any TranslationEngine
     /// The languages the person prefers, first first, as the system lists them.
     @ObservationIgnored private let preferredLanguages: @Sendable () -> [String]
+    /// What Translate automatically makes for the card the translation column shows, until the card is left.
+    @ObservationIgnored private var viewed: Set<GenerationKey> = []
+    /// What Translate automatically is checking before it starts, one at a time for an item.
+    @ObservationIgnored private var checking: [GenerationKey: (token: UUID, task: Task<Void, Never>)] = [:]
     @ObservationIgnored private let image: @Sendable (ContentRef) async throws -> CGImage
     @ObservationIgnored private let text: @Sendable (ContentRef) async throws -> String
     /// The latest request for each item and operation, while its job runs or its result is saved. Only its ending
@@ -255,15 +259,22 @@ final class DerivedTextCoordinator {
     /// download is translated, and never in place of anything asked for, made, kept from before in whatever language, or
     /// under way. It gives way to every job a person asks for, and nothing is said of it while it runs, or if it ends with
     /// nothing to keep; once made, the translation is kept as any is.
-    func translateAutomatically(_ source: ContentRef, fixed: String?, lastUsed: String?) {
+    /// `whileViewed` makes it for the card the translation column shows, until `stopTranslationWhileViewed` says the
+    /// card was left.
+    func translateAutomatically(_ source: ContentRef, fixed: String?, lastUsed: String?, whileViewed: Bool = false) {
         let key = Self.key(for: source, operation: .translate)
         // Copied text never leaves this Mac to be translated.
         guard !isClosed, translator.tier == .onThisMac, job(for: source, operation: .translate) == nil,
-              waiting[key] == nil, !hasMade(source, key) else { return }
+              waiting[key] == nil, checking[key] == nil, !hasMade(source, key) else { return }
+        // A card whose translation a person asked for and saw fail keeps saying why.
+        if whileViewed, outcomes[key]?.source == source { return }
+        if whileViewed { viewed.insert(key) }
         let text = text
         let translator = translator
         let preferredLanguages = preferredLanguages
-        Task { [weak self] in
+        let token = UUID()
+        let check = Task { [weak self] in
+            defer { if self?.checking[key]?.token == token { self?.checking[key] = nil } }
             // What was kept is read first; while the store can't say, nothing is translated.
             guard let store = self?.store else { return }
             let kept: DerivedText?
@@ -273,17 +284,31 @@ final class DerivedTextCoordinator {
             let target = TranslationTargets.target(fixed: fixed, lastUsed: lastUsed, preferred: preferredLanguages(),
                                                    offered: offered)
             guard let body = try? await text(source) else { return }
-            // A long text is measured, and its language told, away from the main actor.
+            // A long text is measured, and its language told, away from the main actor, and no longer once nobody waits.
             let telling = Task.detached(priority: .utility) { () -> Locale.Language? in
                 guard body.count <= Self.automaticLength else { return nil }
                 return TranslationSource.mainLanguage(of: body, supported: offered)
             }
-            guard let language = await telling.value, !language.isSameLanguage(as: target),
+            let told = await withTaskCancellationHandler { await telling.value } onCancel: { telling.cancel() }
+            guard let language = told, !language.isSameLanguage(as: target),
                   await translator.status(of: TranslationPair(source: language, target: target)) == .installed,
-                  let self, !isClosed, job(for: source, operation: .translate) == nil, waiting[key] == nil,
-                  !hasMade(source, key) else { return }
+                  let self, !Task.isCancelled, !isClosed, job(for: source, operation: .translate) == nil,
+                  waiting[key] == nil, !hasMade(source, key), !whileViewed || viewed.contains(key) else { return }
             startTranslation(source, text: body, to: target, priority: .automatic)
         }
+        checking[key] = (token, check)
+    }
+
+    /// Stops what Translate automatically makes for the card the translation column shows, once the card is left, the
+    /// column closes or the panel does: it keeps nothing and says nothing. A translation made for a copy, or one the
+    /// person asked for, goes on.
+    func stopTranslationWhileViewed(_ source: ContentRef) {
+        let key = Self.key(for: source, operation: .translate)
+        guard viewed.remove(key) != nil else { return }
+        // What is still checked stops being checked.
+        checking.removeValue(forKey: key)?.task.cancel()
+        guard let job = job(for: source, operation: .translate), job.priority == .automatic else { return }
+        job.stop(.superseded)
     }
 
     /// The longest text Translate automatically translates, in characters.
@@ -436,10 +461,11 @@ final class DerivedTextCoordinator {
         options.idleTimeout = .seconds(90)
         let key = Self.key(for: source, operation: .translate)
         // One made in the background that gave way to what a person asked for is asked for again, behind it, unless
-        // something was asked for or made of the item meanwhile.
+        // something was asked for or made of the item meanwhile, or it was for a card that was left.
+        let wasViewed = viewed.contains(key)
         let again: (() -> Void)? = priority == .automatic ? { [weak self] in
             guard let self, !isClosed, job(for: source, operation: .translate) == nil, waiting[key] == nil,
-                  !hasMade(source, key) else { return }
+                  !hasMade(source, key), !wasViewed || viewed.contains(key) else { return }
             startTranslation(source, text: given, from: language, to: target, priority: .automatic)
         } : nil
         return start(request, lane: translator.tier.lane, priority: priority, options: options, generation: generation,
