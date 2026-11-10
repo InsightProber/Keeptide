@@ -57,15 +57,24 @@ enum GenerationEvent: Equatable, Sendable {
     /// at once rather than typing it.
     case replace(String, channel: OutputChannel = .main)
     case usage(GenerationUsage)
+    /// How many paragraphs the source will write, such as a translation once it has read the original. Snapshots
+    /// then report progress, in place of `GenerationJob.Options.expectedParagraphs`.
+    case expecting(paragraphs: Int)
     case finished(FinishReason)
 
     /// Whether the event carries text, which is what the first-text time limit waits for.
     var carriesText: Bool {
         switch self {
         case .delta(let text, _), .replace(let text, _): !text.isEmpty
-        case .started, .usage, .finished: false
+        case .started, .usage, .expecting, .finished: false
         }
     }
+}
+
+/// The languages a translation is from and to.
+struct TranslationPair: Hashable, Sendable {
+    var source: Locale.Language
+    var target: Locale.Language
 }
 
 /// Why a generation could not finish. Each source maps its own errors to a kind, and `message` is written for the
@@ -88,12 +97,22 @@ struct GenerationError: Error, Equatable, Sendable {
         case engineUnavailable
         /// The item can't be read: it changed or went, or its content is damaged.
         case contentUnavailable
+        /// A translation on this Mac needs its languages downloaded first.
+        case languageNotDownloaded
+        /// This Mac can't translate between these languages.
+        case languagePairUnsupported
+        /// The language of the text couldn't be told, so a person chooses it.
+        case sourceLanguageUnknown
+        /// The text is already in the language it was to be translated into.
+        case alreadyInTargetLanguage
     }
 
     var kind: Kind
     var message: String
     /// For `rateLimited`: how long the provider asked to wait before trying again.
     var retryAfter: Duration? = nil
+    /// For a translation's languages: the pair to download, or that this Mac can't translate between.
+    var pair: TranslationPair? = nil
 
     static let interrupted = GenerationError(kind: .streamInterrupted, message: "The response ended unexpectedly.")
     /// The item changed or went before its result could be made or kept.

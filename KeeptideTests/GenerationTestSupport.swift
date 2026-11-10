@@ -149,6 +149,35 @@ final class ScriptedRecognizer: TextRecognitionEngine, @unchecked Sendable {
     }
 }
 
+/// A translation engine whose sources a test drives by hand. It records what it was asked for.
+final class ScriptedTranslator: TranslationEngine, @unchecked Sendable {
+    struct Request {
+        let text: @Sendable () async throws -> String
+        let source: Locale.Language?
+        let target: Locale.Language
+        let generation: ControlledSource
+    }
+
+    let tier: EngineTier
+    private let lock = NSLock()
+    private var requests: [Request] = []
+
+    init(tier: EngineTier = .onThisMac) {
+        self.tier = tier
+    }
+
+    func translate(_ text: @escaping @Sendable () async throws -> String, from source: Locale.Language?,
+                   to target: Locale.Language) -> any GenerationSource {
+        let generation = ControlledSource()
+        lock.withLock { requests.append(Request(text: text, source: source, target: target, generation: generation)) }
+        return generation
+    }
+
+    func request(_ index: Int) -> Request? {
+        lock.withLock { index < requests.count ? requests[index] : nil }
+    }
+}
+
 /// The recognizer's `index`th source, once its job has started reading it.
 @MainActor
 func startedSource(_ recognizer: ScriptedRecognizer, _ index: Int, file: StaticString = #filePath,

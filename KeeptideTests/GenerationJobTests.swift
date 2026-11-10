@@ -286,6 +286,29 @@ final class GenerationJobTests: XCTestCase {
         XCTAssertFalse(job.snapshot.separationFailed)
     }
 
+    func testASourceThatSaysHowManyParagraphsItWritesReportsProgress() async {
+        let center = makeCenter()
+        let source = ControlledSource()
+        var finals: [GenerationSnapshot] = []
+        // The job starts without a count: the source learns it once it has read the original.
+        let job = center.start(key, lane: .onDevice, priority: .user, options: options(), source: source) {
+            finals.append($0)
+        }
+        await waitUntil("the source starts") { source.startCount == 1 }
+        source.send(.started(GenerationInfo(engine: "On this Mac")), .expecting(paragraphs: 4))
+        await waitUntil("the count arrives") { job.snapshot.progress == 0 }
+        XCTAssertEqual(job.snapshot.phase, .waiting)
+
+        source.send(.delta("一\n\n"))
+        await waitUntil("the first paragraph arrives") { job.snapshot.text() == "一\n\n" }
+        XCTAssertEqual(job.snapshot.progress, 0.25)
+
+        source.send(.delta("二\n\n三\n\n四"), .finished(.completed))
+        await waitUntil("the job ends") { !finals.isEmpty }
+        XCTAssertEqual(job.snapshot.text(), "一\n\n二\n\n三\n\n四")
+        XCTAssertEqual(job.snapshot.progress, 1)
+    }
+
     func testSnapshotsArriveOncePerIntervalAndTheLastAlwaysArrives() async {
         let center = makeCenter(clock: ContinuousClock())
         let source = ControlledSource()
