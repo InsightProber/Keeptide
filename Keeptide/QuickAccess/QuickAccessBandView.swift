@@ -24,6 +24,8 @@ struct QuickAccessBandView: View {
         /// The review card's buttons.
         let confirmCommand: () -> Void
         let cancelCommandReview: () -> Void
+        /// Copies text the preview shows, such as part of the text recognized in an image, as the panel copies it.
+        let copyText: (String) -> Void
     }
 
     let layout: Layout
@@ -174,7 +176,26 @@ struct QuickAccessBandView: View {
             } else {
                 keepLineBreaks
             }
+            textButtons(enabled: state.textColumnText != nil)
         }
+    }
+
+    /// Copy and Save as Snippet for the text beside an image, dimmed until there is text. After a copy, "Copied" shows
+    /// beside Copy for a moment.
+    private func textButtons(enabled: Bool) -> some View {
+        HStack(spacing: 8) {
+            if state.isTextCopied {
+                Text("Copied")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Color(nsColor: ToolbarPalette.secondary))
+                    .accessibilityIdentifier("QuickAccessTextCopied")
+            }
+            TrayRoundButton(symbol: "doc.on.doc", label: "Copy Text", help: "Copy Text (⌘C)",
+                            identifier: "QuickAccessCopyText") { actions.previewCommand(.copyText) }
+            TrayRoundButton(symbol: "bookmark", label: "Save Text as Snippet", help: "Save Text as Snippet (⌘S)",
+                            identifier: "QuickAccessSaveText") { actions.previewCommand(.saveTextAsSnippet) }
+        }
+        .disabled(!enabled)
     }
 
     /// On, with a check mark, while the text shown keeps the image's line breaks; without text, as the person chose.
@@ -202,7 +223,8 @@ struct QuickAccessBandView: View {
         let applicationName = selectedRow?.sourceApp.flatMap(applicationNames.name(for:))
         if let ref = state.textColumnRef, let column = state.textColumn {
             QuickAccessSplitPreview(preview: state.preview, applicationName: applicationName, column: column, ref: ref,
-                                    isJustMade: state.isTextColumnJustMade, onCommand: actions.previewCommand)
+                                    isJustMade: state.isTextColumnJustMade, onCommand: actions.previewCommand,
+                                    onCopy: actions.copyText)
         } else {
             QuickAccessPreviewView(preview: state.preview,
                                    applicationName: applicationName,

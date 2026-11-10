@@ -227,6 +227,17 @@ final class PasteService {
         DirectPasteAccessState(canPostEvents: system.canPostEvents(), accessRequested: hasRequestedAccess)
     }
 
+    /// Copies text the panel shows, such as text recognized in an image or part of it, as plain text marked as
+    /// Keeptide's own, so capture skips it. No item's use is counted, and no session or target is involved: the panel
+    /// stays as it is. Returns whether the clipboard was written.
+    @discardableResult
+    func copyText(_ text: String) -> Bool {
+        guard let prepared = try? PasteboardWriter.preparePlainText(text),
+              let token = try? PasteboardWriter(pasteboard: pasteboard).write(prepared) else { return false }
+        didWrite(token)
+        return true
+    }
+
     func execute(_ request: PasteRequest) async -> PasteOutcome {
         let session = request.session
         let generation = request.queryGeneration

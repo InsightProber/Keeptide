@@ -1095,6 +1095,91 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(children[1].accessibilityLabel(), "Snippet, \(time(rows[1])): Loose note")
     }
 
+    func testTheRecognitionLineMovesByItselfAndHoldsStillWithReduceMotion() {
+        let line = StripProgressLineView(frame: NSRect(x: 0, y: 0, width: 196, height: 2))
+
+        line.configure(track: .white, segment: .systemBlue, moves: true)
+        line.layoutSubtreeIfNeeded()
+        XCTAssertTrue(line.isMoving, "Core Animation moves it, with no redrawing of the card")
+
+        line.configure(track: .white, segment: .systemBlue, moves: false)
+        line.layoutSubtreeIfNeeded()
+        XCTAssertFalse(line.isMoving)
+        XCTAssertEqual(line.segmentFrame.minX, 0, "Still, it rests at the start")
+        XCTAssertEqual(line.segmentFrame.width, 196 * 0.3, accuracy: 0.5)
+    }
+
+    func testAnImageCardSaysWhatIsKnownOfItsText() throws {
+        let strip = makeStrip()
+        let rows = [makeRow(kind: .image, title: "Receipt"), makeRow(kind: .image, title: "Poster"),
+                    makeRow(kind: .image, title: "Map"), makeRow(kind: .image, title: "Menu")]
+        let marks: [ContentRef: StripTextMark] = [
+            rows[0].ref: .hasText, rows[1].ref: .recognizing, rows[2].ref: .waiting,
+            rows[3].ref: .failed("Text couldn't be recognized in this image."),
+        ]
+
+        strip.show(rows, selection: rows[0].id, details: [:], metrics: metrics, applicationNames: ApplicationNames(),
+                   textMarks: marks)
+
+        let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        guard children.count == 4 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
+        XCTAssertEqual(children[0].accessibilityLabel(), "Image, \(time(rows[0])): Receipt, has text")
+        XCTAssertEqual(children[1].accessibilityLabel(), "Image, \(time(rows[1])): Poster, recognizing text")
+        XCTAssertEqual(children[2].accessibilityLabel(), "Image, \(time(rows[2])): Map, waiting to recognize text")
+        // A failure says why.
+        XCTAssertEqual(children[3].accessibilityLabel(),
+                       "Image, \(time(rows[3])): Menu, text recognition failed: Text couldn't be recognized in this image.")
+        // The mark's help tag is the card's help, as VoiceOver reads it on request.
+        XCTAssertEqual(children[0].accessibilityHelp(), "Has text. Press ⇧⌘T to show.")
+        XCTAssertEqual(children[1].accessibilityHelp(), "Recognizing text…")
+        XCTAssertEqual(children[2].accessibilityHelp(), "Waiting to recognize text")
+        XCTAssertEqual(children[3].accessibilityHelp(), "Text couldn't be recognized in this image.")
+    }
+
+    func testTheRecognitionLineRunsAlongARecognizingCardOnly() throws {
+        /// Each line in a card, with how far its top is below the card's top.
+        func lines(for mark: StripTextMark, reduceMotion: Bool = false,
+                   metrics: StripMetrics? = nil) -> [(line: StripProgressLineView, top: CGFloat)] {
+            let metrics = metrics ?? self.metrics
+            let row = makeRow(kind: .image, title: "Poster", sourceApp: "com.apple.Preview")
+            let card = StripFrameView(content: StripFrameContent.make(row: row, detail: nil,
+                                                                      cardSize: metrics.cardSize, textMark: mark),
+                                      applicationIcon: ApplicationNames().icon(for: "com.apple.Preview"),
+                                      metrics: metrics, accent: nil, isSelected: false)
+                .environment(\._accessibilityReduceMotion, reduceMotion)
+            let hosting = NSHostingView(rootView: card)
+            hosting.frame = NSRect(origin: .zero, size: metrics.frameSize)
+            let window = NSWindow(contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            addTeardownBlock { window.close() }
+            window.contentView = hosting
+            hosting.layoutSubtreeIfNeeded()
+            func find(_ view: NSView) -> [StripProgressLineView] {
+                ((view as? StripProgressLineView).map { [$0] } ?? []) + view.subviews.flatMap(find)
+            }
+            return find(hosting).map { line in
+                let frame = line.convert(line.bounds, to: hosting)
+                return (line, hosting.isFlipped ? frame.minY : hosting.bounds.height - frame.maxY)
+            }
+        }
+
+        let line = try XCTUnwrap(lines(for: .recognizing).first).line
+        XCTAssertEqual(line.frame.width, metrics.frameSize.width, accuracy: 0.5, "Across the whole card")
+        XCTAssertEqual(line.frame.height, 2)
+        XCTAssertTrue(line.isMoving)
+        XCTAssertFalse(try XCTUnwrap(lines(for: .recognizing, reduceMotion: true).first).line.isMoving)
+        XCTAssertTrue(lines(for: .waiting).isEmpty, "Waiting has no line")
+        XCTAssertTrue(lines(for: .hasText).isEmpty)
+        // Under the header and not in it, where it would cross the time's descenders: a small card's header ends
+        // right below them.
+        for size in CardSize.allCases {
+            let metrics = StripLayout.metrics(for: size, visibleWidth: 1440)
+            let top = try XCTUnwrap(lines(for: .recognizing, metrics: metrics).first, "\(size)").top
+            XCTAssertEqual(top, metrics.headerHeight, accuracy: 0.5, "Right under a \(size) card's header")
+        }
+    }
+
     func testAccessibilityLabelsAndInfoValues() throws {
         let strip = makeStrip()
         let names = ApplicationNames()

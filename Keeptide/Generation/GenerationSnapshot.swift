@@ -62,12 +62,13 @@ struct GenerationSnapshot: Equatable, Sendable {
 
     var hasText: Bool { texts.values.contains { !$0.isEmpty } }
 
-    /// What the result store does with a generation that has ended. Only a whole result with text replaces an earlier
-    /// one. A result a person stopped, or one that was cut off, is kept only while there is no whole one. A result that
-    /// a newer request replaced, that shutdown ended, that failed or that the model refused isn't saved.
+    /// What the result store does with a generation that has ended. A whole result replaces an earlier one, and one with
+    /// nothing in it, as when an image has no text, leaves none. A result a person stopped, or one that was cut off, is
+    /// kept only while there is no whole one. A result that a newer request replaced, that shutdown ended, that failed or
+    /// that the model refused isn't saved, and leaves the earlier one.
     var saveDecision: SaveDecision {
         switch phase {
-        case .finished(.completed): hasText ? .replace : .discard
+        case .finished(.completed): hasText ? .replace : .clear
         case .finished(.truncated), .stopped(.person): hasText ? .keepIfNoCompleteResult : .discard
         case .finished(.refused), .stopped(.superseded), .stopped(.shutdown), .failed, .queued, .waiting, .streaming:
             .discard
@@ -78,6 +79,9 @@ struct GenerationSnapshot: Equatable, Sendable {
 enum SaveDecision: Equatable, Sendable {
     /// A whole result: it replaces any earlier one.
     case replace
+    /// A whole result with nothing in it: any earlier one goes, and nothing takes its place. A source that should
+    /// have made something, and made nothing, fails instead.
+    case clear
     /// Part of a result: keep it, marked Stopped, only when the item has no whole result.
     case keepIfNoCompleteResult
     /// Nothing to keep.

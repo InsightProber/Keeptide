@@ -39,6 +39,7 @@ enum QuickAccessCommand: Equatable {
     case moveListCursor(Int), chooseListAtCursor, openFilterMenu, typeIntoSearch
     /// The text column beside an image's preview.
     case showTextInImage, closeResultColumn, extractText, stopTextRecognition, toggleKeepLineBreaks
+    case copyText, saveTextAsSnippet
 }
 
 /// Translates panel keys into commands. Keys with native meaning where focus is, and

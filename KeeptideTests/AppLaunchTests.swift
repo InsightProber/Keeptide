@@ -9,8 +9,9 @@ import XCTest
 final class AppLaunchTests: XCTestCase {
     /// A panel a test set up in a task of its own, for the test to look at once the task is done.
     private var panelUnderTest: PanelController?
-    /// The store under the panel `makeTextPanel` made last.
+    /// The store under the panel `makeTextPanel` made last, and its clipboard.
     private var textPanelHarness: SearchHarness?
+    private var textPanelBoard: NSPasteboard?
 
     func testDefaultLibraryInitializerCreatesItsWindow() {
         XCTAssertNotNil(LibraryWindowController(session: CaptureSession()).window)
@@ -2415,6 +2416,71 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(controller.state.textColumn, .failed(.contentUnavailable))
     }
 
+    func testVoiceOverHearsThatRecognizingAgainFailedAndLeftTheText() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        let made = TextColumn.text("Synthetic text in image", keepsLineBreaks: true, status: .complete)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == made
+        }
+        controller.perform(.toggleKeepLineBreaks)
+        let again = try await startedSource(recognizer, 1)
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+
+        again.end(throwing: failure)
+
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TextColumnWords.failedAgain(leaving: made, because: failure))
+        }
+        XCTAssertEqual(controller.state.textColumn, .failedAgain(made, failure))
+        window.contentView?.layoutSubtreeIfNeeded()
+        let display = try XCTUnwrap(views(StreamingTextDisplay.self, in: window.contentView).first)
+        XCTAssertEqual(display.shownText, "Synthetic text in image")
+        // ⇧⌘T tries again.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        _ = try await startedSource(recognizer, 2)
+    }
+
+    func testVoiceOverHearsWhyARecognitionFailedOnceWhereverTheSelectionGoes() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let failure = GenerationError(kind: .engineUnavailable, message: "Text couldn't be recognized in this image.")
+        try await startedSource(recognizer, 0).end(throwing: failure)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(failure.message)
+        }
+
+        // To the text clip and back: the column shows the failure again once what the image has is read, quietly.
+        controller.perform(.move(1))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumnRef == nil
+        }
+        controller.perform(.move(-1))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return controller.state.textColumn == .failed(failure)
+        }
+        for _ in 0..<5 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(30))
+        }
+        XCTAssertEqual(announced, ["\(TextColumnWords.title), on this Mac", failure.message])
+    }
+
     func testExtractTextShowsTheRecognitionAtOnce() async throws {
         try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
@@ -2436,6 +2502,481 @@ final class AppLaunchTests: XCTestCase {
             window.contentView?.layoutSubtreeIfNeeded()
             return self.views(StreamingTextDisplay.self, in: window.contentView).first?.mode == .writing
         }
+    }
+
+    func testReturnTakesTheTextBesideTheImageOnceItIsMade() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        // While the text is made, Return takes nothing: not the text, and not the image either.
+        _ = try await toolbarSaying(.action(title: "Paste Text into TextEdit", enabled: false, hint: nil),
+                                    in: controller)
+        let changes = board.changeCount
+        controller.perform(.primary)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(board.changeCount, changes)
+        XCTAssertEqual(pasting.sent, [])
+        XCTAssertTrue(controller.isSessionOpen)
+
+        engine.send(.delta("Synthetic text in image"), .finished(.completed))
+        _ = try await toolbarSaying(.action(title: "Paste Text into TextEdit", enabled: true, hint: nil),
+                                    in: controller)
+        controller.perform(.primary)
+
+        try await SearchTestSupport.waitUntil { pasting.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "Synthetic text in image")
+    }
+
+    func testAReviewedCommandMadeOfTheTextPastesTheTextNotTheImage() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let (controller, recognizer) = try await makeTextPanel(system: fake.system)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("echo synthetic-one\necho synthetic-two"),
+                                                    .finished(.completed))
+        _ = try await toolbarSaying(.action(title: "Paste Command", enabled: true, hint: nil), in: controller)
+
+        controller.perform(.primary)
+        // The card marks each line break it shows.
+        try await waitForReview("echo synthetic-one↵\necho synthetic-two", in: window)
+        try pressCommandReturn(in: window)
+
+        try await SearchTestSupport.waitUntil { fake.sent == [9] && !controller.isSessionOpen }
+        XCTAssertEqual(board.string(forType: .string), "echo synthetic-one\necho synthetic-two")
+    }
+
+    func testCommandCCopiesTheTextAndThePanelStays() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        var display: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            display = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return controller.state.textColumnResult != nil && display?.shownText == "Synthetic text in image"
+        }
+
+        // With the keys on the strip, ⌘C copies the whole text.
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        XCTAssertEqual(board.string(forType: .string), "Synthetic text in image")
+        XCTAssertTrue(controller.state.isTextCopied)
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(announced.last, "Copied")
+
+        // In the text, it copies what is selected.
+        let text = try XCTUnwrap(display).textView
+        XCTAssertTrue(window.makeFirstResponder(text))
+        text.setSelectedRange(NSRange(location: 0, length: 9))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        XCTAssertEqual(board.string(forType: .string), "Synthetic")
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
+    func testCommandSSavesTheTextAsASnippet() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+
+        try await SearchTestSupport.waitUntil { announced.contains("Text saved to Snippets") }
+        XCTAssertEqual(controller.state.saveMessage, "Text saved to Snippets")
+        XCTAssertEqual(controller.state.resultColumn, .text, "The text stays beside the image")
+    }
+
+    func testCommandKOffersTheTextsActionsWhileItShowsAndExtractTextOtherwise() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        func titles(_ menu: NSMenu) -> [String] { menu.items.map(\.title) }
+        func item(_ title: String, in menu: NSMenu) throws -> NSMenuItem {
+            try XCTUnwrap(menu.items.first { $0.title == title }, "No \(title) in \(titles(menu))")
+        }
+
+        // The image, with the preview closed: Extract Text shows its text.
+        let closed = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Extract Text", in: closed).isEnabled)
+        XCTAssertNil(try item("Extract Text", in: closed).toolTip)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil { controller.state.textColumn?.isRecognizing == true }
+
+        // While the text shows, the menu starts with what can be done with it; the rest is the image's.
+        let recognizing = try actionMenu(of: controller)
+        XCTAssertEqual(titles(recognizing), [
+            "Copy Text", "Save Text as Snippet", "Keep Line Breaks", "Stop", "Extract Text", "", "Hide Preview", "",
+            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
+            "", "Move to Recently Deleted",
+        ])
+        XCTAssertEqual(recognizing.items.map(\.keyEquivalent),
+                       ["\r", "s", "", ".", "t", "", " ", "", "", "", "d", "", "e", "n", "", "\u{8}"])
+        XCTAssertFalse(try item("Copy Text", in: recognizing).isEnabled)
+        XCTAssertFalse(try item("Save Text as Snippet", in: recognizing).isEnabled)
+        XCTAssertEqual(try item("Keep Line Breaks", in: recognizing).state, .on)
+        XCTAssertTrue(try item("Stop", in: recognizing).isEnabled)
+        XCTAssertFalse(try item("Extract Text", in: recognizing).isEnabled)
+
+        // Stop in the menu stops the recognition.
+        recognizing.performActionForItem(at: try XCTUnwrap(recognizing.items.firstIndex { $0.title == "Stop" }))
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        try await SearchTestSupport.waitUntil { controller.state.textColumn == .notStarted }
+        let stopped = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Extract Text", in: stopped).isEnabled)
+        XCTAssertFalse(try item("Stop", in: stopped).isEnabled)
+
+        // Extract Text in the menu recognizes it again; once it is made, it can be taken.
+        stopped.performActionForItem(at: try XCTUnwrap(stopped.items.firstIndex { $0.title == "Extract Text" }))
+        try await startedSource(recognizer, 1).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        let made = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Copy Text", in: made).isEnabled)
+        XCTAssertTrue(try item("Save Text as Snippet", in: made).isEnabled)
+        made.performActionForItem(at: try XCTUnwrap(made.items.firstIndex { $0.title == "Save Text as Snippet" }))
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Text saved to Snippets" }
+
+        // On a clip without text in an image, Extract Text is there, disabled, and says why.
+        controller.perform(.move(1))
+        let text = try actionMenu(of: controller)
+        XCTAssertEqual(titles(text).first, "Copy")
+        XCTAssertFalse(try item("Extract Text", in: text).isEnabled)
+        XCTAssertEqual(try item("Extract Text", in: text).toolTip, "Only images have text to extract.")
+    }
+
+    func testCommandKNamesThePasteOfTheTextAndItsCopy() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+
+        let menu = try actionMenu(of: controller)
+
+        XCTAssertEqual(Array(menu.items.map(\.title).prefix(3)),
+                       ["Paste Text into TextEdit", "Copy Text", "Save Text as Snippet"])
+        XCTAssertEqual(menu.items[1].keyEquivalent, "c")
+        // Copy Text copies and leaves the panel open.
+        menu.performActionForItem(at: 1)
+        XCTAssertEqual(try XCTUnwrap(textPanelBoard).string(forType: .string), "Synthetic text in image")
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(pasting.sent, [])
+    }
+
+    func testTheBarsCopyAndSaveTakeTheText() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        let elements = try swiftUIAccessibilityElements(in: content) {
+            $0.contains(where: identified("QuickAccessCopyText"))
+                && $0.contains(where: identified("QuickAccessSaveText"))
+        }
+
+        press(try XCTUnwrap(elements.first(where: identified("QuickAccessCopyText"))))
+
+        XCTAssertEqual(try XCTUnwrap(textPanelBoard).string(forType: .string), "Synthetic text in image")
+        XCTAssertTrue(controller.state.isTextCopied)
+        _ = try swiftUIAccessibilityElements(in: content) { $0.contains(where: identified("QuickAccessTextCopied")) }
+        press(try XCTUnwrap(elements.first(where: identified("QuickAccessSaveText"))))
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Text saved to Snippets" }
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
+    func testARightClickOnAnotherImageActsOnThatImageNotOnItsText() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, recognizer) = try await makeTextPanel(system: pasting.system,
+                                                               secondImage: [("public.png", try pngData())])
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        strip.reducesMotion = { true }
+        // The second image's text is made first, and is kept for the rest of the session.
+        controller.perform(.focusResults)
+        controller.perform(.move(1))
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "Photo")
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic caption text"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        // Back on the first image, the column follows it.
+        controller.perform(.move(-1))
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "Picture")
+        settleLayout()
+
+        // A right-click on the second image's card offers that image, and pastes the image.
+        let photo = try frame(of: "Photo", in: strip)
+        let menu = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: strip.convert(NSPoint(x: photo.midX, y: photo.midY), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1
+        ))))
+        XCTAssertEqual(menu.items.first?.title, "Paste into TextEdit")
+        let changes = board.changeCount
+        menu.performActionForItem(at: 0)
+
+        // A menu choice here may have left Return down, so the paste copies instead; what is written is the point.
+        try await SearchTestSupport.waitUntil { board.changeCount != changes }
+        XCTAssertNil(board.string(forType: .string), "The image, not its text")
+        XCTAssertNotNil(board.data(forType: .png))
+    }
+
+    func testCopyAsIsOnAnotherImageKeepsThatClipWhole() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let (controller, _) = try await makeTextPanel(system: fake.system, secondImage: [
+            ("public.png", try pngData()), ("public.utf8-plain-text", Data("Synthetic caption".utf8)),
+        ])
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        strip.reducesMotion = { true }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        settleLayout()
+
+        let photo = try frame(of: "Photo", in: strip)
+        let menu = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: strip.convert(NSPoint(x: photo.midX, y: photo.midY), to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+            clickCount: 1, pressure: 1
+        ))))
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Copy As-Is" }))
+
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "Synthetic caption", "Copy As-Is keeps every representation")
+        XCTAssertNotNil(board.data(forType: .png))
+    }
+
+    func testADoubleClickOnTheImageTakesTheImageEvenWhileItsTextShows() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        strip.reducesMotion = { true }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        settleLayout()
+
+        // The strip's double-click on the image's card.
+        strip.onActivate?(try XCTUnwrap(controller.state.selection.selectedID), false)
+
+        try await SearchTestSupport.waitUntil { pasting.sent == [9] }
+        XCTAssertNil(board.string(forType: .string), "The clip double-clicked, not the text beside it")
+        XCTAssertNotNil(board.data(forType: .png))
+    }
+
+    func testReturnInTheRecognizedTextPastesTheText() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        var display: StreamingTextDisplay?
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            display = self.views(StreamingTextDisplay.self, in: window.contentView).first
+            return controller.state.textColumnResult != nil && display?.shownText == "Synthetic text in image"
+        }
+        XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(display).textView))
+
+        window.sendEvent(try key(kVK_Return, "\r", windowNumber: window.windowNumber))
+        window.sendEvent(try keyUp(kVK_Return, "\r", windowNumber: window.windowNumber))
+
+        try await SearchTestSupport.waitUntil { pasting.sent == [9] }
+        XCTAssertEqual(board.string(forType: .string), "Synthetic text in image")
+    }
+
+    func testCommandCOnTheReviewCardIsTheCardsOwn() async throws {
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let (controller, recognizer) = try await makeTextPanel(system: fake.system)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("echo synthetic-one\necho synthetic-two"),
+                                                    .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        controller.perform(.primary)
+        try await waitForReview("echo synthetic-one↵\necho synthetic-two", in: window)
+        let review = try XCTUnwrap(reviewTextView(in: window))
+        XCTAssertTrue(window.makeFirstResponder(review))
+        review.setSelectedRange(NSRange(location: 0, length: 4))
+        let changes = board.changeCount
+
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)),
+                       "The card's text copies its own selection")
+
+        XCTAssertEqual(board.changeCount, changes)
+        XCTAssertFalse(controller.state.isTextCopied)
+    }
+
+    func testHeldCommandCCopiesOnce() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        board.clearContents()
+        XCTAssertTrue(board.setString("untouched", forType: .string))
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command,
+                                                                 isARepeat: true)))
+
+        XCTAssertEqual(board.string(forType: .string), "untouched")
+        XCTAssertEqual(announced.filter { $0 == "Copied" }.count, 1)
+    }
+
+    func testCommandCLeavesASelectionInTheSearchFieldToTheField() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        XCTAssertTrue(window.makeFirstResponder(editor))
+        editor.insertText("Pic", replacementRange: NSRange(location: NSNotFound, length: 0))
+        editor.selectAll(nil)
+        try await SearchTestSupport.waitUntil { controller.state.textColumnRef != nil }
+
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        XCTAssertFalse(controller.state.isTextCopied)
+    }
+
+    func testSavingTheTextNeverSavesTheImageInstead() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        controller.perform(.stopTextRecognition)
+        try await SearchTestSupport.waitUntil { controller.state.textColumn == .notStarted }
+
+        // No text yet: ⌘S keeps nothing, and says nothing.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(controller.state.saveMessage)
+        XCTAssertEqual(announced.filter { $0 != "\(TextColumnWords.title), on this Mac" }, [])
+
+        // With the column closed, the bar's and the menu's Save Text keep nothing either: they never fall back to the
+        // image.
+        controller.perform(.closeResultColumn)
+        controller.perform(.saveTextAsSnippet)
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(controller.state.saveMessage)
+    }
+
+    func testTheTextsTakeItemTakesNothingOnceTheColumnHasClosed() async throws {
+        let pasting = FakeDirectPasteSystem()
+        let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        let menu = try actionMenu(of: controller)
+        XCTAssertEqual(menu.items.first?.title, "Paste Text into TextEdit")
+        let changes = board.changeCount
+
+        // The column closes while the menu is open.
+        controller.perform(.closeResultColumn)
+        menu.performActionForItem(at: 0)
+
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(board.changeCount, changes, "Neither the text, which no longer shows, nor the image")
+        XCTAssertEqual(pasting.sent, [])
+    }
+
+    func testTheMenusSaveAsSnippetStillSavesTheImage() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        let menu = try actionMenu(of: controller)
+
+        menu.performActionForItem(at: try XCTUnwrap(menu.items.firstIndex { $0.title == "Save as Snippet" }))
+
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Saved to Snippets" }
+        let listed = try await ContentRepository(controller: try XCTUnwrap(textPanelHarness).controller)
+            .recent(limit: 100)
+        XCTAssertNotNil(listed.first { $0.title == "Picture" }?.memo, "The image itself is a snippet now")
+    }
+
+    func testTheImagesCardSaysItHasTextOnceItIsMade() async throws {
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        func pictureLabel() -> String? {
+            framesOnScreen(in: strip).compactMap { $0.accessibilityLabel() }.first { $0.contains("Picture") }
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+        try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", recognizing text") == true }
+
+        engine.send(.delta("Synthetic text in image"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", has text") == true }
     }
 
     func testThePreviewIsOneCardWhetherItIsSplitOrNot() async throws {
@@ -2832,17 +3373,22 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
         XCTAssertEqual(commandK.point.y, selected.maxY, accuracy: 1)
         XCTAssertEqual(commandK.menu.items.map(\.title), [
-            "Copy", "Copy as Plain Text", "", "Show Preview", "",
+            "Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
         // Save to Collection has its submenu instead of a key: AppKit keeps none on such an item, and ⇧⌘M is the
         // panel's own.
         XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent),
-                       ["\r", "\r", "", " ", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
+                       ["\r", "\r", "", " ", "t", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
         XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem && !$0.hasSubmenu }
-            .map(\.keyEquivalentModifierMask), [[], .shift, [], .command, .command, .command, .command, .command])
-        // Everything is available but Save to Collection, which needs a collection first and says so, and Move to
+            .map(\.keyEquivalentModifierMask),
+                       [[], .shift, [], [.command, .shift], .command, .command, .command, .command, .command])
+        // A clip that isn't an image has no text to extract, and the item says why.
+        let extract = try XCTUnwrap(commandK.menu.items.first { $0.title == "Extract Text" })
+        XCTAssertFalse(extract.isEnabled)
+        XCTAssertEqual(extract.toolTip, "Only images have text to extract.")
+        // Everything else is available but Save to Collection, which needs a collection first and says so, and Move to
         // Recently Deleted, which needs a library to move the clip in: this panel has none.
         let saveTo = try XCTUnwrap(commandK.menu.items.first { $0.title == "Save to Collection" })
         XCTAssertFalse(saveTo.isEnabled)
@@ -2850,7 +3396,7 @@ final class AppLaunchTests: XCTestCase {
         let delete = try XCTUnwrap(commandK.menu.items.last)
         XCTAssertFalse(delete.isEnabled)
         XCTAssertTrue(commandK.menu.items.allSatisfy {
-            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete
+            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete || $0 === extract
         })
         // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
@@ -4324,16 +4870,17 @@ final class AppLaunchTests: XCTestCase {
         // captured, and the way to turn direct paste on, after a separator of its own.
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-                       ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview",
+                       ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview", "Extract Text",
                         "Save as Snippet", "Save to Collection", "Add to Favorites", "Show in Library", "New Snippet",
                         "Enable Direct Paste…", "Move to Recently Deleted"])
         XCTAssertEqual(menu.items.map(\.isSeparatorItem),
-                       [false, false, true, false, true, false, false, false, true, false, false, true, false, true,
-                        false])
+                       [false, false, true, false, false, true, false, false, false, true, false, false, true, false,
+                        true, false])
         XCTAssertEqual(menu.items[0].keyEquivalent, "\r")
         XCTAssertEqual(menu.items[0].keyEquivalentModifierMask, [])
         XCTAssertTrue(menu.items.allSatisfy {
-            $0.isSeparatorItem || $0.isEnabled || ["Save to Collection", "Move to Recently Deleted"].contains($0.title)
+            $0.isSeparatorItem || $0.isEnabled
+                || ["Save to Collection", "Move to Recently Deleted", "Extract Text"].contains($0.title)
         })
 
         // Copy As-Is copies the clip as captured, its trailing line break too, and sends nothing.
@@ -4349,7 +4896,7 @@ final class AppLaunchTests: XCTestCase {
         _ = try searchEditor(in: other)
         let pasteMenu = try actionMenu(of: other)
         XCTAssertEqual(pasteMenu.items.map(\.title), [
-            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "",
+            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "Extract Text", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -4389,7 +4936,7 @@ final class AppLaunchTests: XCTestCase {
             clickCount: 1, pressure: 1
         ))))
         XCTAssertEqual(menu.items.map(\.title), [
-            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "",
+            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "Extract Text", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -5109,7 +5656,7 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNil(controller.state.pasteTarget)
         _ = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
         XCTAssertEqual(try actionMenu(of: controller).items.map(\.title),
-                       ["Copy", "Copy as Plain Text", "", "Show Preview", "",
+                       ["Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "",
                         "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
                         "New Snippet", "", "Move to Recently Deleted"])
 
@@ -5265,17 +5812,18 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(toolbar.copyHint.isEnabled)
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.map(\.title), [
-            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "",
+            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "Extract Text", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
         XCTAssertFalse(menu.items[0].isEnabled)
         XCTAssertTrue(menu.items[1].isEnabled)
         XCTAssertTrue(menu.items[3].isEnabled)
-        XCTAssertTrue(menu.items[5].isEnabled)
-        XCTAssertTrue(menu.items[7].isEnabled)
-        XCTAssertTrue(menu.items[9].isEnabled)
+        XCTAssertFalse(menu.items[4].isEnabled, "A command has no text in an image")
+        XCTAssertTrue(menu.items[6].isEnabled)
+        XCTAssertTrue(menu.items[8].isEnabled)
         XCTAssertTrue(menu.items[10].isEnabled)
+        XCTAssertTrue(menu.items[11].isEnabled)
 
         // Without the card, Return's actions are offered again.
         controller.perform(.escape)
@@ -5752,6 +6300,18 @@ final class AppLaunchTests: XCTestCase {
     }
 
     /// Stores a small PNG picture as the newest clip.
+    /// A small synthetic picture as PNG data.
+    private func pngData() throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: 5, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+            space: try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB)),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(srgbRed: 0.8, green: 0.3, blue: 0.2, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 5, height: 4))
+        return try XCTUnwrap(NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+            .representation(using: .png, properties: [:]))
+    }
+
     private func insertImageClip(into harness: SearchHarness, data: Data? = nil) async throws {
         let context = try XCTUnwrap(CGContext(
             data: nil, width: 4, height: 3, bitsPerComponent: 8, bytesPerRow: 0,
@@ -5869,8 +6429,10 @@ final class AppLaunchTests: XCTestCase {
                            lifecycle: (any QuickAccessLifecycle)? = nil,
                            derivedText: DerivedTextCoordinator? = nil) throws -> PanelController {
         let repository = ContentRepository(controller: harness.controller)
+        let derivedTextStore = DerivedTextStore(controller: harness.controller)
         let paste = PasteService(pasteboard: pasteboard, read: { try await repository.read($0) },
-                                 recordUse: { _ in }, didWrite: { _ in }, system: system)
+                                 recordUse: { _ in }, didWrite: { _ in }, system: system,
+                                 readDerivedText: { try await derivedTextStore.result(for: $0, operation: $1) })
         // A paste the panel could not hide for stops a debug build; here it fails the test instead.
         paste.reportProgrammingError = { XCTFail("Programming error: \($0)") }
         let services = QuickAccessServices(repository: repository, search: search ?? harness.service, paste: paste,
@@ -5961,12 +6523,20 @@ final class AppLaunchTests: XCTestCase {
     /// the test drives makes. `imageData` stands in for the picture's PNG. With `keepsUnderAnotherGeneration`, the
     /// library is another generation than the one the text is made for, so nothing made is kept.
     private func makeTextPanel(newestIsImage: Bool = true, imageData: Data? = nil,
-                               keepsUnderAnotherGeneration: Bool = false)
+                               keepsUnderAnotherGeneration: Bool = false, system: DirectPasteSystem = .unavailable,
+                               secondImage: [(String, Data)]? = nil)
         async throws -> (PanelController, ScriptedRecognizer) {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
+        textPanelBoard = board
         try await insertClips(["older"], into: harness)
+        if let secondImage {
+            let capture = try ContentStoreFixtures.capture([secondImage])
+            let item = ItemValue(title: "Photo", captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: Date(timeIntervalSince1970: 1_500), copyCount: 1)
+            try await ContentStoreFixtures.insert(item, capture, into: harness.controller)
+        }
         if newestIsImage { try await insertImageClip(into: harness, data: imageData) }
         try await harness.consumer.synchronize()
         let recognizer = ScriptedRecognizer()
@@ -5979,11 +6549,13 @@ final class AppLaunchTests: XCTestCase {
         textPanelHarness = harness
         addTeardownBlock { await derivedText.stopAndDrain() }
         let controller = try makePanel(over: harness, pasteboard: board,
-                                       visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                                       visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900), system: system,
+                                       library: LibraryService(controller: harness.controller),
                                        derivedText: derivedText)
         controller.show()
         addTeardownBlock { controller.close() }
-        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == (newestIsImage ? 2 : 1) }
+        let count = 1 + (newestIsImage ? 1 : 0) + (secondImage == nil ? 0 : 1)
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == count }
         return (controller, recognizer)
     }
 

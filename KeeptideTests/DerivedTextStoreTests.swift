@@ -88,6 +88,45 @@ final class DerivedTextStoreTests: XCTestCase {
         XCTAssertEqual(thirdRows, 0)
     }
 
+    func testAWholeResultWithoutTextLeavesNoResultForTheContentTheItemHas() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Screenshot", into: controller)
+        let recognition = DerivedTextRequest(source: source, operation: .extractText)
+        _ = try await store.save(snapshot("Made before"), for: recognition)
+        _ = try await store.save(snapshot("Traduit"),
+                                 for: DerivedTextRequest(source: source, operation: .translate, targetLanguage: "fr"))
+
+        // Nothing found under another store generation, or for content the item no longer has, and nothing made by a
+        // job that failed or was stopped: the text made before stays.
+        let current = try await controller.identity()
+        let earlier = StoreIdentity(storeID: current.storeID, generation: UUID())
+        _ = try await store.save(snapshot(""), for: recognition, expecting: earlier)
+        var stale = source
+        stale.version = ContentVersion()
+        _ = try await store.save(snapshot(""), for: DerivedTextRequest(source: stale, operation: .extractText))
+        let clearedOtherGeneration = try await store.clear(source, operation: .extractText, expecting: earlier)
+        let clearedStale = try await store.clear(stale, operation: .extractText)
+        XCTAssertFalse(clearedOtherGeneration, "It says the store didn't take it")
+        XCTAssertFalse(clearedStale)
+        _ = try await store.save(snapshot("", phase: .failed(.interrupted)), for: recognition)
+        _ = try await store.save(snapshot("", phase: .stopped(.person)), for: recognition)
+        var kept = try await store.result(for: source, operation: .extractText)
+        XCTAssertEqual(kept?.text, "Made before")
+
+        // Nothing found for the content the item has: the item has no text now, and keeps its translation.
+        let cleared = try await store.save(snapshot(""), for: recognition, expecting: current)
+
+        XCTAssertNil(cleared)
+        let clearedAgain = try await store.clear(source, operation: .extractText, expecting: current)
+        XCTAssertTrue(clearedAgain, "Nothing left to clear is cleared all the same")
+        kept = try await store.result(for: source, operation: .extractText)
+        XCTAssertNil(kept)
+        let translation = try await store.result(for: source, operation: .translate)
+        XCTAssertEqual(translation?.text, "Traduit")
+        let rows = try await rowCount(for: source.itemID, in: controller)
+        XCTAssertEqual(rows, 1)
+    }
+
     func testTheRecognizedTextAndTheTranslationOfOneItemAreKeptApart() async throws {
         let (controller, store) = try await makeStore()
         let source = try await insertClip("Hello", into: controller)
@@ -355,6 +394,45 @@ final class DerivedTextStoreTests: XCTestCase {
         XCTAssertNil(saved?.usage, "Usage with no count is no usage")
         let read = try await store.result(for: source, operation: .translate)
         XCTAssertEqual(read, saved)
+    }
+
+    func testWhichSourcesHaveAWholeResultIsReadForManyAtOnce() async throws {
+        let (controller, store) = try await makeStore()
+        let whole = try await insertClip("Whole", into: controller)
+        let partial = try await insertClip("Partial", into: controller)
+        let none = try await insertClip("None", into: controller)
+        let changed = try await insertClip("Changed", into: controller)
+        let deleted = try await insertClip("Deleted", into: controller)
+        let otherGeneration = try await insertClip("Other generation", into: controller)
+        for (source, phase) in [(whole, GenerationSnapshot.Phase.finished(.completed)), (partial, .stopped(.person)),
+                                (changed, .finished(.completed)), (deleted, .finished(.completed)),
+                                (otherGeneration, .finished(.completed))] {
+            _ = try await store.save(snapshot("Made of \(source.itemID)", phase: phase),
+                                     for: DerivedTextRequest(source: source, operation: .extractText))
+        }
+        var later = changed
+        later.version = ContentVersion()
+        let identity = try await controller.identity()
+        let permit = try await StoreSafetyGate(controller: controller).permit(.maintenance)
+        _ = try await LifecycleService(controller: controller).remove(ref: deleted, at: Date(), expecting: identity,
+                                                                      permit: permit)
+        let otherItemID = otherGeneration.itemID.rawValue
+        try await controller.perform { context in
+            let request = NSFetchRequest<NSManagedObject>(entityName: "DerivedText")
+            request.predicate = NSPredicate(format: "itemID == %@", otherItemID as NSUUID)
+            try context.fetch(request).forEach { $0.setValue(UUID(), forKey: "storeGeneration") }
+            try context.save()
+            context.reset()
+        }
+
+        let found = try await store.sourcesWithWholeResults([whole, partial, none, later, deleted, otherGeneration],
+                                                            operation: .extractText)
+
+        XCTAssertEqual(found, [whole], "Whole, current, and for exactly the content it was made from")
+        let nothingAsked = try await store.sourcesWithWholeResults([], operation: .extractText)
+        XCTAssertEqual(nothingAsked, [])
+        let otherOperation = try await store.sourcesWithWholeResults([whole], operation: .translate)
+        XCTAssertEqual(otherOperation, [])
     }
 
     // MARK: Helpers
