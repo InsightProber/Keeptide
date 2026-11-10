@@ -50,6 +50,20 @@ image's card in quick access carries a small mark while its text is recognized
 or waits its turn, once it has text, or when recognizing it failed; its help
 tag and VoiceOver say which.
 
+⌘T, or **Translation** in the preview's bar, shows a translation of the selected
+text beside its preview: the text on the left and, on the right, a translation
+made on this Mac with Apple's Translation into the first language in the
+person's language list, each paragraph as it is done. Code, links and parts
+already in that language stay as they are. Both languages must be downloaded on
+this Mac, and Keeptide names any that is missing before it translates; a text
+already in that language offers the next one. Nothing is translated until it is
+asked for, and the translation is kept beside its text on this Mac, one per
+item, not in iCloud or in exports. ⌘. stops a translation and shows what was
+made, marked incomplete, which is kept unless a whole translation was kept
+before. Escape closes the translation before the preview.
+When translating again fails, the earlier translation stays and the column says
+why; the same holds for the text in an image.
+
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library
@@ -86,6 +100,7 @@ planned.
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
 | Text in images | Text recognized on this Mac in a copied image, shown beside its preview and kept locally |
+| Translation | A text clip translated on this Mac, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |
 | Recovery | Recently deleted content, clear storage errors and protection against partial writes |
@@ -105,8 +120,9 @@ planned.
   disk cannot safely accept new content, new copies are not saved, and Keeptide
   says so until there is room.
 - Saved commands are content. Reusing them must not automatically execute them.
-- Text recognition reads only images that were copied, when asked. Keeptide does
-  not read the screen or other apps' windows.
+- Text recognition reads only images that were copied, and translation only the
+  text of clips, when asked. Keeptide does not read the screen or other apps'
+  windows.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
   before it sends the paste and again after the panel hides. When they changed,

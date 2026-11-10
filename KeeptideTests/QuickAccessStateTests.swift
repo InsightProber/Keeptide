@@ -1084,6 +1084,226 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.textMark(for: row), .hasText)
     }
 
+    // MARK: Translation
+
+    /// A panel over two text clips with an image between them, the newest text first, translating with `translator` for
+    /// a person who prefers Simplified Chinese, then English.
+    private func makeTranslationPanel(_ translator: ScriptedTranslator) async throws -> (QuickAccessState, Fixture) {
+        let (fixture, _) = try await makeTextFixture(translator: translator)
+        try await insert("Notes", body: "Second synthetic note.", at: 0, into: fixture)
+        try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        try await insert("Quarterly plan", body: "The quarterly plan is due on Friday.", at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.open()
+        try await settled(state)
+        return (state, fixture)
+    }
+
+    func testShowingTheTranslationOpensItsColumnAndTranslatesOnce() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        let ref = try XCTUnwrap(state.selection.selectedRow?.ref)
+        XCTAssertTrue(state.offersTranslation)
+
+        state.showTranslation()
+
+        XCTAssertTrue(state.isPreviewExpanded)
+        XCTAssertEqual(state.resultColumn, .translation)
+        XCTAssertEqual(state.translationColumnRef, ref)
+        let engine = try await startedTranslation(translator, 0)
+        XCTAssertTrue(translator.request(0)?.target.isSameLanguage(as: Locale.Language(identifier: "zh-Hans")) == true,
+                      "Into the language the person prefers")
+        guard case .translating(_, let into)? = state.translationColumn else {
+            return XCTFail("Translating: \(String(describing: state.translationColumn))")
+        }
+        XCTAssertEqual(into, "zh-Hans", "The column names the language it is translating into")
+        state.showTranslation()
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度计划周五截止。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .translation("季度计划周五截止。", into: "zh-Hans", status: .complete)
+        }
+        try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
+        XCTAssertEqual(state.translationColumnText, "季度计划周五截止。")
+        XCTAssertEqual(state.translationOriginal, .text("The quarterly plan is due on Friday.", isTruncated: false))
+        XCTAssertNil(state.textColumnRef)
+        state.showTranslation()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(1), "Translated once")
+    }
+
+    func testATranslationKeptFromBeforeShowsWithoutTranslatingAgain() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture) = try await makeTranslationPanel(translator)
+        let ref = try XCTUnwrap(state.selection.selectedRow?.ref)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Le plan trimestriel est dû vendredi."]),
+            for: DerivedTextRequest(source: ref, operation: .translate, targetLanguage: "fr"))
+
+        state.showTranslation()
+
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .translation("Le plan trimestriel est dû vendredi.", into: "fr",
+                                                    status: .complete)
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(0), "Whatever language it is in")
+    }
+
+    func testOnlyTextHasATranslationColumnAndItFollowsTheSelectionWithoutTranslating() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("译文"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
+
+        // An image has no translation here: its preview shows alone in the same place.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Screenshot")
+        XCTAssertFalse(state.offersTranslation)
+        XCTAssertTrue(state.isPreviewSplit)
+        XCTAssertNil(state.translationColumnRef)
+        state.showTranslation()
+        XCTAssertNil(state.translationColumnRef)
+
+        // Another text shows its column, with nothing translated until asked.
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Notes")
+        try await SearchTestSupport.waitUntil { state.translationColumn == .notStarted }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(1))
+    }
+
+    func testCopyingTheTranslationLeavesThePanelOpenAndSkipsCapture() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture) = try await makeTranslationPanel(translator)
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("季度计划周五截止。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.translationColumnResult != nil }
+
+        XCTAssertTrue(state.copyText())
+
+        XCTAssertEqual(fixture.board.string(forType: .string), "季度计划周五截止。")
+        XCTAssertEqual(fixture.board.pasteboardItems?.first?.types.contains(.init(OwnWriteToken.typeIdentifier)), true)
+        XCTAssertTrue(state.isTextCopied)
+        // Part of it, as the translation's own Copy hands it over.
+        XCTAssertTrue(state.copyText("季度"))
+        XCTAssertEqual(fixture.board.string(forType: .string), "季度")
+    }
+
+    func testStoppingATranslationKeepsWhatItMadeAndSaysItIsIncomplete() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        state.showTranslation()
+        let engine = try await startedTranslation(translator, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度计划"))
+        try await SearchTestSupport.waitUntil {
+            if case .translating(let snapshot, _)? = state.translationColumn { return snapshot.hasText }
+            return false
+        }
+        XCTAssertTrue(state.canStopTranslation)
+
+        state.stopTranslation()
+
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .translation("季度计划", into: "zh-Hans", status: .stopped)
+        }
+        XCTAssertNil(state.translationColumnText, "Part of a translation is copied by selecting it")
+        XCTAssertNil(state.translationColumnResult)
+        XCTAssertEqual(state.translationColumn?.endingWords, TranslationColumnWords.stopped)
+
+        // ⌘T tries again, as the column's Try Again does.
+        state.showTranslation()
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "zh-Hans"))
+    }
+
+    func testATranslationIntoAnotherLanguageThatFailsLeavesTheOneBeforeAndSaysSo() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("季度计划"), .finished(.completed))
+        let made = TranslationColumn.translation("季度计划", into: "zh-Hans", status: .complete)
+        try await SearchTestSupport.waitUntil { state.translationColumn == made && state.translationColumnResult != nil }
+        let failure = GenerationError(kind: .languageNotDownloaded,
+                                      message: "To translate from English to Japanese on this Mac, download both languages.")
+
+        state.translate(into: Locale.Language(identifier: "ja"))
+        try await startedTranslation(translator, 1).end(throwing: failure)
+
+        try await SearchTestSupport.waitUntil { state.translationColumn == .failedAgain(made, failure, asked: "ja") }
+        XCTAssertTrue(state.isTranslationColumnJustMade)
+        XCTAssertEqual(state.translationColumnText, "季度计划", "The translation from before is still the one taken")
+        XCTAssertEqual(TranslationColumnWords.failedAgain(leaving: made, because: failure, asked: "ja"),
+                       "Couldn't translate to Japanese. The Chinese (Simplified) translation is unchanged.")
+        // ⌘T tries again, into the language that failed.
+        state.showTranslation()
+        _ = try await startedTranslation(translator, 2)
+        XCTAssertEqual(translator.request(2)?.target, Locale.Language(identifier: "ja"))
+    }
+
+    func testATextAlreadyInTheLanguageOffersTheNextAndNothingToTranslateSaysSo() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        let already = GenerationError(kind: .alreadyInTargetLanguage,
+                                      message: "This text is already in Chinese (Simplified).")
+        state.showTranslation()
+        try await startedTranslation(translator, 0).end(throwing: already)
+
+        try await SearchTestSupport.waitUntil { state.translationColumn == .failed(already, asked: "zh-Hans") }
+        XCTAssertEqual(state.translationColumn?.language, "zh-Hans", "The column names the language it was asked")
+        XCTAssertEqual(state.translationTarget(after: Locale.Language(identifier: "zh-Hans")),
+                       Locale.Language(identifier: "en-US"))
+        // ⌘T takes the offer of the next language, as the column's button does.
+        state.showTranslation()
+        try await startedTranslation(translator, 1).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .finished(.completed))
+        XCTAssertTrue(translator.request(1)?.target.isSameLanguage(as: Locale.Language(identifier: "en")) == true)
+
+        try await SearchTestSupport.waitUntil { state.translationColumn == .nothingToTranslate(into: "en") }
+        XCTAssertEqual(state.translationColumn?.language, "en")
+        XCTAssertEqual(state.translationColumn?.endingWords, TranslationColumnWords.nothingToTranslate)
+    }
+
+    func testTheLanguageThatFailedIsTheOneTriedAgainAfterARetryIsStopped() async throws {
+        let translator = ScriptedTranslator()
+        let (state, _) = try await makeTranslationPanel(translator)
+        let missing = GenerationError(kind: .languageNotDownloaded,
+                                      message: "To translate from Chinese (Simplified) to English on this Mac, download both languages.")
+        state.showTranslation()
+        try await startedTranslation(translator, 0).end(throwing: missing)
+        try await SearchTestSupport.waitUntil {
+            if case .failed(_, "zh-Hans")? = state.translationColumn { return true }
+            return false
+        }
+        state.translate(into: Locale.Language(identifier: "en"))
+        try await startedTranslation(translator, 1).end(throwing: missing)
+        try await SearchTestSupport.waitUntil { state.translationColumn == .failed(missing, asked: "en") }
+
+        // Tried again and stopped before any text: the failure stays, and so does the language it was for.
+        state.showTranslation()
+        _ = try await startedTranslation(translator, 2)
+        state.stopTranslation()
+        try await SearchTestSupport.waitUntil { state.translationColumn == .failed(missing, asked: "en") }
+        state.translate()
+        _ = try await startedTranslation(translator, 3)
+        XCTAssertEqual(translator.request(3)?.target, Locale.Language(identifier: "en"))
+    }
+
+    func testTheTranslationTargetIsThePersonsFirstLanguageAndTheNextOneWhereTheTextIsInIt() {
+        XCTAssertEqual(TranslationTargets.first(of: ["zh-Hans-CN", "en-US"]), Locale.Language(identifier: "zh-Hans-CN"))
+        XCTAssertEqual(TranslationTargets.first(of: []), Locale.Language(identifier: "en"))
+        let chinese = Locale.Language(identifier: "zh-Hans")
+        XCTAssertEqual(TranslationTargets.next(after: chinese, of: ["zh-Hans-CN", "ja-JP"]),
+                       Locale.Language(identifier: "ja-JP"))
+        XCTAssertEqual(TranslationTargets.next(after: chinese, of: ["zh-Hans-CN"]), Locale.Language(identifier: "en"))
+        XCTAssertNil(TranslationTargets.next(after: Locale.Language(identifier: "en-GB"), of: ["en-US"]))
+    }
+
     func testFindingNoTextInTheOtherLayoutReplacesTheTextMadeBefore() async throws {
         let (fixture, recognizer) = try await makeTextFixture()
         try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
@@ -3033,7 +3253,8 @@ final class QuickAccessStateTests: XCTestCase {
 
     /// A fixture whose library recognizes text with a recognizer the test drives. Under another store generation, as
     /// when the library has since become another, nothing it makes is kept.
-    private func makeTextFixture(keepsUnderAnotherGeneration: Bool = false) async throws
+    private func makeTextFixture(keepsUnderAnotherGeneration: Bool = false,
+                                 translator: ScriptedTranslator = ScriptedTranslator()) async throws
         -> (Fixture, ScriptedRecognizer) {
         var fixture = try makeFixture()
         let recognizer = ScriptedRecognizer()
@@ -3043,7 +3264,7 @@ final class QuickAccessStateTests: XCTestCase {
             : current
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: controller), identity: identity,
-            recognizer: recognizer, translator: ScriptedTranslator(),
+            recognizer: recognizer, translator: translator,
             image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
         addTeardownBlock { await derivedText.stopAndDrain() }
         var services = fixture.services

@@ -18,14 +18,15 @@ import Observation
 final class DerivedTextCoordinator {
     /// How a job for an item and operation ended, where that is something to show.
     enum Outcome: Equatable, Sendable {
-        /// The job ended with this text, made as the request asked, which is being saved.
-        case saving(String, DerivedTextRequest)
+        /// The job ended with this text, made as the request asked, which is being saved: whole, or as far as it got
+        /// before a person stopped it or it was cut off.
+        case saving(String, DerivedTextRequest, status: DerivedTextStatus)
         /// What the job made, as saved beside its item.
         case saved(DerivedText)
         /// The engine found no text: nothing is kept for the item, and what was kept before goes.
         case noText
-        /// The job made this text as the request asked, but the library couldn't keep it.
-        case notSaved(String, DerivedTextRequest)
+        /// The job made this text as the request asked, whole or as far as it got, but the library couldn't keep it.
+        case notSaved(String, DerivedTextRequest, status: DerivedTextStatus)
         /// Nothing was made, or what was made belongs to content that changed or went meanwhile, and nothing was made of
         /// this content earlier in this session. What the store kept from earlier sessions stays.
         case failed(GenerationError)
@@ -34,10 +35,12 @@ final class DerivedTextCoordinator {
     /// An outcome as an item shows it: with the content it was made from, and the request whose job ended so; and a
     /// later job that failed and left it, with why.
     private struct Shown {
-        let source: ContentRef
+        let request: DerivedTextRequest
         let outcome: Outcome
         let token: UUID
-        var failure: (error: GenerationError, token: UUID)?
+        var failure: (error: GenerationError, token: UUID, request: DerivedTextRequest)?
+
+        var source: ContentRef { request.source }
 
         /// Something was made of the content: text, or that it has none.
         var isMade: Bool {
@@ -51,9 +54,15 @@ final class DerivedTextCoordinator {
     private var outcomes: [GenerationKey: Shown] = [:]
     /// The request whose job ended last for each item and operation, of those whose ending decides what it shows.
     private var lastEnded: [GenerationKey: UUID] = [:]
-    /// Requests waiting on what the store kept, which decides whether they start: the content each is for, and the
-    /// layout asked for last.
-    private var waiting: [GenerationKey: (source: ContentRef, keepsLineBreaks: Bool)] = [:]
+    /// Requests waiting on what the store kept, which decides whether they start: the content each is for, and what was
+    /// asked for last.
+    private var waiting: [GenerationKey: (source: ContentRef, asked: Asked)] = [:]
+
+    /// What a request waiting on the store starts, if the store kept nothing.
+    private enum Asked {
+        case extractText(keepingLineBreaks: Bool)
+        case translate(to: Locale.Language)
+    }
 
     @ObservationIgnored private let store: DerivedTextStore
     @ObservationIgnored private let identity: StoreIdentity
@@ -63,7 +72,7 @@ final class DerivedTextCoordinator {
     @ObservationIgnored private let text: @Sendable (ContentRef) async throws -> String
     /// The latest request for each item and operation, while its job runs or its result is saved. Only its ending
     /// changes what the item shows.
-    @ObservationIgnored private var latest: [GenerationKey: (token: UUID, source: ContentRef)] = [:]
+    @ObservationIgnored private var latest: [GenerationKey: (token: UUID, request: DerivedTextRequest)] = [:]
     /// The latest save for each item and operation, which a later save waits for. Closing the library waits for all.
     @ObservationIgnored private var saves: [GenerationKey: (token: UUID, task: Task<Void, Never>)] = [:]
     /// For each save under way, what its item shows again if the store doesn't take the text: what it showed before
@@ -89,7 +98,7 @@ final class DerivedTextCoordinator {
         let key = Self.key(for: source, operation: operation)
         // Read first: whoever asks learns of the next job too, though `latest` isn't observed.
         let job = jobs.job(for: key)
-        guard latest[key]?.source == source else { return nil }
+        guard latest[key]?.request.source == source else { return nil }
         return job
     }
 
@@ -123,10 +132,38 @@ final class DerivedTextCoordinator {
     /// Why the latest job for exactly this content failed, when it left what an earlier job of this session made of it,
     /// which the item still shows. Nil once a later job has ended, however it ended.
     func failure(for source: ContentRef, operation: DerivedTextOperation) -> GenerationError? {
+        latestFailure(for: source, operation: operation)?.error
+    }
+
+    /// What the job that failed was asked to make, such as the language a translation was to be in: the latest job,
+    /// when it failed and left what was made before, or the one whose failure exactly this content shows on its own.
+    func failedRequest(for source: ContentRef, operation: DerivedTextOperation) -> DerivedTextRequest? {
+        if let failure = latestFailure(for: source, operation: operation) { return failure.request }
+        guard let shown = outcomes[Self.key(for: source, operation: operation)], shown.source == source,
+              case .failed = shown.outcome else { return nil }
+        return shown.request
+    }
+
+    /// What the job whose ending exactly this content shows was asked to make. Nil when it shows none.
+    func shownRequest(for source: ContentRef, operation: DerivedTextOperation) -> DerivedTextRequest? {
+        guard let shown = outcomes[Self.key(for: source, operation: operation)], shown.source == source else {
+            return nil
+        }
+        return shown.request
+    }
+
+    /// What the job under way for exactly this content was asked to make. Nil without one.
+    func runningRequest(for source: ContentRef, operation: DerivedTextOperation) -> DerivedTextRequest? {
+        guard job(for: source, operation: operation) != nil else { return nil }
+        return latest[Self.key(for: source, operation: operation)]?.request
+    }
+
+    private func latestFailure(for source: ContentRef, operation: DerivedTextOperation)
+        -> (error: GenerationError, token: UUID, request: DerivedTextRequest)? {
         let key = Self.key(for: source, operation: operation)
         guard let shown = outcomes[key], shown.source == source, let failure = shown.failure,
               failure.token == lastEnded[key] else { return nil }
-        return failure.error
+        return failure
     }
 
     /// What a job saved for exactly this content of an item, in this session or an earlier one; nil when there is
@@ -147,7 +184,7 @@ final class DerivedTextCoordinator {
         let key = Self.key(for: source, operation: operation)
         let job = jobs.job(for: key)
         let shown = outcomes[key]
-        return (latest[key]?.source == source ? job : nil, shown?.source == source ? shown?.outcome : nil)
+        return (latest[key]?.request.source == source ? job : nil, shown?.source == source ? shown?.outcome : nil)
     }
 
     /// Starts recognizing the text in an image item, in place of any recognition under way for it. Nil once the
@@ -172,22 +209,35 @@ final class DerivedTextCoordinator {
     /// unless it left text the store kept. Asked again while the store is read, it starts nothing more, in the layout
     /// asked for last.
     func extractTextUnlessMade(from source: ContentRef, keepingLineBreaks: Bool) {
-        let key = Self.key(for: source, operation: .extractText)
-        guard !isClosed, job(for: source, operation: .extractText) == nil else { return }
+        startUnlessMade(source, operation: .extractText, asked: .extractText(keepingLineBreaks: keepingLineBreaks))
+    }
+
+    /// Translates an item's text into `target` unless something was made of it, as `extractTextUnlessMade` recognizes
+    /// an image's text: a translation kept from before shows as it is, in whatever language it is in.
+    func translateUnlessMade(_ source: ContentRef, to target: Locale.Language) {
+        startUnlessMade(source, operation: .translate, asked: .translate(to: target))
+    }
+
+    private func startUnlessMade(_ source: ContentRef, operation: DerivedTextOperation, asked: Asked) {
+        let key = Self.key(for: source, operation: operation)
+        guard !isClosed, job(for: source, operation: operation) == nil else { return }
         if waiting[key]?.source == source {
-            waiting[key] = (source, keepingLineBreaks)
+            waiting[key] = (source, asked)
             return
         }
         guard !hasMade(source, key) else { return }
-        waiting[key] = (source, keepingLineBreaks)
+        waiting[key] = (source, asked)
         Task { [weak self] in
-            let kept = await self?.savedResult(for: source, operation: .extractText)
+            let kept = await self?.savedResult(for: source, operation: operation)
             // Stopped meanwhile, or asked for again for other content, it starts nothing.
             guard let self, let request = waiting[key], request.source == source else { return }
             waiting[key] = nil
             // Meanwhile a job may have been asked for, and may have made something.
-            guard kept == nil, job(for: source, operation: .extractText) == nil, !hasMade(source, key) else { return }
-            extractText(from: source, keepingLineBreaks: request.keepsLineBreaks)
+            guard kept == nil, job(for: source, operation: operation) == nil, !hasMade(source, key) else { return }
+            switch request.asked {
+            case .extractText(let keepsLineBreaks): extractText(from: source, keepingLineBreaks: keepsLineBreaks)
+            case .translate(let target): translate(source, to: target)
+            }
         }
     }
 
@@ -249,7 +299,7 @@ final class DerivedTextCoordinator {
         let token = UUID()
         // Before the job starts: starting it stops the one under way, whose end this request now outranks, and it
         // stands in for a request still waiting on the store.
-        latest[key] = (token, request.source)
+        latest[key] = (token, request)
         waiting[key] = nil
         return jobs.start(key, lane: lane, priority: .user, options: options, source: generation) { [weak self] in
             self?.end($0, of: request, key: key, token: token)
@@ -270,17 +320,17 @@ final class DerivedTextCoordinator {
                 break
             case .failed(let error)? where hasMade(request.source, key):
                 // So does a failure, once something was made of this content in this session, and it says why.
-                outcomes[key]?.failure = (error, token)
+                outcomes[key]?.failure = (error, token, request)
             case let outcome?:
-                show(outcome, for: key, source: request.source, token: token)
+                show(outcome, for: key, request: request, token: token)
             }
             return
         }
         // Until the save lands, the item shows what the job made, or that it found nothing, which the store is told
         // too: the text kept before goes.
         restores[token] = outcomes[key]
-        show(decision == .clear ? .noText : .saving(snapshot.text(), request), for: key, source: request.source,
-             token: token)
+        show(decision == .clear ? .noText : .saving(snapshot.text(), request, status: Self.status(of: snapshot)),
+             for: key, request: request, token: token)
         let store = store
         let identity = identity
         let earlier = saves[key]?.task
@@ -300,9 +350,10 @@ final class DerivedTextCoordinator {
                 }
             } catch {
                 // The image has no text, whether or not the store could let go of what it kept before.
-                outcome = decision == .clear ? .noText : .notSaved(snapshot.text(), request)
+                outcome = decision == .clear ? .noText
+                    : .notSaved(snapshot.text(), request, status: Self.status(of: snapshot))
             }
-            self?.saved(outcome, for: key, source: request.source, token: token)
+            self?.saved(outcome, for: key, request: request, token: token)
         }
         saves[key] = (token, save)
     }
@@ -311,7 +362,8 @@ final class DerivedTextCoordinator {
     /// something of its own to show meanwhile, though one may have been stopped, or have failed and said why. What the
     /// store didn't take leaves what the item showed before the job: text from a job stopped or cut off, as it was; a
     /// whole text, or finding none, as a failure does, saying why, once something was made of the content.
-    private func saved(_ outcome: Outcome?, for key: GenerationKey, source: ContentRef, token: UUID) {
+    private func saved(_ outcome: Outcome?, for key: GenerationKey, request: DerivedTextRequest, token: UUID) {
+        let source = request.source
         if saves[key]?.token == token { saves[key] = nil }
         if latest[key]?.token == token { latest[key] = nil }
         let before = restores.removeValue(forKey: token)
@@ -320,11 +372,11 @@ final class DerivedTextCoordinator {
         case .failed(let error)? where before.map({ $0.source == source && $0.isMade }) == true:
             cameTo = before.map { kept in
                 var kept = kept
-                kept.failure = (error, token)
+                kept.failure = (error, token, request)
                 return kept
             }
         case let outcome?:
-            cameTo = Shown(source: source, outcome: outcome, token: token)
+            cameTo = Shown(request: request, outcome: outcome, token: token)
         case nil:
             cameTo = before
         }
@@ -340,14 +392,23 @@ final class DerivedTextCoordinator {
     private static func cameTo(_ cameTo: Shown?, for shown: Shown) -> Shown? {
         guard let failure = shown.failure else { return cameTo }
         guard var cameTo, cameTo.isMade else {
-            return Shown(source: shown.source, outcome: .failed(failure.error), token: failure.token)
+            return Shown(request: failure.request, outcome: .failed(failure.error), token: failure.token)
         }
         cameTo.failure = failure
         return cameTo
     }
 
-    private func show(_ outcome: Outcome, for key: GenerationKey, source: ContentRef, token: UUID) {
-        outcomes[key] = Shown(source: source, outcome: outcome, token: token)
+    private func show(_ outcome: Outcome, for key: GenerationKey, request: DerivedTextRequest, token: UUID) {
+        outcomes[key] = Shown(request: request, outcome: outcome, token: token)
+    }
+
+    /// How whole a snapshot's text is, as the store keeps it.
+    private static func status(of snapshot: GenerationSnapshot) -> DerivedTextStatus {
+        switch snapshot.phase {
+        case .finished(.completed): .complete
+        case .finished(.truncated): .truncated
+        default: .stopped
+        }
     }
 
     private static func outcome(of snapshot: GenerationSnapshot, saved: DerivedText?) -> Outcome? {
