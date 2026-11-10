@@ -289,7 +289,8 @@ extension CaptureSession {
             fileAccessIdentity: fileAccessIdentity,
             collections: collectionService,
             collectionChanges: collectionService,
-            lifecycle: maintenance
+            lifecycle: maintenance,
+            derivedText: derivedText
         )
     }
 }

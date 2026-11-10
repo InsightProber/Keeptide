@@ -714,6 +714,43 @@ final class QuickAccessBandTests: XCTestCase {
         XCTAssertFalse(same(try picture(frequent), try picture(recent)))
     }
 
+    // MARK: Text in an image
+
+    func testTheTextColumnSaysWhyWhenARecognitionEndsWithoutText() {
+        var endings = TextColumnEndings()
+        let image = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        let failure = GenerationError(kind: .contentUnavailable, message: "This image couldn't be read.")
+        func say(_ column: TextColumn?, justMade: Bool = true, ref: ContentRef = image, open: Bool = true) -> String? {
+            endings.words(for: column.map { (ref, $0) }, isJustMade: justMade, isOpen: open)
+        }
+
+        XCTAssertNil(say(.loading, justMade: false))
+        // A recognition that fails at once, before it was seen under way, says why as it ends, once.
+        XCTAssertEqual(say(.failed(failure)), failure.message)
+        XCTAssertNil(say(.failed(failure)))
+        // Text that was made, then couldn't be kept, says why too.
+        XCTAssertNil(say(.text("Synthetic", keepsLineBreaks: true, status: .complete)))
+        XCTAssertEqual(say(.failed(.contentUnavailable)), GenerationError.contentUnavailable.message)
+        // An image without text says so.
+        XCTAssertNil(say(.loading, justMade: false))
+        XCTAssertEqual(say(.noText), TextColumnWords.noText)
+
+        // An ending from before, shown for another image, says nothing again.
+        let other = ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(), digest: Data())
+        XCTAssertNil(say(.noText, ref: other))
+        // Nor does an ending that isn't the latest recognition's, such as text brought back by stopping one.
+        XCTAssertNil(say(.loading, justMade: false))
+        XCTAssertNil(say(.failed(failure), justMade: false))
+        // With the panel closed nothing is said, and an ending seen as it opens is only shown.
+        XCTAssertNil(say(.loading, justMade: false))
+        XCTAssertNil(say(.noText, open: false))
+        endings.reset()
+        XCTAssertNil(say(.failed(failure)))
+        // Without a column, nothing is said, and the next column starts afresh.
+        XCTAssertNil(say(nil))
+        XCTAssertNil(say(.noText))
+    }
+
     // MARK: Helpers
 
     /// The band view with `metrics`, medium cards unless given others, and nothing in its state, in a window that is

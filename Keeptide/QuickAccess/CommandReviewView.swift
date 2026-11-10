@@ -93,7 +93,7 @@ struct CommandReviewView: View {
 }
 
 /// ⌘⏎ drawn as the toolbar draws Return's key cap, beside the button it confirms with. VoiceOver reads the button.
-private struct ReviewKeycap: View {
+struct ReviewKeycap: View {
     let symbol: String
 
     var body: some View {

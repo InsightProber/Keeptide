@@ -111,6 +111,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var captureNotice: () -> String? = { nil }
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
+    /// What `update()` says as a recognition ends without text.
+    private var textColumnEndings = TextColumnEndings()
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
     /// to count the calls.
     var fieldCharactersMoved: (NSTextView) -> Void = { $0.inputContext?.invalidateCharacterCoordinates() }
@@ -167,7 +169,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         panel.onKeyEvent = { [weak self] in self?.followReturnKey($0) }
         panel.onPreviewKeyDown = { [weak self] in self?.handlePreviewKeyDown($0) ?? false }
         panel.onContentMouseDown = { [weak self] point in
-            guard let self, state.isPreviewExpanded, state.commandReview == nil,
+            // Over the band, a click closes the preview that lies over it. Below the split card or a command's review,
+            // which stand above the band, it goes to the band, as it does with no card at all.
+            guard let self, state.isPreviewExpanded, state.commandReview == nil, !state.isPreviewSplit,
                   let previewFrameInWindow, !previewFrameInWindow.contains(point),
                   contentFrames.first?.contains(point) == true else { return false }
             // Dismissal owns this click: it must not also select a clip or activate the copy button beneath it.
@@ -204,6 +208,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             visibleFrame = fixedVisibleFrame ?? Self.workingScreen()?.visibleFrame ?? visibleFrame
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
+            state.restoreKeepsLineBreaks(preferences.keepsLineBreaks)
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics
@@ -235,6 +240,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         isSessionOpen = false
         isHiddenForPaste = false
         searchReachedByKeyboard = false
+        textColumnEndings.reset()
         state.close()
         // The undo stack is the showing's: a move stays in Recently Deleted, where the library recovers it.
         window?.undoManager?.removeAllActions()
@@ -353,6 +359,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         // only shown: it would be read each time the panel opens.
         if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
         toolbar.captureNotice = notice
+        // And why a recognition that just ended left the text column without text.
+        let column = state.textColumnRef.flatMap { ref in state.textColumn.map { (ref: ref, column: $0) } }
+        if let words = textColumnEndings.words(for: column, isJustMade: state.isTextColumnJustMade,
+                                               isOpen: isSessionOpen) {
+            announce(words)
+        }
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }
@@ -416,14 +428,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
 
     private var hasCard: Bool { state.isPreviewExpanded || state.commandReview != nil }
 
-    /// The preview overlays the stationary band; only a command review uses the separate card above it.
-    /// The transparent host expands to fit the content without animating or moving the band's screen coordinates.
+    /// The preview overlays the stationary band. A command review, and the preview split for a column beside it, stand
+    /// above the band instead, which moves down where they need the room. The transparent host expands to fit the
+    /// content without animating.
     private func layoutPanel() {
         guard let window, let hosting else { return }
         var band = StripLayout.bandFrame(metrics, in: visibleFrame)
         var preview: NSRect?
         if state.commandReview != nil {
             let placed = StripLayout.previewLayout(band: band, in: visibleFrame)
+            band = placed.band
+            preview = placed.preview
+        } else if state.isPreviewSplit {
+            let placed = StripLayout.splitLayout(band: band, in: visibleFrame)
             band = placed.band
             preview = placed.preview
         } else if state.isPreviewExpanded {
@@ -501,6 +518,25 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             togglePreview()
         case .escape:
             escape()
+        case .showTextInImage:
+            let focus = currentFocus
+            let wasShowing = state.textColumnRef != nil
+            state.showTextInImage()
+            update()
+            keepFocus(focus)
+            // VoiceOver hears the column once, as it opens.
+            if !wasShowing, state.textColumnRef != nil { announce("\(TextColumnWords.title), on this Mac") }
+        case .closeResultColumn:
+            let focus = currentFocus
+            state.closeResultColumn()
+            update()
+            keepFocus(focus)
+        case .extractText:
+            state.extractText()
+        case .stopTextRecognition:
+            state.stopTextRecognition()
+        case .toggleKeepLineBreaks:
+            preferences.keepsLineBreaks = state.toggleKeepLineBreaks()
         }
     }
 
@@ -719,7 +755,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if responder === filterButton { return .filterButton }
         guard let editor = responder as? NSTextView else { return nil }
         if editor.isFieldEditor { return editor.delegate === searchField ? .searchField : nil }
-        // Besides the field's editor, the preview's text is the panel's only text view.
+        // Besides the field's editor, the panel's text views are the preview's: its own text, a review's command, or
+        // the text recognized in an image.
         return .preview
     }
 
@@ -1257,6 +1294,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// What Escape has to peel, the same for the search field and for the strip, the preview and the review card.
     private var escapeContext: QuickAccessEscapeContext {
         QuickAccessEscapeContext(hasCommandReview: state.commandReview != nil,
+                                 hasResultColumn: state.isPreviewSplit,
                                  isPreviewExpanded: state.isPreviewExpanded,
                                  hasFilters: !state.kinds.isEmpty || state.favoritesOnly,
                                  hasList: state.hasList,
@@ -1269,6 +1307,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard closingOnceReturnIsUp == nil else { return close() }
         let context = escapeContext
         let action = QuickAccessEscapePolicy.action(hasMarkedText: false, hasCommandReview: context.hasCommandReview,
+                                                    hasResultColumn: context.hasResultColumn,
                                                     isPreviewExpanded: context.isPreviewExpanded,
                                                     hasQuery: !searchField.stringValue.isEmpty,
                                                     hasFilters: context.hasFilters, hasList: context.hasList,
@@ -1279,7 +1318,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         case .clearQuery:
             searchField.stringValue = ""
             applyEscape(action)
-        case .cancelComposition, .cancelCommandReview, .collapsePreview, .foldSearch:
+        case .cancelComposition, .cancelCommandReview, .closeResultColumn, .collapsePreview, .foldSearch:
             applyEscape(action)
         }
     }
@@ -1289,6 +1328,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         switch action {
         case .cancelCommandReview:
             cancelCommandReview()
+        case .closeResultColumn:
+            perform(.closeResultColumn)
         case .collapsePreview:
             togglePreview()
         case .clearQuery:
@@ -1310,14 +1351,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
-        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M is the one
-        // shortcut here with Shift.
+        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M and ⇧⌘T
+        // are the shortcuts here with Shift.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         // The panel knows its commands' keys as the menu bar knows its items' keys, apart from ⌘Return, keypad Enter
-        // and ⌘⌫, which it knows by the key.
+        // and ⌘⌫, which it knows by the key, and ⌘.
         let key = Self.commandKey(of: event)
         let isShiftCommandM = modifiers == [.command, .shift] && key == "m"
-        guard isSessionOpen, modifiers == .command || isShiftCommandM else { return false }
+        let isShiftCommandT = modifiers == [.command, .shift] && key == "t"
+        // ⌘. is the text system's key, not the menu bar's: its key bindings know it by what the key types without ⌘,
+        // with Shift where "." needs it, and make it Escape if the panel leaves it. The panel knows it the same way.
+        let isCommandPeriod = event.charactersIgnoringModifiers == "."
+            && (modifiers == .command || modifiers == [.command, .shift])
+        guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT || isCommandPeriod else {
+            return false
+        }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
         // review card, and nothing else: a preview is not a review, and while an input method composes in the search
         // field the key is the composition's.
@@ -1354,6 +1402,21 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 lastTextCommandDelete = event.timestamp
                 window?.firstResponder?.keyDown(with: event)
             }
+            return true
+        }
+        // ⇧⌘T shows the text in the selected image beside its preview. It never goes on to the menu bar; a composition
+        // keeps it, and held down it has acted already.
+        if isShiftCommandT {
+            if !isComposing, !event.isARepeat, state.offersTextInImage { perform(.showTextInImage) }
+            return true
+        }
+        // ⌘. stops the recognition beside the preview. While the preview is split, every ⌘. is taken here, so that one
+        // pressed just as the recognition ends never becomes Escape. Elsewhere it becomes Escape, once: held down, ⌘.
+        // has acted already, as Escape or as Stop, and its repeats peel nothing.
+        if isCommandPeriod, !isComposing {
+            if event.isARepeat { return true }
+            guard state.isPreviewSplit else { return false }
+            if state.canStopTextRecognition { perform(.stopTextRecognition) }
             return true
         }
         // ⌘Z undoes a move to Recently Deleted or the search field's typing, whichever `undoFromKeyboard` finds; a

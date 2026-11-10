@@ -390,8 +390,19 @@ enum StripLayout {
     /// whole height, and one too tall even for that rests on the visible area's bottom with the card at its top, over
     /// the band's top edge.
     static func previewLayout(band: NSRect, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
+        previewLayout(band: band, in: visible, width: previewMaximum.width)
+    }
+
+    /// The preview with a result column beside it, as wide as the band and in line with it, placed above the band as
+    /// the command review is (`previewLayout`).
+    static func splitLayout(band: NSRect, in visible: NSRect) -> (preview: NSRect, band: NSRect) {
+        previewLayout(band: band, in: visible, width: band.width)
+    }
+
+    private static func previewLayout(band: NSRect, in visible: NSRect,
+                                      width: CGFloat) -> (preview: NSRect, band: NSRect) {
         let room = visible.insetBy(dx: sideMargin, dy: screenMargin)
-        let size = CGSize(width: min(previewMaximum.width, room.width),
+        let size = CGSize(width: min(width, room.width),
                           height: max(previewMinimumHeight,
                                       min(previewMaximum.height, room.height - band.height - previewGap)))
         var movedBand = band

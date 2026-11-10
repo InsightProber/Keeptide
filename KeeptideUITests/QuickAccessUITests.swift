@@ -331,6 +331,34 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
     }
 
+    func testShiftCommandTShowsTheTextInTheImageBesideItsPreview() throws {
+        let app = launchKeeptide(fakesTextRecognition: true)
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForExistence(timeout: 5), app.debugDescription)
+        // Images only: the seeded picture is the one clip listed, and it is selected.
+        app.descendants(matching: .any)["QuickAccessFilterButton"].click()
+        let images = app.menuItems["Images"]
+        XCTAssertTrue(images.waitForExistence(timeout: 5), app.debugDescription)
+        images.click()
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForNonExistence(timeout: 5), app.debugDescription)
+
+        // To the panel, wherever its keys are after the filter menu.
+        app.typeKey("t", modifierFlags: [.command, .shift])
+
+        let column = app.descendants(matching: .any)["QuickAccessTextInImage"]
+        XCTAssertTrue(column.waitForExistence(timeout: 8), app.debugDescription)
+        // Text views alone: elements such as scrollers and radio buttons have numbers for values.
+        let text = app.textViews.matching(NSPredicate(format: "value CONTAINS %@", "Synthetic text in image"))
+            .firstMatch
+        XCTAssertTrue(text.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.buttons["QuickAccessKeepLineBreaks"].exists, app.debugDescription)
+
+        // Escape closes the column first, and the preview stays.
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(column.waitForNonExistence(timeout: 5), app.debugDescription)
+        XCTAssertTrue(app.descendants(matching: .any)["QuickAccessPreview"].exists, app.debugDescription)
+    }
+
     func testFavoritesOnlyLivesInTheFilterMenu() throws {
         let app = launchKeeptide(seedsSnippets: true)
         let frames = try openPanel(app)
@@ -415,12 +443,14 @@ final class QuickAccessUITests: XCTestCase {
         return (launchKeeptide(sessionID: sessionID), host)
     }
 
-    private func launchKeeptide(sessionID: UUID = UUID(), seedsSnippets: Bool = false) -> XCUIApplication {
+    private func launchKeeptide(sessionID: UUID = UUID(), seedsSnippets: Bool = false,
+                                fakesTextRecognition: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-global-hotkey", "--show-quick-access",
                                "--capture-test-session", sessionID.uuidString, "--seed-synthetic-clips"]
             + (seedsSnippets ? ["--seed-synthetic-snippets"] : [])
+            + (fakesTextRecognition ? ["--fake-text-recognition"] : [])
         self.sessionID = sessionID
         application = app
         app.launch()

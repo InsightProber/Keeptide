@@ -129,12 +129,27 @@ line, or act on such a character, as soon as it arrives. **Copy As-Is** in the
 actions menu copies the clip complete. The application does not execute saved
 commands: the paste is the only keystroke it sends.
 
+## Text recognition
+
+Text in an image is recognized on this Mac with Apple's Vision framework, from
+the image's full-size original rather than a card's thumbnail, and off the main
+thread. Engines are grouped in three tiers: Apple's frameworks on this Mac, and,
+planned, Apple Intelligence on Macs that have it and cloud models a person
+chooses. A tall image is read in strips, because Vision only finds text that is
+large enough against the region it reads; each paragraph comes whole from one
+strip. A shared streaming module runs each request as one job per item and
+action, which a newer request replaces, and saves its result once. Recognized
+text is derived data, kept beside its item in the local store: it follows the
+item into Recently Deleted and back, is removed with it, is bound to the item's
+exact content, and is never mirrored to iCloud or exported.
+
 ## Extension boundary
 
 Stable content identities, versions, change consumption and a shared search
 interface allow future semantic retrieval to be added as a derived capability.
-The first release does not include embeddings, model inference or background
-input monitoring. Future suggestions must preserve the same permission and
+On-device model inference uses only Apple's frameworks, for text recognition
+today. The first release does not include embeddings or background input
+monitoring. Future suggestions must preserve the same permission and
 content-validation boundaries.
 
 ## Local export
