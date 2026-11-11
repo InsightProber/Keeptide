@@ -9,8 +9,259 @@ import XCTest
 final class SettingsTests: XCTestCase {
     func testSettingsTabsHaveTheProductOrder() {
         XCTAssertEqual(SettingsTab.allCases.map(\.title), [
-            "General", "Shortcuts", "Privacy", "iCloud",
+            "General", "Shortcuts", "Privacy", "AI", "iCloud",
         ])
+        XCTAssertEqual(SettingsTab.ai.systemImage, "sparkles")
+    }
+
+    func testAppleIntelligenceIsSaidAsTheSystemReportsItAndNothingClaimsToUseIt() {
+        XCTAssertEqual(AppleIntelligenceState(.available), .available)
+        XCTAssertEqual(AppleIntelligenceState(.unavailable(.deviceNotEligible)), .notOnThisMac)
+        XCTAssertEqual(AppleIntelligenceState(.unavailable(.appleIntelligenceNotEnabled)), .turnedOff)
+        XCTAssertEqual(AppleIntelligenceState(.unavailable(.modelNotReady)), .gettingReady)
+        // Where it is missing, the page says what still works without it; where it is there, nothing uses it yet, and
+        // the page says so rather than offering it as an engine.
+        for missing in [AppleIntelligenceState.notOnThisMac, .turnedOff, .gettingReady] {
+            XCTAssertTrue(missing.sentence.hasSuffix("Translation and text recognition still work on this Mac."),
+                          missing.sentence)
+        }
+        XCTAssertEqual(AppleIntelligenceState.available.sentence,
+                       "Apple Intelligence is available on this Mac. Keeptide doesn't use it yet.")
+    }
+
+    func testAFixedLanguageToTranslateIntoIsKeptApartFromTheLastUsedOne() throws {
+        let defaults = try makeDefaults()
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        XCTAssertNil(preferences.fixedTranslationTarget, "The last used language until one is fixed in Settings")
+        XCTAssertEqual(QuickAccessPreferences.fixedTranslationTargetKey, "translation.fixedTargetLanguage")
+
+        preferences.fixedTranslationTarget = "ja"
+        preferences.translationTarget = "fr"
+
+        let reopened = QuickAccessPreferences(defaults: defaults)
+        XCTAssertEqual(reopened.fixedTranslationTarget, "ja")
+        XCTAssertEqual(reopened.translationTarget, "fr", "Choosing in the language menu still keeps the last used one")
+        reopened.fixedTranslationTarget = nil
+        XCTAssertNil(QuickAccessPreferences(defaults: defaults).fixedTranslationTarget)
+        // What is stored is not trusted: anything but a code reads as no fixed language.
+        for stored: Any in [3, ""] {
+            defaults.set(stored, forKey: QuickAccessPreferences.fixedTranslationTargetKey)
+            XCTAssertNil(QuickAccessPreferences(defaults: defaults).fixedTranslationTarget, "\(stored)")
+        }
+    }
+
+    func testTheAIPageSaysWhatEachOfThePersonsLanguagesNeedsToBeTranslatedIntoTheTarget() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "en-GB", "ja-JP", "fr-FR", "zh-Hans-CN", "de-DE"], statuses: [
+            ("ja-JP", "zh-Hans-CN", .needsDownload), ("fr-FR", "zh-Hans-CN", .unsupported),
+        ])
+        let model = AISettingsModel(preferences: QuickAccessPreferences(defaults: try makeDefaults()),
+                                    translator: translator, appleIntelligence: { .notOnThisMac },
+                                    preferredLanguages: { ["zh-Hans-CN", "ja-JP", "fr-FR"] })
+
+        await model.refresh()
+
+        XCTAssertEqual(model.appleIntelligence, .notOnThisMac)
+        XCTAssertEqual(model.target?.name, "Chinese (Simplified)")
+        // The person's languages and English, as Translation offers them, but the one translations go into: each says
+        // what translating from it into that one needs, as the language menu says it.
+        XCTAssertEqual(model.languages.map(\.name), ["Japanese", "French", "English"])
+        XCTAssertEqual(model.languages.map(\.status), ["Not Downloaded", "Not Available on This Mac", "Downloaded"])
+        XCTAssertEqual(model.languages.map(\.spokenName),
+                       ["Japanese, not downloaded", "French, not available on this Mac", "English, downloaded"])
+    }
+
+    func testTheAIPageSpeaksOfTheLanguageFixedInSettingsElseTheLastUsedOne() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"])
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        preferences.translationTarget = "en"
+        let model = AISettingsModel(preferences: preferences, translator: translator, appleIntelligence: { .available },
+                                    preferredLanguages: { ["zh-Hans-CN"] })
+        await model.refresh()
+        XCTAssertEqual(model.target?.name, "English", "The last used language")
+        XCTAssertEqual(model.languages.map(\.name), ["Chinese (Simplified)"])
+
+        preferences.fixedTranslationTarget = "ja"
+        await model.refresh()
+
+        XCTAssertEqual(model.target?.name, "Japanese")
+        XCTAssertEqual(model.languages.map(\.name), ["Chinese (Simplified)", "English"])
+        // Translate to offers every language Translation does, the person's first, then the others by name.
+        XCTAssertEqual(model.targetChoices.preferred.map(\.name), ["Chinese (Simplified)", "English"])
+        XCTAssertEqual(model.targetChoices.others.map(\.name), ["Japanese"])
+        XCTAssertEqual(model.targetChoices.others.map(\.code), ["ja"])
+    }
+
+    func testTheAIPageSaysWhatTheEnginesOnThisMacDoAndFollowsTheLanguageToTranslateInto() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"], statuses: [("ja-JP", "zh-Hans-CN", .needsDownload)])
+        var opened: [URL] = []
+        let ai = AISettingsModel(preferences: preferences, translator: translator, appleIntelligence: { .turnedOff },
+                                 preferredLanguages: { ["zh-Hans-CN", "ja-JP"] }, open: { opened.append($0) })
+        let (hosting, window, status) = showAIPage(makeSettingsModel(quickAccess: preferences, ai: ai))
+        defer { window.close() }
+        func elements() -> [NSObject] { accessibilityElements(in: hosting) }
+        let built = waitUntil { elements().contains(where: reads("Japanese, not downloaded")) }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let described = elements().map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+
+        // What Apple Intelligence is doing on this Mac, and what still works without it.
+        XCTAssertTrue(built, "\(described)")
+        XCTAssertTrue(elements().contains(where: reads(AppleIntelligenceState.turnedOff.sentence)), "\(described)")
+        // Each engine is this Mac's own, named for what it does; recognized text keeps its line breaks until they are
+        // joined, as the panel's capsule does; translations are made in the last used language until one is fixed.
+        func identified(_ identifier: String) -> NSObject? {
+            elements().first { attribute(of: $0, "accessibilityIdentifier") as? String == identifier }
+        }
+        XCTAssertEqual(identified("TextRecognitionEngine").map(reads("Text recognition engine, On This Mac")), true,
+                       "\(described)")
+        XCTAssertEqual(identified("TranslationEngine").map(reads("Translation engine, On This Mac")), true, "\(described)")
+        func popUp(_ title: String) -> NSObject? {
+            elements().first { role(of: $0) == .popUpButton && name(of: $0) == title }
+        }
+        func value(_ title: String) -> String? { popUp(title).flatMap { attribute(of: $0, "accessibilityValue") as? String } }
+        XCTAssertEqual(value("Line breaks"), "Keep Line Breaks", "\(described)")
+        XCTAssertEqual(value("Translate to"), "Last Used", "\(described)")
+        preferences.keepsLineBreaks = false
+        XCTAssertTrue(waitUntil { value("Line breaks") == "Join Lines into Paragraphs" })
+        // The person's languages, but the one translations go into, which is said before them, say what translating
+        // from them into it needs.
+        XCTAssertTrue(elements().contains(where: reads("Into Chinese (Simplified)")), "\(described)")
+        XCTAssertTrue(elements().contains(where: reads("English, downloaded")), "\(described)")
+        XCTAssertFalse(elements().contains(where: reads("Chinese (Simplified), ")), "\(described)")
+
+        // A language chosen in quick access, the last used one, is the one the page speaks of next.
+        preferences.translationTarget = "ja"
+        XCTAssertTrue(waitUntil { elements().contains(where: reads("Into Japanese")) }, "\(described)")
+        XCTAssertTrue(waitUntil { elements().contains(where: reads("Chinese (Simplified), downloaded")) }, "\(described)")
+        XCTAssertFalse(elements().contains(where: reads("Japanese, ")), "\(described)")
+        // So is one fixed here.
+        preferences.fixedTranslationTarget = "en"
+        XCTAssertTrue(waitUntil { value("Translate to") == "English" }, "\(described)")
+        XCTAssertTrue(waitUntil { elements().contains(where: reads("Japanese, downloaded")) }, "\(described)")
+        XCTAssertTrue(elements().contains(where: reads("Into English")), "\(described)")
+        // A stored code is shown as quick access takes it, and one Translation doesn't offer is shown as unavailable.
+        preferences.fixedTranslationTarget = "ja-JP"
+        XCTAssertTrue(waitUntil { value("Translate to") == "Japanese" }, "\(described)")
+        preferences.fixedTranslationTarget = "sw"
+        XCTAssertTrue(waitUntil { value("Translate to") == "Swahili (Not Available on This Mac)" }, "\(described)")
+
+        // Languages are downloaded and removed in System Settings, which the page opens at Language & Region.
+        let manage = try XCTUnwrap(elements().first { role(of: $0) == .button && name(of: $0) == "Manage in System Settings…" },
+                                   "\(described)")
+        press(manage)
+        XCTAssertTrue(waitUntil { !opened.isEmpty })
+        XCTAssertEqual(opened, [URL(string: "x-apple.systempreferences:com.apple.Localization-Settings.extension")])
+    }
+
+    func testTheAIPageSaysWhereOtherLanguagesComeFromWhenThePersonHasOnlyOne() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP"])
+        let ai = AISettingsModel(preferences: preferences, translator: translator, appleIntelligence: { .notOnThisMac },
+                                 preferredLanguages: { ["en-US"] })
+        let (hosting, window, status) = showAIPage(makeSettingsModel(quickAccess: preferences, ai: ai))
+        defer { window.close() }
+        func elements() -> [NSObject] { accessibilityElements(in: hosting) }
+        let built = waitUntil { elements().contains(where: reads("Into English")) }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let described = elements().map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+
+        // The only language in the person's list is the one translations go into: there is nothing to list, and the
+        // page says where the languages to translate from come from.
+        XCTAssertTrue(built, "\(described)")
+        XCTAssertTrue(elements().contains(where: reads("Languages you add in Language & Region show here.")),
+                      "\(described)")
+        XCTAssertFalse(elements().contains(where: reads(", downloaded")), "\(described)")
+    }
+
+    func testTheSettingsWindowReadsTheAIPageAgainAsItOpensAndAsKeeptideBecomesActiveWhileItShows() async throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"], statuses: [("ja-JP", "zh-Hans-CN", .needsDownload)])
+        let ai = AISettingsModel(preferences: preferences, translator: translator, appleIntelligence: { .notOnThisMac },
+                                 preferredLanguages: { ["zh-Hans-CN", "ja-JP"] })
+        // The window opens on another page, so nothing but the window reads the AI page.
+        let controller = SettingsWindowController(model: makeSettingsModel(quickAccess: preferences, ai: ai),
+                                                  setActivationPolicy: { _ in })
+        defer { controller.window?.close() }
+        func japanese() -> String? { ai.languages.first { $0.name == "Japanese" }?.status }
+
+        controller.show()
+        try await SearchTestSupport.waitUntil { japanese() == "Not Downloaded" }
+        // Coming back to Keeptide while the window shows, as from System Settings once a language is downloaded.
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"])
+        controller.refreshIfOpen()
+        try await SearchTestSupport.waitUntil { japanese() == "Downloaded" }
+        // Closed, it reads nothing; opened again, it reads it all.
+        controller.window?.close()
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"], statuses: [("ja-JP", "zh-Hans-CN", .unsupported)])
+        controller.refreshIfOpen()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertEqual(japanese(), "Downloaded")
+        controller.show()
+        try await SearchTestSupport.waitUntil { japanese() == "Not Available on This Mac" }
+    }
+
+    func testAReadOfTheAIPageThatANewerOneOvertakesChangesNothing() async throws {
+        let translator = GatedTranslator(first: ["en-US", "zh-Hans-CN"], later: ["en-US", "zh-Hans-CN", "ja-JP"])
+        let model = AISettingsModel(preferences: QuickAccessPreferences(defaults: try makeDefaults()),
+                                    translator: translator, appleIntelligence: { .notOnThisMac },
+                                    preferredLanguages: { ["zh-Hans-CN"] })
+        let overtaken = Task { await model.refresh() }
+        try await SearchTestSupport.waitUntil { translator.isWaiting }
+        await model.refresh()
+        XCTAssertEqual(model.targetChoices.others.map(\.name), ["Japanese"])
+
+        translator.open()
+        await overtaken.value
+
+        XCTAssertEqual(model.targetChoices.others.map(\.name), ["Japanese"], "The newer read's languages stay")
+    }
+
+    func testAFixedLanguageOutsideTheChoicesIsStillShownAndTheLastLanguagesListedAreKept() async throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        preferences.translationTarget = "en"
+        preferences.fixedTranslationTarget = "ja"
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"])
+        let model = AISettingsModel(preferences: preferences, translator: translator, appleIntelligence: { .notOnThisMac },
+                                    preferredLanguages: { ["zh-Hans-CN"] })
+        // Before Translation's languages are read, the fixed one is still a choice, so Translate to shows it.
+        XCTAssertEqual(model.unlistedFixedTarget?.name, "Japanese")
+        await model.refresh()
+        XCTAssertNil(model.unlistedFixedTarget, "It is among the choices once they are read")
+
+        // One Translation doesn't offer stays a choice, said to be unavailable, and translations are made in the last
+        // used language.
+        preferences.fixedTranslationTarget = "sw"
+        await model.refresh()
+        XCTAssertEqual(model.unlistedFixedTarget?.name, "Swahili")
+        XCTAssertEqual(model.target?.name, "English")
+        // Where Translation lists nothing for a moment, the languages read before stay.
+        translator.script(languages: [])
+        await model.refresh()
+        XCTAssertEqual(model.targetChoices.others.map(\.name), ["Japanese"])
+    }
+
+    func testAppleIntelligenceIsSaidAsTheSystemHasItNow() throws {
+        var state = AppleIntelligenceState.gettingReady
+        let model = AISettingsModel(preferences: QuickAccessPreferences(defaults: try makeDefaults()),
+                                    translator: ScriptedTranslator(), appleIntelligence: { state })
+        XCTAssertEqual(model.appleIntelligence, .gettingReady, "Before anything else is read")
+        // Its model finishing getting ready shows without reading the rest again.
+        state = .available
+        XCTAssertEqual(model.appleIntelligence, .available)
     }
 
     func testManagingIgnoredAppsPresentsTheSheetOverSettings() {
@@ -669,17 +920,19 @@ final class SettingsTests: XCTestCase {
                                  setActivationPolicy: onPolicy)
     }
 
-    private func makeSettingsModel(directPaste: DirectPasteSettingsModel = DirectPasteSettingsModel())
-        -> SettingsModel {
+    private func makeSettingsModel(directPaste: DirectPasteSettingsModel = DirectPasteSettingsModel(),
+                                   quickAccess: QuickAccessPreferences? = nil,
+                                   ai: AISettingsModel? = nil) -> SettingsModel {
         let defaults = UserDefaults(suiteName: "SettingsModelTests-\(UUID().uuidString)")!
         defaults.set(QuickAccessShortcut.disabled.rawValue, forKey: GlobalShortcutPreferences.selectionKey)
         return SettingsModel(
-            quickAccess: QuickAccessPreferences(defaults: defaults),
+            quickAccess: quickAccess ?? QuickAccessPreferences(defaults: defaults),
             capture: CapturePreferences(defaults: defaults),
             lifecycle: nil,
             shortcut: GlobalShortcutCoordinator(preferences: GlobalShortcutPreferences(defaults: defaults)),
             launchAtLogin: SettingsLaunchAtLoginFake(),
-            directPaste: directPaste
+            directPaste: directPaste,
+            ai: ai
         )
     }
 
@@ -726,6 +979,39 @@ final class SettingsTests: XCTestCase {
         return attribute(of: title, "accessibilityValue") as? String
     }
 
+    /// Settings on its AI page in a window of its own, and whether accessibility answers the test host.
+    private func showAIPage(_ model: SettingsModel) -> (NSHostingView<SettingsView>, NSWindow, AXError) {
+        model.selectedTab = .ai
+        let hosting = NSHostingView(rootView: SettingsView(model: model))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 700), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        var applicationRole: CFTypeRef?
+        let status = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(getpid()),
+                                                   kAXRoleAttribute as CFString, &applicationRole)
+        return (hosting, window, status)
+    }
+
+    /// Whether an element reads `text` in its label, value or title, as SwiftUI puts a static text's words in its
+    /// value and a control's in its label.
+    private func reads(_ text: String) -> (NSObject) -> Bool {
+        { element in
+            ["accessibilityLabel", "accessibilityValue", "accessibilityTitle"].contains {
+                (self.attribute(of: element, $0) as? String)?.contains(text) == true
+            }
+        }
+    }
+
+    /// Presses an accessibility element, as VoiceOver does. The press answers whether it was handled, which is not an
+    /// object, so the answer is left unread.
+    private func press(_ element: NSObject) {
+        let selector = NSSelectorFromString("accessibilityPerformPress")
+        XCTAssertTrue(element.responds(to: selector))
+        _ = element.perform(selector)
+    }
+
     /// An accessibility attribute asked for by its getter's name, or nil where the element has no such getter.
     private func attribute(of element: NSObject, _ getter: String) -> Any? {
         let selector = NSSelectorFromString(getter)
@@ -739,6 +1025,57 @@ final class SettingsTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
         return defaults
+    }
+}
+
+/// A translator whose first list of languages waits until it is let go, and whose later lists answer at once.
+private final class GatedTranslator: TranslationEngine, @unchecked Sendable {
+    let tier = EngineTier.onThisMac
+    private let lock = NSLock()
+    private let first: [Locale.Language]
+    private let later: [Locale.Language]
+    private var calls = 0
+    private var isLetGo = false
+    private var waiting: CheckedContinuation<Void, Never>?
+
+    init(first: [String], later: [String]) {
+        self.first = first.map(Locale.Language.init(identifier:))
+        self.later = later.map(Locale.Language.init(identifier:))
+    }
+
+    var isWaiting: Bool { lock.withLock { waiting != nil } }
+
+    func open() {
+        let waiting = lock.withLock {
+            isLetGo = true
+            defer { self.waiting = nil }
+            return self.waiting
+        }
+        waiting?.resume()
+    }
+
+    func supportedLanguages() async -> [Locale.Language] {
+        let call = lock.withLock {
+            calls += 1
+            return calls
+        }
+        guard call == 1 else { return later }
+        await withCheckedContinuation { continuation in
+            let goesNow = lock.withLock {
+                if isLetGo { return true }
+                waiting = continuation
+                return false
+            }
+            if goesNow { continuation.resume() }
+        }
+        return first
+    }
+
+    func status(of pair: TranslationPair) async -> TranslationPairStatus { .installed }
+
+    func translate(_ text: @escaping @Sendable () async throws -> String, from source: Locale.Language?,
+                   to target: Locale.Language) -> any GenerationSource {
+        ControlledSource()
     }
 }
 

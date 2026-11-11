@@ -234,6 +234,37 @@ enum TranslationTargets {
         return variant(of: next, preferred: preferred, offered: offered)
     }
 
+    /// The language translations are made in: the one fixed in Settings, else the one last chosen in the language
+    /// menu, where Translation offers it; else the first the person prefers. Each in the region the person wants it in.
+    static func target(fixed: String?, lastUsed: String?, preferred: [String],
+                       offered: [Locale.Language]) -> Locale.Language {
+        // Stored codes are not trusted: one that names no language is passed over, as quick access and Settings both
+        // ask here.
+        for chosen in [fixed, lastUsed].compactMap({ $0.flatMap(Self.code(of:)) }) {
+            let language = Locale.Language(identifier: chosen)
+            if isOffered(language, offered) { return variant(of: language, preferred: preferred, offered: offered) }
+        }
+        return first(of: preferred, offered: offered)
+    }
+
+    /// The languages to translate into as the language menu and Settings list them: the ones the person prefers that
+    /// Translation offers, and English, then the others it offers, by name. Each is listed once, in the region the
+    /// person wants it in.
+    static func ordered(preferred: [String],
+                        offered: [Locale.Language]) -> (preferred: [Locale.Language], others: [Locale.Language]) {
+        var first: [Locale.Language] = []
+        for language in preferred.map(Locale.Language.init(identifier:)) + [Locale.Language(identifier: "en")]
+            where isOffered(language, offered) && !first.contains(where: { $0.isSameLanguage(as: language) }) {
+            first.append(variant(of: language, preferred: preferred, offered: offered))
+        }
+        var others: [Locale.Language] = []
+        for language in offered where !(first + others).contains(where: { $0.isSameLanguage(as: language) }) {
+            others.append(variant(of: language, preferred: preferred, offered: offered))
+        }
+        others.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        return (first, others)
+    }
+
     /// Whether translations can be made in `language`, as far as is known.
     static func isOffered(_ language: Locale.Language, _ offered: [Locale.Language]) -> Bool {
         offered.isEmpty || offered.contains { $0.isSameLanguage(as: language) }
@@ -422,9 +453,12 @@ final class QuickAccessState {
     @ObservationIgnored private var readingSavedTranslation: Task<Void, Never>?
     /// The languages the person prefers, first first, as the system lists them.
     @ObservationIgnored private let preferredLanguages: () -> [String]
-    /// The language last chosen from the language menu, by its code without a region: translations are made in it.
-    /// Nil until one is, and translations are made in the first language the person prefers.
+    /// The language last chosen from the language menu, by its code without a region: translations are made in it
+    /// unless Settings fixes one. Nil until one is, and translations are made in the first language the person
+    /// prefers.
     private var chosenTranslationTarget: String?
+    /// The language Settings fixes translations in; nil for the last used one.
+    private var fixedTranslationTarget: String?
     /// The languages translations can be made in, a language in each of its regions, as Translation last listed them:
     /// read again each time the panel opens. Empty until then; kept from one showing to the next.
     private(set) var knownTranslationLanguages: [Locale.Language] = []
@@ -1093,17 +1127,12 @@ final class QuickAccessState {
     /// Whether a clip of this kind can be translated: a text, or the text in an image.
     static func isTranslatable(_ kind: ContentKind) -> Bool { kind == .text || kind == .image }
 
-    /// The language translations are made in: the one last chosen from the language menu while Translation offers
-    /// it, or else the first the person prefers that it offers, each in the region the person wants it in.
+    /// The language translations are made in: the one fixed in Settings, else the one last chosen from the language
+    /// menu, while Translation offers it, or else the first the person prefers that it offers, each in the region the
+    /// person wants it in.
     var translationTarget: Locale.Language {
-        let offered = knownTranslationLanguages
-        if let chosenTranslationTarget {
-            let chosen = Locale.Language(identifier: chosenTranslationTarget)
-            if TranslationTargets.isOffered(chosen, offered) {
-                return TranslationTargets.variant(of: chosen, preferred: preferredLanguages(), offered: offered)
-            }
-        }
-        return TranslationTargets.first(of: preferredLanguages(), offered: offered)
+        TranslationTargets.target(fixed: fixedTranslationTarget, lastUsed: chosenTranslationTarget,
+                                  preferred: preferredLanguages(), offered: knownTranslationLanguages)
     }
 
     /// The language to offer where the text is in the one asked for already; nil without another.
@@ -1131,17 +1160,7 @@ final class QuickAccessState {
         if let ref, let entry = textLanguages[ref], let told = entry {
             statuses = pairStatuses[told.translationCode] ?? []
         }
-        var preferred: [Locale.Language] = []
-        for language in preferredLanguages.map(Locale.Language.init(identifier:)) + [Locale.Language(identifier: "en")]
-            where TranslationTargets.isOffered(language, offered)
-            && !preferred.contains(where: { $0.isSameLanguage(as: language) }) {
-            preferred.append(TranslationTargets.variant(of: language, preferred: preferredLanguages, offered: offered))
-        }
-        var others: [Locale.Language] = []
-        for language in offered where !(preferred + others).contains(where: { $0.isSameLanguage(as: language) }) {
-            others.append(TranslationTargets.variant(of: language, preferred: preferredLanguages, offered: offered))
-        }
-        others.sort { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
+        let (preferred, others) = TranslationTargets.ordered(preferred: preferredLanguages, offered: offered)
         func item(_ language: Locale.Language) -> TranslationLanguageMenu.Item {
             let status = statuses.first {
                 $0.language.isSameLanguage(as: language) && $0.language.region == language.region
@@ -1223,10 +1242,11 @@ final class QuickAccessState {
         readingPairStatuses = [:]
     }
 
-    /// Chooses the language translations are made in, by its code, from the language menu. The selected clip's
-    /// translation shows beside it, made in that language, in the region the person wants it in, unless the column
-    /// shows a whole one in it or one is being made in it. Returns the code, without a region, for the panel to keep;
-    /// a code that names no language chooses nothing and returns nil.
+    /// Chooses a language from the language menu, by its code: the last used one, which translations are made in
+    /// unless Settings fixes one. The selected clip's translation shows beside it, made in that language, in the
+    /// region the person wants it in, unless the column shows a whole one in it or one is being made in it. Returns
+    /// the code, without a region, for the panel to keep; a code that names no language chooses nothing and returns
+    /// nil.
     @discardableResult
     func chooseTranslationLanguage(_ code: String) -> String? {
         guard let code = TranslationTargets.code(of: code) else { return nil }
@@ -1253,10 +1273,12 @@ final class QuickAccessState {
         return code
     }
 
-    /// The person's choice of language, as the panel opens: without one, or with one that names no language,
-    /// translations are made in the first language the person prefers. It changes nothing shown.
-    func restoreTranslationTarget(_ code: String?) {
+    /// The person's choice of language, as the panel opens: the one fixed in Settings, else the one last chosen in
+    /// the language menu. Without either, or with codes that name no language, translations are made in the first
+    /// language the person prefers. It changes nothing shown.
+    func restoreTranslationTarget(_ code: String?, fixed: String?) {
         chosenTranslationTarget = code.flatMap(TranslationTargets.code(of:))
+        fixedTranslationTarget = fixed.flatMap(TranslationTargets.code(of:))
     }
 
     /// What the translation column shows, while it shows: a job under way, then how the latest job ended, and
