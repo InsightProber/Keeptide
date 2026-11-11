@@ -6,7 +6,7 @@ import Foundation
 /// an answer's body streams in as it comes, even once the client itself is let go.
 final class ModelClient: Sendable {
     /// The hosts of the model services Keeptide knows: Anthropic's and OpenAI's APIs.
-    static let providerHosts: Set<String> = ["api.anthropic.com", "api.openai.com"]
+    static let providerHosts = Set(ProviderPreset.all.compactMap { $0.baseURL.host(percentEncoded: false) })
     /// The most of a line passed on at once while it doesn't end.
     static let chunkSize = 16 * 1024
 
