@@ -47,6 +47,39 @@ final class SQLiteSearchIndexTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: evidence), Data("unrelated".utf8))
     }
 
+    func testRecognizedTextResultsAreRecordedWithTheirItemsDocuments() throws {
+        let index = try makeIndex()
+        let identity = SearchTestSupport.identity()
+        try index.reset(identity: identity)
+        let (image, other) = (ItemID(), ItemID())
+        let (first, second, third) = (UUID(), UUID(), UUID())
+        let document = SearchTestSupport.document(itemID: image, kind: .image)
+
+        try index.apply([
+            IndexedItemChange(itemID: image, documents: [document],
+                              recognizedResults: [.history: first, .memo: second]),
+            IndexedItemChange(itemID: other, documents: [], recognizedResults: [.history: third]),
+        ], sequence: 5, checkpoint: .keep)
+        XCTAssertEqual(try index.recognizedRows(), [
+            RecognizedTextKey(itemID: image, facet: .history): first,
+            RecognizedTextKey(itemID: image, facet: .memo): second,
+            RecognizedTextKey(itemID: other, facet: .history): third,
+        ])
+
+        // An older projection is left out, as its documents are; a later one replaces what was recorded.
+        try index.apply([IndexedItemChange(itemID: image, documents: [document], recognizedResults: [.history: third])],
+                        sequence: 4, checkpoint: .keep)
+        try index.apply([IndexedItemChange(itemID: other, documents: [], recognizedResults: [:])],
+                        sequence: 6, checkpoint: .keep)
+        XCTAssertEqual(try index.recognizedRows(), [
+            RecognizedTextKey(itemID: image, facet: .history): first,
+            RecognizedTextKey(itemID: image, facet: .memo): second,
+        ])
+
+        try index.reset(identity: identity)
+        XCTAssertEqual(try index.recognizedRows(), [:])
+    }
+
     func testFreshIndexHasNoMetadataUntilReset() throws {
         let index = try makeIndex()
         XCTAssertNil(try index.metadata())
@@ -59,7 +92,7 @@ final class SQLiteSearchIndexTests: XCTestCase {
         XCTAssertNil(building.checkpoint)
         XCTAssertEqual(building.schemaVersion, SQLiteSearchIndex.schemaVersion)
         XCTAssertEqual(building.normalizerVersion, 2)
-        XCTAssertEqual(building.extractorVersion, 2)
+        XCTAssertEqual(building.extractorVersion, 3)
         XCTAssertEqual(building.tokenizer, "trigram case_sensitive 1")
         XCTAssertEqual(building.identity, identity)
         XCTAssertFalse(building.isUsable(for: identity))
@@ -79,7 +112,8 @@ final class SQLiteSearchIndexTests: XCTestCase {
         do {
             let index = try SQLiteSearchIndex(directory: directory)
             try index.reset(identity: identity)
-            try index.apply([IndexedItemChange(itemID: document.ref.itemID, documents: [document])],
+            try index.apply([IndexedItemChange(itemID: document.ref.itemID, documents: [document],
+                                               recognizedResults: [:])],
                             sequence: 1, checkpoint: .keep)
             try index.finishBuild(checkpoint: Data("one".utf8))
             index.close()
@@ -98,12 +132,13 @@ final class SQLiteSearchIndexTests: XCTestCase {
         let history = SearchTestSupport.document(itemID: itemID, facet: .history, title: "history")
         let memo = SearchTestSupport.document(itemID: itemID, facet: .memo, title: "memo", memoID: UUID())
 
-        try index.apply([IndexedItemChange(itemID: itemID, documents: [history, memo])],
+        try index.apply([IndexedItemChange(itemID: itemID, documents: [history, memo], recognizedResults: [:])],
                         sequence: 1, checkpoint: .set(Data("token1".utf8)))
         XCTAssertEqual(Set(try index.allDocuments().map(\.title)), ["history", "memo"])
         XCTAssertEqual(try index.metadata()?.checkpoint, Data("token1".utf8))
 
-        try index.apply([IndexedItemChange(itemID: itemID, documents: [])], sequence: 2, checkpoint: .keep)
+        try index.apply([IndexedItemChange(itemID: itemID, documents: [], recognizedResults: [:])],
+                        sequence: 2, checkpoint: .keep)
         XCTAssertEqual(try index.allDocuments(), [])
         XCTAssertEqual(try index.metadata()?.checkpoint, Data("token1".utf8))
     }
@@ -114,10 +149,10 @@ final class SQLiteSearchIndexTests: XCTestCase {
 
         try index.apply([IndexedItemChange(itemID: itemID, documents: [
             SearchTestSupport.document(itemID: itemID, title: "new"),
-        ])], sequence: 10, checkpoint: .keep)
+        ], recognizedResults: [:])], sequence: 10, checkpoint: .keep)
         try index.apply([IndexedItemChange(itemID: itemID, documents: [
             SearchTestSupport.document(itemID: itemID, title: "old"),
-        ])], sequence: 5, checkpoint: .keep)
+        ], recognizedResults: [:])], sequence: 5, checkpoint: .keep)
 
         XCTAssertEqual(try index.allDocuments().map(\.title), ["new"])
     }
@@ -131,10 +166,10 @@ final class SQLiteSearchIndexTests: XCTestCase {
         try index.apply([
             IndexedItemChange(itemID: captureItem, documents: [
                 SearchTestSupport.document(itemID: captureItem, captureID: captureID),
-            ]),
+            ], recognizedResults: [:]),
             IndexedItemChange(itemID: memoItem, documents: [
                 SearchTestSupport.document(itemID: memoItem, facet: .memo, captureID: nil, memoID: memoID),
-            ]),
+            ], recognizedResults: [:]),
         ], sequence: 1, checkpoint: .keep)
 
         XCTAssertEqual(try index.itemIDs(referencing: [captureID]), [captureItem])
@@ -188,7 +223,7 @@ final class SQLiteSearchIndexTests: XCTestCase {
         let itemID = ItemID()
         try index.apply([IndexedItemChange(itemID: itemID, documents: [
             SearchTestSupport.document(itemID: itemID),
-        ])], sequence: 1, checkpoint: .keep)
+        ], recognizedResults: [:])], sequence: 1, checkpoint: .keep)
 
         try index.reset(identity: SearchTestSupport.identity())
 
@@ -204,7 +239,7 @@ final class SQLiteSearchIndexTests: XCTestCase {
                 let documents = offset % 3 == round ? [] : [
                     SearchTestSupport.document(itemID: itemID, body: "\(keyword) round body \(offset)"),
                 ]
-                return IndexedItemChange(itemID: itemID, documents: documents)
+                return IndexedItemChange(itemID: itemID, documents: documents, recognizedResults: [:])
             }, sequence: Int64(round + 1), checkpoint: .keep)
         }
 
@@ -250,7 +285,8 @@ final class SQLiteSearchIndexTests: XCTestCase {
     func testReaderSnapshotIgnoresWritesUntilItEnds() throws {
         let index = try makeReadyIndex()
         let first = ItemID()
-        try index.apply([IndexedItemChange(itemID: first, documents: [SearchTestSupport.document(itemID: first)])],
+        try index.apply([IndexedItemChange(itemID: first, documents: [SearchTestSupport.document(itemID: first)],
+                                           recognizedResults: [:])],
                         sequence: 1, checkpoint: .keep)
         let reader = try index.openReader()
         defer { reader.close() }
@@ -258,7 +294,8 @@ final class SQLiteSearchIndexTests: XCTestCase {
         let counts = try reader.snapshot { () -> [[[SQLiteValue]]] in
             let before = try reader.rows("SELECT count(*) FROM doc", [])
             let second = ItemID()
-            try index.apply([IndexedItemChange(itemID: second, documents: [SearchTestSupport.document(itemID: second)])],
+            try index.apply([IndexedItemChange(itemID: second, documents: [SearchTestSupport.document(itemID: second)],
+                                               recognizedResults: [:])],
                             sequence: 2, checkpoint: .keep)
             return [before, try reader.rows("SELECT count(*) FROM doc", [])]
         }

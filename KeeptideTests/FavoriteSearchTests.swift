@@ -65,8 +65,10 @@ final class FavoriteSearchTests: XCTestCase {
         let moved = document(itemID: itemID, facet: .memo, version: first.ref.version, body: first.body,
                              memoID: memoID, collectionID: CollectionID(), isFavorite: true)
         try index.reset(identity: SearchTestSupport.identity())
-        try index.apply([IndexedItemChange(itemID: itemID, documents: [first])], sequence: 1, checkpoint: .keep)
-        try index.apply([IndexedItemChange(itemID: itemID, documents: [moved])], sequence: 2, checkpoint: .keep)
+        try index.apply([IndexedItemChange(itemID: itemID, documents: [first], recognizedResults: [:])],
+                        sequence: 1, checkpoint: .keep)
+        try index.apply([IndexedItemChange(itemID: itemID, documents: [moved], recognizedResults: [:])],
+                        sequence: 2, checkpoint: .keep)
 
         let stored = try XCTUnwrap(index.allDocuments().first)
         XCTAssertEqual(stored.collectionIDs, moved.collectionIDs)
@@ -94,7 +96,7 @@ final class FavoriteSearchTests: XCTestCase {
         try index.reset(identity: SearchTestSupport.identity())
         try index.apply(
             Dictionary(grouping: documents, by: { $0.ref.itemID }).map {
-                IndexedItemChange(itemID: $0.key, documents: $0.value)
+                IndexedItemChange(itemID: $0.key, documents: $0.value, recognizedResults: [:])
             }, sequence: 1, checkpoint: .keep
         )
         try index.finishBuild(checkpoint: nil)

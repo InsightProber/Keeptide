@@ -1,6 +1,20 @@
 import CoreData
 import Foundation
 
+/// An item's facet with text recognized in it, as the search index keeps track of which result it projected.
+struct RecognizedTextKey: Hashable, Sendable {
+    let itemID: ItemID
+    let facet: ContentFacet
+}
+
+/// What tells that the text recognized in images changed: how many results are kept, and the sum of the times they were
+/// made. A save adds a result, or replaces one with another made at another time, whichever way the clock went, and
+/// clearing removes one.
+struct RecognizedTextFingerprint: Equatable, Sendable {
+    let count: Int
+    let madeTotal: Double
+}
+
 /// What a derived text was made by.
 enum DerivedTextOperation: String, Codable, Sendable {
     /// Text recognized in an image.
@@ -249,6 +263,83 @@ final class DerivedTextStore: @unchecked Sendable {
             removed += matches.count
         }
         return removed
+    }
+
+    // MARK: For the search index, on the writer's queue
+
+    /// The results of text recognized in these items' images, written in this store generation, whatever their status
+    /// and whatever content they were made from: the result each item's facet has, by the rule `recognizedRows` follows,
+    /// and those whose text can be shown, as stored, their text checked where it is searched. Queue-confined: the
+    /// caller is inside the writer's `perform`.
+    static func recognizedTexts(
+        itemIDs: [ItemID], identity: StoreIdentity, in context: NSManagedObjectContext
+    ) throws -> (results: [RecognizedTextKey: UUID], rows: [RecognizedTextRow]) {
+        guard !itemIDs.isEmpty else { return ([:], []) }
+        let request = NSFetchRequest<NSDictionary>(entityName: "DerivedText")
+        request.resultType = .dictionaryResultType
+        request.propertiesToFetch = ["id", "itemID", "facet", "sourceVersion", "sourceDigest", "text", "textDigest"]
+        request.predicate = NSPredicate(
+            format: "operation == %@ AND itemID IN %@ AND storeID == %@ AND storeGeneration == %@",
+            DerivedTextOperation.extractText.rawValue, Set(itemIDs.map(\.rawValue)).map { $0 as NSUUID },
+            identity.storeID as NSUUID, identity.generation as NSUUID
+        )
+        let fetched = try context.fetch(request)
+        let rows = fetched.compactMap { row -> RecognizedTextRow? in
+            guard let id = row["id"] as? UUID, let itemID = row["itemID"] as? UUID,
+                  let facet = (row["facet"] as? String).flatMap(ContentFacet.init(rawValue:)),
+                  let version = row["sourceVersion"] as? UUID, let sourceDigest = row["sourceDigest"] as? Data,
+                  let bytes = row["text"] as? Data, let digest = row["textDigest"] as? Data else { return nil }
+            let source = ContentRef(itemID: ItemID(rawValue: itemID), facet: facet,
+                                    version: ContentVersion(rawValue: version), digest: sourceDigest)
+            return RecognizedTextRow(id: id, source: source, bytes: bytes, digest: digest)
+        }
+        return (results(of: fetched), rows)
+    }
+
+    /// Every result of text recognized in an image written in this store generation, by the item's facet it was made
+    /// for: its identifier, which a new result replaces. Queue-confined.
+    static func recognizedRows(identity: StoreIdentity,
+                               in context: NSManagedObjectContext) throws -> [RecognizedTextKey: UUID] {
+        let request = NSFetchRequest<NSDictionary>(entityName: "DerivedText")
+        request.resultType = .dictionaryResultType
+        request.propertiesToFetch = ["itemID", "facet", "id"]
+        request.predicate = NSPredicate(format: "operation == %@ AND storeID == %@ AND storeGeneration == %@",
+                                        DerivedTextOperation.extractText.rawValue, identity.storeID as NSUUID,
+                                        identity.generation as NSUUID)
+        return results(of: try context.fetch(request))
+    }
+
+    /// The result each item's facet has, by the rule both readers follow: a row counts with its identifier, item and
+    /// facet alone, so one whose text can't be read is recorded all the same.
+    private static func results(of rows: [NSDictionary]) -> [RecognizedTextKey: UUID] {
+        var results: [RecognizedTextKey: UUID] = [:]
+        for row in rows {
+            guard let id = row["id"] as? UUID, let itemID = row["itemID"] as? UUID,
+                  let facet = (row["facet"] as? String).flatMap(ContentFacet.init(rawValue:)) else { continue }
+            results[RecognizedTextKey(itemID: ItemID(rawValue: itemID), facet: facet)] = id
+        }
+        return results
+    }
+
+    /// Changes with every result of recognized text saved, replaced or cleared. Queue-confined.
+    static func recognizedFingerprint(in context: NSManagedObjectContext) throws -> RecognizedTextFingerprint {
+        func aggregate(_ name: String, _ function: String, _ type: NSAttributeType) -> NSExpressionDescription {
+            let description = NSExpressionDescription()
+            description.name = name
+            description.expression = NSExpression(forFunction: function,
+                                                  arguments: [NSExpression(forKeyPath: "createdAt")])
+            description.expressionResultType = type
+            return description
+        }
+        let request = NSFetchRequest<NSDictionary>(entityName: "DerivedText")
+        request.resultType = .dictionaryResultType
+        request.predicate = NSPredicate(format: "operation == %@", DerivedTextOperation.extractText.rawValue)
+        request.propertiesToFetch = [
+            aggregate("count", "count:", .integer64AttributeType), aggregate("total", "sum:", .doubleAttributeType),
+        ]
+        let row = try context.fetch(request).first
+        return RecognizedTextFingerprint(count: (row?["count"] as? NSNumber)?.intValue ?? 0,
+                                         madeTotal: (row?["total"] as? NSNumber)?.doubleValue ?? 0)
     }
 
     // MARK: Rows

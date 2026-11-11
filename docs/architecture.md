@@ -89,7 +89,10 @@ content and drafts remain intact.
 Full-text search is a derived SQLite index, rebuilt from the content store when
 necessary. It supports literal queries, mixed languages, and complete progressive
 matching for short queries. Results carry enough identity and version information
-to reject obsolete content before an action is performed.
+to reject obsolete content before an action is performed. Text recognized in an
+image is indexed as part of the image's text. It is kept in the local store,
+which keeps no change history the index reads, so each indexing pass checks
+whether the recognized text changed and indexes those images again.
 
 Previews and thumbnails are also derived. Expensive work runs away from the UI
 thread and can be cancelled when the user changes selection. Link and Markdown

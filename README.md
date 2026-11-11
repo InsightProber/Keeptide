@@ -59,7 +59,8 @@ snippets in a native library.
   preview, recognized on this Mac with Apple's Vision, line by line or joined
   into paragraphs. Tall screenshots are read in strips, so their small text is
   found. Nothing is recognized until you ask, and an image's card shows when
-  its text is being recognized or has been found.
+  its text is being recognized or has been found. Once it has been, search finds
+  the image by that text.
 - **Translation.** ⌘T shows a translation of the selected text, or of the text
   in an image, beside its preview, made on this Mac with Apple's Translation
   into the language fixed in **Settings › AI**, or else the one you chose last,
