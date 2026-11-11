@@ -29,12 +29,10 @@ struct OpenAIResponsesSource: GenerationSource {
         let request = request
         return ProviderStream.events(from: Self.preset, by: client, sending: { source.cloudRequest() },
                                      answer: Answer(request: request)) { status, headers, body in
-            let error = try? ProviderStream.decode(HTTPError.self, body).error
-            if Self.isPolicy(error?.code) {
+            if Self.isPolicy((try? ProviderStream.decode(HTTPError.self, body).error)?.code) {
                 return .declined(GenerationInfo(engine: request.modelName, model: request.model))
             }
-            return .error(Self.failure(code: error?.code, message: error?.message ?? "", status: status,
-                                       retryAfter: ProviderStream.retryAfter(in: headers), for: request))
+            return .error(Self.failure(body, status: status, headers: headers, about: .generation(request)))
         }
     }
 
@@ -59,10 +57,18 @@ struct OpenAIResponsesSource: GenerationSource {
                             headers: ProviderStream.headers(for: Self.preset, key: key), body: encoded)
     }
 
+    /// An HTTP error as a person reads it, from its status, its `retry-after` header and the error in its body.
+    fileprivate static func failure(_ body: Data, status: Int, headers: [String: String],
+                                    about subject: ProviderStream.Subject) -> GenerationError {
+        let error = try? ProviderStream.decode(HTTPError.self, body).error
+        return failure(code: error?.code, message: error?.message ?? "", status: status,
+                       retryAfter: ProviderStream.retryAfter(in: headers), about: subject)
+    }
+
     /// An error OpenAI reported, by HTTP status or in the stream, as a person reads it. Its code tells most apart, and
     /// its status the rest.
     fileprivate static func failure(code: String?, message: String, status: Int?, retryAfter: Duration?,
-                                    for request: ModelRequest) -> GenerationError {
+                                    about subject: ProviderStream.Subject) -> GenerationError {
         let said = message.lowercased()
         if status == 401 || code == "invalid_api_key" {
             return GenerationError(kind: .keyRejected, message: "OpenAI didn't accept your API key.")
@@ -84,23 +90,33 @@ struct OpenAIResponsesSource: GenerationSource {
         }
         // Said by an HTTP error, or by an error in the stream once it has begun.
         if said.contains("must be verified") {
+            let what = switch subject {
+            case .generation: "this model"
+            case .models: "its models"
+            }
             return GenerationError(kind: .verificationRequired,
-                                   message: "OpenAI needs to verify your organization before you can use this model.")
+                                   message: "OpenAI needs to verify your organization before you can use \(what).")
         }
         // A 403 that isn't OpenAI's own, such as a proxy's page, is only turned away.
         if status == 403 && !message.isEmpty {
-            return GenerationError(kind: .accessDenied, message: "Your API key doesn't have access to this model.")
+            let what = switch subject {
+            case .generation: "this model"
+            case .models: "OpenAI's models"
+            }
+            return GenerationError(kind: .accessDenied, message: "Your API key doesn't have access to \(what).")
         }
-        if status == 404 || code == "model_not_found" {
-            return GenerationError(kind: .modelUnavailable,
-                                   message: "\(request.modelName) isn't available with your API key.")
-        }
-        if status == 413 || isTooLarge(code) {
-            return ProviderStream.tooLarge(request)
-        }
-        // More tokens than the account may send in a minute, which waiting doesn't help.
-        if (status == 429 || code == "rate_limit_exceeded") && said.hasPrefix("request too large") {
-            return tooLargeForAMinute(request)
+        if case .generation(let request) = subject {
+            if status == 404 || code == "model_not_found" {
+                return GenerationError(kind: .modelUnavailable,
+                                       message: "\(request.modelName) isn't available with your API key.")
+            }
+            if status == 413 || isTooLarge(code) {
+                return ProviderStream.tooLarge(request)
+            }
+            // More tokens than the account may send in a minute, which waiting doesn't help.
+            if (status == 429 || code == "rate_limit_exceeded") && said.hasPrefix("request too large") {
+                return tooLargeForAMinute(request)
+            }
         }
         if status == 429 || code == "rate_limit_exceeded" || code == "slow_down" {
             return ProviderStream.rateLimited(retryAfter: retryAfter)
@@ -176,7 +192,7 @@ private struct Answer: ProviderAnswer {
             return try end(data) { response in
                 if OpenAIResponsesSource.isPolicy(response.error?.code) { return .refused }
                 throw OpenAIResponsesSource.failure(code: response.error?.code, message: response.error?.message ?? "",
-                                                    status: nil, retryAfter: nil, for: request)
+                                                    status: nil, retryAfter: nil, about: .generation(request))
             }
         case "error":
             // Its fields are at the top, or under `error`.
@@ -187,7 +203,7 @@ private struct Answer: ProviderAnswer {
                 return [.finished(.refused)]
             }
             throw OpenAIResponsesSource.failure(code: code, message: error.error?.message ?? error.message ?? "",
-                                                status: nil, retryAfter: nil, for: request)
+                                                status: nil, retryAfter: nil, about: .generation(request))
         default:
             // The response's progress, its items and parts, reasoning, and events Keeptide doesn't know.
             return []
@@ -201,6 +217,31 @@ private struct Answer: ProviderAnswer {
         let response = try ProviderStream.decode(Ended.self, data).response
         usage = response.usage.map { GenerationUsage(inputTokens: $0.inputTokens, outputTokens: $0.outputTokens) }
         return try [usage.map(GenerationEvent.usage), GenerationEvent.finished(ending(response))].compactMap { $0 }
+    }
+}
+
+/// OpenAI's list of models: each one's identifier, when it was made, and when OpenAI will shut it down, once it has
+/// said.
+enum OpenAIModels {
+    private static let preset = ProviderPreset.openAI
+
+    static func list(by client: ModelClient, key: APIKey,
+                     waiting wait: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+        async throws -> [RemoteModel] {
+        let request = CloudRequest(method: .get, url: preset.baseURL.appending(path: "v1/models"),
+                                   headers: ProviderStream.headers(for: preset, key: key))
+        let body = try await ProviderStream.fetch(request, from: preset, by: client, waiting: wait) {
+            OpenAIResponsesSource.failure($2, status: $0, headers: $1, about: .models)
+        }
+        // A list that says it goes on, as OpenAI's other lists can, isn't the whole list.
+        guard let list = try? JSONDecoder().decode(ModelList.self, from: body), list.hasMore != true else {
+            throw GenerationError.interrupted
+        }
+        let models = list.data.compactMap { $0.value?.model }
+        // A list none of whose models can be read would empty the catalog it stands in for.
+        guard !models.isEmpty || list.data.isEmpty else { throw GenerationError.interrupted }
+        var listed: Set<String> = []
+        return models.filter { listed.insert($0.id).inserted }
     }
 }
 
@@ -271,4 +312,44 @@ private struct ErrorEvent: Decodable {
 
 private struct HTTPError: Decodable {
     let error: Failure
+}
+
+private struct ModelList: Decodable {
+    let data: [Lenient<ListedModel>]
+    let hasMore: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+        case hasMore = "has_more"
+    }
+}
+
+/// A model as OpenAI lists it. Only its identifier must be read; anything else that can't be is unknown.
+private struct ListedModel: Decodable {
+    let id: String
+    /// Seconds since 1970.
+    let created: Double?
+    /// A day, such as "2026-12-01".
+    let shutdownDate: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case created
+        case shutdownDate = "shutdown_date"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        id = try fields.decode(String.self, forKey: .id)
+        guard !id.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: fields, debugDescription: "No identifier")
+        }
+        created = try? fields.decodeIfPresent(Double.self, forKey: .created)
+        shutdownDate = try? fields.decodeIfPresent(String.self, forKey: .shutdownDate)
+    }
+
+    var model: RemoteModel {
+        RemoteModel(id: id, created: created.flatMap { $0 > 0 ? Date(timeIntervalSince1970: $0) : nil },
+                    shutDown: shutdownDate.flatMap { try? Date($0, strategy: .iso8601.year().month().day()) })
+    }
 }
