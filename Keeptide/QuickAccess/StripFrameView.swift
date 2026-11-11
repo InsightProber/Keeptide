@@ -143,7 +143,8 @@ struct StripFrameContent: Equatable {
     /// notice that stands in for a body whose text is gone.
     var memoTitle: String?
     var body: Body
-    /// The line in the card's footer: a text's length, a picture's size, a link's host, or what a file clip holds.
+    /// The line in the card's footer: a text's length, a picture's size, a link's host, or what a file clip holds; for
+    /// a single image a search found in its text, "Text in image" in place of its size.
     var info: String?
     /// How many more items than the shown one the clip holds.
     var extraItems: Int
@@ -212,7 +213,7 @@ struct StripFrameContent: Equatable {
     /// Fills in what the details tell: the footer, how many more items there are, and the clip itself.
     private mutating func show(_ detail: ClipDetail, of row: QuickAccessRow, cardSize: CardSize) {
         extraItems = max(0, detail.itemCount - 1)
-        info = Self.info(for: row.kind, detail: detail)
+        info = Self.info(for: row, detail: detail)
         switch row.kind {
         case .text:
             if !showSnippet(of: row, cardSize: cardSize), let excerpt = detail.excerpt, !excerpt.isEmpty {
@@ -250,10 +251,11 @@ struct StripFrameContent: Equatable {
         }
     }
 
-    /// The text of the footer: a picture's size, a text's length, a link's host (or its length when it has no
-    /// host), what a file clip holds, or how many items several are. Several items that are not files read as items
-    /// whatever they are.
-    private static func info(for kind: ContentKind, detail: ClipDetail) -> String? {
+    /// The text of the footer: a picture's size, or "Text in image" for one a search found in its text, a text's
+    /// length, a link's host (or its length when it has no host), what a file clip holds, or how many items several
+    /// are. Several items that are not files read as items whatever they are.
+    private static func info(for row: QuickAccessRow, detail: ClipDetail) -> String? {
+        let kind = row.kind
         if kind == .file {
             // A file whose name could not be read is still a file, so the names are made up to the items.
             let unreadable = Array(repeating: "", count: max(0, detail.itemCount - detail.fileNames.count))
@@ -261,7 +263,8 @@ struct StripFrameContent: Equatable {
         }
         if detail.itemCount > 1 { return ClipInfoFormatter.items(detail.itemCount) }
         switch kind {
-        case .image: return detail.pixelSize.map(ClipInfoFormatter.pixels)
+        case .image:
+            return row.foundInImageText ? ClipInfoFormatter.textInImage : detail.pixelSize.map(ClipInfoFormatter.pixels)
         case .url:
             if let host = detail.excerpt.flatMap(split(link:))?.host { return host }
             return detail.characterCount.map { ClipInfoFormatter.characters($0) }
