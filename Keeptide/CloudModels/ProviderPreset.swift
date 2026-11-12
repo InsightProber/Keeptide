@@ -45,4 +45,12 @@ struct ProviderPreset: Hashable, Sendable {
 extension ProviderPreset.ID {
     /// The provider as people see it, such as "Anthropic".
     var displayName: String { ProviderPreset.all.first { $0.id == self }?.displayName ?? rawValue }
+
+    /// How the provider's API keys begin, as it writes them.
+    var keyPrefix: String {
+        switch self {
+        case .anthropic: "sk-ant-"
+        case .openAI: "sk-"
+        }
+    }
 }

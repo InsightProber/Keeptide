@@ -121,7 +121,7 @@ final class CredentialStoreTests: XCTestCase {
         keychain.answer(errSecAuthFailed, to: .delete)
 
         await assertThrows(try await store().replace(credential, with: newClaudeKey),
-                           .notSaved(.anthropic, errSecAuthFailed))
+                           .notRemoved(.anthropic, errSecAuthFailed), "So that the key in place is known to stay")
         XCTAssertEqual(keychain.added.count, 1, "Nothing is saved while the old key is in place")
         let kept = try await store().key(for: credential)
         XCTAssertEqual(kept.value, claudeKey.value)
@@ -219,6 +219,23 @@ final class CredentialStoreTests: XCTestCase {
                        "This key is for Anthropic. Choose Anthropic to add it.")
     }
 
+    func testAKeyIsKeptOnlyForAProviderWhoseKeysBeginAsItDoes() async throws {
+        await assertThrows(try await store().save(openAIKey, for: .anthropic), .notProvidersKey(.anthropic))
+        await assertThrows(try await store().save(APIKey("AIza-synthetic-key-for-tests"), for: .openAI),
+                           .notProvidersKey(.openAI))
+        let credential = try await store().save(claudeKey, for: .anthropic)
+
+        await assertThrows(try await store().replace(credential, with: openAIKey), .notProvidersKey(.anthropic))
+
+        XCTAssertEqual(keychain.added.count, 1)
+        XCTAssertEqual(keychain.deleted.count, 0, "The key in place stays")
+        XCTAssertNoThrow(try openAIKey.check(for: .openAI))
+        XCTAssertNoThrow(try APIKey("sk-synthetic-key-for-tests").check(for: .openAI))
+        XCTAssertThrowsError(try claudeKey.check(for: .openAI)) { error in
+            XCTAssertEqual(error as? CredentialError, .otherProvidersKey(.anthropic))
+        }
+    }
+
     func testAKeysBeginningSaysWhoseItLikelyIs() {
         XCTAssertEqual(APIKey("sk-ant-api03-synthetic").likelyProvider, .anthropic)
         XCTAssertEqual(APIKey("sk-proj-synthetic").likelyProvider, .openAI)
@@ -289,70 +306,6 @@ final class CredentialStoreTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? CredentialError, expected, message, file: file, line: line)
         }
-    }
-}
-
-/// A keychain held in memory, which records what it was asked and whether on the main thread. It finds only items named
-/// as Keeptide's are, by their class and service as well as their identifier, as the keychain would find nothing else;
-/// `answer(_:data:to:)` makes the next call of one kind give what the test chooses.
-private final class KeychainStandIn: Keychain, @unchecked Sendable {
-    enum Call { case add, copy, delete }
-
-    private let lock = NSLock()
-    private var items: [String: Data] = [:]
-    private var forced: [Call: (status: OSStatus, data: Data?)] = [:]
-    private var recordedAdds: [[String: Any]] = []
-    private var recordedQueries: [[String: Any]] = []
-    private var recordedDeletes: [[String: Any]] = []
-    private var recordedThreads: [Bool] = []
-
-    var added: [[String: Any]] { lock.withLock { recordedAdds } }
-    var queried: [[String: Any]] { lock.withLock { recordedQueries } }
-    var deleted: [[String: Any]] { lock.withLock { recordedDeletes } }
-    var onMainThread: [Bool] { lock.withLock { recordedThreads } }
-
-    func answer(_ status: OSStatus, data: Data? = nil, to call: Call) {
-        lock.withLock { forced[call] = (status, data) }
-    }
-
-    func add(_ item: [String: Any]) -> OSStatus {
-        lock.withLock {
-            recordedAdds.append(item)
-            recordedThreads.append(Thread.isMainThread)
-            if let answer = forced.removeValue(forKey: .add) { return answer.status }
-            guard let account = Self.account(item) else { return errSecParam }
-            guard items[account] == nil else { return errSecDuplicateItem }
-            items[account] = item[kSecValueData as String] as? Data
-            return errSecSuccess
-        }
-    }
-
-    func copyData(matching query: [String: Any]) -> (status: OSStatus, data: Data?) {
-        lock.withLock {
-            recordedQueries.append(query)
-            recordedThreads.append(Thread.isMainThread)
-            if let answer = forced.removeValue(forKey: .copy) { return answer }
-            guard let account = Self.account(query) else { return (errSecParam, nil) }
-            guard let data = items[account] else { return (errSecItemNotFound, nil) }
-            return (errSecSuccess, data)
-        }
-    }
-
-    func delete(matching query: [String: Any]) -> OSStatus {
-        lock.withLock {
-            recordedDeletes.append(query)
-            recordedThreads.append(Thread.isMainThread)
-            if let answer = forced.removeValue(forKey: .delete) { return answer.status }
-            guard let account = Self.account(query) else { return errSecParam }
-            return items.removeValue(forKey: account) == nil ? errSecItemNotFound : errSecSuccess
-        }
-    }
-
-    /// The identifier of the item `query` names, if it names one as Keeptide's are named.
-    private static func account(_ query: [String: Any]) -> String? {
-        guard query[kSecClass as String] as? String == kSecClassGenericPassword as String,
-              query[kSecAttrService as String] as? String == KeychainCredentialStore.service else { return nil }
-        return query[kSecAttrAccount as String] as? String
     }
 }
 
