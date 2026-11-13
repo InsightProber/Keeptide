@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+import plistlib
 import re
 import unittest
 
@@ -14,8 +15,14 @@ SHELL_DIRECTORIES = (
 FORBIDDEN_CLIPBOARD_ACCESS = re.compile(r"\bNSPasteboard\b|\bUIPasteboard\b")
 
 APP_SOURCES = REPOSITORY_ROOT / "Keeptide"
+CLOUD_MODULE = APP_SOURCES / "CloudModels"
+PASTEBOARD_READER = REPOSITORY_ROOT / "KeeptidePasteboardReader"
 UNIT_TESTS = REPOSITORY_ROOT / "KeeptideTests"
 UI_TESTS = REPOSITORY_ROOT / "KeeptideUITests"
+APP_ENTITLEMENTS = REPOSITORY_ROOT / "Config" / "Keeptide.entitlements"
+PROJECT = REPOSITORY_ROOT / "Keeptide.xcodeproj" / "project.pbxproj"
+APP_SOURCES_PHASE = "A07000000000000000000001"
+READER_ENTITLEMENTS = REPOSITORY_ROOT / "Config" / "PasteboardReader.entitlements"
 ACCESSIBILITY_GATE = "Keeptide/Paste/AccessibilityGate.swift"
 APP_DELEGATE = "Keeptide/App/KeeptideApp.swift"
 # Reading another app's interface, or the screen, needs Accessibility or Screen Recording access; direct paste asks
@@ -39,6 +46,23 @@ LIVE_WIRING = re.compile(
     r"CaptureSession\s*\(\s*preferences\s*:\s*capturePreferences\s*,"
     r"\s*directPaste\s*:\s*\.live\s*\)"
 )
+# Reaching the network: URL loading, the Network framework, CFNetwork's sockets and HTTP messages, looking a host up,
+# and opening a socket; and loading what a page links to, as web views, link previews, AsyncImage and the HTML importer
+# do. `contentsOf:` initializers also read files, so they can't be told apart here; AGENTS.md rules them out instead.
+NETWORK_ACCESS = re.compile(
+    r"\b(?:NS)?URLSession\w*|\b(?:NS|NSMutable)?URLRequest\b|\bNSURLConnection\b|\bimport\s+Network\b"
+    r"|\bNW(?:Connection|Listener|Browser|PathMonitor|Endpoint|Parameters|ProtocolFramer)\w*"
+    r"|\bCFSocket\w*|\bCFStreamCreatePairWithSocket\w*|\bCFHTTPMessage\w*|\bCFReadStreamCreateForHTTPRequest\b"
+    r"|\bgetaddrinfo\b|\bgethostbyname\w*|\bCFHost\w*|\b(?:NS)?NetService\w*|\bgetStreamsToHost\b"
+    r"|\bsocket\s*\(\s*(?:AF|PF)_"
+    r"|\bimport\s+(?:WebKit|LinkPresentation)\b|\bWKWebView\b|\bLPMetadataProvider\b|\bAsyncImage\b"
+    r"|\bresourceBytes\b|\bNSAttributedString\s*\(\s*html\b|\bDocumentType\.(?:html|webArchive)\b"
+    r"|\bdocumentType\s*:\s*\.(?:html|webArchive)\b"
+)
+# Writing to the log, which must never carry what the cloud module sends or receives.
+LOGGING = re.compile(r"\b(?:print|debugPrint|dump|NSLog|os_log)\s*\(|\bLogger\s*\(|\bimport\s+(?:os|OSLog)\b")
+# A model client built in a test: it must be given a stand-in for the network.
+TEST_CLIENT = re.compile(r"\bModelClient\s*\(((?:[^()]|\([^()]*\))*)\)")
 # Reading the keyboard's state or watching other apps' events needs Input Monitoring access.
 INPUT_MONITORING = re.compile(
     r"\bCGEventSource\.keyState\b|\bCGEventSourceKeyState\b|\bCGEvent\.tapCreate\w*|\bCGEventTapCreate\w*"
@@ -195,6 +219,101 @@ class DirectPasteBoundaryTests(unittest.TestCase):
             [],
             "Keeptide must not read the keyboard's state or watch other apps' events",
         )
+
+
+class NetworkBoundaryTests(unittest.TestCase):
+    def test_the_network_pattern_finds_each_way_to_reach_the_network(self) -> None:
+        for code in ("URLSession.shared", "URLSessionConfiguration.ephemeral", "let request = URLRequest(url: url)",
+                     "NSMutableURLRequest(url: url)", "NSURLConnection", "import Network", "NWConnection(host: h",
+                     "NWPathMonitor()", "CFSocketCreate(nil", "CFStreamCreatePairWithSocketToHost(nil",
+                     "CFHTTPMessageCreateRequest(nil", "getaddrinfo(name",
+                     # Web content and link previews load what pages link to, and so does the HTML importer.
+                     "import WebKit", "WKWebView(frame: .zero)", "import LinkPresentation", "LPMetadataProvider()",
+                     "AsyncImage(url: url)", "for try await byte in url.resourceBytes",
+                     "NSAttributedString(html: data, documentAttributes: nil)",
+                     "[.documentType: NSAttributedString.DocumentType.html]", "options: [.documentType: .html]",
+                     ".documentType: .webArchive",
+                     # Finding a host, or opening a socket, without URL loading.
+                     "Stream.getStreamsToHost(withName: h", "CFHostCreateWithName(nil", "NetService(domain: d",
+                     "NSNetService", "gethostbyname(name", "socket(AF_INET, SOCK_STREAM, 0)"):
+            self.assertIsNotNone(NETWORK_ACCESS.search(code), code)
+        for code in ("connect()", "requestedURL", "let urlRequestCount = 0", "import NetworkExtras",
+                     "[.documentType: NSAttributedString.DocumentType.rtf]", "socketCount"):
+            self.assertIsNone(NETWORK_ACCESS.search(code), code)
+
+    def test_only_the_cloud_module_reaches_the_network(self) -> None:
+        cloud_sources = frozenset(
+            path.relative_to(REPOSITORY_ROOT).as_posix() for path in CLOUD_MODULE.rglob("*.swift")
+        )
+        self.assertNotEqual(cloud_sources, frozenset(), f"{CLOUD_MODULE} has no sources")
+        self.assertEqual(
+            matching_lines(NETWORK_ACCESS, (APP_SOURCES,), cloud_sources),
+            [],
+            "Only Keeptide/CloudModels/ may reach the network",
+        )
+        # The reader inherits Keeptide's sandbox, outgoing connections included; its code never uses them.
+        self.assertEqual(
+            matching_lines(NETWORK_ACCESS, (PASTEBOARD_READER,)),
+            [],
+            "The pasteboard reader never reaches the network",
+        )
+
+    def test_the_cloud_module_reaches_nothing_but_the_network_and_logs_nothing(self) -> None:
+        for pattern, why in (
+            (FORBIDDEN_CLIPBOARD_ACCESS, "reads or writes the clipboard"),
+            (KEYBOARD_EVENT_CREATION_OR_POSTING, "makes or posts keyboard events"),
+            (APPLICATION_ACTIVATION, "activates an app"),
+            (LOGGING, "writes to the log"),
+        ):
+            self.assertEqual(matching_lines(pattern, (CLOUD_MODULE,)), [], f"The cloud module {why}")
+
+    def test_the_cloud_module_is_compiled_into_the_app_alone(self) -> None:
+        # The reader may compile shared sources; never the cloud module's.
+        project = PROJECT.read_text(encoding="utf-8")
+        phases = dict(re.findall(
+            r"(\w{24}) /\* Sources \*/ = \{isa = PBXSourcesBuildPhase;[^\n]*?files = \(([^)]*)\)", project
+        ))
+        self.assertIn(APP_SOURCES_PHASE, phases)
+        compiled = {phase: set(re.findall(r"/\* (\S+) in Sources \*/", files)) for phase, files in phases.items()}
+        cloud_files = {path.name for path in CLOUD_MODULE.rglob("*.swift")}
+        self.assertTrue(cloud_files <= compiled[APP_SOURCES_PHASE], "The app compiles the cloud module")
+        for phase, names in compiled.items():
+            if phase != APP_SOURCES_PHASE:
+                self.assertEqual(names & cloud_files, set(), f"Sources phase {phase} compiles the cloud module")
+
+    def test_tests_build_a_model_client_only_with_a_stand_in_for_the_network(self) -> None:
+        # The test host may connect out; a test that reached a provider would make a real, billed request.
+        for pattern_case in ("ModelClient(protocolClasses: [StubService.self])",
+                             "ModelClient(hosts: Set([\"h\"]), protocolClasses: [StubService.self])"):
+            self.assertIn("protocolClasses:", TEST_CLIENT.search(pattern_case).group(1), pattern_case)
+        clients: list[str] = []
+        for directory in (UNIT_TESTS, UI_TESTS):
+            for source_file in sorted(directory.rglob("*.swift")):
+                code = code_only(source_file.read_text(encoding="utf-8"))
+                for match in TEST_CLIENT.finditer(code):
+                    if "protocolClasses:" not in match.group(1):
+                        line = code.count("\n", 0, match.start()) + 1
+                        clients.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line}")
+        self.assertEqual(clients, [], "Tests must give each ModelClient a stand-in for the network")
+
+
+class EntitlementTests(unittest.TestCase):
+    def test_keeptide_may_connect_out_and_do_nothing_more(self) -> None:
+        with APP_ENTITLEMENTS.open("rb") as file:
+            self.assertEqual(plistlib.load(file), {
+                "com.apple.security.app-sandbox": True,
+                "com.apple.security.files.user-selected.read-write": True,
+                "com.apple.security.files.bookmarks.app-scope": True,
+                # Outgoing connections only, for the cloud module; nothing listens.
+                "com.apple.security.network.client": True,
+            })
+
+    def test_the_pasteboard_reader_only_inherits_keeptides_sandbox(self) -> None:
+        with READER_ENTITLEMENTS.open("rb") as file:
+            self.assertEqual(plistlib.load(file), {
+                "com.apple.security.app-sandbox": True,
+                "com.apple.security.inherit": True,
+            })
 
 
 if __name__ == "__main__":
