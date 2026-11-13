@@ -194,6 +194,131 @@ final class SearchDocumentBuilderTests: XCTestCase {
         XCTAssertEqual(SearchDocumentBuilder.documents(for: input).first?.body, "ab")
     }
 
+    // MARK: Text recognized in an image
+
+    func testTheTextRecognizedInAnImageIsSearchedAsItsBody() throws {
+        var item = makeInput(representations: [], types: ["public.png"])
+        item.recognizedText = recognized("Quarterly plan 季度计划")
+
+        let history = try XCTUnwrap(SearchDocumentBuilder.documents(for: item).first)
+
+        XCTAssertEqual(history.kind, .image)
+        XCTAssertEqual(history.body, "Quarterly plan 季度计划")
+        XCTAssertEqual(history.normalizedBody, SearchNormalizer.normalize("Quarterly plan 季度计划"))
+        XCTAssertFalse(history.bodyPartial)
+    }
+
+    func testRecognizedTextFollowsTheImagesOwnText() {
+        var item = makeInput(representations: [text(0, 1, "public.utf8-plain-text", Data("Screenshot 1".utf8))],
+                             types: ["public.png", "public.utf8-plain-text"])
+        item.recognizedText = recognized("Quarterly plan")
+
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: item).first?.body, "Screenshot 1\nQuarterly plan")
+    }
+
+    func testRecognizedTextIsCappedWithTheBody() throws {
+        var item = makeInput(representations: [], types: ["public.png"])
+        item.recognizedText = recognized(String(repeating: "文", count: SearchDocumentBuilder.bodyByteLimit))
+
+        let history = try XCTUnwrap(SearchDocumentBuilder.documents(for: item).first)
+
+        XCTAssertLessThanOrEqual(history.body.utf8.count, SearchDocumentBuilder.bodyByteLimit)
+        XCTAssertTrue(history.body.allSatisfy { $0 == "文" }, "Cut on a character")
+        XCTAssertTrue(history.bodyPartial)
+    }
+
+    func testOnlyAnImageSearchesRecognizedText() {
+        var item = makeInput(representations: [text(0, 0, "public.utf8-plain-text", Data("Plain note".utf8))])
+        item.recognizedText = recognized("Never searched")
+
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: item).first?.body, "Plain note")
+    }
+
+    func testAClipAndItsSnippetEachSearchTheirOwnRecognizedTextFirst() {
+        var item = makeInput(representations: [], types: ["public.png"], memo: { itemID, captureID in
+            var memo = MemoProjection(
+                ref: ContentRef(itemID: itemID, facet: .memo, version: ContentVersion(rawValue: captureID),
+                                digest: Data(repeating: 1, count: 32)),
+                memoID: UUID(), title: "Snippet", note: "", isInherited: true, body: nil
+            )
+            memo.recognizedText = self.recognized("Snippet's own text")
+            return memo
+        })
+        item.recognizedText = recognized("Clip's text")
+
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: item).map(\.body),
+                       ["Clip's text\nSnippet's own text", "Snippet's own text\nClip's text"])
+    }
+
+    func testAClipAndTheSnippetSavedFromItShareTheTextRecognizedInEither() {
+        // The clip stands for both in All, and the snippet is the same image.
+        let fromSnippet = clipAndSnippet(clip: nil, snippet: "Snippet text")
+        let fromClip = clipAndSnippet(clip: "Clip text", snippet: nil)
+
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: fromSnippet).map(\.body), ["Snippet text", "Snippet text"])
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: fromClip).map(\.body), ["Clip text", "Clip text"])
+    }
+
+    func testTheSameTextRecognizedInAClipAndItsSnippetIsSearchedOnce() {
+        let item = clipAndSnippet(clip: "Quarterly plan", snippet: "Quarterly plan")
+
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: item).map(\.body), ["Quarterly plan", "Quarterly plan"])
+    }
+
+    func testALineBreakBesideChineseOrJapaneseIsLeftOutOfTheSearchedText() throws {
+        XCTAssertEqual(try recognizedBody("季度\n计划"), "季度计划")
+        XCTAssertEqual(try recognizedBody("かな\nカナ\n漢字"), "かなカナ漢字")
+        XCTAssertEqual(try recognizedBody("第4\n季度\niPhone\n拍摄"), "第4季度iPhone拍摄", "Beside a digit or a Latin letter")
+        XCTAssertEqual(try recognizedBody("「计划」\nQ4 季度：\nQ1"), "「计划」Q4 季度：Q1", "Beside their punctuation")
+        XCTAssertEqual(try recognizedBody("Quarterly\nplan\n한국\n어"), "Quarterly\nplan\n한국\n어",
+                       "Words written with spaces between them")
+        XCTAssertEqual(try recognizedBody("计划\n\n明年"), "计划\n\n明年", "A blank line between parts")
+        XCTAssertEqual(try recognizedBody("计划 \n明年"), "计划 \n明年", "A space before the break")
+    }
+
+    func testRecognizedTextThatIsDamagedOrNotUTF8IsNotSearched() {
+        var damaged = makeInput(representations: [], types: ["public.png"])
+        let text = recognized("Quarterly plan")
+        damaged.recognizedText = RecognizedTextRow(id: text.id, source: text.source, bytes: text.bytes,
+                                                   digest: Data(repeating: 0, count: 32))
+        var undecodable = makeInput(representations: [], types: ["public.png"])
+        let bytes = Data([0xFF, 0xFE, 0x41])
+        undecodable.recognizedText = RecognizedTextRow(id: text.id, source: text.source, bytes: bytes,
+                                                       digest: ContentDigest.sha256(bytes))
+
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: damaged).first?.body, "")
+        XCTAssertEqual(SearchDocumentBuilder.documents(for: undecodable).first?.body, "")
+    }
+
+    /// An image clip saved as a snippet that inherits it, each with the text recognized in it, if any.
+    private func clipAndSnippet(clip: String?, snippet: String?) -> SearchProjectionInput {
+        var item = makeInput(representations: [], types: ["public.png"], memo: { itemID, captureID in
+            var memo = MemoProjection(
+                ref: ContentRef(itemID: itemID, facet: .memo, version: ContentVersion(rawValue: captureID),
+                                digest: Data(repeating: 1, count: 32)),
+                memoID: UUID(), title: "Snippet", note: "", isInherited: true, body: nil
+            )
+            memo.recognizedText = snippet.map(self.recognized)
+            return memo
+        })
+        item.recognizedText = clip.map(recognized)
+        return item
+    }
+
+    /// The searched body of an image with no text of its own, whose recognized text is `text`.
+    private func recognizedBody(_ text: String) throws -> String {
+        var item = makeInput(representations: [], types: ["public.png"])
+        item.recognizedText = recognized(text)
+        return try XCTUnwrap(SearchDocumentBuilder.documents(for: item).first).body
+    }
+
+    /// A kept result of recognized text, intact. The builder doesn't look at where it came from.
+    private func recognized(_ text: String) -> RecognizedTextRow {
+        RecognizedTextRow(id: UUID(), source: ContentRef(itemID: ItemID(), facet: .history, version: ContentVersion(),
+                                                         digest: Data(repeating: 1, count: 32)),
+                          bytes: Data(text.utf8), digest: ContentDigest.sha256(Data(text.utf8)))
+    }
+
     private func text(_ item: Int, _ representation: Int, _ type: String, _ bytes: Data) -> TextRepresentation {
         TextRepresentation(
             itemIndex: item, representationIndex: representation, typeIdentifier: type,

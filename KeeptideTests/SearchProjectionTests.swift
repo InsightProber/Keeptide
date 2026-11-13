@@ -65,12 +65,15 @@ final class SearchProjectionTests: XCTestCase {
             ids.append(item.id)
         }
         let requested = ids
+        let identity = try await controller.identity()
 
         let small = try await controller.perform { context in
-            try StoredRecords.searchProjection(itemIDs: requested, maximumTextBytes: 1_000_000, in: context)
+            try StoredRecords.searchProjection(itemIDs: requested, maximumTextBytes: 1_000_000, identity: identity,
+                                               in: context)
         }
         let medium = try await controller.perform { context in
-            try StoredRecords.searchProjection(itemIDs: requested, maximumTextBytes: 5_000_000, in: context)
+            try StoredRecords.searchProjection(itemIDs: requested, maximumTextBytes: 5_000_000, identity: identity,
+                                               in: context)
         }
 
         XCTAssertEqual(small.processed, 1)
@@ -222,10 +225,11 @@ final class SearchProjectionTests: XCTestCase {
     }
 
     private func project(_ ids: [ItemID], in controller: PersistenceController) async throws -> [SearchProjectionInput] {
-        try await controller.perform { context in
+        let identity = try await controller.identity()
+        return try await controller.perform { context in
             context.reset()
             defer { context.reset() }
-            return try StoredRecords.searchProjection(itemIDs: ids, in: context)
+            return try StoredRecords.searchProjection(itemIDs: ids, identity: identity, in: context)
         }
     }
 

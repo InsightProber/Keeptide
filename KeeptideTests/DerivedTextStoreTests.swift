@@ -447,6 +447,132 @@ final class DerivedTextStoreTests: XCTestCase {
         XCTAssertEqual(otherOperation, [:])
     }
 
+    // MARK: For the search index
+
+    func testRecognizedTextsAreReadAsKeptForTheItemsAskedFor() async throws {
+        let (controller, store) = try await makeStore()
+        let image = try await insertClip("Screenshot", into: controller)
+        let stopped = try await insertClip("Diagram", into: controller)
+        let translated = try await insertClip("Plan", into: controller)
+        let other = try await insertClip("Other", into: controller)
+        let saved = try await store.save(snapshot("Quarterly plan"),
+                                         for: DerivedTextRequest(source: image, operation: .extractText))
+        let partial = try await store.save(snapshot("Diagr", phase: .stopped(.person)),
+                                           for: DerivedTextRequest(source: stopped, operation: .extractText))
+        try await store.save(snapshot("Plan traduit"), for: DerivedTextRequest(source: translated, operation: .translate,
+                                                                                targetLanguage: "fr"))
+        try await store.save(snapshot("Not asked for"), for: DerivedTextRequest(source: other, operation: .extractText))
+        let identity = try await controller.identity()
+
+        let read = try await controller.perform { context in
+            try DerivedTextStore.recognizedTexts(itemIDs: [image.itemID, stopped.itemID, translated.itemID],
+                                                 identity: identity, in: context)
+        }
+
+        // As stored: where the text is searched, its digest is checked. A result stopped partway is read too.
+        let (first, second) = (try XCTUnwrap(saved), try XCTUnwrap(partial))
+        let expected = [(first, image, "Quarterly plan"), (second, stopped, "Diagr")]
+            .map { RecognizedTextRow(id: $0.0.id, source: $0.1, bytes: Data($0.2.utf8),
+                                     digest: ContentDigest.sha256(Data($0.2.utf8))) }
+        XCTAssertEqual(Set(read.rows), Set(expected), "Only recognized text, of the items asked for")
+        XCTAssertEqual(read.results, [RecognizedTextKey(itemID: image.itemID, facet: image.facet): first.id,
+                                      RecognizedTextKey(itemID: stopped.itemID, facet: stopped.facet): second.id])
+    }
+
+    func testRecognizedTextsWrittenInAnotherStoreGenerationAreNotRead() async throws {
+        let (controller, store) = try await makeStore()
+        let image = try await insertClip("Screenshot", into: controller)
+        try await store.save(snapshot("Quarterly plan"), for: DerivedTextRequest(source: image, operation: .extractText))
+        let identity = try await controller.identity()
+        let elsewhere = StoreIdentity(storeID: UUID(), generation: identity.generation)
+        let later = StoreIdentity(storeID: identity.storeID, generation: UUID())
+
+        let read = try await controller.perform { context in
+            [try DerivedTextStore.recognizedTexts(itemIDs: [image.itemID], identity: elsewhere, in: context),
+             try DerivedTextStore.recognizedTexts(itemIDs: [image.itemID], identity: later, in: context)]
+                .map { $0.rows.count + $0.results.count }
+        }
+        let rows = try await controller.perform { context in
+            [try DerivedTextStore.recognizedRows(identity: elsewhere, in: context),
+             try DerivedTextStore.recognizedRows(identity: later, in: context)]
+        }
+
+        XCTAssertEqual(read, [0, 0])
+        XCTAssertEqual(rows, [[:], [:]])
+    }
+
+    func testRecognizedTextRowsAreListedWithAFingerprintThatChangesWithEachSaveAndClear() async throws {
+        let (controller, store) = try await makeStore()
+        let image = try await insertClip("Screenshot", into: controller)
+        let note = try await insertClip("Note", into: controller)
+        let identity = try await controller.identity()
+        func rows() async throws -> ([RecognizedTextKey: UUID], RecognizedTextFingerprint) {
+            try await controller.perform { context in
+                (try DerivedTextStore.recognizedRows(identity: identity, in: context),
+                 try DerivedTextStore.recognizedFingerprint(in: context))
+            }
+        }
+        let (none, empty) = try await rows()
+        XCTAssertEqual(none, [:])
+
+        let saved1 = try await store.save(snapshot("Quarterly plan"),
+                                          for: DerivedTextRequest(source: image, operation: .extractText),
+                                          at: Date(timeIntervalSinceNow: -10))
+        let first = try XCTUnwrap(saved1)
+        let (_, beforeTranslation) = try await rows()
+        try await store.save(snapshot("Note traduite"), for: DerivedTextRequest(source: note, operation: .translate,
+                                                                                 targetLanguage: "fr"))
+        let (saved, afterSave) = try await rows()
+        XCTAssertEqual(saved, [RecognizedTextKey(itemID: image.itemID, facet: .history): first.id],
+                       "Only recognized text")
+        XCTAssertEqual(afterSave, beforeTranslation, "A translation changes nothing that is searched")
+        XCTAssertNotEqual(afterSave, empty)
+
+        let saved2 = try await store.save(snapshot("Annual plan"),
+                                          for: DerivedTextRequest(source: image, operation: .extractText))
+        let second = try XCTUnwrap(saved2)
+        let (replaced, afterReplace) = try await rows()
+        XCTAssertEqual(replaced, [RecognizedTextKey(itemID: image.itemID, facet: .history): second.id])
+        XCTAssertNotEqual(afterReplace, afterSave)
+
+        try await store.clear(image, operation: .extractText)
+        let (cleared, afterClear) = try await rows()
+        XCTAssertEqual(cleared, [:])
+        XCTAssertNotEqual(afterClear, afterReplace)
+    }
+
+    func testTheFingerprintChangesWhenAResultIsReplacedAtAnEarlierTime() async throws {
+        let (controller, store) = try await makeStore()
+        let image = try await insertClip("Screenshot", into: controller)
+        let other = try await insertClip("Diagram", into: controller)
+        let now = Date()
+        try await store.save(snapshot("Quarterly plan"), for: DerivedTextRequest(source: image, operation: .extractText),
+                             at: now)
+        try await store.save(snapshot("Diagram text"), for: DerivedTextRequest(source: other, operation: .extractText),
+                             at: now.addingTimeInterval(-10))
+        let before = try await controller.perform { try DerivedTextStore.recognizedFingerprint(in: $0) }
+
+        // As after the clock was set back: as many results are kept, and the latest is the same one.
+        try await store.save(snapshot("Diagram notes"), for: DerivedTextRequest(source: other, operation: .extractText),
+                             at: now.addingTimeInterval(-20))
+
+        let after = try await controller.perform { try DerivedTextStore.recognizedFingerprint(in: $0) }
+        XCTAssertNotEqual(after, before)
+    }
+
+    func testTheFingerprintCountsAResultMadeAtTheReferenceDate() async throws {
+        let (controller, store) = try await makeStore()
+        let image = try await insertClip("Screenshot", into: controller)
+        let none = try await controller.perform { try DerivedTextStore.recognizedFingerprint(in: $0) }
+
+        // Its time adds nothing to the sum.
+        try await store.save(snapshot("Quarterly plan"), for: DerivedTextRequest(source: image, operation: .extractText),
+                             at: Date(timeIntervalSinceReferenceDate: 0))
+
+        let one = try await controller.perform { try DerivedTextStore.recognizedFingerprint(in: $0) }
+        XCTAssertNotEqual(one, none)
+    }
+
     // MARK: Helpers
 
     private func makeStore() async throws -> (PersistenceController, DerivedTextStore) {

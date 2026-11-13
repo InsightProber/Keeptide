@@ -563,7 +563,7 @@ final class SearchServiceTests: XCTestCase {
         }
         let document = SearchTestSupport.document(title: "partial build")
         try index.reset(identity: SearchTestSupport.identity())
-        try index.apply([IndexedItemChange(itemID: document.ref.itemID, documents: [document])],
+        try index.apply([IndexedItemChange(itemID: document.ref.itemID, documents: [document], recognizedResults: [:])],
                         sequence: 1, checkpoint: .keep)
 
         let page = try await lastPage(SearchService(index: index, status: SearchIndexStatus(.ready)),
@@ -645,7 +645,7 @@ final class SearchServiceTests: XCTestCase {
         }
         try index.reset(identity: SearchTestSupport.identity())
         let changes = Dictionary(grouping: documents, by: \.ref.itemID.rawValue).map { itemID, documents in
-            IndexedItemChange(itemID: ItemID(rawValue: itemID), documents: documents)
+            IndexedItemChange(itemID: ItemID(rawValue: itemID), documents: documents, recognizedResults: [:])
         }
         try index.apply(changes, sequence: 1, checkpoint: .keep)
         try index.finishBuild(checkpoint: nil)

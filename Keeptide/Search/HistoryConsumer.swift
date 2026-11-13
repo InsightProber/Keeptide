@@ -21,6 +21,8 @@ actor HistoryConsumer {
     private var rebuildRequested = false
     /// The usage state last copied into the index; nil forces a refresh.
     private var usageFingerprint: UsageSummaryFingerprint?
+    /// The recognized text last compared with the index; nil forces a comparison.
+    private var recognizedFingerprint: RecognizedTextFingerprint?
     private var stopped = false
 
     init(controller: PersistenceController, index: SQLiteSearchIndex, status: SearchIndexStatus,
@@ -128,6 +130,7 @@ actor HistoryConsumer {
                 }
                 guard let metadata = try index.metadata() else { throw SearchIndexError.corrupt }
                 try await catchUp(from: metadata.checkpoint, identity: identity)
+                try await refreshRecognizedText(identity: identity)
                 await refreshUsage()
                 status.finishPass(startedAt: mark)
                 return
@@ -158,8 +161,31 @@ actor HistoryConsumer {
             defer { context.reset() }
             return try StoredRecords.searchAllItemIDs(in: context)
         }
-        try await project(ids, sequence: sequence, checkpoint: .keep)
+        try await project(ids, sequence: sequence, checkpoint: .keep, identity: identity)
         try index.finishBuild(checkpoint: boundary)
+    }
+
+    /// The text recognized in images lives in LocalState, which keeps no history this index reads. Each pass, once
+    /// something changed, compares the results kept with those each item was projected with, and projects again the
+    /// items whose results were saved, replaced or cleared, at the checkpoint's sequence so that nothing older wins;
+    /// `apply` records the results with their documents. The save that changed them already marked the index behind.
+    private func refreshRecognizedText(identity: StoreIdentity) async throws {
+        let known = recognizedFingerprint
+        let read: (RecognizedTextFingerprint, [RecognizedTextKey: UUID]?) = try await controller.perform { context in
+            let fingerprint = try DerivedTextStore.recognizedFingerprint(in: context)
+            guard fingerprint != known else { return (fingerprint, nil) }
+            return (fingerprint, try DerivedTextStore.recognizedRows(identity: identity, in: context))
+        }
+        guard let kept = read.1 else { return }
+        let projected = try index.recognizedRows()
+        let items = Set(kept.filter { projected[$0.key] != $0.value }.keys.map(\.itemID))
+            .union(projected.keys.filter { kept[$0] == nil }.map(\.itemID))
+        if !items.isEmpty {
+            guard let metadata = try index.metadata() else { throw SearchIndexError.corrupt }
+            let sequence = try metadata.checkpoint.map(StoreChangeReader.sequence(of:)) ?? 0
+            try await project(Array(items), sequence: sequence, checkpoint: .keep, identity: identity)
+        }
+        recognizedFingerprint = read.0
     }
 
     /// Usage only orders equally relevant results, so a failure here never fails
@@ -191,7 +217,8 @@ actor HistoryConsumer {
                 try index.apply([], sequence: sequence, checkpoint: .set(next))
             } else {
                 status.update(.updating)
-                try await project(try await affectedItems(changes), sequence: sequence, checkpoint: .set(next))
+                try await project(try await affectedItems(changes), sequence: sequence, checkpoint: .set(next),
+                                  identity: identity)
             }
             token = next
         }
@@ -209,7 +236,8 @@ actor HistoryConsumer {
 
     /// Replaces the documents of `ids` in bounded batches. Only the last batch
     /// carries the checkpoint, so an interruption replays the whole set.
-    private func project(_ ids: [ItemID], sequence: Int64, checkpoint: CheckpointUpdate) async throws {
+    private func project(_ ids: [ItemID], sequence: Int64, checkpoint: CheckpointUpdate,
+                         identity: StoreIdentity) async throws {
         var remaining = ids[...]
         if remaining.isEmpty, case .set = checkpoint {
             try index.apply([], sequence: sequence, checkpoint: checkpoint)
@@ -221,7 +249,7 @@ actor HistoryConsumer {
                 context.reset()
                 defer { context.reset() }
                 return try StoredRecords.searchProjection(
-                    itemIDs: batch, maximumTextBytes: Self.textByteBudget, in: context
+                    itemIDs: batch, maximumTextBytes: Self.textByteBudget, identity: identity, in: context
                 )
             }
             guard projected.processed > 0 else { throw SearchIndexError.corrupt }
@@ -230,7 +258,8 @@ actor HistoryConsumer {
                 grouping: projected.inputs.flatMap(SearchDocumentBuilder.documents(for:)), by: \.ref.itemID.rawValue
             )
             let changes = batch.prefix(projected.processed).map {
-                IndexedItemChange(itemID: $0, documents: documents[$0.rawValue] ?? [])
+                IndexedItemChange(itemID: $0, documents: documents[$0.rawValue] ?? [],
+                                  recognizedResults: projected.recognizedResults[$0] ?? [:])
             }
             try index.apply(changes, sequence: sequence, checkpoint: remaining.isEmpty ? checkpoint : .keep)
         }
