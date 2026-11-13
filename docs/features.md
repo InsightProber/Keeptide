@@ -184,12 +184,14 @@ of the person's languages into that one needs on this Mac, opens Language &
 Region in System Settings to download more, and can translate new text
 automatically: with Translate automatically on, which it is not at first, text
 in another language is translated on this Mac as it is copied, giving way to
-anything the person asks for, and its card shows nothing until it is done. Only
-text of up to 5,000 characters is translated, if it isn't mostly code, links or
-numbers and this Mac translates its main language without a download. The page
-also says whether Apple Intelligence is available, which Keeptide doesn't use
-yet. Keeptide saves new copies from first launch; the welcome says what it saves
-and what it skips, and there is no switch to turn it off. Shortcut changes
-preserve the last working registration if a new choice fails. Login-item
-controls reflect the operating system status. iCloud is explicitly unavailable
-in the current build.
+anything the person asks for, and its card shows nothing until it is done. While
+the translation column is open, so is a text card moved to that has no
+translation, once it has shown a moment, and that stops, keeping nothing, as the
+person moves on, the list changes or the column closes. Only text of up to 5,000
+characters is translated, if it isn't mostly code, links or numbers and this Mac
+translates its main language without a download. The page also says whether
+Apple Intelligence is available, which Keeptide doesn't use yet. Keeptide saves
+new copies from first launch; the welcome says what it saves and what it skips,
+and there is no switch to turn it off. Shortcut changes preserve the last
+working registration if a new choice fails. Login-item controls reflect the
+operating system status. iCloud is explicitly unavailable in the current build.

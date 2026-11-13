@@ -219,6 +219,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             strip.ticksEnabled = preferences.trackpadTicks
             state.restoreKeepsLineBreaks(preferences.keepsLineBreaks)
             state.restoreTranslationTarget(preferences.translationTarget, fixed: preferences.fixedTranslationTarget)
+            state.translatesAutomatically = preferences.translatesAutomatically
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics

@@ -2574,6 +2574,12 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(preferences.translationTarget, "de")
         XCTAssertEqual(preferences.fixedTranslationTarget, "ja")
         XCTAssertEqual(controller.state.translationTarget, Locale.Language(identifier: "ja-JP"))
+        // Whether the card moved to is translated automatically is read as the panel opens.
+        XCTAssertFalse(controller.state.translatesAutomatically)
+        controller.close()
+        preferences.translatesAutomatically = true
+        controller.show()
+        XCTAssertTrue(controller.state.translatesAutomatically)
     }
 
     func testOptionCommandTOffersTheLanguagesToTranslateIntoAndSaysWhatEachNeeds() async throws {

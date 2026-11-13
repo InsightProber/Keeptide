@@ -49,8 +49,9 @@ locally; Return, ⌘C and ⌘S then take it in the same way; translating or
 recognizing again that fails leaves the earlier result. Settings › AI sets the
 line breaks and the language to translate into, Last Used or a fixed one, can
 translate new text in other languages automatically in the background on this
-Mac, lists what each preferred language needs to be translated into it, and says
-whether Apple Intelligence is available; nothing uses Apple Intelligence yet.
+Mac, and the text card moved to while the translation column is open, lists what
+each preferred language needs to be translated into it, and says whether Apple
+Intelligence is available; nothing uses Apple Intelligence yet.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
 A network boundary is in place for cloud models: only `Keeptide/CloudModels/`
