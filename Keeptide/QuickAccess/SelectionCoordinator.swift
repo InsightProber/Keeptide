@@ -20,6 +20,9 @@ struct QuickAccessRow: Identifiable, Equatable, Sendable {
     var isFavorite = false
     /// How many times the clip was used, for a row of the frequent wing; nil for recent clips and search results.
     var frequentUses: Int64? = nil
+    /// Whether a search found the image in its text, the text it carries or the text recognized in it, rather than in
+    /// its title: a single image's card says so in place of its size. False for every other row.
+    var foundInImageText = false
 
     /// A row's place in the list: its clip, and whether it is the clip's frequent copy.
     struct ID: Hashable, Sendable {

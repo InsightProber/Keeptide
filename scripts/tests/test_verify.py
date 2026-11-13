@@ -4,6 +4,7 @@ import os
 import json
 from contextlib import contextmanager
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -27,17 +28,60 @@ class VerifyScriptTests(unittest.TestCase):
             build.write_text(
                 '#!/bin/sh\nif [ "$1" = "-version" ]; then exit 0; fi\n'
                 'printf "%s\\n" "$@" > "$CAPTURE_PATH"\n'
+                # Like xcodebuild, leave a result bundle where the run asked for one, whatever the outcome.
+                'while [ "$#" -gt 1 ]; do\n'
+                '  if [ "$1" = "-resultBundlePath" ]; then mkdir -p "$2" && : > "$2/Info.plist"; fi\n'
+                '  shift\n'
+                'done\n'
                 f'exit {exit_code}\n', encoding="utf-8")
             result = binaries / "xcrun"
             result.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_SUMMARY"\n', encoding="utf-8")
             for executable in (build, result):
                 executable.chmod(0o755)
             env = os.environ.copy()
+            env.pop("KEEPTIDE_KEEP_RESULT_BUNDLE", None)
             env.update(DEVELOPER_DIR=str(developer), PATH=f"{binaries}:{env['PATH']}",
                        CAPTURE_PATH=str(capture), TEST_SUMMARY=json.dumps(summary or {
                            "totalTestCount": 3, "passedTests": 3, "failedTests": 0,
                            "skippedTests": 0, "result": "Passed"}))
-            yield env, capture
+            try:
+                yield env, capture
+            finally:
+                # The script writes below the repository's own ignored results folder; leave nothing of a fake run there.
+                bundle = self.result_bundle(capture)
+                if bundle is not None:
+                    shutil.rmtree(bundle, ignore_errors=True)
+                    Path(f"{bundle}.summary.json").unlink(missing_ok=True)
+
+    @staticmethod
+    def result_bundle(capture):
+        arguments = capture.read_text().splitlines() if capture.exists() else []
+        if "-resultBundlePath" not in arguments:
+            return None
+        return REPOSITORY_ROOT / arguments[arguments.index("-resultBundlePath") + 1]
+
+    def test_a_passing_run_keeps_its_summary_and_not_its_result_bundle(self):
+        with self.fake_xcode() as (env, capture):
+            result = self.run_verify("unit", "ExampleTests", environment=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            bundle = self.result_bundle(capture)
+            self.assertFalse(bundle.exists())
+            self.assertEqual(json.loads(Path(f"{bundle}.summary.json").read_text())["result"], "Passed")
+
+    def test_a_run_that_does_not_pass_keeps_its_result_bundle(self):
+        failed = {"totalTestCount": 3, "passedTests": 2, "failedTests": 1, "skippedTests": 0, "result": "Failed"}
+        unexecuted = {"totalTestCount": 0, "passedTests": 0, "failedTests": 0, "skippedTests": 0, "result": "Passed"}
+        for name, summary, exit_code in (("failed", failed, 0), ("nothing ran", unexecuted, 0), ("build", None, 65)):
+            with self.subTest(name), self.fake_xcode(summary, exit_code) as (env, capture):
+                self.assertNotEqual(self.run_verify("unit", "ExampleTests", environment=env).returncode, 0)
+                self.assertTrue(self.result_bundle(capture).is_dir())
+
+    def test_a_passing_run_keeps_its_result_bundle_on_request(self):
+        with self.fake_xcode() as (env, capture):
+            env["KEEPTIDE_KEEP_RESULT_BUNDLE"] = "1"
+            result = self.run_verify("unit", "ExampleTests", environment=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(self.result_bundle(capture).is_dir())
 
     def test_zero_selected_tests_fail_even_when_xcodebuild_succeeds(self):
         with self.fake_xcode({"totalTestCount": 0, "passedTests": 0, "failedTests": 0,

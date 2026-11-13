@@ -50,7 +50,9 @@ image's card in quick access carries a small mark while its text is recognized
 or waits its turn, once it has text, or when recognizing it failed; its help
 tag and VoiceOver say which. Once an image's text is recognized, search finds the
 image by it, under the same rules as other text; a clip and the snippet saved
-from it are found by the text recognized in either.
+from it are found by the text recognized in either. In quick access, the card of
+an image found that way, and not by its title, says Text in image in place of its
+size.
 
 ⌘T, or **Translation** in the preview's bar, shows a translation of the selected
 text beside its preview: the text on the left and, on the right, a translation

@@ -23,6 +23,9 @@ enum ClipInfoFormatter {
         return fileExtension.isEmpty ? "File" : fileExtension
     }
 
+    /// A single image's caption, in place of its size, when a search found it in its text.
+    static let textInImage = "Text in image"
+
     /// For a clip with several items that are not files.
     static func items(_ count: Int) -> String {
         count == 1 ? "1 item" : "\(count) items"
@@ -36,8 +39,9 @@ enum ClipInfoFormatter {
         return "\(spoken ? "used" : "Used") \(number) \(count == 1 ? "time" : "times")"
     }
 
-    /// The caption as VoiceOver says it: a picture's size reads "2880 by 1800".
+    /// The caption as VoiceOver says it: a picture's size reads "2880 by 1800", and "text in image" follows the
+    /// kind after a comma in lower case.
     static func spoken(_ info: String) -> String {
-        info.replacingOccurrences(of: " × ", with: " by ")
+        info == textInImage ? info.lowercased() : info.replacingOccurrences(of: " × ", with: " by ")
     }
 }

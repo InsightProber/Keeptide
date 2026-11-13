@@ -307,6 +307,22 @@ final class StripFrameContentTests: XCTestCase {
         XCTAssertNil(unread.info)
     }
 
+    func testAnImageFoundByTheTextInItSaysSoInItsFooter() throws {
+        let photo = ClipDetail(pixelSize: CGSize(width: 4032, height: 3024), thumbnail: try makeImage(width: 8, height: 6),
+                               fillsFrame: true)
+        let found = makeRow(kind: .image, foundInImageText: true)
+
+        XCTAssertEqual(StripFrameContent.make(row: found, detail: photo, cardSize: .medium).info, "Text in image",
+                       "In place of its size")
+        XCTAssertNil(StripFrameContent.make(row: found, detail: nil, cardSize: .medium).info,
+                     "As for any card, until its details arrive")
+        XCTAssertEqual(StripFrameContent.make(row: makeRow(kind: .image), detail: photo, cardSize: .medium).info,
+                       "4032 × 3024")
+        // Several items say how many they are, which VoiceOver reads nowhere else.
+        let several = ClipDetail(pixelSize: CGSize(width: 4032, height: 3024), itemCount: 3)
+        XCTAssertEqual(StripFrameContent.make(row: found, detail: several, cardSize: .medium).info, "3 items")
+    }
+
     func testImageAndFileInfoAndTheMultiItemMarker() throws {
         let thumbnail = try makeImage(width: 8, height: 6)
         let photo = ClipDetail(pixelSize: CGSize(width: 4032, height: 3024), thumbnail: thumbnail, fillsFrame: true)
@@ -481,13 +497,15 @@ private func makeRow(
     kind: ContentKind = .text, facet: ContentFacet = .history, title: String = "Synthetic title",
     snippet: SearchSnippet? = nil, sourceApp: String? = nil, date: Date = Date(timeIntervalSince1970: 1_000),
     savedAsMemo: Bool = false, isPartiallyIndexed: Bool = false, isTextUnavailable: Bool = false,
-    collectionID: CollectionID? = nil, collectionIDs: [CollectionID] = [], isFavorite: Bool = false
+    collectionID: CollectionID? = nil, collectionIDs: [CollectionID] = [], isFavorite: Bool = false,
+    foundInImageText: Bool = false
 ) -> QuickAccessRow {
     QuickAccessRow(
         ref: ContentRef(itemID: ItemID(), facet: facet, version: ContentVersion(), digest: Data(repeating: 3, count: 32)),
         title: title, snippet: snippet, kind: kind, sourceApp: sourceApp, date: date,
         savedAsMemo: savedAsMemo, isPartiallyIndexed: isPartiallyIndexed, isTextUnavailable: isTextUnavailable,
-        collectionIDs: (collectionID.map { [$0] } ?? []) + collectionIDs, isFavorite: isFavorite
+        collectionIDs: (collectionID.map { [$0] } ?? []) + collectionIDs, isFavorite: isFavorite,
+        foundInImageText: foundInImageText
     )
 }
 

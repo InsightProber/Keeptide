@@ -42,6 +42,52 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertEqual(state.selection.rows.map(\.title), ["beta note", "alpha note"])
     }
 
+    func testAnImageFoundByTheTextRecognizedInItIsMarkedSo() async throws {
+        let fixture = try makeFixture()
+        /// A synthetic image clip, with the text recognized in it, if any.
+        func image(_ title: String, seed: UInt8, at seconds: Double, text: String?, memo: MemoValue? = nil)
+            async throws -> ItemValue {
+            let capture = try ContentStoreFixtures.capture([[("public.png", Data([1, 2, 3, 4, seed]))]])
+            var item = ItemValue(sourceApp: "test.source", title: title, captureID: capture.id, historyEligible: true,
+                                 lastCopiedAt: Date(timeIntervalSince1970: 1_000 + seconds), copyCount: 1)
+            var memo = memo
+            memo?.itemID = item.id
+            item.memoID = memo?.id
+            try await fixture.harness.commit([.insert(.capture(capture))] + (memo.map { [.insert(.memo($0))] } ?? [])
+                                             + [.insert(.item(item))])
+            if let text {
+                _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+                    GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                                       texts: [.main: text]),
+                    for: DerivedTextRequest(source: ContentStoreFixtures.ref(item, capture), operation: .extractText)
+                )
+            }
+            return item
+        }
+        let found = try await image("Synthetic image", seed: 5, at: 1, text: "Quarterly plan")
+        // Found by its title as well, by the note of the snippet saved from it, or a text by its own text: none of
+        // them is found in an image's text alone.
+        let poster = try await image("Quarterly poster", seed: 6, at: 2, text: "Quarterly sale")
+        var snippet = MemoValue(itemID: ItemID(), bodyMode: .inheritedCapture)
+        snippet.note = "Quarterly review"
+        let noted = try await image("Synthetic photo", seed: 7, at: 3, text: nil, memo: snippet)
+        // Found in its text as well as in the snippet's note: in its text all the same.
+        var annotated = MemoValue(itemID: ItemID(), bodyMode: .inheritedCapture)
+        annotated.note = "Quarterly review"
+        let both = try await image("Synthetic scan", seed: 8, at: 4, text: "Quarterly budget", memo: annotated)
+        let note = try await insert("Note", body: "Quarterly report", at: 5, into: fixture)
+        try await fixture.harness.consumer.synchronize()
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+
+        state.setQuery("Quarterly")
+        try await settled(state)
+
+        let marked = Dictionary(uniqueKeysWithValues: state.selection.rows.map { ($0.ref.itemID, $0.foundInImageText) })
+        XCTAssertEqual(marked, [found.id: true, poster.id: false, noted.id: false, both.id: true, note.id: false])
+    }
+
     func testTypingSearchesAndDropsStalePages() async throws {
         let fixture = try makeFixture()
         try await insert("alpha note", at: 1, into: fixture)

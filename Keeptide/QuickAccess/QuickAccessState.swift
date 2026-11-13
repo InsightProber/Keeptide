@@ -2561,7 +2561,9 @@ final class QuickAccessState {
                        sourceApp: result.sourceApp, date: result.lastCopiedAt, savedAsMemo: result.savedAsMemo,
                        isPartiallyIndexed: result.isPartiallyIndexed, isTextUnavailable: result.isTextUnavailable,
                        collectionIDs: CollectionBadge.ordered(result.collectionIDs, by: order),
-                       isFavorite: result.isFavorite)
+                       isFavorite: result.isFavorite,
+                       foundInImageText: result.kind == .image && result.matchedFields.contains(.body)
+                           && !result.matchedFields.contains(.title))
     }
 
     /// A memo's row from the store, for when the index cannot serve Snippets; its collection and favorite are not
