@@ -18,6 +18,8 @@ enum URLPreviewPolicy {
 struct URLPreview: View {
     let title: String?
     let url: URL
+    /// Why the link's page isn't shown, when Keeptide never loads it.
+    var note: String? = nil
     var onOpen: (URL) -> Void
 
     var body: some View {
@@ -34,6 +36,13 @@ struct URLPreview: View {
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let note {
+                Text(verbatim: note)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("LinkNotLoadedNote")
+            }
 
             if let actionableURL = URLPreviewPolicy.actionableURL(url) {
                 Button {

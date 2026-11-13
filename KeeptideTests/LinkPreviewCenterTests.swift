@@ -337,6 +337,34 @@ final class LinkPreviewCenterTests: XCTestCase {
         XCTAssertNotNil(kept, "Shown 15 days ago, it was used within 30 days")
     }
 
+    func testThePreviewShowsALinksPageWhileLoadingIsOnAndSaysWhyNotForALinkNeverLoaded() throws {
+        let center = makeCenter(FakeLinkLoader(), pages: .web)
+        let url = try XCTUnwrap(URL(string: "https://example.com/a"))
+        XCTAssertEqual(center.pagePresentation(for: "https://example.com/a"), .page(url, .address(url)))
+        XCTAssertEqual(center.pagePresentation(for: "mailto:someone@example.com"), .link(note: nil))
+        XCTAssertEqual(center.pagePresentation(for: "http://localhost:3000/"),
+                       .link(note: "Keeptide doesn't load links to this Mac or your local network."))
+        XCTAssertEqual(center.pagePresentation(for: "https://user:secret@example.com/"),
+                       .link(note: "Keeptide doesn't load links that name a user or a password."))
+        XCTAssertEqual(center.pagePresentation(for: "https://example.com/?token=abc"),
+                       .link(note: "Keeptide doesn't load links that may hold a password, key or token."))
+        // Turned off, a link shows alone, with nothing to say why: the person turned it off.
+        isEnabled = false
+        XCTAssertEqual(center.pagePresentation(for: "https://example.com/a"), .link(note: nil))
+        XCTAssertEqual(center.pagePresentation(for: "http://localhost:3000/"), .link(note: nil))
+    }
+
+    func testPagesAreSyntheticAndLoadNothingUnlessTheWebIsAskedFor() throws {
+        // A center made without saying where its pages come from, as a test's or a UI test session's is.
+        let center = LinkPreviewCenter(loader: FakeLinkLoader(), store: makeStore(), isEnabled: { true })
+        let url = try XCTUnwrap(URL(string: "https://example.com/a"))
+        guard case .page(let shown, .synthetic(let html)) = center.pagePresentation(for: "https://example.com/a") else {
+            return XCTFail("Not a synthetic page")
+        }
+        XCTAssertEqual(shown, url)
+        XCTAssertTrue(html.contains("Synthetic page"))
+    }
+
     func testOnlyTheLatestPicturesStayInMemoryAndTheRestAreReadAgainFromTheStore() async throws {
         let loader = FakeLinkLoader()
         let picture = try LinkTestImages.png(width: 300, height: 200)
@@ -363,10 +391,10 @@ final class LinkPreviewCenterTests: XCTestCase {
         LinkPreviewStore(directory: directory, now: { [clock] in clock.now })
     }
 
-    private func makeCenter(_ loader: FakeLinkLoader, store: LinkPreviewStore? = nil,
-                            maximumPictures: Int = 96) -> LinkPreviewCenter {
+    private func makeCenter(_ loader: FakeLinkLoader, store: LinkPreviewStore? = nil, maximumPictures: Int = 96,
+                            pages: LinkPreviewCenter.PageSource = .synthetic) -> LinkPreviewCenter {
         LinkPreviewCenter(loader: loader, store: store ?? makeStore(), isEnabled: { [unowned self] in self.isEnabled },
-                          now: { [clock] in clock.now }, maximumPictures: maximumPictures)
+                          now: { [clock] in clock.now }, maximumPictures: maximumPictures, pages: pages)
     }
 
     private func key(_ text: String) throws -> String {

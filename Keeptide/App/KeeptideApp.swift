@@ -155,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return nil
             }
             let store = LinkPreviewStore(directory: caches.appendingPathComponent("LinkPreviews", isDirectory: true))
-            return LinkPreviewCenter(loader: SystemLinkMetadataLoader(), store: store, isEnabled: isEnabled)
+            return LinkPreviewCenter(loader: SystemLinkMetadataLoader(), store: store, isEnabled: isEnabled, pages: .web)
         }
     }
 

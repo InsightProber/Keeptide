@@ -442,6 +442,30 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(titled.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
     }
 
+    /// Space on a link's card shows its page, here a synthetic one that loads nothing, under its address; Escape closes
+    /// it again once the page has been clicked, which the page doesn't get to keep.
+    func testSpaceOnALinkShowsItsPageAndEscapeFromThePageClosesIt() throws {
+        let app = launchKeeptide(fakesLinkPreviews: true)
+        let frames = try openPanel(app)
+        XCTAssertTrue(clip("Synthetic page at example.com/synthetic", in: frames).waitForExistence(timeout: 10),
+                      app.debugDescription)
+        // Only the link holds the address searched for.
+        let query = app.searchFields["Quick access query"]
+        query.typeText("example.com")
+        XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForNonExistence(timeout: 8), app.debugDescription)
+        query.typeKey(.downArrow, modifierFlags: [])
+        app.typeKey(.space, modifierFlags: [])
+        let preview = app.descendants(matching: .any)["LinkPagePreview"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.buttons["OpenLinkInBrowser"].exists, app.debugDescription)
+        // The page shows, in the web view.
+        let heading = app.webViews.staticTexts["Synthetic page"].firstMatch
+        XCTAssertTrue(heading.waitForExistence(timeout: 20), app.debugDescription)
+        heading.click()
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(preview.waitForNonExistence(timeout: 8), app.debugDescription)
+    }
+
     // MARK: - Helpers
 
     /// Launches the test host first, so the panel opens last and keeps keyboard focus.

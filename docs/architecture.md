@@ -95,8 +95,9 @@ which keeps no change history the index reads, so each indexing pass checks
 whether the recognized text changed and indexes those images again.
 
 Previews and thumbnails are also derived. Expensive work runs away from the UI
-thread and can be cancelled when the user changes selection. Link and Markdown
-previews do not automatically fetch remote resources.
+thread and can be cancelled when the user changes selection. Markdown previews
+do not fetch remote resources, and a link's preview loads its page only through
+the link preview module described below.
 
 ## iCloud and local boundaries
 
@@ -166,39 +167,51 @@ language identification and translation today. The first release does not includ
 monitoring. Future suggestions must preserve the same permission and
 content-validation boundaries.
 
-Keeptide's own network access is confined to two modules, the only code that
-may reach the network: the cloud-model module in `Keeptide/CloudModels/`, which
-uses URL loading, and the link preview module in `Keeptide/LinkPreviews/`, which
-may use only the system's LinkPresentation and WebKit. The clipboard reader,
-which inherits the app sandbox and its outgoing connections, never uses them.
-The cloud-model module connects only over HTTPS,
-on HTTPS's port, to the hosts it is given, Anthropic's and OpenAI's APIs by
-default. It follows no redirect, so that a request and the key in its headers go
-nowhere else, keeps no cache, cookies or credentials, and logs nothing it sends
-or receives. An answer's body streams in as each line ends, and stopping reading
-it cancels the request. Cloud models a person chooses with their own API key,
-which are planned, will reach providers only through it; no feature uses it yet.
-The link preview module loads the page of a web link a person copied, to show
-its title and picture, through the system's LinkPresentation; a web view in it,
-for showing a page, will keep no data. It refuses a link whose address leads to
-this Mac or the local network, including any IP address and any name written
-with escapes; one that names a user or a password; and one with a parameter that
-may carry a token, key, password, session, signature or a code that isn't
-plainly a country's, a postal one or the like, or that holds a JSON Web Token,
-escaped or not. A link another carries in a parameter, as a click tracker's does, is held
-to the same rules. It can't check what the address doesn't show: a public name
-that resolves to a local address, where the page redirects, and the pictures
-and icons the page names. What it loads is a cache it can rebuild, kept under a
-hash of each address: previews unused for 30 days go, and the least recently
-used ones beyond 64 MB, checked as a preview is asked for, at most once a day,
-and after every 50 pages loaded. Quick access's link cards use it while
-Settings › Privacy's Load link previews is on: a link's page is loaded as it is
-copied and as its card is framed, and turning the switch off removes what was
-kept. A test session loads no page: it has no previews, or synthetic ones a UI
-test asks for. Source-boundary tests keep those APIs, and the HTML
-importer, which loads what a page links to, out of the rest of the app and the
-reader, and keep tests from naming the system's link loader. iCloud mirroring
-goes through the system's CloudKit service instead.
+Keeptide's own network access is confined to two modules, the only code that may
+reach the network: the cloud-model module in `Keeptide/CloudModels/`, which uses
+URL loading, and the link preview module in `Keeptide/LinkPreviews/`, which may
+use only the system's LinkPresentation and WebKit. The clipboard reader, which
+inherits the app sandbox and its outgoing connections, never uses them. The
+cloud-model module connects only over HTTPS, on HTTPS's port, to the hosts it is
+given, Anthropic's and OpenAI's APIs by default. It follows no redirect, so that
+a request and the key in its headers go nowhere else, keeps no cache, cookies or
+credentials, and logs nothing it sends or receives. An answer's body streams in
+as each line ends, and stopping reading it cancels the request. Cloud models a
+person chooses with their own API key, which are planned, will reach providers
+only through it; no feature uses it yet. The link preview module loads the page
+of a web link a person copied, to show its title and picture, through the
+system's LinkPresentation, and shows the page itself in quick access's preview
+in a WebKit view that keeps no data: each has a store of its own, and nothing is
+downloaded. It refuses a link whose address leads to this Mac or the local
+network, including any IP address and any name written with escapes; one that
+names a user or a password; and one with a parameter that may carry a token,
+key, password, session, signature or a code that isn't plainly a country's, a
+postal one or the like, or that holds a JSON Web Token, escaped or not. A link
+another carries in a parameter, as a click tracker's does, is held to the same
+rules. A page in the preview moves on by itself, through redirects or its own
+script, only to addresses held to these rules, and a link within it moves within
+it. The address shown follows the page within its origin, and to another origin
+only once that origin's page shows. A link the person clicks there, or a form
+they send, goes to the default browser, also when it asks for a new window; a
+form that would send its data other than in its address isn't sent, since the
+browser is given an address alone. A click the page makes counts as theirs only
+right after a click or key press of their own, once, and never while one of the
+page's navigations is on its way. A window its script asks for opens nowhere.
+The module can't check what an address doesn't show: a public name that resolves
+to a local address, where LinkPresentation's fetch redirects, and what a page
+loads for itself, its pictures, scripts and frames among them. What it loads is
+a cache it can rebuild, kept under a hash of each address: previews unused for
+30 days go, and the least recently used ones beyond 64 MB, checked as a preview
+is asked for, at most once a day, and after every 50 pages loaded. Quick
+access's link cards use it while Settings › Privacy's Load link previews is on:
+a link's page is loaded as it is copied and as its card is framed, and turning
+the switch off removes what was kept. A test session loads no page: it has no
+previews, or synthetic ones a UI test asks for, with text in place of each page.
+Source-boundary tests keep those APIs, and the HTML importer, which loads what a
+page links to, out of the rest of the app and the reader, keep tests from naming
+the system's link loader, and let only the app delegate give quick access pages
+from the web. iCloud mirroring goes through the system's CloudKit service
+instead.
 
 ## Local export
 
