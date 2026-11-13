@@ -90,6 +90,8 @@ struct GenerationError: Error, Equatable, Sendable {
         case modelUnavailable
         case inputTooLarge
         case verificationRequired
+        /// The provider turned the request away for a reason of its own, which the message gives.
+        case requestRejected
         case network
         /// The response stopped before it was complete: a broken stream, or nothing within the time limits.
         case streamInterrupted
