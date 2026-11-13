@@ -76,7 +76,10 @@ directory; do not commit those logs, result bundles, or reports.
 For verification-script changes, also run
 `python3 -m unittest discover -s scripts/tests -v`. Documentation changes need
 accurate status, valid links, consistent terminology, and `git diff --check`.
-Logs and result bundles belong under the ignored `.local/` directory.
+Logs and result bundles belong under the ignored `.local/` directory. A test
+run that passes leaves only its summary there: `verify.sh` keeps the result
+bundle of a run that fails, and of any run started with
+`KEEPTIDE_KEEP_RESULT_BUNDLE=1`.
 
 Passing automated checks is necessary but is not a release declaration. There
 is no completed Developer ID signing, notarization, production cloud recovery,
