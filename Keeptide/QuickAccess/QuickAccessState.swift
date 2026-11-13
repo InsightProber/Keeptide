@@ -986,7 +986,8 @@ final class QuickAccessState {
         return { row in
             guard Self.isTranslatable(row.kind) else { return nil }
             let (job, outcome) = derivedText.cardState(for: row.ref, operation: .translate)
-            if let job {
+            // A translation made in the background isn't shown until it is made.
+            if let job, job.priority == .user {
                 guard job.hasStarted else { return .waiting }
                 let into = derivedText.runningRequest(for: row.ref, operation: .translate)?.targetLanguage
                 return .translating(into: into)
@@ -1261,7 +1262,9 @@ final class QuickAccessState {
             loadPreview()
         }
         readTranslationLanguages()
-        if let column = translationColumn, column.isTranslating || column.wholeText != nil,
+        // One made in the background in that language becomes the person's, made again as theirs.
+        let isBackground = derivedText.job(for: row.ref, operation: .translate)?.priority == .automatic
+        if !isBackground, let column = translationColumn, column.isTranslating || column.wholeText != nil,
            column.language.map(Locale.Language.init(identifier:))?.isSameLanguage(as: language) == true {
             return code
         }

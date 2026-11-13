@@ -163,6 +163,8 @@ final class ScriptedTranslator: TranslationEngine, @unchecked Sendable {
     private var requests: [Request] = []
     private var scriptedLanguages: [Locale.Language] = []
     private var scriptedStatuses: [TranslationPair: TranslationPairStatus] = [:]
+    private var holdsStatuses = false
+    private var heldStatuses: [CheckedContinuation<Void, Never>] = []
 
     init(tier: EngineTier = .onThisMac) {
         self.tier = tier
@@ -182,7 +184,32 @@ final class ScriptedTranslator: TranslationEngine, @unchecked Sendable {
     func supportedLanguages() async -> [Locale.Language] { lock.withLock { scriptedLanguages } }
 
     func status(of pair: TranslationPair) async -> TranslationPairStatus {
-        lock.withLock { scriptedStatuses[pair] ?? .installed }
+        await withCheckedContinuation { continuation in
+            let held = lock.withLock {
+                guard holdsStatuses else { return false }
+                heldStatuses.append(continuation)
+                return true
+            }
+            if !held { continuation.resume() }
+        }
+        return lock.withLock { scriptedStatuses[pair] ?? .installed }
+    }
+
+    /// From now on, what a pair needs is answered only once `releaseStatuses()` is called.
+    func holdStatuses() {
+        lock.withLock { holdsStatuses = true }
+    }
+
+    /// How many askers wait for what a pair needs.
+    var waitingForStatus: Int { lock.withLock { heldStatuses.count } }
+
+    func releaseStatuses() {
+        let held = lock.withLock {
+            holdsStatuses = false
+            defer { heldStatuses = [] }
+            return heldStatuses
+        }
+        held.forEach { $0.resume() }
     }
 
     func translate(_ text: @escaping @Sendable () async throws -> String, from source: Locale.Language?,

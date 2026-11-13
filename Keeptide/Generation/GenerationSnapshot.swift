@@ -11,6 +11,8 @@ struct GenerationSnapshot: Equatable, Sendable {
         case superseded
         /// Keeptide stopped everything, as when it quits or switches libraries.
         case shutdown
+        /// Made in the background, it gave way to a job a person asked for.
+        case yielded
     }
 
     enum Phase: Equatable, Sendable {
@@ -70,7 +72,8 @@ struct GenerationSnapshot: Equatable, Sendable {
         switch phase {
         case .finished(.completed): hasText ? .replace : .clear
         case .finished(.truncated), .stopped(.person): hasText ? .keepIfNoCompleteResult : .discard
-        case .finished(.refused), .stopped(.superseded), .stopped(.shutdown), .failed, .queued, .waiting, .streaming:
+        case .finished(.refused), .stopped(.superseded), .stopped(.shutdown), .stopped(.yielded), .failed, .queued,
+             .waiting, .streaming:
             .discard
         }
     }

@@ -215,6 +215,12 @@ struct SettingsView: View {
                             .tag(String?.some(unlisted.code))
                     }
                 }
+                Toggle(isOn: $preferences.translatesAutomatically) {
+                    Text("Translate automatically")
+                    Text("Translates new text in other languages into your target language on this Mac. When off, "
+                        + "text is translated only when you ask.")
+                }
+                .accessibilityIdentifier("TranslateAutomaticallyToggle")
                 engine("TranslationEngine", named: "Translation engine")
                 LabeledContent {
                     Button("Manage in System Settings…") { ai.manageLanguages() }

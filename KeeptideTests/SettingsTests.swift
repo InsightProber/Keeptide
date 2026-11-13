@@ -264,6 +264,66 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(model.appleIntelligence, .available)
     }
 
+    func testTranslatingNewTextAutomaticallyIsOffUntilTurnedOnAndIsKept() throws {
+        let defaults = try makeDefaults()
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        XCTAssertFalse(preferences.translatesAutomatically)
+        XCTAssertEqual(QuickAccessPreferences.translatesAutomaticallyKey, "translation.automatic")
+
+        preferences.translatesAutomatically = true
+
+        XCTAssertTrue(QuickAccessPreferences(defaults: defaults).translatesAutomatically)
+        // What is stored is not trusted: anything but a flag reads as off.
+        defaults.set("yes", forKey: QuickAccessPreferences.translatesAutomaticallyKey)
+        XCTAssertFalse(QuickAccessPreferences(defaults: defaults).translatesAutomatically)
+    }
+
+    func testTranslateAutomaticallyGivesNewTextTheLanguagesQuickAccessUses() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let environment = AppEnvironment(quickAccessPreferences: preferences)
+        func languages() -> (fixed: String?, lastUsed: String?)? { environment.captureSession.automaticTranslation?() ?? nil }
+        XCTAssertNil(languages(), "Off at first, so nothing copied is translated")
+
+        preferences.translatesAutomatically = true
+        preferences.fixedTranslationTarget = "ja"
+        preferences.translationTarget = "fr"
+
+        XCTAssertEqual(languages()?.fixed, "ja")
+        XCTAssertEqual(languages()?.lastUsed, "fr")
+        preferences.translatesAutomatically = false
+        XCTAssertNil(languages())
+    }
+
+    func testTheAIPageOffersToTranslateNewTextAutomaticallyAndSaysHow() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "ja-JP", "zh-Hans-CN"])
+        let ai = AISettingsModel(preferences: preferences, translator: translator, appleIntelligence: { .notOnThisMac },
+                                 preferredLanguages: { ["zh-Hans-CN", "ja-JP"] })
+        let (hosting, window, status) = showAIPage(makeSettingsModel(quickAccess: preferences, ai: ai))
+        defer { window.close() }
+        func elements() -> [NSObject] { accessibilityElements(in: hosting) }
+        let title = "Translate automatically"
+        func toggle() -> NSObject? { elements().first { role(of: $0) == .checkBox && name(of: $0)?.hasPrefix(title) == true } }
+        let built = waitUntil { toggle() != nil }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let described = elements().map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+        func isOn() -> Int? { (toggle()?.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }
+
+        XCTAssertEqual(isOn(), 0, "Off to begin with: \(described)")
+        XCTAssertEqual(toggle().flatMap { attribute(of: $0, "accessibilityIdentifier") as? String },
+                       "TranslateAutomaticallyToggle")
+        XCTAssertTrue(elements().contains(where: reads(
+            "Translates new text in other languages into your target language on this Mac. When off, text is "
+                + "translated only when you ask.")), "\(described)")
+        preferences.translatesAutomatically = true
+        XCTAssertTrue(waitUntil { isOn() == 1 })
+    }
+
     func testManagingIgnoredAppsPresentsTheSheetOverSettings() {
         let model = makeSettingsModel()
         XCTAssertFalse(model.showsIgnoredApplications)
