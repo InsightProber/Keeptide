@@ -1109,6 +1109,24 @@ final class QuickAccessStripViewTests: XCTestCase {
         XCTAssertEqual(line.segmentFrame.width, 196 * 0.3, accuracy: 0.5)
     }
 
+    func testAnImageCardFoundByTheTextInItSaysSo() throws {
+        let strip = makeStrip()
+        var found = makeRow(kind: .image, title: "Receipt")
+        found.foundInImageText = true
+        let rows = [found, makeRow(kind: .image, title: "Poster")]
+
+        let photo = ClipDetail(pixelSize: CGSize(width: 4032, height: 3024))
+        strip.show(rows, selection: rows[0].id, details: [rows[0].ref: photo, rows[1].ref: photo], metrics: metrics,
+                   applicationNames: ApplicationNames())
+
+        let children = try XCTUnwrap(strip.accessibilityChildren() as? [NSView])
+        guard children.count == 2 else { return XCTFail("Expected an element per frame, got \(children.count)") }
+        let time = { (row: QuickAccessRow) in QuickAccessRowContent.time(of: row.date, spoken: true) }
+        // Said after a comma as the rest of the card is, in lower case.
+        XCTAssertEqual(children[0].accessibilityLabel(), "Image, \(time(rows[0])), text in image: Receipt")
+        XCTAssertEqual(children[1].accessibilityLabel(), "Image, \(time(rows[1])), 4032 by 3024: Poster")
+    }
+
     func testAnImageCardSaysWhatIsKnownOfItsText() throws {
         let strip = makeStrip()
         let rows = [makeRow(kind: .image, title: "Receipt"), makeRow(kind: .image, title: "Poster"),
