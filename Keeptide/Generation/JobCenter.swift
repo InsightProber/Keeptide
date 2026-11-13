@@ -16,7 +16,8 @@ enum JobLane: Hashable, Sendable {
     case cloud
 }
 
-/// Jobs a person started go ahead of automatic ones waiting in the same lane, and their work runs at a higher priority.
+/// Jobs a person started go ahead of automatic ones waiting in the same lane, one running there gives way to them, and
+/// their work runs at a higher priority.
 enum JobPriority: Int, Comparable, Sendable {
     case automatic
     case user
@@ -66,6 +67,12 @@ final class JobCenter {
         queue.insert(job, at: queue.firstIndex { $0.priority < priority } ?? queue.endIndex)
         waiting[lane] = queue
         previous?.stop(.superseded)
+        // A job a person asked for doesn't wait for one running in the background: that one gives way, and whoever
+        // started it may ask for it again.
+        if priority == .user, running[lane, default: []].count >= (limits[lane] ?? 1),
+           let background = running[lane]?.last(where: { $0.priority == .automatic && $0 !== previous }) {
+            background.stop(.yielded)
+        }
         startWaitingJobs(in: lane)
         return job
     }

@@ -5,6 +5,9 @@ import Observation
 final class CaptureSession {
     private(set) var preferences: CapturePreferences
     private(set) var recent: [ItemSummary] = []
+    /// Where Translate automatically is on, the languages a new text is translated into: the one fixed in Settings and
+    /// the one last used, by their codes; nil where it is off. The app gives it from quick access's preferences.
+    var automaticTranslation: (@MainActor () -> (fixed: String?, lastUsed: String?)?)?
     private(set) var isReady = false
     private(set) var libraryWorkspace: LibraryWorkspace?
     private(set) var maintenance: LibraryMaintenance?
@@ -48,6 +51,8 @@ final class CaptureSession {
     /// A clipboard a test gives in place of the real one. Without it, the session reads the clipboard its library
     /// records.
     @ObservationIgnored private let clipboardReader: (any SnapshotReading)?
+    /// What translates on this Mac; the system's own unless a test gives one.
+    @ObservationIgnored private let translator: (any TranslationEngine)?
     /// An app-level preference object is injected before asynchronous store initialization so Settings, onboarding,
     /// and the monitor keep one identity. Legacy tests that do not inject one still adopt the selected test/QA suite.
     @ObservationIgnored private var keepsPreferenceIdentity: Bool
@@ -80,12 +85,14 @@ final class CaptureSession {
     init(preferences: CapturePreferences? = nil,
          pasteboard: NSPasteboard? = nil,
          directPaste: DirectPasteSystem = .unavailable,
-         clipboardReader: (any SnapshotReading)? = nil) {
+         clipboardReader: (any SnapshotReading)? = nil,
+         translator: (any TranslationEngine)? = nil) {
         self.preferences = preferences ?? CapturePreferences()
         keepsPreferenceIdentity = preferences != nil
         self.pasteboard = pasteboard
         self.directPaste = directPaste
         self.clipboardReader = clipboardReader
+        self.translator = translator
     }
 
     /// Once application-level UI observes this session, its preference reference must remain stable. Launch wiring
@@ -206,7 +213,7 @@ final class CaptureSession {
                                     sourceApp: { NSWorkspace.shared.frontmostApplication?.bundleIdentifier },
                                     matchesOwnWrite: { $0.matches(pasteboard: board) })
                 : nil
-            monitor?.onCapture = { [weak self] in await self?.refresh() }
+            monitor?.onCapture = { [weak self] in await self?.captured($0) }
             // Only reopening Keeptide brings the library back. Until then, the monitor says why it stopped.
             monitor?.onUnavailable = { [weak self] in self?.isReady = false }
             monitor?.onStorageFull = { [weak self] in await self?.recoverFromDiskPressure() }
@@ -248,7 +255,7 @@ final class CaptureSession {
             #endif
             derivedText = DerivedTextCoordinator(
                 store: derivedTextStore, identity: storeIdentity, recognizer: recognizer,
-                translator: OnDeviceTranslationEngine(),
+                translator: translator ?? OnDeviceTranslationEngine(),
                 image: { ref in
                     guard let original = try await preview.originalImage(for: ref) else {
                         throw PreviewLoadError.couldNotDecodeImage
@@ -328,6 +335,16 @@ final class CaptureSession {
             guard searchIndex === index else { return }
             actionMessage = "Your content and drafts are preserved; the search cache could not be cleared."
         }
+    }
+
+    /// A copy was kept: the recent clips are read again, and text copied, a clip copied again as much as a new one, is
+    /// translated in the background where Translate automatically is on. A clip the recent clips don't list yet, as when
+    /// another read of them overtook this one, is tried too: an image or a file has no text of its own to translate.
+    private func captured(_ result: CaptureResult) async {
+        await refresh()
+        let kind = recent.first(where: { $0.history == result.ref })?.kind
+        guard let languages = automaticTranslation?(), kind == nil || kind == .text else { return }
+        derivedText?.translateAutomatically(result.ref, fixed: languages.fixed, lastUsed: languages.lastUsed)
     }
 
     func refresh() async {

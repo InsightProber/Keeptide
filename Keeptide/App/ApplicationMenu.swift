@@ -73,7 +73,7 @@ enum ApplicationMenuBuilder {
         // The library's own sidebar and list commands; validation names Show or Hide Sidebar.
         let viewMenu = NSMenu(title: "View")
         viewMenu.addItem(item(title: "Show Sidebar", action: #selector(LibraryWindowController.toggleLibrarySidebar(_:)), keyEquivalent: "s", modifierMask: [.control, .command]))
-        viewMenu.addItem(item(title: "Show Inspector", action: #selector(LibraryWindowController.toggleInspector(_:)), keyEquivalent: "i", modifierMask: [.control, .command]))
+        viewMenu.addItem(item(title: "Show Inspector", action: #selector(LibraryWindowController.toggleLibraryInspector(_:)), keyEquivalent: "i", modifierMask: [.control, .command]))
         viewMenu.addItem(.separator())
         viewMenu.addItem(item(title: "Previous List", action: #selector(LibraryWindowController.selectPreviousList(_:)), keyEquivalent: "["))
         viewMenu.addItem(item(title: "Next List", action: #selector(LibraryWindowController.selectNextList(_:)), keyEquivalent: "]"))

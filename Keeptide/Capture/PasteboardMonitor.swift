@@ -33,7 +33,8 @@ final class PasteboardMonitor {
     @ObservationIgnored private var captureTask: Task<Void, Never>?
     @ObservationIgnored private var stopping = false
     @ObservationIgnored private var ownWrite: OwnWriteToken?
-    @ObservationIgnored var onCapture: (() async -> Void)?
+    /// A copy was kept, as a new clip or as the one it matches.
+    @ObservationIgnored var onCapture: ((CaptureResult) async -> Void)?
     @ObservationIgnored var onUnavailable: (() -> Void)?
     @ObservationIgnored var onStorageFull: (() async -> Void)?
     @ObservationIgnored private var retryAfter: ContinuousClock.Instant?
@@ -139,7 +140,7 @@ final class PasteboardMonitor {
         do {
             let snapshot = try await reader.readAsynchronously(sourceApp: observation.source, expectedChangeCount: observation.count)
             guard snapshot.changeCount == observation.count else { throw CaptureError.staleSnapshot }
-            _ = try await service.capture(snapshot, permit: admission, isCurrent: { [weak self] in
+            let result = try await service.capture(snapshot, permit: admission, isCurrent: { [weak self] in
                 await MainActor.run {
                     guard let self else { return false }
                     return !self.stopping && admission.isValid
@@ -148,7 +149,7 @@ final class PasteboardMonitor {
                 }
             })
             if !stopping, state != .watching { state = .watching }
-            await onCapture?()
+            await onCapture?(result)
         } catch {
             // A stop and a replacement own the final state, including when a provider reports a late error after its
             // permission was revoked.
