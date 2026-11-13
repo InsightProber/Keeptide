@@ -48,7 +48,9 @@ leaves quick access open; ⌘S saves it as a snippet of its own. A double-click
 on a card, or a right-click on another card, still acts on that clip. An
 image's card in quick access carries a small mark while its text is recognized
 or waits its turn, once it has text, or when recognizing it failed; its help
-tag and VoiceOver say which.
+tag and VoiceOver say which. Once an image's text is recognized, search finds the
+image by it, under the same rules as other text; a clip and the snippet saved
+from it are found by the text recognized in either.
 
 ⌘T, or **Translation** in the preview's bar, shows a translation of the selected
 text beside its preview: the text on the left and, on the right, a translation
@@ -123,7 +125,7 @@ planned.
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
-| Text in images | Text recognized on this Mac in a copied image, shown beside its preview and kept locally |
+| Text in images | Text recognized on this Mac in a copied image, shown beside its preview, kept locally and searched |
 | Translation | A text clip, or the text in an image, translated on this Mac into the language chosen, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |

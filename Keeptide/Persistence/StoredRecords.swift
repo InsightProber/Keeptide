@@ -554,16 +554,17 @@ enum StoredRecords {
 extension StoredRecords {
     /// Visible facets of the requested items as raw Sendable values. Items with
     /// no visible facet are omitted; callers remove their index documents.
-    static func searchProjection(itemIDs: [ItemID], in context: NSManagedObjectContext) throws -> [SearchProjectionInput] {
-        try searchProjection(itemIDs: itemIDs, maximumTextBytes: .max, in: context).inputs
+    static func searchProjection(itemIDs: [ItemID], identity: StoreIdentity,
+                                 in context: NSManagedObjectContext) throws -> [SearchProjectionInput] {
+        try searchProjection(itemIDs: itemIDs, maximumTextBytes: .max, identity: identity, in: context).inputs
     }
 
     /// Projects the longest prefix of `itemIDs` whose text payloads fit
     /// `maximumTextBytes`, so one batch never holds unbounded bytes. The first
     /// visible item is always included, so callers always make progress.
     static func searchProjection(
-        itemIDs: [ItemID], maximumTextBytes: Int64, in context: NSManagedObjectContext
-    ) throws -> (inputs: [SearchProjectionInput], processed: Int) {
+        itemIDs: [ItemID], maximumTextBytes: Int64, identity: StoreIdentity, in context: NSManagedObjectContext
+    ) throws -> SearchProjectionBatch {
         var rows: [NSDictionary] = []
         for ids in batches(itemIDs.map(\.rawValue)) {
             rows += try context.fetch(dictionaryRequest(
@@ -615,6 +616,14 @@ extension StoredRecords {
         let captureIDs = Set(included.compactMap(\.item.captureID))
         let texts = try searchCaptureText(manifests: manifests.filter { captureIDs.contains($0.key) }, in: context)
         let collectionsByItem = try memberships(itemIDs: included.map(\.item.id.rawValue), in: context)
+        // Text recognized in images is kept in LocalState beside the items. Each row shows the text made from exactly
+        // its content, and every item read records the results it was read with, beside its documents.
+        let kept = try DerivedTextStore.recognizedTexts(itemIDs: Array(itemIDs.prefix(processed)), identity: identity,
+                                                        in: context)
+        let recognized = Dictionary(kept.rows.map { ($0.source, $0) }, uniquingKeysWith: { first, _ in first })
+        let results = kept.results.reduce(into: [ItemID: [ContentFacet: UUID]]()) {
+            $0[$1.key.itemID, default: [:]][$1.key.facet] = $1.value
+        }
 
         let inputs = included.map { entry in
             let memo = entry.memo.flatMap { ref -> MemoProjection? in
@@ -622,7 +631,7 @@ extension StoredRecords {
                 return MemoProjection(
                     ref: ref, memoID: memoID, title: memoRow["title"] as? String ?? "",
                     note: memoRow["note"] as? String ?? "", isInherited: entry.isInherited,
-                    body: entry.isInherited ? nil : bodies[memoID]
+                    body: entry.isInherited ? nil : bodies[memoID], recognizedText: recognized[ref]
                 )
             }
             let manifest = entry.item.captureID.flatMap { manifests[$0] }
@@ -633,10 +642,11 @@ extension StoredRecords {
                 lastCopiedAt: entry.item.lastCopiedAt, history: entry.history, memo: memo,
                 captureID: entry.item.captureID, representationTypes: manifest?.entries.map(\.typeIdentifier) ?? [],
                 hasLocalReference: manifest?.entries.contains { $0.storage == .localReference } ?? false,
-                textRepresentations: entry.item.captureID.flatMap { texts[$0] } ?? []
+                textRepresentations: entry.item.captureID.flatMap { texts[$0] } ?? [],
+                recognizedText: entry.history.flatMap { recognized[$0] }
             )
         }
-        return (inputs, processed)
+        return SearchProjectionBatch(inputs: inputs, processed: processed, recognizedResults: results)
     }
 
     /// Every item ID, newest copy first, for a full index rebuild.
