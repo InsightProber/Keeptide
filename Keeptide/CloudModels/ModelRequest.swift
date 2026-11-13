@@ -24,9 +24,12 @@ struct ModelRequest: Sendable {
         case image(Data, mediaType: String)
     }
 
-    /// How hard a model works at an answer, where it lets that be set.
+    /// How hard a model works at an answer, where it lets that be set. Each provider takes some of these, and a model
+    /// some of those, as its catalog entry says.
     enum Effort: String, Sendable {
-        case low, medium, high, xhigh, max
+        /// OpenAI's way of answering without reasoning first. Not `none`, which `Optional.none` would shadow.
+        case noReasoning = "none"
+        case minimal, low, medium, high, xhigh, max
     }
 
     /// How a model thinks before it answers, where it lets that be set.
