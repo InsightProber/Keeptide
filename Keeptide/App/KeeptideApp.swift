@@ -235,6 +235,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        // Unless the library window is the main window, New Snippet, Search Library… and Export Library… come here,
+        // and each opens the library. While quick access has the keys they stay off, as the library window's own
+        // commands do.
+        let opensLibrary = [#selector(newDocument(_:)), #selector(searchLibrary(_:)), #selector(exportLibrary(_:))]
+        if let action = menuItem.action, opensLibrary.contains(action), NSApp.keyWindow?.isQuickAccess == true {
+            return false
+        }
         if menuItem.action == #selector(exportLibrary(_:)) {
             guard let session = environment?.captureSession else { return false }
             return session.exportCoordinator?.canStart == true

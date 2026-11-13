@@ -4,6 +4,15 @@ import XCTest
 
 @MainActor
 final class LibraryCommandsTests: XCTestCase {
+    /// The library's commands read the key window as they validate: quick access left open by another test would turn
+    /// them off in every test here.
+    override func setUp() async throws {
+        try await super.setUp()
+        await MainActor.run {
+            XCTAssertNotEqual(NSApp.keyWindow?.isQuickAccess, true, "Quick access is open from another test")
+        }
+    }
+
     func testFileMenuExposesNewAndSaveWithoutReplacingNativeEditCommands() throws {
         let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
         let file = try XCTUnwrap(menu.items.first { $0.title == "File" }?.submenu)
@@ -196,7 +205,7 @@ final class LibraryCommandsTests: XCTestCase {
 
         let view = try XCTUnwrap(menu.items.first { $0.title == "View" }?.submenu)
         let inspector = try XCTUnwrap(view.items.first {
-            $0.action == #selector(LibraryWindowController.toggleInspector(_:))
+            $0.action == #selector(LibraryWindowController.toggleLibraryInspector(_:))
         })
         XCTAssertEqual(inspector.keyEquivalent, "i")
         XCTAssertEqual(inspector.keyEquivalentModifierMask, [.control, .command])
@@ -225,7 +234,7 @@ final class LibraryCommandsTests: XCTestCase {
         let markdown = item(#selector(LibraryWindowController.setSnippetKind(_:)), tag: 3)
         let code = item(#selector(LibraryWindowController.setSnippetKind(_:)), tag: 2)
         let linked = item(#selector(LibraryWindowController.showLinkedItem(_:)))
-        let inspector = item(#selector(LibraryWindowController.toggleInspector(_:)))
+        let inspector = item(#selector(LibraryWindowController.toggleLibraryInspector(_:)))
 
         // Nothing selected: nothing to act on.
         XCTAssertFalse(controller.validateMenuItem(favorite))
@@ -335,6 +344,157 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(controller.commands.deleteRequest, 1)
     }
 
+    func testTheLibrarysCommandsStayOffWhileQuickAccessHasTheKeys() async throws {
+        // A library over a session of its own, so that it can save and export too. The menu bar's library commands go
+        // to its window controller while the window is open, and to the app, which opens it, while it is closed.
+        let session = try await makeSession()
+        let library = LibraryWindowController(session: session, autosaveName: nil, setActivationPolicy: { _ in })
+        let window = try XCTUnwrap(library.window)
+        addTeardownBlock { @MainActor in window.close() }
+        let list = KeyboardTable(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+        try XCTUnwrap(window.contentView).addSubview(list)
+        let app = AppDelegate()
+        app.environment = AppEnvironment(captureSession: session)
+        let items = menuItems(in: ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide"))
+        // A favorite snippet saved from a clip is selected and open, in the collection the library shows, and a list
+        // has the keys.
+        let snippet = Self.entry(.memo, isFavorite: true)
+        var details = LibraryItemDetails(createdAt: Date(), lastCopiedAt: Date(), copyCount: 1)
+        details.isFavorite = true
+        details.originalClip = .available(Self.ref(.history, of: snippet.id))
+        let open = LibrarySelectionState.OpenItem(ref: snippet.ref, details: details, kind: .markdown,
+                                                  isReadOnly: false)
+        let context = LibraryItemContext(
+            selection: .make(entries: [snippet], open: open, hasCollections: true, canDelete: true),
+            removableCollection: CollectionValue(name: "Prompts", color: "blue")
+        )
+        // The window's own view reports the library's state as it lays out, so the test's goes in before each check.
+        func enabled() -> [String] {
+            XCTAssertTrue(window.makeFirstResponder(list))
+            library.commands.updateItemContext(context)
+            library.commands.updateExportContext(refs: [snippet.ref], isRecentlyDeleted: false)
+            return enabledCommands(in: items, library: library, app: app)
+        }
+
+        // Nothing in quick access has the keys: the commands follow the library.
+        let on = enabled()
+        XCTAssertTrue(Set(on).isSuperset(of: [
+            "newDocument:", "newCollection:", "saveDocument:", "exportLibrary:", "exportSelected:", "searchLibrary:",
+            "copyEntireItem:", "toggleLibrarySidebar:", "chooseList:", "toggleFavorite:", "moveToRecentlyDeleted:",
+            "App showSettings:", "App newDocument:", "App exportLibrary:", "App searchLibrary:",
+        ]), "\(on)")
+
+        // Quick access has the keys: none of them is on, wherever it would go. Settings… is the app's, which the
+        // panel's own menu opens too. The items' titles still follow the library.
+        let panel = PanelController()
+        panel.show()
+        addTeardownBlock { @MainActor in panel.close() }
+        try await SearchTestSupport.waitUntil { NSApp.keyWindow?.isQuickAccess == true }
+        let favorite = try XCTUnwrap(items.first { $0.action == #selector(LibraryWindowController.toggleFavorite(_:)) })
+        favorite.title = "Add to Favorites"
+        XCTAssertEqual(enabled(), ["App showSettings:"])
+        XCTAssertEqual(favorite.title, "Remove from Favorites")
+
+        // Closed, it leaves them as they were.
+        panel.close()
+        try await SearchTestSupport.waitUntil { NSApp.keyWindow?.isQuickAccess != true }
+        XCTAssertEqual(enabled(), on)
+    }
+
+    func testTheLibrarysCommandsStayOffWhileASheetOverQuickAccessHasTheKeys() async throws {
+        let library = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let libraryWindow = try XCTUnwrap(library.window)
+        addTeardownBlock { @MainActor in libraryWindow.close() }
+        let app = AppDelegate()
+        let items = menuItems(in: ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide"))
+        let on = enabledCommands(in: items, library: library, app: app)
+        XCTAssertTrue(Set(on).isSuperset(of: [
+            "newDocument:", "searchLibrary:", "toggleLibrarySidebar:", "App newDocument:", "App searchLibrary:",
+        ]), "\(on)")
+
+        // A sheet over the panel takes the keys from it, as the file-access sheet does: the commands stay off.
+        let panel = PanelController()
+        let window = try XCTUnwrap(panel.window)
+        panel.show()
+        addTeardownBlock { @MainActor in panel.close() }
+        let sheet = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 120), styleMask: [.titled],
+                            backing: .buffered, defer: false)
+        window.beginSheet(sheet, completionHandler: { _ in })
+        addTeardownBlock { @MainActor in
+            if window.attachedSheet === sheet { window.endSheet(sheet) }
+            sheet.orderOut(nil)
+        }
+        try await SearchTestSupport.waitUntil { NSApp.keyWindow === sheet }
+        XCTAssertTrue(sheet.isQuickAccess)
+        XCTAssertEqual(enabledCommands(in: items, library: library, app: app), ["App showSettings:"])
+
+        // Gone, the sheet is no part of quick access, and the library's window never is. Closed, quick access leaves
+        // the commands as they were.
+        window.endSheet(sheet)
+        try await SearchTestSupport.waitUntil { window.attachedSheet == nil }
+        XCTAssertFalse(sheet.isQuickAccess)
+        XCTAssertFalse(libraryWindow.isQuickAccess)
+        panel.close()
+        try await SearchTestSupport.waitUntil { NSApp.keyWindow?.isQuickAccess != true }
+        XCTAssertEqual(enabledCommands(in: items, library: library, app: app), on)
+    }
+
+    func testNoMenuCommandActsOnTheLibraryBehindQuickAccess() async throws {
+        // A snippet is open in the library, its text has the window's keys, and the window shows. Once quick access has
+        // the keys, the library window is the main one behind it.
+        let session = try await makeSession()
+        let service = try XCTUnwrap(session.libraryService)
+        let workspace = try XCTUnwrap(session.libraryWorkspace)
+        await workspace.open(try await service.create(MemoDraft(title: "Synthetic", body: "Synthetic body")))
+        let library = LibraryWindowController(session: session, autosaveName: nil, setActivationPolicy: { _ in })
+        let libraryWindow = try XCTUnwrap(library.window)
+        addTeardownBlock { @MainActor in libraryWindow.close() }
+        libraryWindow.makeKeyAndOrderFront(nil)
+        try await SearchTestSupport.waitUntil(timeout: .seconds(10)) {
+            libraryWindow.contentView?.layoutSubtreeIfNeeded()
+            return Self.snippetText(in: libraryWindow) != nil
+        }
+        let text = try XCTUnwrap(Self.snippetText(in: libraryWindow))
+        XCTAssertTrue(libraryWindow.makeFirstResponder(text))
+        let panel = PanelController()
+        panel.show()
+        addTeardownBlock { @MainActor in panel.close() }
+        try await SearchTestSupport.waitUntil {
+            NSApp.keyWindow?.isQuickAccess == true && NSApp.mainWindow === libraryWindow
+        }
+
+        // The lists have the panel's keys, and nothing in the panel takes text commands. Each item in the menu bar with
+        // no target of its own goes where AppKit sends it; none that is on is the library's, Paste and Find in Note…
+        // into the snippet's text and Show Inspector among them.
+        panel.perform(.cycleFocus(forward: true))
+        XCTAssertFalse(panel.window?.firstResponder is NSTextView)
+        XCTAssertTrue(libraryWindow.firstResponder === text)
+        let on = try menuItems(in: XCTUnwrap(NSApp.mainMenu)).filter { item in
+            guard item.target == nil, let action = item.action else { return false }
+            let target = NSApp.target(forAction: action, to: nil, from: item)
+            guard Self.validates(item, at: target) else { return false }
+            XCTAssertFalse(Self.belongs(target, to: libraryWindow), "\(item.title) acts on the library")
+            return true
+        }.compactMap(\.action)
+        for action in [#selector(NSText.paste(_:)), #selector(NSText.selectAll(_:)),
+                       #selector(NSTextView.performFindPanelAction(_:)),
+                       #selector(LibraryWindowController.toggleLibraryInspector(_:))] {
+            XCTAssertFalse(on.contains(action), NSStringFromSelector(action))
+        }
+        XCTAssertTrue(on.contains(#selector(AppDelegate.showSettings(_:))))
+        // Close All, which AppKit adds to the Window menu, is the app's, and would close the library window too: the
+        // panel takes it, and closes only itself.
+        let closeAll = NSMenuItem(title: "Close All", action: NSSelectorFromString("closeAll:"), keyEquivalent: "w")
+        let closing = NSApp.target(forAction: try XCTUnwrap(closeAll.action), to: nil, from: closeAll)
+        XCTAssertTrue(closing as AnyObject? === panel.window)
+        XCTAssertTrue(Self.validates(closeAll, at: closing))
+        NSApp.sendAction(try XCTUnwrap(closeAll.action), to: nil, from: closeAll)
+        XCTAssertFalse(panel.isSessionOpen)
+        XCTAssertTrue(libraryWindow.isVisible)
+    }
+
     func testItemCommandsAreForwardedAsRequests() throws {
         let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         let prompts = CollectionID()
@@ -346,7 +506,7 @@ final class LibraryCommandsTests: XCTestCase {
         ]))
 
         controller.toggleFavorite(nil)
-        controller.toggleInspector(nil)
+        controller.toggleLibraryInspector(nil)
         controller.showLinkedItem(nil)
         let code = NSMenuItem(title: "Code", action: #selector(LibraryWindowController.setSnippetKind(_:)),
                               keyEquivalent: "")
@@ -428,6 +588,70 @@ final class LibraryCommandsTests: XCTestCase {
         // Nothing selected: nothing to act on.
         state = .make(entries: [], open: open(details), hasCollections: true, canDelete: true)
         XCTAssertFalse(state.canCopy || state.canSave || state.canFavorite || state.canFile || state.canDelete)
+    }
+
+    /// A capture session over a temporary library of its own, shut down and removed as the test ends.
+    private func makeSession() async throws -> CaptureSession {
+        let configuration = CaptureTestConfiguration(id: UUID())
+        let session = CaptureSession()
+        await session.initialize(testSessionID: configuration.id)
+        addTeardownBlock { @MainActor in
+            await session.shutdown()
+            try? FileManager.default.removeItem(at: configuration.directory)
+            UserDefaults(suiteName: configuration.preferencesSuite)?
+                .removePersistentDomain(forName: configuration.preferencesSuite)
+            NSPasteboard(name: .init(configuration.pasteboardName)).releaseGlobally()
+        }
+        XCTAssertTrue(session.isReady)
+        return session
+    }
+
+    /// The items in `menu` and its submenus that have an action, in the menu's order.
+    private func menuItems(in menu: NSMenu) -> [NSMenuItem] {
+        menu.items.flatMap { item in
+            (item.action == nil ? [] : [item]) + (item.submenu.map { menuItems(in: $0) } ?? [])
+        }
+    }
+
+    /// The actions of `items` that `library` and `app` each turn on now, in the menu's order, the app's marked "App".
+    /// Items with no target of their own go to the library window's controller while the window is open, and to the
+    /// app while it is closed.
+    private func enabledCommands(in items: [NSMenuItem], library: LibraryWindowController,
+                                 app: AppDelegate) -> [String] {
+        let commands = items.filter { $0.target == nil }
+        let libraryOn = commands.filter { $0.action.map(library.responds(to:)) == true && library.validateMenuItem($0) }
+        let appOn = commands.filter { $0.action.map(app.responds(to:)) == true && app.validateMenuItem($0) }
+        return libraryOn.compactMap(\.action).map(NSStringFromSelector)
+            + appOn.compactMap(\.action).map { "App " + NSStringFromSelector($0) }
+    }
+
+    /// Whether the menu bar would show `item` on, with `target` the object AppKit sends its action to.
+    private static func validates(_ item: NSMenuItem, at target: Any?) -> Bool {
+        guard let target else { return false }
+        if let validating = target as? NSMenuItemValidation { return validating.validateMenuItem(item) }
+        if let validating = target as? NSUserInterfaceValidations { return validating.validateUserInterfaceItem(item) }
+        return true
+    }
+
+    /// Whether `target` is `window`'s: a view in it, the window itself, or a controller of either.
+    private static func belongs(_ target: Any?, to window: NSWindow) -> Bool {
+        switch target {
+        case let view as NSView: view.window === window
+        case let other as NSWindow: other === window
+        case let controller as NSWindowController: controller.window === window
+        case let controller as NSViewController: controller.viewIfLoaded?.window === window
+        default: false
+        }
+    }
+
+    /// The open snippet's text in the library window.
+    private static func snippetText(in window: NSWindow) -> NSTextView? {
+        views(NSTextView.self, in: window.contentView).first { $0.accessibilityIdentifier() == "SnippetBodyTextView" }
+    }
+
+    private static func views<View: NSView>(_ type: View.Type, in root: NSView?) -> [View] {
+        guard let root else { return [] }
+        return ((root as? View).map { [$0] } ?? []) + root.subviews.flatMap { views(type, in: $0) }
     }
 
     private static func ref(_ facet: ContentFacet, of itemID: ItemID = ItemID()) -> ContentRef {

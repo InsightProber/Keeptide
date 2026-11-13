@@ -1725,7 +1725,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ]
 
     /// Edit's Cut, Copy, Paste and Select All, by their keys with ⌘. Their items have no target either: each goes to
-    /// the first responder that takes it, in the panel and then in the library window behind it.
+    /// the first responder in the panel that takes it, and otherwise ends at the panel's window, off.
     private static let textActions: [String: Selector] = [
         "x": #selector(NSText.cut(_:)), "c": #selector(NSText.copy(_:)), "v": #selector(NSText.paste(_:)),
         "a": #selector(NSText.selectAll(_:)),
@@ -1742,8 +1742,9 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ///   panel's window takes Close, Undo and Redo, and the app the keys AppKit adds for dictation and Emoji & Symbols.
     ///   So do keys the menu bar has no item for, such as ⌘← in the search field.
     ///
-    /// Not known here, and still taken to the library by the menu bar: shortcuts a person gives the library's items in
-    /// System Settings, and any the menu bar moves to another key for a keyboard layout.
+    /// Not known here: shortcuts a person gives the menu bar's items in System Settings, and any the menu bar moves to
+    /// another key for a keyboard layout. The menu bar finds those items off while the panel has the keys: the
+    /// library's (`NSWindow.isQuickAccess`), and the text commands that nothing in the panel takes.
     private func keepFromMenuBar(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = Self.commandKey(of: event)
@@ -1758,7 +1759,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     }
 
     /// Whether a responder in the panel takes `action`, from the one with the keys through the panel's window to this
-    /// controller: the menu bar's item would send it there before it turns to the library window.
+    /// controller: the menu bar's item would send it there. Otherwise it ends at the panel's window, off.
     private func panelTakes(_ action: Selector) -> Bool {
         var responder = window?.firstResponder
         while let current = responder {
@@ -1779,6 +1780,16 @@ private final class MoveUndo {
     init(_ moving: Task<QuickAccessDeletion?, Never>, change: Int) {
         self.moving = moving
         self.change = change
+    }
+}
+
+extension NSWindow {
+    /// Whether this is quick access's panel, or a sheet over it such as the file-access sheet. While the key window is,
+    /// the library's menu commands stay off. The panel never becomes the main window, so a command that nothing in
+    /// quick access takes goes on to the library window behind it, or, with the library closed, to the app, which
+    /// opens the library.
+    var isQuickAccess: Bool {
+        self is QuickAccessPanel || sheetParent?.isQuickAccess == true
     }
 }
 
@@ -1827,10 +1838,34 @@ private final class QuickAccessPanel: NSPanel {
         if delegate?.windowShouldClose?(self) ?? true { close() }
     }
 
+    /// Close All, which AppKit adds to the Window menu, closes only the panel, as ⌥⌘W does. The app would otherwise
+    /// take it and close the library window behind the panel too.
+    @objc func closeAll(_ sender: Any?) {
+        performClose(sender)
+    }
+
     /// ⌘W reaches `performClose` through the Window menu's Close, which NSWindow disables for a window without a
     /// close button; ⌘W would then only beep.
     override func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-        menuItem.action == #selector(performClose(_:)) || super.validateMenuItem(menuItem)
+        menuItem.action == #selector(performClose(_:)) || menuItem.action == #selector(closeAll(_:))
+            || super.validateMenuItem(menuItem)
+    }
+
+    /// Text that cannot be edited, selected or searched, where the menu bar's text commands end when nothing in the
+    /// panel takes them, so the menu bar shows them off. AppKit would otherwise send them on to the main window, which
+    /// is the library window behind the panel, and paste or find in the snippet open there. Text in the panel, such as
+    /// the search field's and the preview's, takes them before they get here.
+    private let inertText: NSTextView = {
+        let text = NSTextView(frame: .zero)
+        text.isEditable = false
+        text.isSelectable = false
+        text.usesFindBar = false
+        text.usesFindPanel = false
+        return text
+    }()
+
+    override func supplementalTarget(forAction action: Selector, sender: Any?) -> Any? {
+        inertText.responds(to: action) ? inertText : super.supplementalTarget(forAction: action, sender: sender)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
