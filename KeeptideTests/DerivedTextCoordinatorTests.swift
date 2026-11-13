@@ -1488,6 +1488,79 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         _ = try await startedTranslation(translator, 1)
     }
 
+    func testATranslationMadeForACardBeingViewedStopsWithoutAWordOnceTheCardIsLeft() async throws {
+        let (controller, store) = try await makeStore()
+        let viewed = try await insertClip("Viewed", into: controller)
+        let copied = try await insertClip("Copied", into: controller)
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "fr-FR", "zh-Hans-CN"])
+        let coordinator = try await makeCoordinator(controller, store, ScriptedRecognizer(), translator: translator,
+                                                    text: { _ in Self.french })
+        coordinator.translateAutomatically(copied, fixed: nil, lastUsed: "zh-Hans")
+        let copiedJob = try await startedTranslation(translator, 0)
+        coordinator.translateAutomatically(viewed, fixed: nil, lastUsed: "zh-Hans", whileViewed: true)
+        await waitUntil("it waits") { coordinator.job(for: viewed, operation: .translate) != nil }
+
+        coordinator.stopTranslationWhileViewed(viewed)
+        // The one made for a copy goes on: only what was made for the card being viewed stops.
+        coordinator.stopTranslationWhileViewed(copied)
+
+        await waitUntil("it stops") { coordinator.job(for: viewed, operation: .translate) == nil }
+        XCTAssertNil(coordinator.outcome(for: viewed, operation: .translate))
+        XCTAssertFalse(copiedJob.wasCancelled)
+        XCTAssertNotNil(coordinator.job(for: copied, operation: .translate))
+        // One asked for while it is checked, and left before it starts, never starts.
+        translator.holdStatuses()
+        coordinator.translateAutomatically(viewed, fixed: nil, lastUsed: "zh-Hans", whileViewed: true)
+        await waitUntil("it is checked") { translator.waitingForStatus == 1 }
+        coordinator.stopTranslationWhileViewed(viewed)
+        translator.releaseStatuses()
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(coordinator.job(for: viewed, operation: .translate))
+    }
+
+    func testATranslationForACardThatGaveWayIsntAskedForAgainOnceTheCardIsLeft() async throws {
+        let (controller, store) = try await makeStore()
+        let viewed = try await insertClip("Viewed", into: controller)
+        let asked = try await insertClip("Asked", into: controller)
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "fr-FR", "zh-Hans-CN"])
+        let coordinator = try await makeCoordinator(controller, store, ScriptedRecognizer(), translator: translator,
+                                                    text: { _ in Self.french })
+        coordinator.translateAutomatically(viewed, fixed: nil, lastUsed: "zh-Hans", whileViewed: true)
+        _ = try await startedTranslation(translator, 0)
+
+        // It gives way to the person's, and its card is left before it is asked for again.
+        coordinator.translate(asked, to: Locale.Language(identifier: "zh-Hans-CN"))
+        coordinator.stopTranslationWhileViewed(viewed)
+
+        try await startedTranslation(translator, 1).send(.started(info), .delta("报告"), .finished(.completed))
+        await waitUntil("the person's is saved") { hasSettled(coordinator, asked, .translate) }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(translator.request(2))
+        XCTAssertNil(coordinator.job(for: viewed, operation: .translate))
+    }
+
+    func testAnItemIsCheckedForTranslatingAutomaticallyOnceAtATime() async throws {
+        let (controller, store) = try await makeStore()
+        let new = try await insertClip("New", into: controller)
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "fr-FR", "zh-Hans-CN"])
+        let coordinator = try await makeCoordinator(controller, store, ScriptedRecognizer(), translator: translator,
+                                                    text: { _ in Self.french })
+        translator.holdStatuses()
+
+        // Asked again while it is checked, as a card read again for each keystroke of a search is, it is checked once.
+        coordinator.translateAutomatically(new, fixed: nil, lastUsed: "zh-Hans", whileViewed: true)
+        coordinator.translateAutomatically(new, fixed: nil, lastUsed: "zh-Hans", whileViewed: true)
+
+        await waitUntil("it is checked") { translator.waitingForStatus >= 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(translator.waitingForStatus, 1)
+        translator.releaseStatuses()
+        _ = try await startedTranslation(translator, 0)
+    }
+
     // MARK: Helpers
 
     private func makeStore() async throws -> (PersistenceController, DerivedTextStore) {
