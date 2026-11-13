@@ -420,10 +420,15 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let translationMarks = Dictionary(
             state.selection.rows.compactMap { row in translationMark(row).map { (row.ref, $0) } },
             uniquingKeysWith: { first, _ in first })
+        // And each link's card of its page, as far as it was loaded.
+        let linkPreview = state.linkPreviewer()
+        let linkPreviews = Dictionary(
+            state.selection.rows.compactMap { row in linkPreview(row).map { (row.ref, $0) } },
+            uniquingKeysWith: { first, _ in first })
         strip.show(state.selection.rows, selection: state.selection.selectedID, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded,
                    collections: cardCollections, collectionColors: colors, slides: !showsNewList,
-                   textMarks: textMarks, translationMarks: translationMarks)
+                   textMarks: textMarks, translationMarks: translationMarks, linkPreviews: linkPreviews)
         glow.show(selectedCardGlow(collectionColors: colors))
     }
 

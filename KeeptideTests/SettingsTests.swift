@@ -324,6 +324,35 @@ final class SettingsTests: XCTestCase {
         XCTAssertTrue(waitUntil { isOn() == 1 })
     }
 
+    func testThePrivacyPageLoadsLinkPreviewsUnlessTurnedOffAndSaysWhatThatSends() throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let (hosting, window, status) = show(makeSettingsModel(quickAccess: preferences), on: .privacy)
+        defer { window.close() }
+        func elements() -> [NSObject] { accessibilityElements(in: hosting) }
+        func toggle() -> NSObject? {
+            elements().first { role(of: $0) == .checkBox && name(of: $0)?.hasPrefix("Load link previews") == true }
+        }
+        let built = waitUntil { toggle() != nil }
+        if !built, status != .success {
+            throw XCTSkip("Accessibility is not available to the test host (AXError \(status.rawValue))")
+        }
+        let described = elements().map {
+            "\(role(of: $0)?.rawValue ?? "?") \(name(of: $0) ?? "") \(attribute(of: $0, "accessibilityValue") ?? "")"
+        }
+        func isOn() -> Int? { (toggle()?.value(forKey: "accessibilityValue") as? NSNumber)?.intValue }
+
+        XCTAssertEqual(isOn(), 1, "On to begin with: \(described)")
+        XCTAssertEqual(toggle().flatMap { attribute(of: $0, "accessibilityIdentifier") as? String },
+                       "LoadLinkPreviewsToggle")
+        XCTAssertTrue(elements().contains(where: reads("To get them, Keeptide sends the link to its website")),
+                      "\(described)")
+        XCTAssertTrue(elements().contains(where: reads("Turning this off removes the previews Keeptide kept.")),
+                      "\(described)")
+        press(try XCTUnwrap(toggle()))
+        XCTAssertTrue(waitUntil { !preferences.loadsLinkPreviews })
+        XCTAssertTrue(waitUntil { isOn() == 0 })
+    }
+
     func testManagingIgnoredAppsPresentsTheSheetOverSettings() {
         let model = makeSettingsModel()
         XCTAssertFalse(model.showsIgnoredApplications)
@@ -1041,7 +1070,12 @@ final class SettingsTests: XCTestCase {
 
     /// Settings on its AI page in a window of its own, and whether accessibility answers the test host.
     private func showAIPage(_ model: SettingsModel) -> (NSHostingView<SettingsView>, NSWindow, AXError) {
-        model.selectedTab = .ai
+        show(model, on: .ai)
+    }
+
+    /// Settings on `tab` in a window of its own, and whether accessibility answers the test host.
+    private func show(_ model: SettingsModel, on tab: SettingsTab) -> (NSHostingView<SettingsView>, NSWindow, AXError) {
+        model.selectedTab = tab
         let hosting = NSHostingView(rootView: SettingsView(model: model))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 700), styleMask: [.titled],
                               backing: .buffered, defer: false)

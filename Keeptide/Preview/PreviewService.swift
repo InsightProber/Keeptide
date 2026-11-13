@@ -19,6 +19,12 @@ struct ClipDetail: Equatable, Sendable {
     var itemCount = 1
     /// The title of the page a link was copied from, when the clip carries one.
     var linkTitle: String?
+
+    /// A link's whole address; nil when the detail holds only the start of a longer one, or nothing.
+    var wholeLink: String? {
+        guard let excerpt, !excerpt.isEmpty, characterCount == excerpt.count else { return nil }
+        return excerpt
+    }
 }
 
 /// Reads a clip's stored content and boils it down to what a strip frame shows: an excerpt and the

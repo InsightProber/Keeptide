@@ -487,6 +487,65 @@ final class StripFrameContentTests: XCTestCase {
                                               cardSize: .medium).accessibilityTitle, "Clipboard Item")
     }
 
+    // MARK: Link previews
+
+    func testALinkWithAPreviewShowsItsPagesPictureAboveTheTitle() throws {
+        let address = "https://example.com/articles/synthetic"
+        let picture = try makeImage(width: 480, height: 252)
+        let content = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address), detail: ClipDetail(excerpt: address, characterCount: 38),
+            cardSize: .medium, linkPreview: LinkPreview(title: "A Synthetic Article", image: picture, icon: nil))
+        XCTAssertEqual(content.body, .linkPreview(image: picture, title: AttributedString("A Synthetic Article")))
+        // The footer names the site under the title, as before.
+        XCTAssertEqual(content.info, "example.com")
+        XCTAssertEqual(content.accessibilityTitle, "A Synthetic Article")
+    }
+
+    func testALinksOwnTitlesComeBeforeItsPagesAndItsPathAfter() throws {
+        let address = "https://example.com/articles/synthetic"
+        let picture = try makeImage(width: 480, height: 252)
+        let preview = LinkPreview(title: "The Page's Title", image: picture, icon: nil)
+        // The title of the page it was copied from, which the clip carries.
+        let copied = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address),
+            detail: ClipDetail(excerpt: address, characterCount: 38, linkTitle: "Copied With This Title"),
+            cardSize: .medium, linkPreview: preview)
+        XCTAssertEqual(copied.body, .linkPreview(image: picture, title: AttributedString("Copied With This Title")))
+        // A copied title shows as a card shows any title: on one line, without direction controls.
+        let unruly = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address),
+            detail: ClipDetail(excerpt: address, characterCount: 38, linkTitle: "Copied\nWith\u{202E} Controls"),
+            cardSize: .medium, linkPreview: preview)
+        XCTAssertEqual(unruly.body, .linkPreview(image: picture, title: AttributedString("Copied With Controls")))
+        // A saved snippet's own title before that.
+        let saved = StripFrameContent.make(
+            row: makeRow(kind: .url, title: "My Reading", savedAsMemo: true),
+            detail: ClipDetail(excerpt: address, characterCount: 38, linkTitle: "Copied With This Title"),
+            cardSize: .medium, linkPreview: preview)
+        XCTAssertEqual(saved.body, .linkPreview(image: picture, title: AttributedString("My Reading")))
+        // Without a picture the card is the link's as before, with the page's title in place of the path.
+        let titleOnly = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address), detail: ClipDetail(excerpt: address, characterCount: 38),
+            cardSize: .medium, linkPreview: LinkPreview(title: "  The Page's Title ", image: nil, icon: nil))
+        XCTAssertEqual(titleOnly.body, .link(title: AttributedString("The Page's Title")))
+        XCTAssertEqual(titleOnly.accessibilityTitle, "The Page's Title")
+        let nothing = StripFrameContent.make(
+            row: makeRow(kind: .url, title: address), detail: ClipDetail(excerpt: address, characterCount: 38),
+            cardSize: .medium, linkPreview: LinkPreview(title: " ", image: nil, icon: nil))
+        XCTAssertEqual(nothing.body, .link(title: AttributedString("/articles/synthetic")))
+    }
+
+    func testASearchHitInAPreviewedLinksTitleIsInBold() throws {
+        let address = "https://example.com/articles/synthetic"
+        let picture = try makeImage(width: 480, height: 252)
+        let content = StripFrameContent.make(
+            row: makeRow(kind: .url, snippet: SearchSnippet(text: address, highlights: [29..<38])),
+            detail: ClipDetail(excerpt: address, characterCount: 38), cardSize: .medium,
+            linkPreview: LinkPreview(title: "Synthetic Articles Weekly", image: picture, icon: nil))
+        guard case .linkPreview(_, let title) = content.body else { return XCTFail("Expected a link preview") }
+        XCTAssertEqual(emphasised(title), ["Synthetic"])
+    }
+
     /// The runs set in bold, in order.
     private func emphasised(_ text: AttributedString) -> [String] {
         text.runs.filter { $0.inlinePresentationIntent == .stronglyEmphasized }.map { String(text[$0.range].characters) }

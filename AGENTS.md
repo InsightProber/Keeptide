@@ -54,10 +54,11 @@ each preferred language needs to be translated into it, and says whether Apple
 Intelligence is available; nothing uses Apple Intelligence yet.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
-A network boundary is in place: only `Keeptide/CloudModels/` may connect, over
-HTTPS to the model providers' API hosts, and `Keeptide/LinkPreviews/`, which
-loads the pages of copied web links through LinkPresentation; nothing uses
-either yet.
+A network boundary is in place: only two modules may connect.
+`Keeptide/CloudModels/` connects over HTTPS to the model providers' API hosts,
+and nothing uses it yet. `Keeptide/LinkPreviews/` loads the pages of copied web
+links through LinkPresentation for their cards' titles and pictures, unless
+Settings › Privacy's Load link previews is off.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here

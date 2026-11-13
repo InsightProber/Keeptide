@@ -20,7 +20,11 @@ collection with the All | Snippets switch and the collection chips at its top
 left, or with ⌘[ and ⌘]. It searches all content in the All list, and within the
 chosen list otherwise, with a local full-text index, from a search that folds
 into an icon at the band's right end until you type; a filter button beside it
-narrows the list to favorites or to types. It previews text and images, and can
+narrows the list to favorites or to types. A link's card shows the title and
+picture of its page, which Keeptide loads as the link is copied or its card is
+shown, unless Settings › Privacy turns this off; a link whose address names
+this Mac or a local-network address, or has a parameter that may carry a
+password, key or token, is never loaded. It previews text and images, and can
 paste the selected clip, with Return or a double click, directly into the app
 window it was opened from; Settings shows whether direct paste is on. Its
 actions menu, or ⌘⌫, moves the selected clip or snippet to Recently Deleted, and
@@ -126,7 +130,7 @@ planned.
 | Quick access | A global shortcut, a band of clip cards, lists of snippets and collections, filters for favorites and types, keyboard navigation and explicit actions |
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
-| Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
+| Previews | Text, image, URL and file previews, and link cards with their page's title and picture; Space opens a preview when results have focus |
 | Text in images | Text recognized on this Mac in a copied image, shown beside its preview, kept locally and searched |
 | Translation | A text clip, or the text in an image, translated on this Mac into the language chosen, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
@@ -151,11 +155,15 @@ planned.
 - Text recognition reads only images that were copied, and translation only the
   text of clips, when asked. Keeptide does not read the screen or other apps'
   windows.
-- Keeptide's own connections go only through its cloud-model module, over
-  HTTPS, to the model providers' API hosts. It sends nothing until a person
-  chooses a cloud model with their own API key, which is planned. iCloud
-  mirroring uses the system's CloudKit service. The helper that reads the
-  clipboard never connects.
+- Keeptide's own connections go only through two modules. The link preview
+  module loads the pages of web links a person copies, or whose cards quick
+  access shows, while Settings › Privacy's Load link previews is on; it never
+  loads a link whose address names this Mac or a local-network address, or has
+  a parameter that may carry a password, key or token. The cloud-model module
+  connects over HTTPS to the model providers' API hosts, and sends nothing
+  until a person chooses a cloud model with their own API key, which is
+  planned. iCloud mirroring uses the system's CloudKit service. The helper that
+  reads the clipboard never connects.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
   before it sends the paste and again after the panel hides. When they changed,
@@ -177,7 +185,9 @@ and performance. They are not first-release promises.
 ## Application preferences and welcome
 
 The native Settings window groups appearance, keyboard shortcuts, privacy, AI
-and cloud availability. Settings › AI sets whether recognized text keeps its
+and cloud availability. Settings › Privacy's Load link previews, on at first,
+turns off loading the pages of links for their cards, and removes the previews
+kept. Settings › AI sets whether recognized text keeps its
 line breaks and the language translations are made in: Last Used, the one last
 chosen in quick access, or one fixed there. It lists what translating from each
 of the person's languages into that one needs on this Mac, opens Language &
