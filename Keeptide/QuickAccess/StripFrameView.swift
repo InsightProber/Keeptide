@@ -41,6 +41,53 @@ enum StripTextMark: Equatable {
     }
 }
 
+/// What a card says of its text's translation, as a "文A" mark beside the mark for the text in an image.
+enum StripTranslationMark: Equatable {
+    /// A translation the person asked for is under way, into the language with this code: an outlined mark, and the
+    /// line moving under the header.
+    case translating(into: String?)
+    /// It waits its turn behind another job: an outlined mark.
+    case waiting
+    /// The text was translated into the language with this code, now or earlier: a solid mark in the accent colour.
+    case translated(into: String?)
+    /// The translation was stopped or cut off before it was whole: a dashed outline.
+    case stopped
+    /// Making it failed, for this reason: an orange mark.
+    case failed(String)
+
+    /// The mark's help tag: "Translated to Chinese (Simplified). Press ⌘T to show."
+    var help: String {
+        switch self {
+        case .translating(let language?): "Translating to \(Self.name(of: language))…"
+        case .translating(nil): "Translating…"
+        case .waiting: "Waiting to translate"
+        case .translated(let language?): "Translated to \(Self.name(of: language)). Press ⌘T to show."
+        case .translated(nil): "Translated. Press ⌘T to show."
+        case .stopped: "Stopped. The translation is incomplete."
+        case .failed(let reason): reason
+        }
+    }
+
+    /// What VoiceOver hears at the end of the card's label: the state, and why for a failure.
+    var spoken: String {
+        switch self {
+        case .translating: "translating"
+        case .waiting: "waiting to translate"
+        case .translated: "translated"
+        case .stopped: "translation stopped"
+        case .failed(let reason): "translation failed: \(reason)"
+        }
+    }
+
+    /// A translation is under way: the line moves under the card's header.
+    var isTranslating: Bool {
+        if case .translating = self { return true }
+        return false
+    }
+
+    private static func name(of language: String) -> String { Locale.Language(identifier: language).displayName }
+}
+
 /// One piece of the line under a card's kind, in its header.
 enum StripHeaderItem: Equatable {
     case time(String)
@@ -104,10 +151,15 @@ struct StripFrameContent: Equatable {
     var isTextUnavailable: Bool
     /// What is known of the text in the clip's image.
     var textMark: StripTextMark?
+    /// What is known of the translation of the clip's text.
+    var translationMark: StripTranslationMark?
     /// Width over height of a picture, from its header. ImageIO rounds the thumbnail's size, which
     /// for a hairline of a picture makes a very different shape, so a picture shown whole takes its
     /// shape from here and not from the thumbnail.
     var imageAspectRatio: CGFloat?
+
+    /// Whether text is being made of the clip, recognized in its image or translated: a line moves under the header.
+    var isMakingText: Bool { textMark == .recognizing || translationMark?.isTranslating == true }
 
     /// The header's second line, left to right: the time, or how often a frequent clip was used, then a memo's
     /// collection, then the marks, and how many more items there are.
@@ -126,7 +178,8 @@ struct StripFrameContent: Equatable {
     /// collection leaves it out, since every card there is in it.
     static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
                      now: Date = Date(), collections: [CollectionID: CollectionSummary] = [:],
-                     textMark: StripTextMark? = nil) -> StripFrameContent {
+                     textMark: StripTextMark? = nil,
+                     translationMark: StripTranslationMark? = nil) -> StripFrameContent {
         let isMemo = row.facet == .memo
         // The row lists its collections in the sidebar's order; the first the card may name leads.
         let named = isMemo ? row.collectionIDs.compactMap { collections[$0] } : []
@@ -142,6 +195,7 @@ struct StripFrameContent: Equatable {
         )
         content.moreCollections = max(0, named.count - 1)
         content.textMark = textMark
+        content.translationMark = translationMark
         if row.savedAsMemo { content.markers.append(.savedAsMemo) }
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
         if content.isFavorite { content.markers.append(.favorite) }
@@ -382,10 +436,11 @@ struct StripFrameView: View {
             middle
                 .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
                 .clipped()
-                // While the text in the image is recognized, a thin line moves along under the header. It lies over
-                // the clip and not in the header, whose time on a small card reaches down to the header's edge.
+                // While the text in the image is recognized, or the text translated, a thin line moves along under
+                // the header. It lies over the clip and not in the header, whose time on a small card reaches down to
+                // the header's edge.
                 .overlay(alignment: .top) {
-                    if content.textMark == .recognizing {
+                    if content.isMakingText {
                         StripProgressLine(color: accent?.color ?? .accentColor, isDark: isDark,
                                           increasedContrast: increasedContrast)
                             .frame(height: 2)
@@ -462,8 +517,14 @@ struct StripFrameView: View {
             }
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
+            // At most two marks: the text in an image, then its translation.
             if let mark = content.textMark {
                 StripTextMarkView(mark: mark, isDark: isDark, increasedContrast: increasedContrast, scale: scale)
+                    .frame(height: metrics.iconSize)
+            }
+            if let mark = content.translationMark {
+                StripTranslationMarkView(mark: mark, isDark: isDark, increasedContrast: increasedContrast,
+                                         scale: scale)
                     .frame(height: metrics.iconSize)
             }
             appIcon
@@ -769,9 +830,71 @@ struct CardWash: View {
     }
 }
 
-/// A card's mark for the text in its image: 18 pt tall on a medium card, with rounded corners, outlined while the
-/// text is made or waits, solid once there is text, and orange with "!" when making it failed; with Increase Contrast
-/// every mark is outlined, more strongly. Its help tag says what it means; VoiceOver hears it with the card's label.
+/// A card's mark, drawn like the band's key caps: 18 pt tall on a medium card, with rounded corners, filled, outlined or
+/// outlined with dashes; with Increase Contrast every mark is outlined, more strongly. Its help tag says what it means;
+/// VoiceOver hears it with the card's label, and not on its own.
+private struct StripMarkCap<Glyph: View>: View {
+    let fill: Color
+    let outline: StripMarkOutline
+    let help: String
+    let isDark: Bool
+    let increasedContrast: Bool
+    let scale: CGFloat
+    @ViewBuilder let glyph: Glyph
+
+    var body: some View {
+        let height = (18 * scale).rounded()
+        let shape = RoundedRectangle(cornerRadius: 5 * scale, style: .continuous)
+        let width: CGFloat = increasedContrast ? 1 : 0.75
+        glyph
+            .padding(.horizontal, 4 * scale)
+            .frame(minWidth: height, minHeight: height, maxHeight: height)
+            .background { fill.clipShape(shape) }
+            .overlay {
+                switch outline {
+                case .dashed:
+                    shape.strokeBorder(edge, style: StrokeStyle(lineWidth: width, dash: [2.5 * scale, 1.5 * scale]))
+                case .solid: shape.strokeBorder(edge, lineWidth: width)
+                case .increasedContrastOnly: if increasedContrast { shape.strokeBorder(edge, lineWidth: width) }
+                }
+            }
+            .help(help)
+            .accessibilityHidden(true)
+    }
+
+    /// The colour of the outline.
+    private var edge: Color {
+        increasedContrast ? (isDark ? .white.opacity(0.6) : .black.opacity(0.55))
+            : (isDark ? .white.opacity(0.4) : .black.opacity(0.35))
+    }
+}
+
+/// How a card's mark is outlined: in a line, in dashes, or, as a filled mark is, only with Increase Contrast.
+private enum StripMarkOutline { case solid, dashed, increasedContrastOnly }
+
+/// The colours the card's marks share.
+enum StripMarkColors {
+    /// Whether a glyph on this accent reads better dark than white: on the system's light accents, yellow, orange and
+    /// green, whose relative luminance is above 0.4, white stands out too little.
+    static func prefersDarkGlyph(on accent: NSColor) -> Bool {
+        guard let color = accent.usingColorSpace(.sRGB) else { return false }
+        func linear(_ component: CGFloat) -> CGFloat {
+            component <= 0.04045 ? component / 12.92 : pow((component + 0.055) / 1.055, 2.4)
+        }
+        let luminance = 0.2126 * linear(color.redComponent) + 0.7152 * linear(color.greenComponent)
+            + 0.0722 * linear(color.blueComponent)
+        return luminance > 0.4
+    }
+
+    /// The glyph of an outlined mark, for work under way, waiting or left part way.
+    static func quietGlyph(dark: Bool) -> Color { dark ? Color.white.opacity(0.72) : Color.black.opacity(0.55) }
+    /// The near-black glyph on a filled mark: the "!" on a failure's orange, and "文A" on a light accent.
+    static var darkGlyph: Color { Color(.sRGB, red: 0x1D / 255, green: 0x1D / 255, blue: 0x1F / 255) }
+    static var failureFill: Color { Color(nsColor: .systemOrange) }
+}
+
+/// A card's mark for the text in its image: outlined while the text is made or waits, solid once there is text, and
+/// orange with "!" when making it failed.
 private struct StripTextMarkView: View {
     let mark: StripTextMark
     let isDark: Bool
@@ -779,19 +902,8 @@ private struct StripTextMarkView: View {
     let scale: CGFloat
 
     var body: some View {
-        let height = (18 * scale).rounded()
-        let shape = RoundedRectangle(cornerRadius: 5 * scale, style: .continuous)
-        glyph
-            .padding(.horizontal, 4 * scale)
-            .frame(minWidth: height, minHeight: height, maxHeight: height)
-            .background { fill.clipShape(shape) }
-            .overlay {
-                if isOutlined || increasedContrast {
-                    shape.strokeBorder(outline, lineWidth: increasedContrast ? 1 : 0.75)
-                }
-            }
-            .help(mark.help)
-            .accessibilityHidden(true)
+        StripMarkCap(fill: fill, outline: mark == .recognizing || mark == .waiting ? .solid : .increasedContrastOnly,
+                     help: mark.help, isDark: isDark, increasedContrast: increasedContrast, scale: scale) { glyph }
     }
 
     @ViewBuilder
@@ -800,7 +912,7 @@ private struct StripTextMarkView: View {
         case .recognizing, .waiting:
             Image(systemName: "viewfinder")
                 .font(.system(size: 10 * scale, weight: .semibold))
-                .foregroundStyle(isDark ? Color.white.opacity(0.72) : Color.black.opacity(0.55))
+                .foregroundStyle(StripMarkColors.quietGlyph(dark: isDark))
         case .hasText:
             Image(systemName: "text.viewfinder")
                 .font(.system(size: 10 * scale, weight: .semibold))
@@ -808,15 +920,8 @@ private struct StripTextMarkView: View {
         case .failed:
             Text("!")
                 .font(.system(size: 12 * scale, weight: .bold))
-                .foregroundStyle(Color(.sRGB, red: 0x1D / 255, green: 0x1D / 255, blue: 0x1F / 255))
+                .foregroundStyle(StripMarkColors.darkGlyph)
         }
-    }
-
-    private var isOutlined: Bool { mark == .recognizing || mark == .waiting }
-
-    private var outline: Color {
-        increasedContrast ? (isDark ? .white.opacity(0.6) : .black.opacity(0.55))
-            : (isDark ? .white.opacity(0.4) : .black.opacity(0.35))
     }
 
     private var fill: Color {
@@ -825,14 +930,65 @@ private struct StripTextMarkView: View {
         case .hasText:
             increasedContrast ? (isDark ? .white.opacity(0.24) : .black.opacity(0.16))
                 : (isDark ? .white.opacity(0.16) : .black.opacity(0.10))
-        case .failed: Color(nsColor: .systemOrange)
+        case .failed: StripMarkColors.failureFill
         }
     }
 }
 
-/// The 2 pt line under a card's header while the text in its image is recognized: a segment that moves across it, and
-/// holds still at its start with Reduce Motion. Core Animation moves it, so the card is never drawn again for it.
-private struct StripProgressLine: NSViewRepresentable {
+/// A card's mark for its text's translation, "文A": outlined while the translation is made or waits, solid in the
+/// accent colour once there is one, outlined with dashes when it was left part way, and orange with "!" when making it
+/// failed.
+private struct StripTranslationMarkView: View {
+    let mark: StripTranslationMark
+    let isDark: Bool
+    let increasedContrast: Bool
+    let scale: CGFloat
+
+    var body: some View {
+        StripMarkCap(fill: fill, outline: outline, help: mark.help, isDark: isDark,
+                     increasedContrast: increasedContrast, scale: scale) { glyph }
+    }
+
+    @ViewBuilder
+    private var glyph: some View {
+        switch mark {
+        case .failed:
+            Text("!")
+                .font(.system(size: 12 * scale, weight: .bold))
+                .foregroundStyle(StripMarkColors.darkGlyph)
+        case .translated:
+            Text(verbatim: "文A")
+                .font(.system(size: 10 * scale, weight: .semibold))
+                .foregroundStyle(StripMarkColors.prefersDarkGlyph(on: .controlAccentColor)
+                                 ? StripMarkColors.darkGlyph : .white)
+        case .translating, .waiting, .stopped:
+            Text(verbatim: "文A")
+                .font(.system(size: 10 * scale, weight: .semibold))
+                .foregroundStyle(StripMarkColors.quietGlyph(dark: isDark))
+        }
+    }
+
+    private var outline: StripMarkOutline {
+        switch mark {
+        case .translating, .waiting: .solid
+        case .stopped: .dashed
+        case .translated, .failed: .increasedContrastOnly
+        }
+    }
+
+    private var fill: Color {
+        switch mark {
+        case .translating, .waiting, .stopped: .clear
+        case .translated: Color(nsColor: .controlAccentColor)
+        case .failed: StripMarkColors.failureFill
+        }
+    }
+}
+
+/// The 2 pt line under a card's header while text is made of the clip, recognized in its image or translated: a segment
+/// that moves across it, and holds still at its start with Reduce Motion. Core Animation moves it, so the card is never
+/// drawn again for it.
+struct StripProgressLine: NSViewRepresentable {
     let color: Color
     let isDark: Bool
     let increasedContrast: Bool

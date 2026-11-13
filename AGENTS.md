@@ -40,8 +40,20 @@ supports recoverable editing, document find, search, and explicit saving. Persis
 file authorization is local and explicit. ⇧⌘T shows the text recognized on this Mac
 in a copied image beside its preview, and keeps it locally beside the image; Return,
 ⌘C and ⌘S then paste, copy or save that text instead of the image.
+⌘T shows a translation of a text clip, or of the text in an image, recognized
+first when needed, beside its preview, made on this Mac with Apple's Translation
+into the language fixed in Settings › AI, or else the one last chosen from the
+menu its title and ⌥⌘T open, which marks the languages not downloaded, and kept
+locally; Return, ⌘C and ⌘S then take it in the same way; translating or
+recognizing again that fails leaves the earlier result. Settings › AI sets the
+line breaks and the language to translate into, Last Used or a fixed one, lists
+what each preferred language needs to be translated into it, and says whether
+Apple Intelligence is available; nothing uses Apple Intelligence yet.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
+A network boundary is in place for cloud models: only `Keeptide/CloudModels/`
+may connect, over HTTPS to the model providers' API hosts, and nothing uses it
+yet.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here
@@ -108,11 +120,11 @@ Planned capabilities must stay labelled until implemented and verified.
   adding Xcode files. Check API availability on the minimum supported macOS.
 - Prefer a small, clear implementation over speculative abstractions.
 - On-device model inference uses only Apple's frameworks: Vision for text
-  recognition, with Translation and Natural Language planned. Also planned:
-  Apple Intelligence on Macs that have it, and cloud models a person chooses
-  explicitly with their own API key, reached only through a dedicated cloud
-  module. The first release does not include embeddings, vector storage or
-  input monitoring.
+  recognition, Natural Language to tell languages apart, and Translation. Also
+  planned: Apple Intelligence on Macs that have it, and cloud models a person
+  chooses explicitly with their own API key, reached only through
+  `Keeptide/CloudModels/`. The first release does not include embeddings,
+  vector storage or input monitoring.
 
 ## Storage and privacy invariants
 
@@ -132,6 +144,15 @@ Planned capabilities must stay labelled until implemented and verified.
 - Keep file permissions, bookmarks, local paths used as file references, drafts,
   indexes and usage summaries local. Do not log clipboard bodies or credentials.
   Preserve user-authored text as data; do not rewrite paths inside commands.
+- Only `Keeptide/CloudModels/` may use the network: HTTPS to the hosts it is
+  given, no redirects, no cache, cookie or credential storage, and no logging of
+  what it sends or receives. The pasteboard reader inherits the sandbox's
+  outgoing connections and never uses them. Source-boundary tests keep URL
+  loading, sockets, web views, link previews and the HTML importer out of
+  everything else; they can't tell a remote URL from a file, so never give a URL
+  that may be remote to a `contentsOf:` initializer. Tests give every model
+  client a stand-in for the network. iCloud mirroring goes through the system's
+  CloudKit service and does not belong in that folder.
 - Tests use synthetic content, temporary stores and isolated cloud resources.
   Never inspect or modify personal clipboard history to populate tests.
 - Automatic insertion requires current target, permission, identity and content

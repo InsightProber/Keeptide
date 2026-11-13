@@ -1,6 +1,7 @@
+import AppKit
 import SwiftUI
 
-/// Four native settings pages backed by the application's shared preference and service models.
+/// Five native settings pages backed by the application's shared preference and service models.
 struct SettingsView: View {
     @Bindable var model: SettingsModel
 
@@ -25,6 +26,9 @@ struct SettingsView: View {
             page("PrivacySettingsPage") { privacyPage }
                 .tabItem { Label(SettingsTab.privacy.title, systemImage: SettingsTab.privacy.systemImage) }
                 .tag(SettingsTab.privacy)
+            page("AISettingsPage") { aiPage }
+                .tabItem { Label(SettingsTab.ai.title, systemImage: SettingsTab.ai.systemImage) }
+                .tag(SettingsTab.ai)
             page("CloudSettingsPage") { cloudPage }
                 .tabItem { Label(SettingsTab.iCloud.title, systemImage: SettingsTab.iCloud.systemImage) }
                 .tag(SettingsTab.iCloud)
@@ -163,6 +167,92 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// What the engines on this Mac do: whether Apple Intelligence is there, text recognition, and translation, with
+    /// what translating from each of the person's languages into the one translations are made in needs. It reads them
+    /// again as it appears and as the language to translate into changes, here or in quick access; the window reads
+    /// them again as it opens and as Keeptide becomes active while it shows, as when coming back from System Settings.
+    private var aiPage: some View {
+        @Bindable var preferences = model.quickAccess
+        let ai = model.ai
+        // A stored code is not trusted: it is shown as the code quick access would take, or as Last Used.
+        let fixedTarget = Binding<String?>(
+            get: { preferences.fixedTranslationTarget.flatMap(TranslationTargets.code(of:)) },
+            set: { preferences.fixedTranslationTarget = $0 }
+        )
+        return Form {
+            Section {
+                Text(ai.appleIntelligence.sentence)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("AppleIntelligenceStatus")
+            }
+
+            Section("Text Recognition") {
+                engine("TextRecognitionEngine", named: "Text recognition engine")
+                Picker("Line breaks", selection: $preferences.keepsLineBreaks) {
+                    Text("Keep Line Breaks").tag(true)
+                    Text("Join Lines into Paragraphs").tag(false)
+                }
+            }
+
+            Section {
+                Picker("Translate to", selection: fixedTarget) {
+                    Text("Last Used").tag(String?.none)
+                    if !ai.targetChoices.preferred.isEmpty { Divider() }
+                    ForEach(ai.targetChoices.preferred) { language in
+                        Text(language.name).tag(String?.some(language.code))
+                    }
+                    if !ai.targetChoices.others.isEmpty { Divider() }
+                    ForEach(ai.targetChoices.others) { language in
+                        Text(language.name).tag(String?.some(language.code))
+                    }
+                    // A fixed language Translate to doesn't list: before Translation's languages are read, or one it
+                    // doesn't offer, which translations then aren't made in.
+                    if let unlisted = ai.unlistedFixedTarget {
+                        Divider()
+                        Text(ai.choicesAreKnown ? "\(unlisted.name) (Not Available on This Mac)" : unlisted.name)
+                            .tag(String?.some(unlisted.code))
+                    }
+                }
+                engine("TranslationEngine", named: "Translation engine")
+                LabeledContent {
+                    Button("Manage in System Settings…") { ai.manageLanguages() }
+                        .help("Opens Language & Region, where Translation Languages… downloads and removes languages.")
+                } label: {
+                    Text("Languages on this Mac")
+                    // Said before the languages, so VoiceOver hears what they are translated into first.
+                    if let target = ai.target { Text("Into \(target.name)") }
+                }
+                if ai.target != nil, ai.languages.isEmpty {
+                    Text("Languages you add in Language & Region show here.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(ai.languages) { row in
+                        LabeledContent(row.name, value: row.status)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityAddTraits(.isStaticText)
+                            .accessibilityLabel(row.spokenName)
+                    }
+                }
+            } header: {
+                Text("Translation")
+            }
+        }
+        .formStyle(.grouped)
+        .task { await ai.refresh() }
+        .onChange(of: preferences.fixedTranslationTarget) { Task { await ai.refresh() } }
+        .onChange(of: preferences.translationTarget) { Task { await ai.refresh() } }
+    }
+
+    /// The engine a capability uses: this Mac's own, the only one for now. VoiceOver reads it as the language rows
+    /// read, what it is and then which.
+    private func engine(_ identifier: String, named name: String) -> some View {
+        LabeledContent("Engine", value: "On This Mac")
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isStaticText)
+            .accessibilityLabel("\(name), On This Mac")
+            .accessibilityIdentifier(identifier)
     }
 
     private var cloudPage: some View {

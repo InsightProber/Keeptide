@@ -90,6 +90,12 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     var presentToolbarMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
     }
+    /// Shows the language menu. Tests replace it, as they do the actions menu.
+    var presentLanguageMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
+        menu.popUp(positioning: nil, at: point, in: view)
+    }
+    /// Where the translation's title is in the band, as SwiftUI last laid it out: the language menu opens below it.
+    private var languageTitleFrame: CGRect?
     /// Shows the ⋯ menu. Tests replace it, as they do the actions menu.
     var presentMoreMenu: (NSMenu, NSPoint, NSView) -> Void = { menu, point, view in
         menu.popUp(positioning: nil, at: point, in: view)
@@ -112,7 +118,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// Reads `message` out to VoiceOver. Tests replace it to hear what is read.
     var announce: (String) -> Void = { _ in }
     /// What `update()` says as a recognition ends without text.
-    private var textColumnEndings = TextColumnEndings()
+    private var textColumnEndings = ResultColumnEndings()
+    private var translationColumnEndings = ResultColumnEndings()
+    /// The image whose text VoiceOver last heard is recognized before it is translated, while the column says so.
+    private var announcedRecognizingFirst: ContentRef?
     /// Tells the input method that the search field's characters moved, as when the search folds or unfolds. Tests replace it
     /// to count the calls.
     var fieldCharactersMoved: (NSTextView) -> Void = { $0.inputContext?.invalidateCharacterCoordinates() }
@@ -209,6 +218,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             metrics = Self.metrics(for: preferences, visibleWidth: visibleFrame.width)
             strip.ticksEnabled = preferences.trackpadTicks
             state.restoreKeepsLineBreaks(preferences.keepsLineBreaks)
+            state.restoreTranslationTarget(preferences.translationTarget, fixed: preferences.fixedTranslationTarget)
             // The app in front is recorded as the paste target before this panel shows (decision 1). How many of the
             // newest clips the band shows whole depends on how many frequent clips stand before them.
             let metrics = metrics
@@ -241,6 +251,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         isHiddenForPaste = false
         searchReachedByKeyboard = false
         textColumnEndings.reset()
+        translationColumnEndings.reset()
+        announcedRecognizingFirst = nil
         state.close()
         // The undo stack is the showing's: a move stays in Recently Deleted, where the library recovers it.
         window?.undoManager?.removeAllActions()
@@ -360,10 +372,31 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         if isSessionOpen, let notice, notice != toolbar.captureNotice { announce(notice) }
         toolbar.captureNotice = notice
         // And why a recognition that just ended left the text column without text.
-        let column = state.textColumnRef.flatMap { ref in
-            state.textColumn.map { (ref: ref, column: $0, ending: state.textColumnEnding) }
+        let textColumn = state.textColumnRef.flatMap { ref in
+            state.textColumn.map { (ref: ref, ending: state.textColumnEnding, words: $0.endingWords, isRead: $0.isRead) }
         }
-        if let words = textColumnEndings.words(for: column, isOpen: isSessionOpen) { announce(words) }
+        if let words = textColumnEndings.words(for: textColumn, isOpen: isSessionOpen) { announce(words) }
+        // And how a translation that just ended left its column.
+        let translationColumn = state.translationColumnRef.flatMap { ref in
+            state.translationColumn.map {
+                (ref: ref, ending: state.translationColumnEnding, words: $0.endingWords, isRead: $0.isRead)
+            }
+        }
+        if let words = translationColumnEndings.words(for: translationColumn, isOpen: isSessionOpen) {
+            announce(words)
+        }
+        // And, once as it begins, that an image's text is recognized before it is translated: nothing else is said
+        // until the translation starts.
+        let recognizingFirst = state.translationColumn?.isRecognizingText == true ? state.translationColumnRef : nil
+        if isSessionOpen, let ref = recognizingFirst, ref != announcedRecognizingFirst {
+            announce(TranslationColumnWords.recognizingFirst)
+        }
+        announcedRecognizingFirst = recognizingFirst
+        // What the language menu marks follows the text quick access has of the selected clip, which can come with no
+        // action of the panel's, as an image's text does when it is recognized.
+        if isSessionOpen, state.isPreviewExpanded { state.readTranslationLanguages() }
+        // The translation's title is where the language menu opens only while it is laid out.
+        if state.translationColumnRef == nil { languageTitleFrame = nil }
         toolbar.reservedNotes = state.possibleActions.map {
             .action(title: $0.primaryTitle, enabled: true, hint: $0.hint)
         }
@@ -377,14 +410,19 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         strip.dimsSideFrames = hasCard
         if state.phase != .loading { oldestIsLoaded = state.selection.isComplete && !state.hasMoreRows }
         let colors = collectionColors
-        // What each image's card says of its text, read here so that the cards follow the recognitions.
+        // What each image's card says of its text, and each text's card of its translation, read here so that the
+        // cards follow the jobs.
         let textMark = state.textMarker()
         let textMarks = Dictionary(state.selection.rows.compactMap { row in textMark(row).map { (row.ref, $0) } },
                                    uniquingKeysWith: { first, _ in first })
+        let translationMark = state.translationMarker()
+        let translationMarks = Dictionary(
+            state.selection.rows.compactMap { row in translationMark(row).map { (row.ref, $0) } },
+            uniquingKeysWith: { first, _ in first })
         strip.show(state.selection.rows, selection: state.selection.selectedID, details: state.details,
                    metrics: metrics, applicationNames: applicationNames, oldestIsLoaded: oldestIsLoaded,
                    collections: cardCollections, collectionColors: colors, slides: !showsNewList,
-                   textMarks: textMarks)
+                   textMarks: textMarks, translationMarks: translationMarks)
         glow.show(selectedCardGlow(collectionColors: colors))
     }
 
@@ -473,7 +511,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             actions: QuickAccessBandView.Actions(previewCommand: { [weak self] in self?.perform($0) },
                                                  confirmCommand: { [weak self] in self?.confirmFromCard() },
                                                  cancelCommandReview: { [weak self] in self?.cancelFromCard() },
-                                                 copyText: { [weak self] in self?.copyShownText($0) })
+                                                 copyText: { [weak self] in self?.copyShownText($0) },
+                                                 languageTitleMoved: { [weak self] in self?.languageTitleFrame = $0 })
         )
     }
 
@@ -545,6 +584,22 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             copyShownText(nil)
         case .saveTextAsSnippet:
             saveShownText()
+        case .showTranslation:
+            let focus = currentFocus
+            let wasShowing = state.translationColumnRef != nil
+            state.showTranslation()
+            update()
+            keepFocus(focus)
+            // VoiceOver hears the column once, as it opens.
+            if !wasShowing, state.translationColumnRef != nil {
+                announce("\(TranslationColumnWords.title), on this Mac")
+            }
+        case .translate(let language):
+            state.translate(into: language.map(Locale.Language.init(identifier:)))
+        case .stopTranslation:
+            state.stopTranslation()
+        case .chooseTranslationLanguage:
+            openLanguageMenu()
         }
     }
 
@@ -826,7 +881,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         guard state.commandReview == nil else { return }
         guard let target = target(for: subject) else {
             // The text beside the image has nothing to take yet; the image is not taken in its place.
-            if subject != .clip, state.textColumnRef != nil { NSSound.beep() }
+            if subject != .clip, state.resultColumnRef != nil { NSSound.beep() }
             return
         }
         if guessesReturn { heldReturnKeys.insert(Self.returnMayBeDown) }
@@ -999,6 +1054,49 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         presentMoreMenu(menu, NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY + 4 : -4), button)
     }
 
+    /// ⌥⌘T, or a click on the translation's title: the languages to translate the selected clip into, below that title
+    /// while the column shows, and otherwise beside the clip, where ⌘K shows its actions. It shows what is known of
+    /// each language now, and reads what isn't for the next time.
+    func openLanguageMenu() {
+        guard state.offersTranslation, state.commandReview == nil else { return }
+        state.readTranslationLanguages()
+        let menu = NSMenu(title: "Translate To")
+        menu.autoenablesItems = false
+        // For the clip it opened for, whatever the list does while it is open.
+        let id = state.selection.selectedID
+        ActionMenu.addLanguageItems(state.translationLanguageMenu, to: menu) { [weak self] in
+            self?.chooseTranslationLanguage($0, for: id)
+        }
+        if state.translationColumnRef != nil, let frame = languageTitleFrame, let hosting {
+            presentLanguageMenu(menu, NSPoint(x: frame.minX, y: frame.maxY + 4), hosting)
+            return
+        }
+        let size = metrics.frameSize
+        let centre = NSRect(x: strip.bounds.midX - size.width / 2, y: strip.bounds.midY - size.height / 2,
+                            width: size.width, height: size.height)
+        presentLanguageMenu(menu, ActionMenu.anchor(beside: strip.selectionAnchorFrame ?? centre, in: strip), strip)
+    }
+
+    /// A language chosen from a language menu, for the clip the menu opened for: that clip's translation is made in it,
+    /// and it is kept as the last used language, which every translation after is made in, in this panel and the next,
+    /// unless Settings fixes one. A clip that left the list while the menu was open gets no translation at all, never
+    /// another clip's, as with ⌘K's actions.
+    private func chooseTranslationLanguage(_ code: String, for id: QuickAccessRow.ID?) {
+        if let id, id != state.selection.selectedID {
+            state.select(id)
+            update()
+            guard state.selection.selectedID == id else { return }
+        }
+        let focus = currentFocus
+        let wasShowing = state.translationColumnRef != nil
+        if let kept = state.chooseTranslationLanguage(code) { preferences.translationTarget = kept }
+        update()
+        keepFocus(focus)
+        if !wasShowing, state.translationColumnRef != nil {
+            announce("\(TranslationColumnWords.title), on this Mac")
+        }
+    }
+
     /// ⌘K: the selected clip's actions, beside it where it rests; with the selection vanished, beside the empty slot
     /// where the newest clip rests as the strip opens, past the divider or, without a frequent wing, at the left dock;
     /// with no clips, beside the middle of the strip.
@@ -1019,7 +1117,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         let row = id.flatMap { id in state.selection.rows.first { $0.id == id } }
         let canUndoSave = state.canUndoSave && id == state.selection.selectedID
         // The text beside the selected image, while the preview shows it.
-        let showsText = id != nil && id == state.selection.selectedID && state.textColumnRef != nil
+        let isSelected = id != nil && id == state.selection.selectedID
+        let showsText = isSelected && state.textColumnRef != nil
         var textInImage = ActionMenu.TextInImage(isOffered: row?.kind == .image && state.canRecognizeText)
         if showsText, let column = state.textColumn {
             textInImage.column = ActionMenu.TextInImage.Column(
@@ -1027,7 +1126,25 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 keepsLineBreaks: state.isKeepLineBreaksOn, canStop: state.canStopTextRecognition,
                 canExtract: column == .notStarted || column.isFailed, failed: column.isFailed)
         }
-        return ActionMenu.make(actions: showsText ? state.actions : state.actions(for: id?.ref), row: row,
+        // And the translation beside the selected text, or the text in the selected image.
+        let showsTranslation = isSelected && state.translationColumnRef != nil
+        var translation = ActionMenu.Translation(
+            isOffered: row.map { QuickAccessState.isTranslatable($0.kind) } == true && state.canRecognizeText,
+            languages: state.translationLanguageMenu(for: row?.ref))
+        if isSelected { state.readTranslationLanguages() }
+        // Translate To lists its languages again as it opens, with what was read since.
+        let rowRef = row?.ref
+        translation.currentLanguages = { [weak self] in
+            self?.state.translationLanguageMenu(for: rowRef) ?? TranslationLanguageMenu()
+        }
+        if showsTranslation, let column = state.translationColumn {
+            translation.column = ActionMenu.Translation.Column(
+                canTake: state.actionTarget != nil, hasText: state.translationColumnText != nil,
+                canStop: state.canStopTranslation, canTranslate: column == .notStarted || column.offersTryAgain,
+                failed: column.offersTryAgain)
+        }
+        let showsResult = showsText || showsTranslation
+        return ActionMenu.make(actions: showsResult ? state.actions : state.actions(for: id?.ref), row: row,
                                canAct: state.selection.executableSelection != nil,
                                isReviewing: state.commandReview != nil,
                                isPreviewExpanded: state.isPreviewExpanded,
@@ -1035,7 +1152,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                                canMoveToRecentlyDeleted: state.canMoveToRecentlyDeleted,
                                listedCollection: state.listedCollection(of: row),
                                canUndoMoveToRecentlyDeleted: canUndoMoveToRecentlyDeleted,
-                               textInImage: textInImage) { [weak self] command in
+                               textInImage: textInImage, translation: translation) { [weak self] command in
             guard let self else { return }
             let returnMayBeDown = followMenuChoice()
             if let id, id != state.selection.selectedID {
@@ -1044,8 +1161,8 @@ final class PanelController: NSWindowController, NSWindowDelegate {
                 guard state.selection.selectedID == id else { return }
             }
             switch command {
-            // What the menu named when it was made: the text that showed, or the clip.
-            case .primary: act(.original, guessesReturn: returnMayBeDown, subject: showsText ? .text : .clip)
+            // What the menu named when it was made: the text or the translation that showed, or the clip.
+            case .primary: act(.original, guessesReturn: returnMayBeDown, subject: showsResult ? .text : .clip)
             case .plainText: act(.plainText, guessesReturn: returnMayBeDown, subject: .clip)
             case .copyOnly: copyOnly()
             case .togglePreview: togglePreview()
@@ -1065,6 +1182,10 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             case .saveTextAsSnippet: perform(.saveTextAsSnippet)
             case .toggleKeepLineBreaks: perform(.toggleKeepLineBreaks)
             case .stopTextRecognition: perform(.stopTextRecognition)
+            case .showTranslation: perform(.showTranslation)
+            case .translate: perform(.translate(into: nil))
+            case .stopTranslation: perform(.stopTranslation)
+            case .translateInto(let code): chooseTranslationLanguage(code, for: nil)
             }
         }
     }
@@ -1169,7 +1290,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// ⌘S: the selected clip, or while the preview shows the text beside an image, that text. The toolbar shows what
     /// the save came to, and VoiceOver reads it.
     private func saveSelectedSnippet() {
-        guard state.textColumnRef != nil else { return saveSelectedClipAsSnippet() }
+        guard state.resultColumnRef != nil else { return saveSelectedClipAsSnippet() }
         saveShownText()
     }
 
@@ -1412,16 +1533,36 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// What `event`'s key types with ⌘, and Shift if it is held, in lower case: the key a ⌘ shortcut is known by, in
+    /// the menu bar and in the panel alike. It is not always what the key types alone: the D key types “в” on a
+    /// Russian layout and “e” on Dvorak – QWERTY ⌘, and “d” on both with ⌘.
+    private static func commandKey(of event: NSEvent) -> String? {
+        event.characters(byApplyingModifiers: event.modifierFlags.intersection(.shift).union(.command))?.lowercased()
+    }
+
+    /// The keys of the panel's commands with ⌘ alone, as `commandKey(of:)` gives them: ⌘S, ⌘E, ⌘N, ⌘D, ⌘F, ⌘[, ⌘],
+    /// ⌘L, ⌘K, ⌘Y, ⌘Z, ⌘T and, while a result shows beside the preview, ⌘C, each run by `handleKeyEquivalent(_:)`.
+    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z", "t", "c"]
+
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
-        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M is the one
-        // shortcut here with Shift.
+        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M and ⇧⌘T
+        // are the shortcuts here with Shift, and ⌥⌘T the one with Option.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
-        let isShiftCommandT = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "t"
-        // ⌘. comes with Shift where "." needs it.
+        // The panel knows its commands' keys as the menu bar knows its items' keys, apart from ⌘Return, keypad Enter
+        // and ⌘⌫, which it knows by the key, and ⌘.
+        let key = Self.commandKey(of: event)
+        let isShiftCommandM = modifiers == [.command, .shift] && key == "m"
+        let isShiftCommandT = modifiers == [.command, .shift] && key == "t"
+        let isOptionCommandT = modifiers == [.command, .option] && key == "t"
+        // ⌘. is the text system's key, not the menu bar's: its key bindings know it by what the key types without ⌘,
+        // with Shift where "." needs it, and make it Escape if the panel leaves it to text. The panel knows it the same
+        // way, after its own commands, as AppKit offers a key to key equivalents before key bindings: on Dvorak –
+        // QWERTY ⌘ the key that types "." types "e" with ⌘, and is ⌘E.
         let isCommandPeriod = event.charactersIgnoringModifiers == "."
             && (modifiers == .command || modifiers == [.command, .shift])
-        guard isSessionOpen, modifiers == .command || isShiftCommandM || isShiftCommandT || isCommandPeriod else {
+            && !(modifiers == .command && Self.ownCommandKeys.contains(key ?? ""))
+        guard isSessionOpen,
+              modifiers == .command || isShiftCommandM || isShiftCommandT || isOptionCommandT || isCommandPeriod else {
             return false
         }
         // ⌘Return, and ⌘ with keypad Enter, which types no "\r", are known by the key. They confirm the command on the
@@ -1462,11 +1603,24 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             }
             return true
         }
-        let key = event.charactersIgnoringModifiers?.lowercased()
         // ⇧⌘T shows the text in the selected image beside its preview. It never goes on to the menu bar; a composition
         // keeps it, and held down it has acted already.
         if isShiftCommandT {
             if !isComposing, !event.isARepeat, state.offersTextInImage { perform(.showTextInImage) }
+            return true
+        }
+        // ⌘T shows the translation of the selected text, or of the text in the selected image, beside its preview, in
+        // the same way, and ⌥⌘T the menu of languages to translate it into.
+        if key == "t", modifiers == .command {
+            if !isComposing, !event.isARepeat, state.commandReview == nil, state.offersTranslation {
+                perform(.showTranslation)
+            }
+            return true
+        }
+        if isOptionCommandT {
+            if !isComposing, !event.isARepeat, state.commandReview == nil, state.offersTranslation {
+                perform(.chooseTranslationLanguage)
+            }
             return true
         }
         // ⌘. stops the recognition beside the preview. While the preview is split, every ⌘. is taken here, so that one
@@ -1476,12 +1630,13 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             if event.isARepeat { return true }
             guard state.isPreviewSplit else { return false }
             if state.canStopTextRecognition { perform(.stopTextRecognition) }
+            if state.canStopTranslation { perform(.stopTranslation) }
             return true
         }
         // ⌘C while the preview shows the text beside an image copies that text: what is selected in it, or with the
         // keys elsewhere, all of it. A selection in another text, the search field's or a review's command, is that
         // text's to copy, and so is everything while a review shows. The panel stays. Held down, it has copied already.
-        if key == "c", modifiers == .command, !isComposing, state.textColumnRef != nil, state.commandReview == nil {
+        if key == "c", modifiers == .command, !isComposing, state.resultColumnRef != nil, state.commandReview == nil {
             if event.isARepeat { return true }
             let responder = window?.firstResponder
             if let text = responder as? GeneratedTextView {
@@ -1577,9 +1732,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ]
 
     /// Keeps a key equivalent from the menu bar, once neither the panel's commands nor its views have taken it, and
-    /// says whether it did. It knows the key as the menu bar does, by what the key types with ⌘, and Shift if it is
-    /// held: on a layout such as Russian or Dvorak – QWERTY ⌘, that is not what the key types alone, which the panel's
-    /// own commands go by.
+    /// says whether it did. It knows the key as the menu bar and the panel's commands do, by `commandKey(of:)`.
     /// - The library's keys stop here and do nothing. While an input method composes, its text gets them, as keys.
     /// - Cut, Copy, Paste and Select All go on while something in the panel takes them, as the search field's text and
     ///   the preview's do, and stop here while the strip, the lists or the filter button have the keys.
@@ -1594,7 +1747,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// library's (`NSWindow.isQuickAccess`), and the text commands that nothing in the panel takes.
     private func keepFromMenuBar(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let key = event.characters(byApplyingModifiers: modifiers.intersection(.shift).union(.command))?.lowercased()
+        let key = Self.commandKey(of: event)
         if modifiers == [.command, .option], key == "w" {
             window?.performClose(nil)
             return true

@@ -621,6 +621,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandFUnfoldsTheSearch() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -647,6 +648,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAClickAnywhereOnTheOpenSearchGivesItsFieldTheKeys() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -720,6 +722,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testEscapeFoldsAnEmptySearchBeforeClosing() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -1299,6 +1302,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandFKeepsTheEditingSession() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["alpha note", "beta note"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -1323,6 +1327,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testLibraryShortcutsDoNotInterruptMarkedSearchText() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["alpha note"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -1496,6 +1501,70 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testThePanelsCommandsAreKnownByWhatTheirKeysTypeWithCommand() async throws {
+        try requireANSICommandLayer()
+        // The panel knows its own commands' keys as the menu bar knows its items' keys. On a layout such as Russian the
+        // keys type Cyrillic letters, and with ⌘ Latin ones. These events type Cyrillic letters; their key codes type
+        // Latin ones with ⌘ here.
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus: [String] = []
+        controller.presentActionMenu = { menu, _, _ in menus.append(menu.title) }
+
+        // ⌘K opens the actions menu, and ⇧⌘M, whose key types a capital with Shift, the collections.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "л", modifiers: .command)))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_M, "Ь", modifiers: [.command, .shift])))
+        XCTAssertEqual(menus, ["Actions", "Save to Collection"])
+        // ⌘D saves the clip as a favorite.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_D, "в", modifiers: .command)))
+        try await SearchTestSupport.waitUntil {
+            controller.state.saveMessage == "Saved as Snippet · Added to Favorites"
+        }
+        // ⌘] and ⌘[ step through the lists while the keys stay in the search, and ⌘L takes the keys to the lists.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_RightBracket, "ъ", modifiers: .command)))
+        XCTAssertEqual(controller.state.list, .snippets)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_LeftBracket, "х", modifiers: .command)))
+        XCTAssertEqual(controller.state.list, .all)
+        XCTAssertTrue(isEditing(field, in: window))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_L, "д", modifiers: .command)))
+        XCTAssertTrue(window.firstResponder === toolbar.lists)
+    }
+
+    func testOnDvorakQwertyCommandTheKeysRunWhatTheyTypeWithCommand() async throws {
+        try requireANSICommandLayer()
+        // On Dvorak – QWERTY ⌘ the keys type Dvorak's letters, and with ⌘ QWERTY's, by which the menu bar knows its
+        // items' keys. These events type Dvorak's letters; their key codes type QWERTY's with ⌘ here.
+        let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
+        let window = try XCTUnwrap(controller.window)
+        let (field, _) = try searchEditor(in: controller)
+        let toolbar = try XCTUnwrap(views(QuickAccessToolbar.self, in: window.contentView).first)
+        var menus = 0
+        controller.presentActionMenu = { _, _, _ in menus += 1 }
+        var handedOver = 0
+        controller.onOpenInLibrary = { _, _ in handedOver += 1 }
+        controller.onNewSnippet = { _ in handedOver += 1 }
+
+        // The V key types “k”. With ⌘ it is Paste, which goes on to the search field's text, and not ⌘K's menu.
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_V, "k", modifiers: .command)))
+        XCTAssertTrue(isEditing(field, in: window))
+        // The D key types “e”. With ⌘ it saves the clip as a favorite, and does not show it in the library.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_D, "e", modifiers: .command)))
+        try await SearchTestSupport.waitUntil {
+            controller.state.saveMessage == "Saved as Snippet · Added to Favorites"
+        }
+        // The L key types “n”. With ⌘ it takes the keys to the lists, and starts no new snippet.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_L, "n", modifiers: .command)))
+        XCTAssertTrue(window.firstResponder === toolbar.lists)
+        XCTAssertEqual(menus, 0)
+        XCTAssertEqual(handedOver, 0)
+        // The E key types “.”, and “e” with ⌘: it is ⌘E, which shows the clip in the library, and not ⌘., the text
+        // system's key. The panel's commands come first, as AppKit offers a key to key equivalents before key bindings.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_E, ".", modifiers: .command)))
+        XCTAssertEqual(handedOver, 1)
+    }
+
     func testOptionCommandWClosesOnlyThePanel() async throws {
         try requireANSICommandLayer()
         // AppKit adds Close All to the app's Window menu, as Close's alternate with ⌥⌘W. From the panel it would close
@@ -1605,6 +1674,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheFocusRingsStayInsideTheBandsCorners() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -1699,6 +1769,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTabIntoTheFoldedSearchRingsItsCircle() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -1890,6 +1961,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandKBesideTheEmptyDock() async throws {
+        try requireANSICommandLayer()
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -2178,6 +2250,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testShiftCommandTShowsTheTextBesideTheImageAndEscapeClosesTheColumnFirst() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2209,6 +2282,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandPeriodStopsTheRecognitionAndClosesNothing() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2224,6 +2298,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testShiftCommandTLeavesAClipWithoutAnImageAlone() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel(newestIsImage: false)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2237,6 +2312,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheTextIsTypedIntoTheDisplayThatWatchedItsRecognitionAndVoiceOverHearsItEnd() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2283,6 +2359,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testVoiceOverHearsWhyAnImageHasNoTextFromThePanel() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2311,6 +2388,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testVoiceOverHearsWhyRecognizedTextCouldntBeKept() async throws {
+        try requireANSICommandLayer()
         // A library that has since become another: what is made isn't kept.
         let (controller, recognizer) = try await makeTextPanel(keepsUnderAnotherGeneration: true)
         let window = try XCTUnwrap(controller.window)
@@ -2339,6 +2417,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testVoiceOverHearsThatRecognizingAgainFailedAndLeftTheText() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2371,7 +2450,387 @@ final class AppLaunchTests: XCTestCase {
         _ = try await startedSource(recognizer, 2)
     }
 
+    func testCommandTShowsTheTranslationBesideTheTextAndCommandPeriodAndEscapeComeFirst() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        XCTAssertEqual(announced, ["\(TranslationColumnWords.title), on this Mac"])
+        let engine = try await startedTranslation(translator, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("翻译"))
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.views(StreamingTextDisplay.self, in: window.contentView).first?.shownText.isEmpty == false
+        }
+
+        // ⌘. stops it, and nothing closes; VoiceOver hears the translation is incomplete.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, ".", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TranslationColumnWords.stopped)
+        }
+        // ⌘K offers to try again, as the column does.
+        let stopped = try actionMenu(of: controller)
+        XCTAssertEqual(stopped.items.first { $0.title == "Try Again" }?.isEnabled, true,
+                       "\(stopped.items.map(\.title))")
+
+        // Escape closes the column first, then the preview.
+        controller.perform(.escape)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertTrue(controller.state.isPreviewExpanded)
+        controller.perform(.escape)
+        XCTAssertFalse(controller.state.isPreviewExpanded)
+    }
+
+    func testTheTranslationIsCopiedSavedAndOfferedInTheActionsMenu() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        func titles(_ menu: NSMenu) -> [String] { menu.items.map(\.title) }
+        func item(_ title: String, in menu: NSMenu) throws -> NSMenuItem {
+            try XCTUnwrap(menu.items.first { $0.title == title }, "No \(title) in \(titles(menu))")
+        }
+        // Before the column opens, every card offers Translate.
+        let closed = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Translate", in: closed).isEnabled)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        let engine = try await startedTranslation(translator, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("翻译"))
+        try await SearchTestSupport.waitUntil { controller.state.translationColumn?.isTranslating == true }
+        let translating = try actionMenu(of: controller)
+        XCTAssertEqual(Array(titles(translating).prefix(4)),
+                       ["Copy Translation", "Save Translation as Snippet", "Stop", "Translate"])
+        XCTAssertFalse(try item("Copy Translation", in: translating).isEnabled)
+        XCTAssertTrue(try item("Stop", in: translating).isEnabled)
+
+        engine.send(.delta("好的译文"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.translationColumnResult != nil }
+
+        // ⌘C copies the whole translation, and the panel stays.
+        controller.perform(.focusResults)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "c", modifiers: .command)))
+        XCTAssertEqual(board.string(forType: .string), "翻译好的译文")
+        XCTAssertTrue(controller.isSessionOpen)
+        XCTAssertEqual(announced.last, "Copied")
+
+        // ⌘S keeps it as a snippet of its own.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_S, "s", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { controller.state.saveMessage == "Translation saved to Snippets" }
+        let made = try actionMenu(of: controller)
+        XCTAssertTrue(try item("Copy Translation", in: made).isEnabled)
+        XCTAssertTrue(try item("Save Translation as Snippet", in: made).isEnabled)
+        XCTAssertFalse(try item("Stop", in: made).isEnabled)
+        // The clip's own Save as Snippet stays, without ⌘S, which belongs to the translation.
+        XCTAssertEqual(try item("Save as Snippet", in: made).keyEquivalent, "")
+
+        // The menu's first item takes the translation, as Return does, and never the text in its place.
+        board.clearContents()
+        made.performActionForItem(at: try XCTUnwrap(made.items.firstIndex { $0.title == "Copy Translation" }))
+        try await SearchTestSupport.waitUntil { board.string(forType: .string) != nil }
+        XCTAssertEqual(board.string(forType: .string), "翻译好的译文")
+    }
+
+    func testALanguageFixedInSettingsIsTheOneThePanelTranslatesInto() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR", "de-DE"])
+        let preferences = try makePreferences(.medium)
+        preferences.translationTarget = "fr"
+        preferences.fixedTranslationTarget = "ja"
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator,
+                                                      textBody: "The quarterly plan is due on Friday.",
+                                                      preferences: preferences)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        // Translation's languages, and so its regions, are read as the panel opens.
+        try await SearchTestSupport.waitUntil { controller.state.knownTranslationLanguages.count == 5 }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "ja-JP"),
+                       "The fixed language, not the last used one")
+        // Another language chosen in the actions menu translates the clip into it and is kept as the last used one;
+        // the fixed language stays the one translations are made in.
+        let languages = try XCTUnwrap(try actionMenu(of: controller).items.first { $0.title == "Translate To" }?.submenu)
+        languages.performActionForItem(at: try XCTUnwrap(languages.items.firstIndex { $0.title == "German" }))
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "de-DE"))
+        XCTAssertEqual(preferences.translationTarget, "de")
+        XCTAssertEqual(preferences.fixedTranslationTarget, "ja")
+        XCTAssertEqual(controller.state.translationTarget, Locale.Language(identifier: "ja-JP"))
+    }
+
+    func testOptionCommandTOffersTheLanguagesToTranslateIntoAndSaysWhatEachNeeds() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR"],
+                          statuses: [("en", "ja-JP", .needsDownload)])
+        let preferences = try makePreferences(.medium)
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator,
+                                                      textBody: "The quarterly plan is due on Friday.",
+                                                      preferences: preferences)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var shown: [(menu: NSMenu, point: NSPoint, view: NSView)] = []
+        controller.presentLanguageMenu = { shown.append(($0, $1, $2)) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        _ = try await startedTranslation(translator, 0)
+        try await SearchTestSupport.waitUntil {
+            controller.state.translationLanguageMenu.others.contains { $0.note != nil }
+        }
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+
+        let menu = try XCTUnwrap(shown.last?.menu)
+        XCTAssertEqual(menu.items.map(\.title), ["Chinese (Simplified)", "English", "", "French", "Japanese"])
+        XCTAssertEqual(menu.items.map(\.state), [.on, .off, .off, .off, .off])
+        XCTAssertEqual(menu.items[4].badge?.stringValue, "Not Downloaded", "Said after its name, as the system does")
+        XCTAssertEqual(menu.items[4].accessibilityLabel(), "Japanese, not downloaded")
+        XCTAssertNil(menu.items[3].badge)
+        // Held down, it has shown the menu already.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option],
+                                                                isARepeat: true)))
+        XCTAssertEqual(shown.count, 1)
+
+        // Choosing one translates into it, and keeps it for the translations after, in this panel and the next.
+        menu.performActionForItem(at: 4)
+        _ = try await startedTranslation(translator, 1)
+        XCTAssertEqual(translator.request(1)?.target, Locale.Language(identifier: "ja-JP"))
+        XCTAssertEqual(preferences.translationTarget, "ja")
+        controller.close()
+        preferences.translationTarget = "fr"
+        controller.show()
+        XCTAssertEqual(controller.state.translationTarget, Locale.Language(identifier: "fr-FR"))
+    }
+
+    func testTheTranslationsTitleOpensTheLanguageMenuBelowIt() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var shown: [(menu: NSMenu, point: NSPoint, view: NSView)] = []
+        controller.presentLanguageMenu = { shown.append(($0, $1, $2)) }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        _ = try await startedTranslation(translator, 0)
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        let elements = try swiftUIAccessibilityElements(in: content) {
+            $0.contains(where: identified("QuickAccessTranslationLanguage"))
+        }
+        let title = try XCTUnwrap(elements.first(where: identified("QuickAccessTranslationLanguage")))
+        XCTAssertEqual(text(of: title), "Chinese (Simplified)")
+
+        press(title)
+
+        let presented = try XCTUnwrap(shown.last)
+        XCTAssertEqual(presented.menu.items.first?.title, "Chinese (Simplified)")
+        // The menu opens at the title's lower left, as a pop-up menu does.
+        let frame = try XCTUnwrap(accessibilityFrame(of: title))
+        let onScreen = window.convertPoint(toScreen: presented.view.convert(presented.point, to: nil))
+        XCTAssertEqual(onScreen.x, frame.minX, accuracy: 2)
+        XCTAssertEqual(onScreen.y, frame.minY, accuracy: 6)
+        // ⌥⌘T opens it in the same place.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        XCTAssertEqual(shown.count, 2)
+        XCTAssertEqual(shown.last?.point, presented.point)
+        // Without the column, beside the clip, where ⌘K opens.
+        controller.perform(.closeResultColumn)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        XCTAssertEqual(shown.count, 3)
+        XCTAssertFalse(shown.last?.view === presented.view, "The strip's menu, not the title's")
+    }
+
+    func testTheActionsMenuOffersTheLanguagesToTranslateInto() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP"], statuses: [("en", "ja-JP", .needsDownload)])
+        let preferences = try makePreferences(.medium)
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator,
+                                                      textBody: "The quarterly plan is due on Friday.",
+                                                      preferences: preferences)
+        // Translation's languages are read as the panel opens.
+        try await SearchTestSupport.waitUntil { controller.state.knownTranslationLanguages.count == 3 }
+        let closed = try actionMenu(of: controller)
+        let translateTo = try XCTUnwrap(closed.items.first { $0.title == "Translate To" })
+        XCTAssertTrue(translateTo.isEnabled)
+        let closedTitles = closed.items.map(\.title)
+        XCTAssertEqual(closedTitles.firstIndex(of: "Translate To"),
+                       closedTitles.firstIndex(of: "Translate").map { $0 + 1 })
+        let languages = try XCTUnwrap(translateTo.submenu)
+        XCTAssertEqual(languages.items.map(\.title), ["Chinese (Simplified)", "English", "", "Japanese"])
+        XCTAssertNil(languages.items[3].badge, "Nothing is said of what the text needs before it shows")
+        // Once the preview shows the text, the submenu says so as it opens.
+        controller.perform(.togglePreview)
+        try await SearchTestSupport.waitUntil { controller.state.translationLanguageMenu.others.first?.note != nil }
+        languages.delegate?.menuNeedsUpdate?(languages)
+        XCTAssertEqual(languages.items.map(\.title), ["Chinese (Simplified)", "English", "", "Japanese"])
+        XCTAssertEqual(languages.items[3].badge?.stringValue, "Not Downloaded")
+
+        // Choosing one shows the translation into it.
+        languages.performActionForItem(at: 3)
+
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        _ = try await startedTranslation(translator, 0)
+        XCTAssertEqual(translator.request(0)?.target, Locale.Language(identifier: "ja-JP"))
+        XCTAssertEqual(preferences.translationTarget, "ja")
+        // With the column open it follows Translate there.
+        let open = try actionMenu(of: controller)
+        let openTitles = open.items.map(\.title)
+        XCTAssertEqual(openTitles.firstIndex(of: "Translate To"), openTitles.firstIndex(of: "Translate").map { $0 + 1 })
+        XCTAssertEqual(open.items.first { $0.title == "Translate To" }?.submenu?.items.map(\.state),
+                       [.off, .off, .off, .on])
+    }
+
+    func testALanguageChosenAfterTheSelectionMovedIsForTheClipTheMenuOpenedFor() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var shown: NSMenu?
+        controller.presentLanguageMenu = { menu, _, _ in shown = menu }
+        let opened = try XCTUnwrap(controller.state.selection.selectedRow)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        let menu = try XCTUnwrap(shown)
+        // The selection moves while the menu is open.
+        XCTAssertEqual(controller.state.moveSelection(by: 1), .moved)
+        XCTAssertNotEqual(controller.state.selection.selectedRow?.ref, opened.ref)
+
+        menu.performActionForItem(at: 1)
+
+        XCTAssertEqual(controller.state.selection.selectedRow?.ref, opened.ref)
+        XCTAssertEqual(controller.state.translationColumnRef, opened.ref)
+        _ = try await startedTranslation(translator, 0)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(translator.request(1), "That clip's translation alone")
+    }
+
+    func testALanguageChosenForAClipThatLeftTheListTranslatesNothing() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var shown: NSMenu?
+        controller.presentLanguageMenu = { menu, _, _ in shown = menu }
+        XCTAssertEqual(controller.state.selection.selectedRow?.title, "newer")
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        let menu = try XCTUnwrap(shown)
+        // A search leaves the clip out while the menu is open.
+        controller.state.setQuery("older")
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.map(\.title) == ["older"] }
+
+        menu.performActionForItem(at: 1)
+
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(translator.request(0), "No other clip's translation")
+        XCTAssertNil(controller.state.translationColumnRef)
+    }
+
+    func testOptionCommandTOpensNothingUnderACompositionOrForAClipThatCantBeTranslated() async throws {
+        try requireANSICommandLayer()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false)
+        let window = try XCTUnwrap(controller.window)
+        let (_, editor) = try searchEditor(in: controller)
+        var languageMenus = 0
+        controller.presentLanguageMenu = { _, _, _ in languageMenus += 1 }
+        // A link, the newest clip.
+        let harness = try XCTUnwrap(textPanelHarness)
+        let capture = try ContentStoreFixtures.capture([[("public.url", Data("https://example.com/plan".utf8))]])
+        let link = ItemValue(title: "Plan link", captureID: capture.id, historyEligible: true,
+                             lastCopiedAt: Date(timeIntervalSince1970: 5_000), copyCount: 1)
+        try await ContentStoreFixtures.insert(link, capture, into: harness.controller)
+        try await harness.consumer.synchronize()
+        controller.state.recentClipsChanged()
+        try await SearchTestSupport.waitUntil { controller.state.selection.rows.count == 2 }
+        let linkRow = try XCTUnwrap(controller.state.selection.rows.first { $0.title == "Plan link" })
+        let textRow = try XCTUnwrap(controller.state.selection.rows.first { $0.title == "older" })
+        controller.state.select(linkRow.id)
+        XCTAssertEqual(controller.state.selection.selectedRow?.kind, .url)
+
+        // Consumed, so that it never reaches the menu bar, and nothing opens for a link.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        XCTAssertEqual(languageMenus, 0)
+        controller.state.select(textRow.id)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        XCTAssertEqual(languageMenus, 1, "A text's opens")
+        // A composition keeps the key: nothing opens, and the composition stays.
+        editor.setMarkedText("ni", selectedRange: NSRange(location: 2, length: 0),
+                             replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        XCTAssertTrue(editor.hasMarkedText())
+        XCTAssertEqual(languageMenus, 1)
+    }
+
+    func testCommandTAndOptionCommandTComeFromTheKeyThatTypesTWithCommand() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        var actionMenus = 0
+        controller.presentActionMenu = { _, _, _ in actionMenus += 1 }
+        var languageMenus = 0
+        controller.presentLanguageMenu = { _, _, _ in languageMenus += 1 }
+
+        // On a Russian layout the T key types “е” alone and “t” with ⌘: it is ⌘T, and with ⌥ it is ⌥⌘T.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "\u{435}", modifiers: .command)))
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "\u{435}",
+                                                                modifiers: [.command, .option])))
+        XCTAssertEqual(languageMenus, 1)
+
+        // On Dvorak – QWERTY ⌘ the K key types “t” alone and “k” with ⌘: it is ⌘K, and with ⌥ it is no ⌥⌘T.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_K, "t", modifiers: .command)))
+        XCTAssertEqual(actionMenus, 1)
+        let languageMenusBefore = languageMenus
+        _ = window.performKeyEquivalent(with: try key(kVK_ANSI_K, "t", modifiers: [.command, .option]))
+        XCTAssertEqual(languageMenus, languageMenusBefore)
+
+        // The T key's ⌘T translates the text.
+        _ = try await startedTranslation(translator, 0)
+    }
+
+    func testTheLanguageMenuSaysWhatAnImagesTextNeedsOnceItIsRecognized() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR"], statuses: [("de", "fr-FR", .unsupported)])
+        let (controller, recognizer) = try await makeTextPanel(translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        try await SearchTestSupport.waitUntil { controller.state.knownTranslationLanguages.count == 3 }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+
+        try await startedSource(recognizer, 0).send(
+            .started(GenerationInfo(engine: "On this Mac")),
+            .delta("Das Museum ist täglich von neun bis achtzehn Uhr geöffnet, außer am Montag."), .finished(.completed))
+
+        // Nothing more is asked: the panel tells the text's language as it updates.
+        try await SearchTestSupport.waitUntil {
+            controller.state.translationLanguageMenu.others.first { $0.code == "fr" }?.note == .notAvailable
+        }
+    }
+
     func testVoiceOverHearsWhyARecognitionFailedOnceWhereverTheSelectionGoes() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2404,6 +2863,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testExtractTextShowsTheRecognitionAtOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2426,6 +2886,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testReturnTakesTheTextBesideTheImageOnceItIsMade() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2455,6 +2916,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAReviewedCommandMadeOfTheTextPastesTheTextNotTheImage() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, recognizer) = try await makeTextPanel(system: fake.system)
@@ -2477,6 +2939,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandCCopiesTheTextAndThePanelStays() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         let board = try XCTUnwrap(textPanelBoard)
@@ -2510,7 +2973,33 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testCommandCCopiesTheTextFromTheKeyThatTypesCWithCommand() async throws {
+        try requireANSICommandLayer()
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        let board = try XCTUnwrap(textPanelBoard)
+        _ = try searchEditor(in: controller)
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "T", modifiers: [.command, .shift])))
+        try await startedSource(recognizer, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                    .delta("Synthetic text in image"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { controller.state.textColumnResult != nil }
+        controller.perform(.focusResults)
+
+        // On Dvorak – QWERTY ⌘ the I key types "c" alone and "i" with ⌘: it is no ⌘C.
+        _ = window.performKeyEquivalent(with: try key(kVK_ANSI_I, "c", modifiers: .command))
+        XCTAssertFalse(controller.state.isTextCopied)
+        XCTAssertNotEqual(board.string(forType: .string), "Synthetic text in image")
+
+        // On a Russian layout the C key types "с" alone and "c" with ⌘: it is ⌘C.
+        board.clearContents()
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_C, "\u{441}", modifiers: .command)))
+        XCTAssertEqual(board.string(forType: .string), "Synthetic text in image")
+        XCTAssertTrue(controller.state.isTextCopied)
+        XCTAssertTrue(controller.isSessionOpen)
+    }
+
     func testCommandSSavesTheTextAsASnippet() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2529,6 +3018,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandKOffersTheTextsActionsWhileItShowsAndExtractTextOtherwise() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2550,12 +3040,12 @@ final class AppLaunchTests: XCTestCase {
         // While the text shows, the menu starts with what can be done with it; the rest is the image's.
         let recognizing = try actionMenu(of: controller)
         XCTAssertEqual(titles(recognizing), [
-            "Copy Text", "Save Text as Snippet", "Keep Line Breaks", "Stop", "Extract Text", "", "Hide Preview", "",
-            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
-            "", "Move to Recently Deleted",
+            "Copy Text", "Save Text as Snippet", "Keep Line Breaks", "Stop", "Extract Text", "", "Hide Preview",
+            "Translate", "Translate To", "", "Save as Snippet", "Save to Collection", "Add to Favorites", "",
+            "Show in Library", "New Snippet", "", "Move to Recently Deleted",
         ])
         XCTAssertEqual(recognizing.items.map(\.keyEquivalent),
-                       ["\r", "s", "", ".", "t", "", " ", "", "", "", "d", "", "e", "n", "", "\u{8}"])
+                       ["\r", "s", "", ".", "t", "", " ", "t", "", "", "", "", "d", "", "e", "n", "", "\u{8}"])
         XCTAssertFalse(try item("Copy Text", in: recognizing).isEnabled)
         XCTAssertFalse(try item("Save Text as Snippet", in: recognizing).isEnabled)
         XCTAssertEqual(try item("Keep Line Breaks", in: recognizing).state, .on)
@@ -2590,6 +3080,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandKNamesThePasteOfTheTextAndItsCopy() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2612,6 +3103,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheBarsCopyAndSaveTakeTheText() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2638,6 +3130,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testARightClickOnAnotherImageActsOnThatImageNotOnItsText() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system,
                                                                secondImage: [("public.png", try pngData())])
@@ -2677,6 +3170,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCopyAsIsOnAnotherImageKeepsThatClipWhole() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, _) = try await makeTextPanel(system: fake.system, secondImage: [
@@ -2704,6 +3198,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testADoubleClickOnTheImageTakesTheImageEvenWhileItsTextShows() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2726,6 +3221,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testReturnInTheRecognizedTextPastesTheText() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2750,6 +3246,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandCOnTheReviewCardIsTheCardsOwn() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, recognizer) = try await makeTextPanel(system: fake.system)
@@ -2776,6 +3273,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testHeldCommandCCopiesOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         let board = try XCTUnwrap(textPanelBoard)
@@ -2799,6 +3297,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandCLeavesASelectionInTheSearchFieldToTheField() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -2816,6 +3315,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testSavingTheTextNeverSavesTheImageInstead() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2842,6 +3342,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheTextsTakeItemTakesNothingOnceTheColumnHasClosed() async throws {
+        try requireANSICommandLayer()
         let pasting = FakeDirectPasteSystem()
         let (controller, recognizer) = try await makeTextPanel(system: pasting.system)
         let window = try XCTUnwrap(controller.window)
@@ -2865,6 +3366,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheMenusSaveAsSnippetStillSavesTheImage() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2883,6 +3385,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheImagesCardSaysItHasTextOnceItIsMade() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2900,7 +3403,79 @@ final class AppLaunchTests: XCTestCase {
         try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", has text") == true }
     }
 
+    func testATextsCardSaysItIsTranslatedOnceItIs() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makeTextPanel(newestIsImage: false, translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        func textLabel() -> String? {
+            framesOnScreen(in: strip).compactMap { $0.accessibilityLabel() }.first { $0.contains("older") }
+        }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        let engine = try await startedTranslation(translator, 0)
+        try await SearchTestSupport.waitUntil { textLabel()?.hasSuffix(", translating") == true }
+
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("较旧"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { textLabel()?.hasSuffix(", translated") == true }
+    }
+
+    func testCommandTTranslatesTheTextInAnImageBesideTheImage() async throws {
+        try requireANSICommandLayer()
+        let translator = ScriptedTranslator()
+        let (controller, recognizer) = try await makeTextPanel(translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        let strip = try await clipStrip(in: window)
+        func pictureLabel() -> String? {
+            framesOnScreen(in: strip).compactMap { $0.accessibilityLabel() }.first { $0.contains("Picture") }
+        }
+        var announced: [String] = []
+        controller.announce = { announced.append($0) }
+        // ⌘K offers to translate the image's text.
+        XCTAssertEqual(try actionMenu(of: controller).items.first { $0.title == "Translate" }?.isEnabled, true)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+
+        XCTAssertEqual(controller.state.resultColumn, .translation)
+        let recognition = try await startedSource(recognizer, 0)
+        // VoiceOver hears that the image's text is recognized first.
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return announced.contains(TranslationColumnWords.recognizingFirst)
+        }
+        try await SearchTestSupport.waitUntil {
+            pictureLabel()?.hasSuffix(", recognizing text, waiting to translate") == true
+        }
+        // The bar offers the image's text and its translation, and the image stands beside the translation.
+        settleLayout()
+        let content = try XCTUnwrap(window.contentView)
+        func identified(_ identifier: String) -> (NSObject) -> Bool { { self.identifier(of: $0) == identifier } }
+        let elements = try swiftUIAccessibilityElements(in: content) {
+            $0.contains(where: identified("QuickAccessPreviewSegment.Translation"))
+                && $0.contains(where: identified("QuickAccessSplitImage"))
+        }
+        for segment in ["Preview", "Text", "Translation"] {
+            XCTAssertTrue(elements.contains(where: identified("QuickAccessPreviewSegment.\(segment)")), segment)
+        }
+        XCTAssertTrue(elements.contains(where: identified("QuickAccessSplitImage")), "The image beside its translation")
+
+        recognition.send(.started(GenerationInfo(engine: "On this Mac")), .delta("Synthetic text in image"),
+                         .finished(.completed))
+        let translation = try await startedTranslation(translator, 0)
+        translation.send(.started(GenerationInfo(engine: "On this Mac")), .delta("图中的文字"), .finished(.completed))
+
+        try await SearchTestSupport.waitUntil { pictureLabel()?.hasSuffix(", has text, translated") == true }
+        try await SearchTestSupport.waitUntil {
+            window.contentView?.layoutSubtreeIfNeeded()
+            return self.views(StreamingTextDisplay.self, in: window.contentView).contains { $0.shownText == "图中的文字" }
+        }
+    }
+
     func testThePreviewIsOneCardWhetherItIsSplitOrNot() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2922,6 +3497,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheSplitStaysPutWhileTheSelectionMovesToAClipWithoutAColumn() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2961,6 +3537,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testPreviewInTheBarLeavesTheSplitOnAClipWithoutAColumn() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -2973,6 +3550,10 @@ final class AppLaunchTests: XCTestCase {
         let elements = try swiftUIAccessibilityElements(in: content) {
             $0.contains(where: identified("QuickAccessPreviewSegment.Preview"))
         }
+        // The text the image column was chosen for stays in the bar, beside the translation a text has.
+        for segment in ["Preview", "Text", "Translation"] {
+            XCTAssertTrue(elements.contains(where: identified("QuickAccessPreviewSegment.\(segment)")), segment)
+        }
 
         press(try XCTUnwrap(elements.first(where: identified("QuickAccessPreviewSegment.Preview"))))
 
@@ -2981,6 +3562,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAClickOnTheBandBelowTheSplitSelectsTheCard() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3005,6 +3587,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandPeriodNeverBecomesEscapeWhileTheColumnShows() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3035,7 +3618,31 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(controller.isSessionOpen)
     }
 
+    func testShiftCommandTGoesByTheCommandLayerAndCommandPeriodByWhatTheKeyTypes() async throws {
+        try requireANSICommandLayer()
+        let (controller, recognizer) = try await makeTextPanel()
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        // On a Russian layout the T key types a Cyrillic “Е” with Shift, and “t” with ⌘: it is ⇧⌘T, as the menu bar
+        // would know it.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "\u{415}", modifiers: [.command, .shift])))
+        XCTAssertEqual(controller.state.resultColumn, .text)
+        let engine = try await startedSource(recognizer, 0)
+        engine.send(.started(GenerationInfo(engine: "On this Mac")))
+
+        // ⌘. is the text system's key, which its key bindings know by what the key types without ⌘. There the Period
+        // key types “ю”, and “.” only with ⌘: it is no ⌘., and goes on. While the preview is split, every ⌘. stops
+        // here.
+        XCTAssertFalse(window.performKeyEquivalent(with: try key(kVK_ANSI_Period, "ю", modifiers: .command)))
+        XCTAssertTrue(controller.state.isPreviewSplit)
+        // The Slash key types “.” there: with ⌘ it is ⌘., and stops the recognition.
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_Slash, ".", modifiers: .command)))
+        try await SearchTestSupport.waitUntil { engine.wasCancelled }
+        XCTAssertEqual(controller.state.resultColumn, .text, "⌘. stops; it is not Escape")
+    }
+
     func testKeysInTheRecognizedTextActAsTheyDoInThePreviewsText() async throws {
+        try requireANSICommandLayer()
         let (controller, recognizer) = try await makeTextPanel()
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3057,6 +3664,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testTheSplitSaysWhyAnImageCantBeShown() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeTextPanel(imageData: Data("not a picture".utf8))
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3151,6 +3759,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAHeldCommandYTogglesThePreviewOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3173,6 +3782,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAHeldCommandSSavesOnceAndAHeldCommandEOrNHandsOverOnce() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makeSavingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3245,6 +3855,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCopyButtonCopiesAndContextMenuMatchesCommandK() async throws {
+        try requireANSICommandLayer()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3261,17 +3872,18 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(commandK.point.x, selected.maxX)
         XCTAssertEqual(commandK.point.y, selected.maxY, accuracy: 1)
         XCTAssertEqual(commandK.menu.items.map(\.title), [
-            "Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "",
+            "Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "Translate", "Translate To", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
-        // Save to Collection has its submenu instead of a key: AppKit keeps none on such an item, and ⇧⌘M is the
-        // panel's own.
+        // Save to Collection and Translate To have their submenus instead of a key: AppKit keeps none on such an item,
+        // and ⇧⌘M and ⌥⌘T are the panel's own.
         XCTAssertEqual(commandK.menu.items.map(\.keyEquivalent),
-                       ["\r", "\r", "", " ", "t", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
+                       ["\r", "\r", "", " ", "t", "t", "", "", "s", "", "d", "", "e", "n", "", "\u{8}"])
         XCTAssertEqual(commandK.menu.items.filter { !$0.isSeparatorItem && !$0.hasSubmenu }
             .map(\.keyEquivalentModifierMask),
-                       [[], .shift, [], [.command, .shift], .command, .command, .command, .command, .command])
+                       [[], .shift, [], [.command, .shift], .command, .command, .command, .command, .command,
+                        .command])
         // A clip that isn't an image has no text to extract, and the item says why.
         let extract = try XCTUnwrap(commandK.menu.items.first { $0.title == "Extract Text" })
         XCTAssertFalse(extract.isEnabled)
@@ -3283,8 +3895,14 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(saveTo.toolTip, "Create a collection first.")
         let delete = try XCTUnwrap(commandK.menu.items.last)
         XCTAssertFalse(delete.isEnabled)
+        // Translate and Translate To, too, need the library, which keeps translations.
+        let translate = try XCTUnwrap(commandK.menu.items.first { $0.title == "Translate" })
+        XCTAssertFalse(translate.isEnabled)
+        let translateTo = try XCTUnwrap(commandK.menu.items.first { $0.title == "Translate To" })
+        XCTAssertFalse(translateTo.isEnabled)
         XCTAssertTrue(commandK.menu.items.allSatisfy {
-            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete || $0 === extract
+            $0.isSeparatorItem || $0.isEnabled || $0 === saveTo || $0 === delete || $0 === extract || $0 === translate
+                || $0 === translateTo
         })
         // A right-click on the selected clip gives the same menu.
         let context = try XCTUnwrap(strip.menu(for: try XCTUnwrap(NSEvent.mouseEvent(
@@ -3307,6 +3925,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testSaveAsSnippetSaysSoInTheToolbarAndTheActionsMenuUndoesIt() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeSavingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3359,6 +3978,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDeleteMovesTheSelectedClipToRecentlyDeletedAndCommandZPutsItBack() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["oldest", "older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (field, _) = try searchEditor(in: controller)
@@ -3411,6 +4031,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDeleteWithTextInTheSearchFieldDeletesTheTextAndThenTheStripsClips() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer", "newest"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -3456,6 +4077,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandZUndoesMovesInTheOrderTheyWereAskedFor() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer", "newest"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -3486,6 +4108,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandZUndoesTheSearchFieldsTypingWhenNothingWasMoved() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -3503,6 +4126,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandZUndoesTypingDoneAfterAMoveBeforeTheMove() async throws {
+        try requireANSICommandLayer()
         let (controller, harness) = try await makeDeletingPanel(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         let (_, editor) = try searchEditor(in: controller)
@@ -3716,6 +4340,7 @@ final class AppLaunchTests: XCTestCase {
     // MARK: Lists
 
     func testCommandBracketsStepTheListsAndCommandLTakesTheKeysToThem() async throws {
+        try requireANSICommandLayer()
         let (controller, _, made) = try await showPanelWithLists(clips: ["older", "newer"],
                                                                  collections: ["Prompts", "Shell"])
         let window = try XCTUnwrap(controller.window)
@@ -3771,6 +4396,7 @@ final class AppLaunchTests: XCTestCase {
     // MARK: Saving into collections, favorites and the library
 
     func testShiftCommandMShowsTheCollectionsBesideTheCardAndSavesIntoTheOneChosen() async throws {
+        try requireANSICommandLayer()
         let (controller, harness, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts", "Shell"])
         let window = try XCTUnwrap(controller.window)
         var shown: [(menu: NSMenu, point: NSPoint)] = []
@@ -3802,6 +4428,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDAndShiftCommandMWaitForTheComposition() async throws {
+        try requireANSICommandLayer()
         let (controller, harness, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         let (field, editor) = try searchEditor(in: controller)
@@ -3826,6 +4453,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testShiftCommandMWithoutCollectionsSaysWhatItTakes() async throws {
+        try requireANSICommandLayer()
         let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: [])
         let window = try XCTUnwrap(controller.window)
         var shown = 0
@@ -3836,6 +4464,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testCommandDSavesTheClipAsAFavoriteAndTurnsASnippetsMarkOver() async throws {
+        try requireANSICommandLayer()
         let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         let commandD = try key(kVK_ANSI_D, "d", modifiers: .command)
@@ -3862,6 +4491,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testShowInLibraryAsksForTheSnippetOfASnippetOrASavedClip() async throws {
+        try requireANSICommandLayer()
         let (controller, _, _) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         var opened: [(ref: ContentRef, showsSnippet: Bool)] = []
@@ -3891,6 +4521,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testNewSnippetGoesIntoTheCollectionListed() async throws {
+        try requireANSICommandLayer()
         let (controller, _, made) = try await showPanelWithLists(clips: ["older"], collections: ["Prompts"])
         let window = try XCTUnwrap(controller.window)
         var asked: [CollectionID?] = []
@@ -4732,6 +5363,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testMenuOffersCopyAsIsAndEnableDirectPasteForATerminal() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         fake.permitted = false
@@ -4745,16 +5377,17 @@ final class AppLaunchTests: XCTestCase {
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
                        ["Copy Command", "Copy As-Is (Keeps Trailing Newline)", "Show Preview", "Extract Text",
-                        "Save as Snippet", "Save to Collection", "Add to Favorites", "Show in Library", "New Snippet",
-                        "Enable Direct Paste…", "Move to Recently Deleted"])
+                        "Translate", "Translate To", "Save as Snippet", "Save to Collection", "Add to Favorites",
+                        "Show in Library", "New Snippet", "Enable Direct Paste…", "Move to Recently Deleted"])
         XCTAssertEqual(menu.items.map(\.isSeparatorItem),
-                       [false, false, true, false, false, true, false, false, false, true, false, false, true, false,
-                        true, false])
+                       [false, false, true, false, false, false, false, true, false, false, false, true, false, false,
+                        true, false, true, false])
         XCTAssertEqual(menu.items[0].keyEquivalent, "\r")
         XCTAssertEqual(menu.items[0].keyEquivalentModifierMask, [])
         XCTAssertTrue(menu.items.allSatisfy {
             $0.isSeparatorItem || $0.isEnabled
-                || ["Save to Collection", "Move to Recently Deleted", "Extract Text"].contains($0.title)
+                || ["Save to Collection", "Move to Recently Deleted", "Extract Text", "Translate", "Translate To"]
+                    .contains($0.title)
         })
 
         // Copy As-Is copies the clip as captured, its trailing line break too, and sends nothing.
@@ -4770,9 +5403,9 @@ final class AppLaunchTests: XCTestCase {
         _ = try searchEditor(in: other)
         let pasteMenu = try actionMenu(of: other)
         XCTAssertEqual(pasteMenu.items.map(\.title), [
-            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "Extract Text", "",
-            "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
-            "", "Move to Recently Deleted",
+            "Paste into TextEdit", "Paste as Plain Text", "Copy", "", "Show Preview", "Extract Text", "Translate",
+            "Translate To", "", "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
+            "New Snippet", "", "Move to Recently Deleted",
         ])
         XCTAssertEqual(pasteMenu.items[1].keyEquivalentModifierMask, .shift)
         pasteMenu.performActionForItem(at: 2)
@@ -4810,7 +5443,8 @@ final class AppLaunchTests: XCTestCase {
             clickCount: 1, pressure: 1
         ))))
         XCTAssertEqual(menu.items.map(\.title), [
-            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "Extract Text", "",
+            "Paste into Terminal", "Paste as Plain Text", "Copy As-Is", "", "Show Preview", "Extract Text",
+            "Translate", "Translate To", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -4818,6 +5452,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testReturnShiftReturnAndTheMenuOpenTheSameReviewAndEscapeCancelsIt() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, board) = try await makePanelWithClips(
@@ -5184,6 +5819,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAPasteChosenFromTheMenuWithReturnWaitsForItToComeUp() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true, system: fake.system)
         let window = try XCTUnwrap(controller.window)
@@ -5255,6 +5891,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAPasteItemChosenNeitherWithThePointerNorWithReturnTakesReturnForDown() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true, system: fake.system)
         let window = try XCTUnwrap(controller.window)
@@ -5305,6 +5942,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAGuessedReturnGoesWithTheMenuChoiceItWasGuessedFor() async throws {
+        try requireANSICommandLayer()
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -5381,6 +6019,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAReviewFromAGuessedReturnConfirmsAtOnceWithTheCardsButton() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, board) = try await makePanelWithClips(
@@ -5403,6 +6042,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAClickEndsAWaitOnlyAGuessedReturnHeldUp() async throws {
+        try requireANSICommandLayer()
         // Without direct paste, Copy copies at once.
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -5443,6 +6083,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testAnActionThatEndsWithReturnDownKeepsThePanelUntilReturnIsUp() async throws {
+        try requireANSICommandLayer()
         // Without direct paste, Return copies at once, while it is still down.
         let (controller, board) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
@@ -5513,6 +6154,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testFinderInFrontIsNoTargetAndOnlyCopies() async throws {
+        try requireANSICommandLayer()
         // The window check cannot tell Finder's desktop from a Finder window on top, and a paste there copies files:
         // Finder is no target, so the panel is as it was before direct paste and says nothing more.
         let fake = FakeDirectPasteSystem()
@@ -5522,8 +6164,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertNil(controller.state.pasteTarget)
         _ = try await toolbarSaying(.action(title: "Copy", enabled: true, hint: nil), in: controller)
         XCTAssertEqual(try actionMenu(of: controller).items.map(\.title),
-                       ["Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "",
-                        "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
+                       ["Copy", "Copy as Plain Text", "", "Show Preview", "Extract Text", "Translate", "Translate To",
+                        "", "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library",
                         "New Snippet", "", "Move to Recently Deleted"])
 
         controller.perform(.primary)
@@ -5659,6 +6301,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testWhileAReviewShowsOnlyTheCardConfirmsIt() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, _) = try await makePanelWithClips(
@@ -5677,7 +6320,8 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertFalse(toolbar.copyHint.isEnabled)
         let menu = try actionMenu(of: controller)
         XCTAssertEqual(menu.items.map(\.title), [
-            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "Extract Text", "",
+            "Paste Command", "Copy As-Is (Keeps Trailing Newline)", "", "Show Preview", "Extract Text",
+            "Translate", "Translate To", "",
             "Save as Snippet", "Save to Collection", "Add to Favorites", "", "Show in Library", "New Snippet",
             "", "Move to Recently Deleted",
         ])
@@ -5685,10 +6329,12 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertTrue(menu.items[1].isEnabled)
         XCTAssertTrue(menu.items[3].isEnabled)
         XCTAssertFalse(menu.items[4].isEnabled, "A command has no text in an image")
-        XCTAssertTrue(menu.items[6].isEnabled)
+        XCTAssertFalse(menu.items[5].isEnabled, "Nor is it translated while it waits on the card")
+        XCTAssertFalse(menu.items[6].isEnabled, "Into any language")
         XCTAssertTrue(menu.items[8].isEnabled)
         XCTAssertTrue(menu.items[10].isEnabled)
-        XCTAssertTrue(menu.items[11].isEnabled)
+        XCTAssertTrue(menu.items[12].isEnabled)
+        XCTAssertTrue(menu.items[13].isEnabled)
 
         // Without the card, Return's actions are offered again.
         controller.perform(.escape)
@@ -5698,7 +6344,36 @@ final class AppLaunchTests: XCTestCase {
         XCTAssertEqual(fake.sent, [])
     }
 
+    func testCommandTTranslatesNothingWhileAReviewShows() async throws {
+        try requireANSICommandLayer()
+        let fake = FakeDirectPasteSystem()
+        fake.front = .terminal
+        let translator = ScriptedTranslator()
+        let (controller, _) = try await makePanelWithClips(
+            ["older", "gamma"], bodies: ["gamma": Self.multiLineCommand], shown: true, system: fake.system,
+            translator: translator)
+        let window = try XCTUnwrap(controller.window)
+        _ = try searchEditor(in: controller)
+        _ = try await toolbarSaying(.action(title: "Paste Command", enabled: true, hint: nil), in: controller)
+        controller.perform(.primary)
+        try await waitForReview(Self.reviewedCommand, in: window)
+
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: .command)))
+        // Nor is a language chosen to translate into, with ⌥⌘T or otherwise.
+        var languageMenus = 0
+        controller.presentLanguageMenu = { _, _, _ in languageMenus += 1 }
+        XCTAssertTrue(window.performKeyEquivalent(with: try key(kVK_ANSI_T, "t", modifiers: [.command, .option])))
+        controller.perform(.chooseTranslationLanguage)
+
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertNil(translator.request(0), "The card is what the keys are for")
+        XCTAssertEqual(languageMenus, 0)
+        XCTAssertNil(controller.state.resultColumn)
+        XCTAssertNotNil(controller.state.commandReview)
+    }
+
     func testTheShortcutsWorkWithCapsLockOn() async throws {
+        try requireANSICommandLayer()
         let fake = FakeDirectPasteSystem()
         fake.front = .terminal
         let (controller, board) = try await makePanelWithClips(
@@ -5808,6 +6483,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testOpenInLibraryWaitsForTheChoosingReturnAndKeepsTheChosenClip() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -5832,6 +6508,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testNewSnippetChosenWithHeldReturnLapsesWithoutOpeningTheEditor() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -5853,6 +6530,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testLibraryHandoffsFromThePointerAndCommandShortcutsAreImmediate() async throws {
+        try requireANSICommandLayer()
         let (controller, _) = try await makePanelWithClips(["older", "newer"], shown: true)
         let window = try XCTUnwrap(controller.window)
         _ = try searchEditor(in: controller)
@@ -5915,6 +6593,7 @@ final class AppLaunchTests: XCTestCase {
     }
 
     func testEnableDirectPasteExplainsWhatItTakesBeforeAskingForAccess() async throws {
+        try requireANSICommandLayer()
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
@@ -6035,6 +6714,11 @@ final class AppLaunchTests: XCTestCase {
         accessibility(element, "accessibilityIdentifier") as? String
     }
 
+    /// Where an accessibility element is on screen, as VoiceOver frames it.
+    private func accessibilityFrame(of element: NSObject) -> NSRect? {
+        (element as? any NSAccessibilityElementProtocol)?.accessibilityFrame()
+    }
+
     /// Presses an accessibility element, as VoiceOver does. The press answers whether it was handled, which is not an
     /// object, so the answer is left unread.
     private func press(_ element: NSObject) {
@@ -6063,7 +6747,8 @@ final class AppLaunchTests: XCTestCase {
         return toolbar
     }
 
-    /// The menu ⌘K opens for the selected clip.
+    /// The menu ⌘K opens for the selected clip. The panel knows ⌘K by what its key types with ⌘, so a test that calls
+    /// this starts with `requireANSICommandLayer()`.
     private func actionMenu(of controller: PanelController) throws -> NSMenu {
         let window = try XCTUnwrap(controller.window)
         var shown: NSMenu?
@@ -6116,14 +6801,25 @@ final class AppLaunchTests: XCTestCase {
     /// does, and the window stays off screen. `visibleFrame` stands in for the screen's visible area when given, and
     /// `system` is what direct paste asks of the system: by default nothing is in front, and the panel only copies.
     private func makePanelWithClips(_ titles: [String], bodies: [String: String] = [:], shown: Bool = false,
-                                    visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable) async throws
+                                    visibleFrame: NSRect? = nil, system: DirectPasteSystem = .unavailable,
+                                    translator: ScriptedTranslator? = nil) async throws
         -> (PanelController, NSPasteboard) {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         try await insertClips(titles, bodies: bodies, into: harness)
         try await harness.consumer.synchronize()
-        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: visibleFrame, system: system)
+        var derivedText: DerivedTextCoordinator?
+        if let translator {
+            let coordinator = DerivedTextCoordinator(
+                store: DerivedTextStore(controller: harness.controller), identity: try await harness.controller.identity(),
+                recognizer: ScriptedRecognizer(), translator: translator,
+                image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
+            addTeardownBlock { await coordinator.stopAndDrain() }
+            derivedText = coordinator
+        }
+        let controller = try makePanel(over: harness, pasteboard: board, visibleFrame: visibleFrame, system: system,
+                                       derivedText: derivedText)
         if shown {
             controller.show()
             addTeardownBlock { controller.close() }
@@ -6298,7 +6994,9 @@ final class AppLaunchTests: XCTestCase {
                                            usage: usage, library: library, collections: collections,
                                            collectionChanges: collections as? any QuickAccessCollectionChanges,
                                            lifecycle: lifecycle, derivedText: derivedText)
-        return PanelController(state: QuickAccessState(services: { services }),
+        // Translations are made for a person who prefers Simplified Chinese, then English, whatever this Mac prefers.
+        return PanelController(state: QuickAccessState(services: { services },
+                                                       preferredLanguages: { ["zh-Hans-CN", "en-US"] }),
                                preferences: try preferences ?? makePreferences(.medium), visibleFrame: visibleFrame)
     }
 
@@ -6383,13 +7081,15 @@ final class AppLaunchTests: XCTestCase {
     /// library is another generation than the one the text is made for, so nothing made is kept.
     private func makeTextPanel(newestIsImage: Bool = true, imageData: Data? = nil,
                                keepsUnderAnotherGeneration: Bool = false, system: DirectPasteSystem = .unavailable,
-                               secondImage: [(String, Data)]? = nil)
+                               secondImage: [(String, Data)]? = nil,
+                               translator: ScriptedTranslator = ScriptedTranslator(),
+                               textBody: String? = nil, preferences: QuickAccessPreferences? = nil)
         async throws -> (PanelController, ScriptedRecognizer) {
         let harness = try SearchHarness.make(in: self)
         let board = NSPasteboard.withUniqueName()
         addTeardownBlock { board.releaseGlobally() }
         textPanelBoard = board
-        try await insertClips(["older"], into: harness)
+        try await insertClips(["older"], bodies: textBody.map { ["older": $0] } ?? [:], into: harness)
         if let secondImage {
             let capture = try ContentStoreFixtures.capture([secondImage])
             let item = ItemValue(title: "Photo", captureID: capture.id, historyEligible: true,
@@ -6404,13 +7104,14 @@ final class AppLaunchTests: XCTestCase {
             : current
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: harness.controller), identity: identity,
-            recognizer: recognizer, image: { _ in throw PreviewLoadError.couldNotDecodeImage })
+            recognizer: recognizer, translator: translator,
+            image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
         textPanelHarness = harness
         addTeardownBlock { await derivedText.stopAndDrain() }
         let controller = try makePanel(over: harness, pasteboard: board,
                                        visibleFrame: NSRect(x: 0, y: 0, width: 1440, height: 900), system: system,
                                        library: LibraryService(controller: harness.controller),
-                                       derivedText: derivedText)
+                                       preferences: preferences, derivedText: derivedText)
         controller.show()
         addTeardownBlock { controller.close() }
         let count = 1 + (newestIsImage ? 1 : 0) + (secondImage == nil ? 0 : 1)
@@ -6721,11 +7422,13 @@ final class AppLaunchTests: XCTestCase {
     }
 
     /// Skips a test whose keys must type, with ⌘, what their ANSI key codes name, as on the US and ABC layouts: the
-    /// panel knows the menu bar's keys as the menu bar does, by what they type with ⌘ on this Mac's layout.
+    /// panel knows its own commands' keys and the menu bar's as the menu bar does, by what they type with ⌘ on this
+    /// Mac's layout.
     private func requireANSICommandLayer() throws {
-        let keys = [(kVK_ANSI_A, "a"), (kVK_ANSI_C, "c"), (kVK_ANSI_D, "d"), (kVK_ANSI_F, "f"), (kVK_ANSI_I, "i"),
-                    (kVK_ANSI_L, "l"), (kVK_ANSI_M, "m"), (kVK_ANSI_N, "n"), (kVK_ANSI_Q, "q"), (kVK_ANSI_S, "s"),
-                    (kVK_ANSI_V, "v"), (kVK_ANSI_W, "w"), (kVK_ANSI_X, "x"), (kVK_ANSI_Z, "z"), (kVK_ANSI_Comma, ","),
+        let keys = [(kVK_ANSI_A, "a"), (kVK_ANSI_C, "c"), (kVK_ANSI_D, "d"), (kVK_ANSI_E, "e"), (kVK_ANSI_F, "f"),
+                    (kVK_ANSI_I, "i"), (kVK_ANSI_K, "k"), (kVK_ANSI_L, "l"), (kVK_ANSI_M, "m"), (kVK_ANSI_N, "n"),
+                    (kVK_ANSI_Q, "q"), (kVK_ANSI_S, "s"), (kVK_ANSI_T, "t"), (kVK_ANSI_V, "v"), (kVK_ANSI_W, "w"),
+                    (kVK_ANSI_X, "x"), (kVK_ANSI_Y, "y"), (kVK_ANSI_Z, "z"), (kVK_ANSI_Comma, ","),
                     (kVK_ANSI_LeftBracket, "["), (kVK_ANSI_RightBracket, "]")]
         for (code, character) in keys {
             let typed = try key(code, character, modifiers: .command).characters(byApplyingModifiers: .command)

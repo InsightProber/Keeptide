@@ -14,6 +14,8 @@ final class QuickAccessPreferences {
     static let fadesStripEndsKey = "quickAccess.fadesStripEnds"
     static let selectedCardScaleKey = "quickAccess.selectedCardScale"
     static let keepsLineBreaksKey = "textRecognition.keepsLineBreaks"
+    static let translationTargetKey = "translation.targetLanguage"
+    static let fixedTranslationTargetKey = "translation.fixedTargetLanguage"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -44,6 +46,19 @@ final class QuickAccessPreferences {
         didSet { defaults.set(keepsLineBreaks, forKey: Self.keepsLineBreaksKey) }
     }
 
+    /// The language last chosen to translate into, by its code, as the language menu names it. Absent means none was
+    /// chosen, and translations are made in the first language the person prefers. A language fixed in Settings comes
+    /// before it.
+    var translationTarget: String? {
+        didSet { defaults.set(translationTarget, forKey: Self.translationTargetKey) }
+    }
+
+    /// The language Settings fixes translations in, by its code. Absent means Last Used: the one last chosen in the
+    /// language menu. Choosing there still keeps that one, for when Settings goes back to Last Used.
+    var fixedTranslationTarget: String? {
+        didSet { defaults.set(fixedTranslationTarget, forKey: Self.fixedTranslationTargetKey) }
+    }
+
     /// The strip's style as these settings make it, with the enlargement as it is stored. The panel takes it as it
     /// opens.
     var stripStyle: StripStyle {
@@ -59,6 +74,12 @@ final class QuickAccessPreferences {
         selectedCardScale = Self.storedCardScale(in: defaults)
         fadesStripEnds = defaults.object(forKey: Self.fadesStripEndsKey) as? Bool ?? true
         keepsLineBreaks = defaults.object(forKey: Self.keepsLineBreaksKey) as? Bool ?? true
+        // Stored values are not trusted: anything but text is no choice, and quick access takes only a code that names
+        // a language.
+        let target = defaults.object(forKey: Self.translationTargetKey) as? String
+        translationTarget = target?.isEmpty == false ? target : nil
+        let fixed = defaults.object(forKey: Self.fixedTranslationTargetKey) as? String
+        fixedTranslationTarget = fixed?.isEmpty == false ? fixed : nil
     }
 
     /// Stored values are not trusted: a number is kept to 1.00–1.25 and to hundredths, and anything else gives the

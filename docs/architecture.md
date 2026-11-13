@@ -129,7 +129,7 @@ line, or act on such a character, as soon as it arrives. **Copy As-Is** in the
 actions menu copies the clip complete. The application does not execute saved
 commands: the paste is the only keystroke it sends.
 
-## Text recognition
+## Text recognition and translation
 
 Text in an image is recognized on this Mac with Apple's Vision framework, from
 the image's full-size original rather than a card's thumbnail, and off the main
@@ -143,14 +143,39 @@ text is derived data, kept beside its item in the local store: it follows the
 item into Recently Deleted and back, is removed with it, is bound to the item's
 exact content, and is never mirrored to iCloud or exported.
 
+Translation runs on this Mac with Apple's Translation framework. Natural
+Language tells each paragraph's language first, after code, links and numbers,
+which it misreads, are set aside; paragraphs already in the target language stay
+as they are. Every language pair is checked before any text is translated, so a
+language to download is named at the start, and the paragraphs in one language
+are translated in one session, each sent as it is done. A translation is kept as
+recognized text is, one per item whatever its language. A whole result replaces
+the one before, even one with nothing in it; a job that fails, or whose result
+the store turns away, leaves the earlier one, and so does a stopped one when the
+earlier one is whole.
+
 ## Extension boundary
 
 Stable content identities, versions, change consumption and a shared search
 interface allow future semantic retrieval to be added as a derived capability.
-On-device model inference uses only Apple's frameworks, for text recognition
-today. The first release does not include embeddings or background input
+On-device model inference uses only Apple's frameworks, for text recognition,
+language identification and translation today. The first release does not include embeddings or background input
 monitoring. Future suggestions must preserve the same permission and
 content-validation boundaries.
+
+Keeptide's own network access is confined to the cloud-model module in
+`Keeptide/CloudModels/`, the only code that may use URL loading, sockets, web
+views or link previews; the clipboard reader, which inherits the app sandbox and
+its outgoing connections, never uses them. The module connects only over HTTPS,
+on HTTPS's port, to the hosts it is given, Anthropic's and OpenAI's APIs by
+default. It follows no redirect, so that a request and the key in its headers go
+nowhere else, keeps no cache, cookies or credentials, and logs nothing it sends
+or receives. An answer's body streams in as each line ends, and stopping reading
+it cancels the request. Cloud models a person chooses with their own API key,
+which are planned, will reach providers only through it; no feature uses it yet.
+Source-boundary tests keep those APIs, and the HTML importer, which loads what a
+page links to, out of the rest of the app and the reader. iCloud mirroring goes
+through the system's CloudKit service instead.
 
 ## Local export
 

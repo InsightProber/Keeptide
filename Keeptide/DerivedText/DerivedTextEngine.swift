@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 
 /// Where an engine does its work, in the three tiers a person chooses between. The tier decides the lane its jobs run
 /// in: work on this Mac goes one job at a time, and requests to cloud models up to three at once (`JobCenter`).
@@ -26,4 +27,26 @@ protocol TextRecognitionEngine: Sendable {
     /// by line or as paragraphs (`TextInImage.text(keepingLineBreaks:)`).
     func recognizeText(in image: @escaping @Sendable () async throws -> CGImage,
                        keepingLineBreaks: Bool) -> any GenerationSource
+}
+
+/// Translates text.
+protocol TranslationEngine: Sendable {
+    var tier: EngineTier { get }
+
+    /// The languages it translates from and into.
+    func supportedLanguages() async -> [Locale.Language]
+    /// What translating from one language into another needs on this Mac.
+    func status(of pair: TranslationPair) async -> TranslationPairStatus
+    /// A source that reads the text with `text` once its stream is read and translates it into `target`: from
+    /// `source` when a person chose it, or else from the languages detected in it.
+    func translate(_ text: @escaping @Sendable () async throws -> String, from source: Locale.Language?,
+                   to target: Locale.Language) -> any GenerationSource
+}
+
+/// A language translations can be made in, and what translating a text into it needs on this Mac.
+struct TranslationLanguage: Equatable, Sendable {
+    /// The language as Translation lists it, in one of the regions it has the language in.
+    let language: Locale.Language
+    /// Nil where that isn't known: without the text's language, or for that language itself.
+    let status: TranslationPairStatus?
 }

@@ -50,6 +50,43 @@ image's card in quick access carries a small mark while its text is recognized
 or waits its turn, once it has text, or when recognizing it failed; its help
 tag and VoiceOver say which.
 
+⌘T, or **Translation** in the preview's bar, shows a translation of the selected
+text beside its preview: the text on the left and, on the right, a translation
+made on this Mac with Apple's Translation into the language fixed in Settings ›
+AI, or else the one chosen last, at first the first one in the person's language
+list that Translation offers, each paragraph as it is done. The language's name
+above the translation is a menu of the languages Translation offers, the
+person's own first; ⌥⌘T opens it too, and **Translate To** in the actions menu
+lists the same languages. Choosing one translates into it, and every translation
+after, in this and later sessions; where Settings › AI fixes a language, it
+translates that clip into it once and is kept for when Settings goes back to
+Last Used. Once quick access shows the
+text and its language can be told, the menu marks the languages it can't be
+translated into yet: **Not Downloaded** where a language must be downloaded
+first, and **Not Available on This Mac** where this Mac can't translate between
+the two. A language Translation offers in more than one region, as it does
+English, is listed once, in the region the person's language list names for it,
+else its usual one. Code, links and parts already in that language stay as they
+are. Both languages must be downloaded on this Mac, and Keeptide names any that
+is missing before it translates; a text already in that language offers the next
+one. Nothing is translated until it is asked for, and the translation is kept
+beside its text on this Mac, one per item, not in iCloud or in exports. ⌘. stops
+a translation and shows what was made, marked incomplete, which is kept unless a
+whole translation was kept before. Escape closes the translation before the
+preview. For an image, ⌘T, or **Translation** beside **Text** in the bar,
+translates the text recognized in it, with the image on the left: text
+recognized or kept from before is translated as it is, and otherwise the image's
+text is recognized first, which ⌘. stops too; an image with no text in it says
+so. When translating again fails, the earlier translation stays and the column
+says why; the same holds for the text in an image. While a whole translation
+that was kept shows, Return pastes it instead of the clip, through the same
+checks as a clip; ⌘C copies a whole translation, or the part selected, and
+leaves quick access open, and ⌘S saves it as a snippet of its own. A card in
+quick access carries a "文A" mark while its translation is made or waits its
+turn, once it is translated, when the translation was stopped part way, or when
+translating it failed; its help tag and VoiceOver say which, with the language
+of a translation or why it failed.
+
 The reusable-library service foundation also supports saving captures, creating
 plain text, prompt, code and Markdown content, preserving originals during edits,
 recoverable local drafts, and independent conflict copies. The native library
@@ -86,6 +123,7 @@ planned.
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
 | Previews | Text, image, URL and file previews; Space opens a preview when results have focus |
 | Text in images | Text recognized on this Mac in a copied image, shown beside its preview and kept locally |
+| Translation | A text clip, or the text in an image, translated on this Mac into the language chosen, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
 | Retention | Configurable history duration, including permanent retention; saved snippets remain independent of history cleanup |
 | Recovery | Recently deleted content, clear storage errors and protection against partial writes |
@@ -105,8 +143,14 @@ planned.
   disk cannot safely accept new content, new copies are not saved, and Keeptide
   says so until there is room.
 - Saved commands are content. Reusing them must not automatically execute them.
-- Text recognition reads only images that were copied, when asked. Keeptide does
-  not read the screen or other apps' windows.
+- Text recognition reads only images that were copied, and translation only the
+  text of clips, when asked. Keeptide does not read the screen or other apps'
+  windows.
+- Keeptide's own connections go only through its cloud-model module, over
+  HTTPS, to the model providers' API hosts. It sends nothing until a person
+  chooses a cloud model with their own API key, which is planned. iCloud
+  mirroring uses the system's CloudKit service. The helper that reads the
+  clipboard never connects.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
   before it sends the paste and again after the panel hides. When they changed,
@@ -127,9 +171,14 @@ and performance. They are not first-release promises.
 
 ## Application preferences and welcome
 
-The native Settings window groups appearance, keyboard shortcuts, privacy, and
-cloud availability. Keeptide saves new copies from first launch; the welcome
-says what it saves and what it skips, and there is no switch to turn it off.
-Shortcut changes preserve the last working registration if a new choice
-fails. Login-item controls reflect the operating system status. iCloud is
-explicitly unavailable in the current build.
+The native Settings window groups appearance, keyboard shortcuts, privacy, AI
+and cloud availability. Settings › AI sets whether recognized text keeps its
+line breaks and the language translations are made in: Last Used, the one last
+chosen in quick access, or one fixed there. It lists what translating from each
+of the person's languages into that one needs on this Mac, opens Language &
+Region in System Settings to download more, and says whether Apple Intelligence
+is available, which Keeptide doesn't use yet. Keeptide saves new copies from
+first launch; the welcome says what it saves and what it skips, and there is no
+switch to turn it off. Shortcut changes preserve the last working registration
+if a new choice fails. Login-item controls reflect the operating system status.
+iCloud is explicitly unavailable in the current build.

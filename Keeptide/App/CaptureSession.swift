@@ -248,12 +248,15 @@ final class CaptureSession {
             #endif
             derivedText = DerivedTextCoordinator(
                 store: derivedTextStore, identity: storeIdentity, recognizer: recognizer,
+                translator: OnDeviceTranslationEngine(),
                 image: { ref in
                     guard let original = try await preview.originalImage(for: ref) else {
                         throw PreviewLoadError.couldNotDecodeImage
                     }
                     return original.image
-                })
+                },
+                // A clip's text is translated as it pastes as plain text.
+                text: { ref in try PasteboardWriter.plainText(try await read(ref)) })
             await startSearch(store: store, directory: directory)
             let consumer = historyConsumer
             do {

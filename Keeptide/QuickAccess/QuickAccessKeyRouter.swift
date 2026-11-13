@@ -40,6 +40,11 @@ enum QuickAccessCommand: Equatable {
     /// The text column beside an image's preview.
     case showTextInImage, closeResultColumn, extractText, stopTextRecognition, toggleKeepLineBreaks
     case copyText, saveTextAsSnippet
+    /// The translation column beside a text clip's preview: open it, translate again into the language with this code,
+    /// or into the one the column shows when there is none, and stop.
+    case showTranslation, translate(into: String?), stopTranslation
+    /// The translation's title, or ⌥⌘T: the menu of languages to translate into.
+    case chooseTranslationLanguage
 }
 
 /// Translates panel keys into commands. Keys with native meaning where focus is, and

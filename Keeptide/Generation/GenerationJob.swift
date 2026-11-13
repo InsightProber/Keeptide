@@ -26,7 +26,7 @@ final class GenerationJob {
         /// Tags that split the stream into channels, when one request asks for two texts.
         var taggedChannels: StreamAccumulator.TaggedChannels?
         /// How many paragraphs the result should have, such as the original's for a translation. With it, snapshots
-        /// report progress.
+        /// report progress. A source that learns the count only once it runs says it with `.expecting`, which wins.
         var expectedParagraphs: Int?
         /// The channel whose paragraphs count toward progress.
         var progressChannel: OutputChannel = .main
@@ -273,7 +273,7 @@ final class GenerationJob {
         var progress: Double?
         if case .finished(.completed) = phase {
             progress = 1
-        } else if let expected = options.expectedParagraphs, expected > 0 {
+        } else if let expected = accumulator.expectedParagraphs ?? options.expectedParagraphs, expected > 0 {
             let done = accumulator.completedParagraphCount(in: options.progressChannel)
             progress = min(1, Double(done) / Double(expected))
         }

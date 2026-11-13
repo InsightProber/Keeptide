@@ -60,11 +60,20 @@ snippets in a native library.
   into paragraphs. Tall screenshots are read in strips, so their small text is
   found. Nothing is recognized until you ask, and an image's card shows when
   its text is being recognized or has been found.
+- **Translation.** ⌘T shows a translation of the selected text, or of the text
+  in an image, beside its preview, made on this Mac with Apple's Translation
+  into the language fixed in **Settings › AI**, or else the one you chose last,
+  at first the first one in your language list that it offers. The language's
+  name above the translation, or ⌥⌘T, opens a menu of languages that marks the
+  ones to download first. An image's text is recognized first when it hasn't
+  been. Code, links and parts already in that language stay as they are. Nothing
+  is translated until you ask, a card shows when it is being translated or has
+  been, and when translating again fails, the earlier translation stays.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
-- **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
-  that apps mark as private or transient, such as passwords from a password
-  manager, is skipped.
+- **Stays on your Mac.** Nothing you copy leaves your Mac. Content that apps
+  mark as private or transient, such as passwords from a password manager, is
+  skipped.
 
 ## Install
 
@@ -115,8 +124,10 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | ⇧Return | Paste or copy as plain text |
 | Space or ⌘Y | Show or hide a larger preview |
 | ⇧⌘T | Show the text in the selected image beside its preview |
-| ⌘. | Stop recognizing the text in an image |
-| Return, ⌘C, ⌘S beside the text in an image | Paste the text, copy it (or the part you selected), or save it as a snippet |
+| ⌘T | Show the translation of the selected text, or of the text in the selected image, beside its preview |
+| ⌥⌘T | Choose the language to translate into |
+| ⌘. | Stop recognizing the text in an image, or translating |
+| Return, ⌘C, ⌘S beside the text in an image or a translation | Paste it, copy it (or the part you selected), or save it as a snippet |
 | ⌘K or right-click | Show every action for the selected clip |
 | ⌘S | Save the clip as a snippet |
 | ⇧⌘M | Save the clip into a collection, or add a snippet to one; choosing a checked collection takes the snippet out |
@@ -163,17 +174,25 @@ Choose **Settings…** from the menu-bar menu.
 | General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, whether direct paste is on, opening at login, the welcome window and library export |
 | Shortcuts | The quick access shortcut: ⇧⌘V, ⌥⌘V, ⌃⌘V or off |
 | Privacy | Ignored apps, how long to keep clipboard history (from one day to forever) and storage warnings |
+| AI | Whether recognized text keeps its line breaks, the language to translate into (the last one chosen, or one you fix), what translating from each of your languages into it needs on this Mac, and whether Apple Intelligence is available (Keeptide doesn't use it yet) |
 | iCloud | Shows that iCloud saving is not available in this build |
 
 ## Privacy
 
-- Your history lives in a local library on this Mac. Keeptide's app sandbox
-  has no network access, and iCloud saving is not available yet.
+- Your history lives in a local library on this Mac, and iCloud saving is not
+  available yet.
+- Keeptide's app sandbox allows outgoing connections, set aside for cloud
+  models you will be able to choose with your own API key (planned). Only one
+  part of Keeptide may use them: it connects only to Anthropic's and OpenAI's
+  API hosts over HTTPS, follows no redirect, and keeps no cache or cookies. No
+  feature uses it yet, so nothing leaves your Mac. The helper that reads the
+  clipboard never connects.
 - Ignored apps, and content that apps mark as private or transient, are
   skipped. A copy larger than 50 MiB, or one whose formats cannot all be read,
   is not kept, and Keeptide says why until a later copy is kept.
-- Text in images is recognized on this Mac. Recognized text is kept beside its
-  image in the local library, and is not saved to iCloud or exported.
+- Text in images is recognized, and translations are made, on this Mac. Both
+  are kept beside their item in the local library, and are not saved to iCloud
+  or exported.
 - Clipboard contents are read in a separate sandboxed helper process, so a slow
   or faulty app cannot freeze Keeptide.
 - When the disk is full, Keeptide stops saving new copies and says so. It never
@@ -184,9 +203,9 @@ Choose **Settings…** from the menu-bar menu.
 
 Development builds include local capture, quick access with lists for
 snippets, favorites and collections, search, direct paste, text in images
-recognized on this Mac, the snippet library with collections (a snippet can be
-in several), favorites, list counts and filters, history retention, Recently
-Deleted and local export.
+recognized and text translated on this Mac, the snippet library with
+collections (a snippet can be in several), favorites, list counts and filters,
+history retention, Recently Deleted and local export.
 
 Planned:
 

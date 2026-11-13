@@ -44,40 +44,40 @@ struct QuickAccessSplitPreview: View {
     }
 }
 
-/// Why a recognition that just ended left the text column without new text, said to VoiceOver as it ends: there is
-/// none in the image, or why it failed, and whether that left the text from before. The panel asks on every change it
+/// Why a recognition or a translation that just ended left its column without new text, said to VoiceOver as it ends:
+/// there is none, or why it failed, and whether that left what was made before. The panel asks on every change it
 /// sees, and not the column's view: SwiftUI doesn't always deliver a view's `onChange`. An ending is told by `ending`,
-/// the latest recognition's while the column shows it. What the column says of an ending is said once, as it changes:
-/// a new ending, or the same one in other words, as when text it made can't be kept. What the column shows as it
-/// begins to show an image, as the panel opens or the selection comes to it, is only shown, even once it has read
-/// what it needs; so is an ending that isn't the latest.
-struct TextColumnEndings {
-    /// The image the column shows, and the ending it showed as it began to show it.
+/// the latest job's while the column shows it. What the column says of an ending, `words`, is said once, as it
+/// changes: a new ending, or the same one in other words, as when text it made can't be kept. What the column shows
+/// as it begins to show a clip, as the panel opens or the selection comes to it, is only shown, even once it has read
+/// what it needs (`isRead`); so is an ending that isn't the latest.
+struct ResultColumnEndings {
+    /// The clip the column shows, and the ending it showed as it began to show it.
     private var shown: (ref: ContentRef, ending: UUID?)?
-    /// What the column last showed of the image once it had read what it needs: the ending and its words. Nil while it
-    /// still reads, as it began to show the image.
+    /// What the column last showed of the clip once it had read what it needs: the ending and its words. Nil while it
+    /// still reads, as it began to show the clip.
     private var known: (ending: UUID?, words: String?)?
     /// The ending said last, and what was said of it.
     private var said: (ending: UUID, words: String)?
 
     /// The words for the column now shown, if any; it remembers what the column shows.
-    mutating func words(for column: (ref: ContentRef, column: TextColumn, ending: UUID?)?, isOpen: Bool) -> String? {
+    mutating func words(for column: (ref: ContentRef, ending: UUID?, words: String?, isRead: Bool)?,
+                        isOpen: Bool) -> String? {
         guard let column else {
             shown = nil
             known = nil
             return nil
         }
-        let now = (ending: column.ending, words: Self.words(for: column.column))
-        let isRead = column.column != .loading
+        let now = (ending: column.ending, words: column.words)
         guard isOpen, let before = shown, before.ref == column.ref else {
             shown = (column.ref, column.ending)
-            known = isRead ? now : nil
+            known = column.isRead ? now : nil
             return nil
         }
-        guard isRead else { return nil }
+        guard column.isRead else { return nil }
         let was = known
         known = now
-        // Read as the column began to show the image, an ending it had then is only shown.
+        // Read as the column began to show the clip, an ending it had then is only shown.
         if was == nil, now.ending == before.ending { return nil }
         if let was, was == now { return nil }
         guard let ending = now.ending, let words = now.words,
@@ -92,15 +92,22 @@ struct TextColumnEndings {
         known = nil
         said = nil
     }
+}
 
-    private static func words(for column: TextColumn) -> String? {
-        switch column {
+extension TextColumn {
+    /// What VoiceOver hears of the column as a recognition ends here without new text; nil where the text speaks for
+    /// itself.
+    var endingWords: String? {
+        switch self {
         case .noText: TextColumnWords.noText
         case .failed(let error): error.message
         case .failedAgain(let kept, let error): TextColumnWords.failedAgain(leaving: kept, because: error)
         case .loading, .notStarted, .recognizing, .text, .unsaved: nil
         }
     }
+
+    /// Whether the column has read what it needs to show.
+    var isRead: Bool { self != .loading }
 }
 
 /// The text column's own words, as the column and its subtitle say them.
@@ -230,6 +237,8 @@ private struct ImageColumn: View {
         .padding(.top, 8)
         .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("QuickAccessSplitImage")
     }
 
     /// Why the image isn't shown, where it would be.
@@ -296,7 +305,7 @@ private struct ColumnDivider: View {
 /// it, the recognition under way, or why there is none. One display shows the text from the moment recognition starts
 /// until it is made, so the text is typed out as it comes and VoiceOver hears the recognition start and end; text kept
 /// from before, or brought back by stopping a recognition, shows at once. Why a recognition found no text, or none
-/// could be made or kept, the panel says as it ends (`TextColumnEndings`). The column is the image's own: another image
+/// could be made or kept, the panel says as it ends (`ResultColumnEndings`). The column is the image's own: another image
 /// has another column.
 private struct TextInImageColumn: View {
     let column: TextColumn
@@ -461,7 +470,8 @@ struct TrayRoundButton: View {
     }
 }
 
-/// Segments on the tray, as the band's All | Snippets: Preview, and Text for an image.
+/// Segments on the tray, as the band's All | Snippets: Preview, then Text for an image and Translation for a text or an
+/// image.
 struct TraySegments: View {
     struct Segment: Identifiable {
         let id: String
@@ -503,4 +513,382 @@ struct TraySegments: View {
         .padding(2)
         .background(Color(nsColor: ToolbarPalette.segmentsFill), in: Capsule())
     }
+}
+
+// MARK: Translation
+
+/// The text a translation is of, as the column beside it shows it: still being read, the text, perhaps only its start,
+/// the image whose text it is, or why it can't be shown.
+enum TranslationOriginal: Equatable {
+    case loading
+    case text(String, isTruncated: Bool)
+    /// The text is the one recognized in the image the preview shows.
+    case image
+    case unavailable(String)
+
+    init(_ preview: PreviewContent?) {
+        switch preview {
+        case .text(let text, let isTruncated)?: self = .text(text, isTruncated: isTruncated)
+        case .markdown(let document, let isTruncated)?: self = .text(document.source, isTruncated: isTruncated)
+        case .failed(let refusal)?: self = .unavailable(refusal.message)
+        case nil: self = .loading
+        case .image?: self = .image
+        case .url?, .files?, .info?: self = .unavailable(TranslationColumnWords.originalUnavailable)
+        }
+    }
+}
+
+/// A text clip with its translation beside it, on the card's tray, laid out as the text in an image is beside the
+/// image: the text on the left in smaller, dimmer type, the translation on the right, with a thin line between them and
+/// nothing of their own under either; for an image, the image on the left. Where the card is narrow, the translation
+/// goes under the text.
+struct QuickAccessTranslationSplit: View {
+    let original: TranslationOriginal
+    /// The preview of the clip translated: for an image, the image the column beside is the translation of.
+    var preview: PreviewContent? = nil
+    /// The app the text was copied from, when it is known.
+    let applicationName: String?
+    let column: TranslationColumn
+    /// The language a translation is made in when the column shows none of its own.
+    let target: Locale.Language
+    /// The language to offer where the text is in the one asked for already.
+    let nextTarget: Locale.Language?
+    let ref: ContentRef
+    /// Whether what the column shows is how the latest translation just ended.
+    let isJustMade: Bool
+    let onCommand: (QuickAccessCommand) -> Void
+    /// Copies what the translation's own Copy takes: the selection, or all of it.
+    let onCopy: (String) -> Void
+    /// Where the translation's title is, in the band, as it is laid out: the language menu opens below it.
+    var onLanguageTitleMoved: (CGRect) -> Void = { _ in }
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    /// Whether the translation has faded in beside the text: the one movement as the preview splits.
+    @State private var showsTranslation = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let sideBySide = geometry.size.width >= QuickAccessSplitPreview.sideBySideWidth
+            let layout = sideBySide ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+            layout {
+                // An image stands beside the translation of its text, with the line passing over it while the text is
+                // recognized; a text beside its own.
+                if original == .image {
+                    ImageColumn(preview: preview, applicationName: applicationName, isScanning: column.isScanningForText)
+                } else {
+                    OriginalColumn(text: original, applicationName: applicationName, onCommand: onCommand)
+                }
+                Group {
+                    ColumnDivider(vertical: sideBySide)
+                    TranslationColumnView(column: column, target: target, nextTarget: nextTarget,
+                                          isJustMade: isJustMade, onCommand: onCommand, onCopy: onCopy,
+                                          onLanguageTitleMoved: onLanguageTitleMoved)
+                        .id(ref)
+                }
+                .opacity(showsTranslation || reduceMotion ? 1 : 0)
+            }
+        }
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { showsTranslation = true }
+        }
+    }
+}
+
+/// The text being translated: under the card's title type, in 14 pt and the secondary colour, so the translation
+/// stands out beside it.
+private struct OriginalColumn: View {
+    let text: TranslationOriginal
+    let applicationName: String?
+    let onCommand: (QuickAccessCommand) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(TranslationColumnWords.original).font(.system(size: 12, weight: .bold))
+            Text(applicationName.map { "From \($0)" } ?? " ").font(.system(size: 11)).foregroundStyle(.secondary)
+                .accessibilityHidden(applicationName == nil)
+            Group {
+                switch text {
+                case .text(let text, let isTruncated):
+                    // The preview's own text, so selecting part of it and copying it works as it does there.
+                    VStack(alignment: .leading, spacing: 8) {
+                        PreviewText(text: text, accessibilityName: TranslationColumnWords.original,
+                                    accessibilityID: "QuickAccessTranslationOriginal",
+                                    font: .systemFont(ofSize: 14), textColor: .secondaryLabelColor,
+                                    textInset: .zero, onCommand: onCommand)
+                        if isTruncated {
+                            Text(TranslationColumnWords.originalTruncated)
+                                .font(.system(size: 11)).foregroundStyle(.tertiary)
+                        }
+                    }
+                case .image:
+                    // The split shows the image itself in this column's place.
+                    EmptyView()
+                case .unavailable(let message):
+                    Text(message).font(.system(size: 14)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                case .loading:
+                    ProgressView().controlSize(.small)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.top, 12)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 8)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(TranslationColumnWords.original)
+    }
+}
+
+/// The translation under its language and how it was made, or what stands for it: an offer to translate, the
+/// translation under way, or why there is none. One display shows the translation from the moment it starts until it
+/// is made, so it is typed out as it comes; one kept from before, or brought back by stopping a translation, shows at
+/// once. Why a translation left no new text, the panel says as it ends (`ResultColumnEndings`).
+private struct TranslationColumnView: View {
+    let column: TranslationColumn
+    let target: Locale.Language
+    let nextTarget: Locale.Language?
+    let isJustMade: Bool
+    let onCommand: (QuickAccessCommand) -> Void
+    let onCopy: (String) -> Void
+    let onLanguageTitleMoved: (CGRect) -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var contrast
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            languageTitle
+            Text(TranslationColumnWords.subtitle(for: column)).font(.system(size: 11)).foregroundStyle(.secondary)
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, 12)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 8)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        // While the translation runs, a thin line moves along under the column's title, as on the clip's card. While an
+        // image's text is recognized first, the line passing over the image is the one that moves.
+        .overlay(alignment: .top) {
+            if case .translating = column {
+                StripProgressLine(color: .accentColor, isDark: colorScheme == .dark,
+                                  increasedContrast: contrast == .increased)
+                    .frame(height: 2)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 44)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(TranslationColumnWords.title), on this Mac")
+        .accessibilityIdentifier("QuickAccessTranslation")
+    }
+
+    /// The language the column's translation is in, or is to be in.
+    private var language: Locale.Language {
+        column.language.map(Locale.Language.init(identifier:)) ?? target
+    }
+
+    /// The language's name is the menu of languages to translate into, as ⌥⌘T is: "Chinese (Simplified) ⌄".
+    private var languageTitle: some View {
+        Button { onCommand(.chooseTranslationLanguage) } label: {
+            HStack(spacing: 3) {
+                Text(language.displayName).font(.system(size: 12, weight: .bold))
+                Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(TranslationColumnWords.languageMenuHelp)
+        .accessibilityLabel(language.displayName)
+        .accessibilityHint(TranslationColumnWords.languageMenuHint)
+        .accessibilityIdentifier("QuickAccessTranslationLanguage")
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { onLanguageTitleMoved($0) }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            note
+            if let shown {
+                StreamingTextView(text: shown.text, mode: shown.mode,
+                                  announcements: .init(start: "Translating", finish: "Translated"),
+                                  allowsCopyingAll: shown.mode != .writing && shown.isWhole,
+                                  onCopy: { [onCopy] in onCopy($0) },
+                                  onKeyDown: { [onCommand] event in
+                                      PreviewTextKeys.handle(event, hasMarkedText: false, onCommand: onCommand)
+                                  })
+            }
+            switch column {
+            case .loading:
+                ProgressView().controlSize(.small)
+            case .notStarted:
+                Button { onCommand(.translate(into: nil)) } label: {
+                    HStack(spacing: 8) {
+                        Text(TranslationColumnWords.translate(into: target))
+                        ReviewKeycap(symbol: "⌘T")
+                    }
+                }
+                .buttonStyle(TrayCapsuleButtonStyle())
+                .accessibilityLabel(TranslationColumnWords.translate(into: target))
+                .accessibilityIdentifier("QuickAccessTranslate")
+                .help("\(TranslationColumnWords.translate(into: target)) (⌘T)")
+            case .nothingToTranslate, .failedAgain(.nothingToTranslate, _, _):
+                Text(TranslationColumnWords.nothingToTranslate).font(.system(size: 14)).foregroundStyle(.secondary)
+            case .noTextInImage, .failedAgain(.noTextInImage, _, _):
+                Text(TextColumnWords.noText).font(.system(size: 14)).foregroundStyle(.secondary)
+            case .failed(let error, _):
+                Text(error.message).font(.system(size: 14)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if error.kind == .alreadyInTargetLanguage, let nextTarget {
+                    Button(TranslationColumnWords.translate(into: nextTarget)) {
+                        onCommand(.translate(into: nextTarget.translationCode))
+                    }
+                    .buttonStyle(TrayCapsuleButtonStyle())
+                } else {
+                    tryAgain
+                }
+            case .translating, .recognizingText, .translation, .unsaved, .failedAgain:
+                EmptyView()
+            }
+        }
+    }
+
+    /// What became of the translation shown, above it, where it is read first: translating again failed and left it,
+    /// it stopped part of the way, or the library couldn't keep it.
+    @ViewBuilder
+    private var note: some View {
+        switch column {
+        case .failedAgain(let kept, let error, let asked):
+            noteLine(TranslationColumnWords.failedAgain(leaving: kept, because: error, asked: asked), help: error.message,
+                     offersTryAgain: true)
+        case .translation(_, _, .stopped), .translation(_, _, .truncated), .unsaved(_, _, .stopped),
+             .unsaved(_, _, .truncated):
+            noteLine(TranslationColumnWords.stopped, help: nil, offersTryAgain: true)
+        case .unsaved:
+            noteLine(TranslationColumnWords.notSaved, help: nil, offersTryAgain: false)
+        case .loading, .notStarted, .translating, .recognizingText, .translation, .nothingToTranslate, .noTextInImage,
+             .failed:
+            EmptyView()
+        }
+    }
+
+    private func noteLine(_ words: String, help: String?, offersTryAgain: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            let line = Text(words)
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let help { line.help(help) } else { line }
+            if offersTryAgain { tryAgain }
+        }
+    }
+
+    private var tryAgain: some View {
+        Button(TranslationColumnWords.tryAgain) { onCommand(.translate(into: nil)) }
+            .buttonStyle(TrayCapsuleButtonStyle())
+            .help("\(TranslationColumnWords.tryAgain) (⌘T)")
+    }
+
+    /// The translation the display shows, how: typed out while it is made, then finished, or at once, and whether it is
+    /// whole, so that copying it all, with nothing selected, takes it. Part of one is copied by selecting it.
+    private var shown: (text: String, mode: StreamingTextDisplay.Mode, isWhole: Bool)? {
+        switch column {
+        case .translating(let snapshot, _):
+            let mode = StreamingTextDisplay.Mode(snapshot.phase)
+            return (snapshot.text(), mode == .finishing && !snapshot.hasText ? .still : mode,
+                    snapshot.phase == .finished(.completed))
+        case .translation(let text, _, let status):
+            return (text, isJustMade && status == .complete ? .finishing : .still, status == .complete)
+        case .unsaved(let text, _, let status):
+            return (text, isJustMade && status == .complete ? .finishing : .still, status == .complete)
+        // What a failed translation left, as it was: not typed out again.
+        case .failedAgain(.translation(let text, _, let status), _, _),
+             .failedAgain(.unsaved(let text, _, let status), _, _):
+            return (text, .still, status == .complete)
+        case .loading, .notStarted, .recognizingText, .nothingToTranslate, .noTextInImage, .failed, .failedAgain:
+            return nil
+        }
+    }
+}
+
+/// The translation column's own words, as the column and its subtitle say them.
+enum TranslationColumnWords {
+    static let title = "Translation"
+    static let original = "Original"
+    static let tryAgain = "Try Again"
+    static let stopped = "Stopped. This translation is incomplete."
+    /// What VoiceOver hears as the text in an image is recognized before it is translated.
+    static let recognizingFirst = "Recognizing the text in the image first"
+    static let notSaved = "The translation couldn't be saved."
+    static let nothingToTranslate = "Nothing in this text to translate."
+    static let originalUnavailable = "This text can't be shown here."
+    static let originalTruncated = "Only the start of this text is shown here."
+    /// The help, and what VoiceOver hears, of the language's name above the translation, which is its menu.
+    static let languageMenuHelp = "Translate into another language (⌥⌘T)"
+    static let languageMenuHint = "Chooses the language to translate into."
+
+    /// "Translate to Chinese (Simplified)".
+    static func translate(into language: Locale.Language) -> String {
+        "Translate to \(language.displayName)"
+    }
+
+    static func subtitle(for column: TranslationColumn) -> String {
+        switch column {
+        case .translating(let snapshot, _) where snapshot.phase == .queued: "Waiting to translate on this Mac…"
+        case .translating: "Translating on this Mac…"
+        case .recognizingText(_, false): "Waiting to recognize the text first on this Mac…"
+        case .recognizingText: "Recognizing the text first on this Mac…"
+        case .translation(_, _, .complete), .unsaved(_, _, .complete): "Translated on this Mac"
+        case .translation, .unsaved: "Stopped on this Mac"
+        case .failedAgain(let kept, _, _): subtitle(for: kept)
+        case .loading, .notStarted, .nothingToTranslate, .noTextInImage, .failed: "On this Mac"
+        }
+    }
+
+    /// What the column says as translating again comes to nothing and leaves what it had: "Couldn't translate to
+    /// Japanese. The Chinese (Simplified) translation is unchanged.", or, where the clip became unavailable meanwhile,
+    /// that.
+    static func failedAgain(leaving kept: TranslationColumn, because error: GenerationError, asked: String?) -> String {
+        let what: String
+        if error.kind == .contentUnavailable {
+            what = error.message
+        } else if let asked {
+            what = "Couldn't translate to \(Locale.Language(identifier: asked).displayName)."
+        } else {
+            what = "Couldn't translate this text again."
+        }
+        // Only a translation that stays is named: there is none where nothing was found to translate.
+        switch kept {
+        case .translation(_, let language?, _), .unsaved(_, let language?, _):
+            return what + " The \(Locale.Language(identifier: language).displayName) translation is unchanged."
+        case .loading, .notStarted, .translating, .recognizingText, .translation, .unsaved, .nothingToTranslate,
+             .noTextInImage, .failed, .failedAgain:
+            return what
+        }
+    }
+}
+
+extension TranslationColumn {
+    /// What VoiceOver hears of the column as a translation ends here without new text; nil where the translation speaks
+    /// for itself.
+    var endingWords: String? {
+        switch self {
+        case .nothingToTranslate: TranslationColumnWords.nothingToTranslate
+        case .noTextInImage: TextColumnWords.noText
+        case .failed(let error, _): error.message
+        case .failedAgain(let kept, let error, let asked):
+            TranslationColumnWords.failedAgain(leaving: kept, because: error, asked: asked)
+        case .translation(_, _, .stopped), .translation(_, _, .truncated), .unsaved(_, _, .stopped),
+             .unsaved(_, _, .truncated): TranslationColumnWords.stopped
+        case .loading, .notStarted, .translating, .recognizingText, .translation, .unsaved: nil
+        }
+    }
+
+    /// Whether the column has read what it needs to show.
+    var isRead: Bool { self != .loading }
 }

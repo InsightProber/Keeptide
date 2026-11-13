@@ -100,6 +100,10 @@ struct PreviewText: NSViewRepresentable {
     var accessibilityID: String?
     /// How far above the view's bottom edge the scroller ends.
     var scrollerBottomInset: CGFloat = 0
+    /// The type and colour the text is set in, and the room around it; the preview's own unless given.
+    var font: NSFont?
+    var textColor: NSColor = .labelColor
+    var textInset = NSSize(width: 12, height: 10)
     let onCommand: (QuickAccessCommand) -> Void
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -112,9 +116,12 @@ struct PreviewText: NSViewRepresentable {
         textView.isSelectable = true
         textView.isRichText = false
         textView.drawsBackground = false
-        textView.font = monospaced ? .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            : .preferredFont(forTextStyle: .body)
-        textView.textContainerInset = NSSize(width: 12, height: 10)
+        textView.font = font ?? (monospaced ? .monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            : .preferredFont(forTextStyle: .body))
+        textView.textColor = textColor
+        textView.textContainerInset = textInset
+        // Set flush with what is above it, the text keeps no padding of its own either.
+        if textInset == .zero { textView.textContainer?.lineFragmentPadding = 0 }
         textView.isVerticallyResizable = true
         textView.autoresizingMask = [.width]
         textView.textContainer?.widthTracksTextView = true
