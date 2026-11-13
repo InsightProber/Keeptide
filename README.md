@@ -187,11 +187,14 @@ Choose **Settings…** from the menu-bar menu.
 - Your history lives in a local library on this Mac, and iCloud saving is not
   available yet.
 - Keeptide's app sandbox allows outgoing connections, set aside for cloud
-  models you will be able to choose with your own API key (planned). Only one
-  part of Keeptide may use them: it connects only to Anthropic's and OpenAI's
-  API hosts over HTTPS, follows no redirect, and keeps no cache or cookies. No
-  feature uses it yet, so nothing leaves your Mac. The helper that reads the
-  clipboard never connects.
+  models you will be able to choose with your own API key and for previews of
+  the links you copy (both planned). Only two parts of Keeptide may use them.
+  The one for cloud models connects only to Anthropic's and OpenAI's API hosts
+  over HTTPS, follows no redirect, and keeps no cache or cookies. The one for
+  link previews will load only the pages of web links you copy, never one whose
+  address leads to this Mac or your local network or may hold a password, key or
+  token. No feature uses either yet, so nothing leaves your Mac. The helper that
+  reads the clipboard never connects.
 - Ignored apps, and content that apps mark as private or transient, are
   skipped. A copy larger than 50 MiB, or one whose formats cannot all be read,
   is not kept, and Keeptide says why until a later copy is kept.
