@@ -16,6 +16,7 @@ final class QuickAccessPreferences {
     static let keepsLineBreaksKey = "textRecognition.keepsLineBreaks"
     static let translationTargetKey = "translation.targetLanguage"
     static let fixedTranslationTargetKey = "translation.fixedTargetLanguage"
+    static let translatesAutomaticallyKey = "translation.automatic"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -59,6 +60,12 @@ final class QuickAccessPreferences {
         didSet { defaults.set(fixedTranslationTarget, forKey: Self.fixedTranslationTargetKey) }
     }
 
+    /// Whether new text in another language is translated on this Mac as it is copied, as Settings › AI's Translate
+    /// automatically says. Absent means off: text is translated only when the person asks.
+    var translatesAutomatically: Bool {
+        didSet { defaults.set(translatesAutomatically, forKey: Self.translatesAutomaticallyKey) }
+    }
+
     /// The strip's style as these settings make it, with the enlargement as it is stored. The panel takes it as it
     /// opens.
     var stripStyle: StripStyle {
@@ -80,6 +87,7 @@ final class QuickAccessPreferences {
         translationTarget = target?.isEmpty == false ? target : nil
         let fixed = defaults.object(forKey: Self.fixedTranslationTargetKey) as? String
         fixedTranslationTarget = fixed?.isEmpty == false ? fixed : nil
+        translatesAutomatically = defaults.object(forKey: Self.translatesAutomaticallyKey) as? Bool ?? false
     }
 
     /// Stored values are not trusted: a number is kept to 1.00–1.25 and to hundredths, and anything else gives the

@@ -31,6 +31,7 @@ APP_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
     "com.apple.security.files.user-selected.read-write": True,
     "com.apple.security.files.bookmarks.app-scope": True,
+    "com.apple.security.network.client": True,
 }
 HELPER_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,

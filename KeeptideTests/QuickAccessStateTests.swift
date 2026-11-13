@@ -1150,6 +1150,60 @@ final class QuickAccessStateTests: XCTestCase {
         XCTAssertNil(translator.request(0), "Whatever language it is in")
     }
 
+    func testACardSaysNothingOfATranslationMadeInTheBackgroundUntilItIsMade() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR"])
+        let (fixture, _) = try await makeTextFixture(translator: translator, text: { _ in
+            "Le rapport trimestriel est attendu vendredi, avec les chiffres définitifs de chaque équipe."
+        })
+        try await insert("Note", body: "Synthetic French note.", at: 0, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.selectedRow)
+        let derivedText = try XCTUnwrap(fixture.services.derivedText)
+
+        derivedText.translateAutomatically(row.ref, fixed: nil, lastUsed: "zh-Hans")
+
+        let engine = try await startedTranslation(translator, 0)
+        XCTAssertEqual(derivedText.job(for: row.ref, operation: .translate)?.priority, .automatic)
+        XCTAssertNil(state.translationMark(for: row), "Nothing is said while it is made in the background")
+        engine.send(.started(GenerationInfo(engine: "On this Mac")), .delta("季度报告将于周五提交。"), .finished(.completed))
+        try await SearchTestSupport.waitUntil { state.translationMark(for: row) == .translated(into: "zh-Hans") }
+    }
+
+    func testChoosingTheLanguageABackgroundTranslationIsMadeInMakesItThePersons() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "fr-FR"])
+        let (fixture, _) = try await makeTextFixture(translator: translator, text: { _ in
+            "Le rapport trimestriel est attendu vendredi, avec les chiffres définitifs de chaque équipe."
+        })
+        try await insert("Older", body: "Older synthetic note.", at: 0, into: fixture)
+        try await insert("Newer", body: "Newer synthetic note.", at: 1, into: fixture)
+        let state = QuickAccessState(services: { fixture.services }, preferredLanguages: { ["zh-Hans-CN", "en-US"] })
+        state.open()
+        try await settled(state)
+        let derivedText = try XCTUnwrap(fixture.services.derivedText)
+        let older = try XCTUnwrap(state.selection.rows.first { $0.title == "Older" })
+        // The column shows the newer clip's translation, and the older one is translated in the background.
+        state.showTranslation()
+        try await startedTranslation(translator, 0).send(.started(GenerationInfo(engine: "On this Mac")),
+                                                         .delta("较新的笔记。"), .finished(.completed))
+        derivedText.translateAutomatically(older.ref, fixed: nil, lastUsed: "zh-Hans")
+        _ = try await startedTranslation(translator, 1)
+        state.moveSelection(by: 1)
+        XCTAssertEqual(state.selection.selectedRow?.title, "Older")
+
+        // Chosen in the language menu, the language it is made in makes it the person's: its card says so.
+        state.chooseTranslationLanguage("zh-Hans")
+
+        try await SearchTestSupport.waitUntil { derivedText.job(for: older.ref, operation: .translate)?.priority == .user }
+        try await SearchTestSupport.waitUntil {
+            if case .translating? = state.translationMark(for: older) { return true }
+            return false
+        }
+    }
+
     func testEachTextCardSaysWhatIsKnownOfItsTranslation() async throws {
         let translator = ScriptedTranslator()
         let (fixture, _) = try await makeTextFixture(translator: translator)
@@ -3970,8 +4024,9 @@ final class QuickAccessStateTests: XCTestCase {
     /// A fixture whose library recognizes text with a recognizer the test drives. Under another store generation, as
     /// when the library has since become another, nothing it makes is kept.
     private func makeTextFixture(keepsUnderAnotherGeneration: Bool = false,
-                                 translator: ScriptedTranslator = ScriptedTranslator()) async throws
-        -> (Fixture, ScriptedRecognizer) {
+                                 translator: ScriptedTranslator = ScriptedTranslator(),
+                                 text: @escaping @Sendable (ContentRef) async throws -> String = { _ in "Synthetic text" })
+        async throws -> (Fixture, ScriptedRecognizer) {
         var fixture = try makeFixture()
         let recognizer = ScriptedRecognizer()
         let controller = fixture.harness.controller
@@ -3981,7 +4036,7 @@ final class QuickAccessStateTests: XCTestCase {
         let derivedText = DerivedTextCoordinator(
             store: DerivedTextStore(controller: controller), identity: identity,
             recognizer: recognizer, translator: translator,
-            image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: { _ in "Synthetic text" })
+            image: { _ in throw PreviewLoadError.couldNotDecodeImage }, text: text)
         addTeardownBlock { await derivedText.stopAndDrain() }
         var services = fixture.services
         services.derivedText = derivedText

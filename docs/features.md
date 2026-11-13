@@ -71,7 +71,8 @@ English, is listed once, in the region the person's language list names for it,
 else its usual one. Code, links and parts already in that language stay as they
 are. Both languages must be downloaded on this Mac, and Keeptide names any that
 is missing before it translates; a text already in that language offers the next
-one. Nothing is translated until it is asked for, and the translation is kept
+one. Nothing is translated until it is asked for, unless Translate automatically
+is on in Settings › AI, and the translation is kept
 beside its text on this Mac, one per item, not in iCloud or in exports. ⌘. stops
 a translation and shows what was made, marked incomplete, which is kept unless a
 whole translation was kept before. Escape closes the translation before the
@@ -148,6 +149,11 @@ planned.
 - Text recognition reads only images that were copied, and translation only the
   text of clips, when asked. Keeptide does not read the screen or other apps'
   windows.
+- Keeptide's own connections go only through its cloud-model module, over
+  HTTPS, to the model providers' API hosts. It sends nothing until a person
+  chooses a cloud model with their own API key, which is planned. iCloud
+  mirroring uses the system's CloudKit service. The helper that reads the
+  clipboard never connects.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
   before it sends the paste and again after the panel hides. When they changed,
@@ -173,9 +179,15 @@ and cloud availability. Settings › AI sets whether recognized text keeps its
 line breaks and the language translations are made in: Last Used, the one last
 chosen in quick access, or one fixed there. It lists what translating from each
 of the person's languages into that one needs on this Mac, opens Language &
-Region in System Settings to download more, and says whether Apple Intelligence
-is available, which Keeptide doesn't use yet. Keeptide saves new copies from
-first launch; the welcome says what it saves and what it skips, and there is no
-switch to turn it off. Shortcut changes preserve the last working registration
-if a new choice fails. Login-item controls reflect the operating system status.
-iCloud is explicitly unavailable in the current build.
+Region in System Settings to download more, and can translate new text
+automatically: with Translate automatically on, which it is not at first, text
+in another language is translated on this Mac as it is copied, giving way to
+anything the person asks for, and its card shows nothing until it is done. Only
+text of up to 5,000 characters is translated, if it isn't mostly code, links or
+numbers and this Mac translates its main language without a download. The page
+also says whether Apple Intelligence is available, which Keeptide doesn't use
+yet. Keeptide saves new copies from first launch; the welcome says what it saves
+and what it skips, and there is no switch to turn it off. Shortcut changes
+preserve the last working registration if a new choice fails. Login-item
+controls reflect the operating system status. iCloud is explicitly unavailable
+in the current build.
