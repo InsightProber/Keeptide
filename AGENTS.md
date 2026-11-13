@@ -38,8 +38,9 @@ service foundation preserves capture identity during saving and body edits,
 retains conflicting edits separately, and recovers local drafts. Its native editor
 supports recoverable editing, document find, search, and explicit saving. Persistent
 file authorization is local and explicit. ⇧⌘T shows the text recognized on this Mac
-in a copied image beside its preview, and keeps it locally beside the image; Return,
-⌘C and ⌘S then paste, copy or save that text instead of the image.
+in a copied image beside its preview, and keeps it locally beside the image, where
+search finds the image by it; Return, ⌘C and ⌘S then paste, copy or save that text
+instead of the image.
 ⌘T shows a translation of a text clip, or of the text in an image, recognized
 first when needed, beside its preview, made on this Mac with Apple's Translation
 into the language fixed in Settings › AI, or else the one last chosen from the

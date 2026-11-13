@@ -29,11 +29,14 @@ final class IndexRecoveryTests: XCTestCase {
         let checkpoint = try harness.index.metadata()?.checkpoint
         try await harness.insertTextItems(count: 5, prefix: "written without checkpoint")
         let ids = try await harness.controller.perform { context in try StoredRecords.searchAllItemIDs(in: context) }
+        let identity = try await harness.controller.identity()
         let inputs = try await harness.controller.perform { context in
-            try StoredRecords.searchProjection(itemIDs: ids, in: context)
+            try StoredRecords.searchProjection(itemIDs: ids, identity: identity, in: context)
         }
         let documents = Dictionary(grouping: inputs.flatMap(SearchDocumentBuilder.documents(for:)), by: \.ref.itemID.rawValue)
-        try harness.index.apply(ids.map { IndexedItemChange(itemID: $0, documents: documents[$0.rawValue] ?? []) },
+        try harness.index.apply(ids.map {
+            IndexedItemChange(itemID: $0, documents: documents[$0.rawValue] ?? [], recognizedResults: [:])
+        },
                                 sequence: 0, checkpoint: .keep)
         XCTAssertEqual(try harness.index.metadata()?.checkpoint, checkpoint)
 
@@ -124,11 +127,13 @@ final class IndexRecoveryTests: XCTestCase {
         try harness.index.reset(identity: try await harness.controller.identity())
         let ids = try await harness.controller.perform { context in try StoredRecords.searchAllItemIDs(in: context) }
         let half = Array(ids.prefix(10))
+        let identity = try await harness.controller.identity()
         let inputs = try await harness.controller.perform { context in
-            try StoredRecords.searchProjection(itemIDs: half, in: context)
+            try StoredRecords.searchProjection(itemIDs: half, identity: identity, in: context)
         }
         try harness.index.apply(inputs.map {
-            IndexedItemChange(itemID: $0.itemID, documents: SearchDocumentBuilder.documents(for: $0))
+            IndexedItemChange(itemID: $0.itemID, documents: SearchDocumentBuilder.documents(for: $0),
+                              recognizedResults: [:])
         }, sequence: 0, checkpoint: .keep)
         XCTAssertEqual(try harness.index.metadata()?.state, .building)
 
@@ -167,7 +172,8 @@ final class IndexRecoveryTests: XCTestCase {
         let target = try XCTUnwrap(current.first)
 
         let stale = SearchTestSupport.document(itemID: target.ref.itemID, title: "stale version")
-        try harness.index.apply([IndexedItemChange(itemID: target.ref.itemID, documents: [stale])],
+        try harness.index.apply([IndexedItemChange(itemID: target.ref.itemID, documents: [stale],
+                                                   recognizedResults: [:])],
                                 sequence: 0, checkpoint: .keep)
 
         XCTAssertEqual(try harness.index.allDocuments(), current)

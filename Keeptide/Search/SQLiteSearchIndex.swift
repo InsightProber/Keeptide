@@ -43,13 +43,16 @@ struct SearchIndexMetadata: Equatable, Sendable {
 struct IndexedItemChange: Sendable {
     let itemID: ItemID
     let documents: [SearchDocument]
+    /// The results of text recognized in the item that its documents were made with, by facet; `apply` records
+    /// them in place of the item's earlier ones, so a change without any clears them.
+    let recognizedResults: [ContentFacet: UUID]
 }
 
 /// The derived full-text index. It lives in its own SQLite file, can be deleted
 /// at any time, and is rebuilt from Core Data. One lock-guarded writer
 /// connection; every search opens its own reader.
 final class SQLiteSearchIndex: @unchecked Sendable {
-    static let schemaVersion = 3
+    static let schemaVersion = 4
     static let tokenizer = "trigram case_sensitive 1"
     static let fileName = "Search.sqlite"
 
@@ -149,8 +152,8 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         }
     }
 
-    /// Applies item replacements and the optional checkpoint in one transaction.
-    /// An item whose stored projection came from a later history sequence is left alone.
+    /// Applies item replacements, with the results of recognized text they were made with, and the optional checkpoint
+    /// in one transaction. An item whose stored projection came from a later history sequence is left alone.
     func apply(_ changes: [IndexedItemChange], sequence: Int64, checkpoint: CheckpointUpdate) throws {
         try withConnection { database in
             try database.transaction {
@@ -159,6 +162,11 @@ final class SQLiteSearchIndex: @unchecked Sendable {
                     let newest = try database.rows("SELECT max(projected_seq) FROM doc WHERE item_id = ?", [item])
                     if case .integer(let stored)? = newest.first?.first, stored > sequence { continue }
                     try database.run("DELETE FROM doc WHERE item_id = ?", [item])
+                    try database.run("DELETE FROM recognized WHERE item_id = ?", [item])
+                    for (facet, rowID) in change.recognizedResults {
+                        try database.run("INSERT INTO recognized(item_id, facet, row_id) VALUES (?, ?, ?)",
+                                         [item, .text(facet.rawValue), .text(rowID.uuidString)])
+                    }
                     for document in change.documents where document.ref.itemID == change.itemID {
                         try database.run(Self.insertDocument, Self.values(for: document, sequence: sequence))
                         for collection in CollectionID.sorted(document.collectionIDs) {
@@ -215,6 +223,24 @@ final class SQLiteSearchIndex: @unchecked Sendable {
                 }
             }
             return result
+        }
+    }
+
+    /// Which result of recognized text each item's facet was projected with, recorded by `apply` with the item's
+    /// documents. The results live in LocalState, which keeps no history this index reads, so each pass compares the
+    /// results kept with these.
+    func recognizedRows() throws -> [RecognizedTextKey: UUID] {
+        try withConnection { database in
+            var rows: [RecognizedTextKey: UUID] = [:]
+            for row in try database.rows("SELECT item_id, facet, row_id FROM recognized", []) {
+                guard case .text(let item) = row[0], let itemID = UUID(uuidString: item),
+                      case .text(let facetText) = row[1], let facet = ContentFacet(rawValue: facetText),
+                      case .text(let rowText) = row[2], let rowID = UUID(uuidString: rowText) else {
+                    throw SearchIndexError.corrupt
+                }
+                rows[RecognizedTextKey(itemID: ItemID(rawValue: itemID), facet: facet)] = rowID
+            }
+            return rows
         }
     }
 
@@ -422,6 +448,11 @@ final class SQLiteSearchIndex: @unchecked Sendable {
         CREATE TABLE usage(
             item_id TEXT NOT NULL, facet TEXT NOT NULL, last_used_at REAL NOT NULL, use_count INTEGER NOT NULL,
             PRIMARY KEY(item_id, facet)
+        ) WITHOUT ROWID
+        """,
+        """
+        CREATE TABLE recognized(
+            item_id TEXT NOT NULL, facet TEXT NOT NULL, row_id TEXT NOT NULL, PRIMARY KEY(item_id, facet)
         ) WITHOUT ROWID
         """,
     ]

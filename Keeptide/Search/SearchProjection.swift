@@ -9,6 +9,24 @@ struct TextRepresentation: Equatable, Sendable {
     let bytes: Data
 }
 
+/// A kept result of text recognized in an image, as stored: its UTF-8 bytes and their SHA-256, checked and decoded
+/// when the document is built.
+struct RecognizedTextRow: Hashable, Sendable {
+    let id: UUID
+    /// The content it was made from, version and digest included.
+    let source: ContentRef
+    let bytes: Data
+    let digest: Data
+}
+
+/// What one projection read: the inputs of the visible items among the first `processed` asked for, and, for each of
+/// those items, the results of text recognized in it, by facet, which its documents are made with.
+struct SearchProjectionBatch: Sendable {
+    let inputs: [SearchProjectionInput]
+    let processed: Int
+    let recognizedResults: [ItemID: [ContentFacet: UUID]]
+}
+
 struct MemoProjection: Equatable, Sendable {
     let ref: ContentRef
     let memoID: UUID
@@ -17,6 +35,8 @@ struct MemoProjection: Equatable, Sendable {
     let isInherited: Bool
     /// UTF-8 body of an owned memo; nil for an inherited memo.
     let body: Data?
+    /// Text recognized in an inherited memo's image, made from exactly this content.
+    var recognizedText: RecognizedTextRow? = nil
 }
 
 /// Raw values copied out of Core Data for one item. Decoding, digest checks and
@@ -36,6 +56,8 @@ struct SearchProjectionInput: Equatable, Sendable {
     let hasLocalReference: Bool
     /// Portable text and URL representations only.
     let textRepresentations: [TextRepresentation]
+    /// Text recognized in the history row's image, made from exactly this content; nil without a history row.
+    var recognizedText: RecognizedTextRow? = nil
 }
 
 struct SearchDocument: Equatable, Sendable {
@@ -65,7 +87,8 @@ struct SearchDocument: Equatable, Sendable {
 }
 
 enum SearchDocumentBuilder {
-    static let extractorVersion = 2
+    /// 3: an image's body ends with the text recognized in it.
+    static let extractorVersion = 3
     static let bodyByteLimit = 1_048_576
 
     static func documents(for input: SearchProjectionInput) -> [SearchDocument] {
@@ -81,7 +104,11 @@ enum SearchDocumentBuilder {
                 merged: false, savedAsMemo: input.memo != nil, kind: captureKind, collectionIDs: [],
                 isFavorite: false,
                 title: memo.map { title(of: $0, input: input) } ?? input.title,
-                text: capture, note: memo?.note ?? ""
+                // A clip and the snippet that inherits it are the same image: each takes the text recognized in
+                // either, its own first, as the clip stands for both in All.
+                text: captureKind == .image
+                    ? appending([input.recognizedText, memo?.recognizedText], to: capture) : capture,
+                note: memo?.note ?? ""
             ))
         }
         if let memo = input.memo {
@@ -91,7 +118,11 @@ enum SearchDocumentBuilder {
                 kind: memo.isInherited ? captureKind : .text, collectionIDs: input.collectionIDs,
                 isFavorite: input.isFavorite,
                 title: title(of: memo, input: input),
-                text: memo.isInherited ? capture : ownedText(memo.body), note: memo.note
+                text: memo.isInherited
+                    ? (captureKind == .image
+                        ? appending([memo.recognizedText, input.recognizedText], to: capture) : capture)
+                    : ownedText(memo.body),
+                note: memo.note
             ))
         }
         return documents
@@ -143,6 +174,52 @@ enum SearchDocumentBuilder {
         return ExtractedText(
             body: body.text, url: cap(urls.joined(separator: "\n")).text, partial: truncated || body.cut
         )
+    }
+
+    /// An image's own text and, after it, each text recognized in it that is intact and not there already, each on a
+    /// line of its own, within the body's limit. Chinese or Japanese that wraps onto the next line is joined again, so
+    /// a phrase is found across the wrap.
+    private static func appending(_ rows: [RecognizedTextRow?], to text: ExtractedText) -> ExtractedText {
+        var recognized: [String] = []
+        for row in rows.compactMap({ $0 }) {
+            guard ContentDigest.sha256(row.bytes) == row.digest,
+                  let decoded = String(data: row.bytes, encoding: .utf8) else { continue }
+            let joined = joiningWrappedLines(decoded)
+            if !joined.isEmpty, !recognized.contains(joined) { recognized.append(joined) }
+        }
+        guard !recognized.isEmpty else { return text }
+        var text = text
+        let capped = cap(([text.body] + recognized).filter { !$0.isEmpty }.joined(separator: "\n"))
+        text.body = capped.text
+        text.partial = text.partial || capped.cut
+        return text
+    }
+
+    /// Removes a line break beside Chinese or Japanese, which wrap without a space, unless a space or another break is
+    /// on its other side: the text is searched as one line there, digits and Latin letters in it included. A break
+    /// between words written with spaces, such as Latin or Korean ones, stays, and so does a blank line.
+    private static func joiningWrappedLines(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        var joined = String.UnicodeScalarView()
+        for (index, scalar) in scalars.enumerated() {
+            if scalar == "\n", index > 0, index + 1 < scalars.count {
+                let (before, after) = (scalars[index - 1], scalars[index + 1])
+                if !before.properties.isWhitespace, !after.properties.isWhitespace,
+                   wrapsWithoutSpace(before) || wrapsWithoutSpace(after) { continue }
+            }
+            joined.append(scalar)
+        }
+        return String(joined)
+    }
+
+    /// Han and kana, and the punctuation and full-width forms written with them. Hangul is written with spaces between
+    /// words, so a line break there stands for one.
+    private static func wrapsWithoutSpace(_ scalar: Unicode.Scalar) -> Bool {
+        if scalar.properties.isIdeographic { return true }
+        switch scalar.value {
+        case 0x3001...0x30FF, 0x31F0...0x31FF, 0xFF01...0xFF9F: return true
+        default: return false
+        }
     }
 
     private static func ownedText(_ body: Data?) -> ExtractedText {
