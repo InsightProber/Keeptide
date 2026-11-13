@@ -1533,17 +1533,34 @@ final class PanelController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    /// What `event`'s key types with ⌘, and Shift if it is held, in lower case: the key a ⌘ shortcut is known by, in
+    /// the menu bar and in the panel alike. It is not always what the key types alone: the D key types “в” on a
+    /// Russian layout and “e” on Dvorak – QWERTY ⌘, and “d” on both with ⌘.
+    private static func commandKey(of event: NSEvent) -> String? {
+        event.characters(byApplyingModifiers: event.modifierFlags.intersection(.shift).union(.command))?.lowercased()
+    }
+
+    /// The keys of the panel's commands with ⌘ alone, as `commandKey(of:)` gives them: ⌘S, ⌘E, ⌘N, ⌘D, ⌘F, ⌘[, ⌘],
+    /// ⌘L, ⌘K, ⌘Y, ⌘Z, ⌘T and, while a result shows beside the preview, ⌘C, each run by `handleKeyEquivalent(_:)`.
+    private static let ownCommandKeys: Set<String> = ["s", "e", "n", "d", "f", "[", "]", "l", "k", "y", "z", "t", "c"]
+
     private func handleKeyEquivalent(_ event: NSEvent) -> Bool {
-        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M is the one
-        // shortcut here with Shift.
+        // Caps Lock, like the keypad's and the function key's flags, is no modifier a shortcut asks for. ⇧⌘M and ⇧⌘T
+        // are the shortcuts here with Shift, and ⌥⌘T the one with Option.
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let isShiftCommandM = modifiers == [.command, .shift] && event.charactersIgnoringModifiers?.lowercased() == "m"
-        let isT = event.charactersIgnoringModifiers?.lowercased() == "t"
-        let isShiftCommandT = modifiers == [.command, .shift] && isT
-        let isOptionCommandT = modifiers == [.command, .option] && isT
-        // ⌘. comes with Shift where "." needs it.
+        // The panel knows its commands' keys as the menu bar knows its items' keys, apart from ⌘Return, keypad Enter
+        // and ⌘⌫, which it knows by the key, and ⌘.
+        let key = Self.commandKey(of: event)
+        let isShiftCommandM = modifiers == [.command, .shift] && key == "m"
+        let isShiftCommandT = modifiers == [.command, .shift] && key == "t"
+        let isOptionCommandT = modifiers == [.command, .option] && key == "t"
+        // ⌘. is the text system's key, not the menu bar's: its key bindings know it by what the key types without ⌘,
+        // with Shift where "." needs it, and make it Escape if the panel leaves it to text. The panel knows it the same
+        // way, after its own commands, as AppKit offers a key to key equivalents before key bindings: on Dvorak –
+        // QWERTY ⌘ the key that types "." types "e" with ⌘, and is ⌘E.
         let isCommandPeriod = event.charactersIgnoringModifiers == "."
             && (modifiers == .command || modifiers == [.command, .shift])
+            && !(modifiers == .command && Self.ownCommandKeys.contains(key ?? ""))
         guard isSessionOpen,
               modifiers == .command || isShiftCommandM || isShiftCommandT || isOptionCommandT || isCommandPeriod else {
             return false
@@ -1586,7 +1603,6 @@ final class PanelController: NSWindowController, NSWindowDelegate {
             }
             return true
         }
-        let key = event.charactersIgnoringModifiers?.lowercased()
         // ⇧⌘T shows the text in the selected image beside its preview. It never goes on to the menu bar; a composition
         // keeps it, and held down it has acted already.
         if isShiftCommandT {
@@ -1716,9 +1732,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     ]
 
     /// Keeps a key equivalent from the menu bar, once neither the panel's commands nor its views have taken it, and
-    /// says whether it did. It knows the key as the menu bar does, by what the key types with ⌘, and Shift if it is
-    /// held: on a layout such as Russian or Dvorak – QWERTY ⌘, that is not what the key types alone, which the panel's
-    /// own commands go by.
+    /// says whether it did. It knows the key as the menu bar and the panel's commands do, by `commandKey(of:)`.
     /// - The library's keys stop here and do nothing. While an input method composes, its text gets them, as keys.
     /// - Cut, Copy, Paste and Select All go on while something in the panel takes them, as the search field's text and
     ///   the preview's do, and stop here while the strip, the lists or the filter button have the keys.
@@ -1732,7 +1746,7 @@ final class PanelController: NSWindowController, NSWindowDelegate {
     /// System Settings, and any the menu bar moves to another key for a keyboard layout.
     private func keepFromMenuBar(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        let key = event.characters(byApplyingModifiers: modifiers.intersection(.shift).union(.command))?.lowercased()
+        let key = Self.commandKey(of: event)
         if modifiers == [.command, .option], key == "w" {
             window?.performClose(nil)
             return true
