@@ -167,6 +167,8 @@ Planned capabilities must stay labelled until implemented and verified.
 - Run `./scripts/verify.sh unit`, `integration`, or `ui` for complete XCTest
   targets; append a class name for focused runs. Use `release-build`,
   `warnings-build`, `analyze`, or `all` for broader checks. The shared project/scheme is `Keeptide`; results stay in `.local/`.
+  A test run that passes keeps its summary only; its result bundle, about 150 MB,
+  stays when the run fails or with `KEEPTIDE_KEEP_RESULT_BUNDLE=1`.
 - Use `./scripts/benchmark.sh` for the fixed 10k oracle and 100k Release search
   benchmark. `--million` explicitly selects the larger stress dataset. Its
   service-level latency evidence does not establish UI presentation latency.

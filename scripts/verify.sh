@@ -15,6 +15,9 @@ Usage:
   ./scripts/verify.sh warnings-build
   ./scripts/verify.sh analyze
   ./scripts/verify.sh all
+
+A test run that passes leaves its summary in .local/build/results. Its result
+bundle stays only when the run fails, or with KEEPTIDE_KEEP_RESULT_BUNDLE=1.
 EOF
 }
 
@@ -97,10 +100,15 @@ run_all_tests() {
   verify_test_result "$result_bundle"
 }
 
+# A run that passes is recorded by its summary alone. Its result bundle is about 150 MB, which repeated runs turn
+# into hundreds of gigabytes, and only a run that fails needs one to look into: the script stops before the
+# removal then, as it does when xcodebuild itself fails. KEEPTIDE_KEEP_RESULT_BUNDLE=1 keeps the bundle of a
+# passing run that is itself the evidence, such as one whose attachments a note cites.
 verify_test_result() {
   summary_path="$1.summary.json"
   xcrun xcresulttool get test-results summary --path "$1" --compact > "$summary_path"
   python3 scripts/check_test_result.py "$summary_path"
+  if [ "${KEEPTIDE_KEEP_RESULT_BUNDLE:-}" != 1 ]; then rm -rf "$1"; fi
 }
 
 require_xcode
