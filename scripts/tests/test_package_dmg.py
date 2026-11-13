@@ -15,6 +15,7 @@ APP_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
     "com.apple.security.files.user-selected.read-write": True,
     "com.apple.security.files.bookmarks.app-scope": True,
+    "com.apple.security.network.client": True,
 }
 HELPER_ENTITLEMENTS = {
     "com.apple.security.app-sandbox": True,
@@ -451,7 +452,7 @@ class PackageDmgTests(unittest.TestCase):
         def runner(command: list[str], **kwargs: object) -> str:
             output = self.validating_runner(command, **kwargs)
             if command[:3] == ["/usr/bin/codesign", "-d", "--entitlements"] and command[-1].endswith("/Keeptide"):
-                return plistlib.dumps({**APP_ENTITLEMENTS, "com.apple.security.network.client": True}).decode("utf-8")
+                return plistlib.dumps({**APP_ENTITLEMENTS, "com.apple.security.network.server": True}).decode("utf-8")
             return output
 
         with tempfile.TemporaryDirectory() as directory:

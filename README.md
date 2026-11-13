@@ -74,9 +74,9 @@ snippets in a native library.
   translation stays.
 - **You decide what stays.** Ignore specific apps, keep history for a day or
   forever, restore from Recently Deleted, and export your library to a folder.
-- **Stays on your Mac.** Keeptide's app sandbox has no network access. Content
-  that apps mark as private or transient, such as passwords from a password
-  manager, is skipped.
+- **Stays on your Mac.** Nothing you copy leaves your Mac. Content that apps
+  mark as private or transient, such as passwords from a password manager, is
+  skipped.
 
 ## Install
 
@@ -182,8 +182,14 @@ Choose **Settings…** from the menu-bar menu.
 
 ## Privacy
 
-- Your history lives in a local library on this Mac. Keeptide's app sandbox
-  has no network access, and iCloud saving is not available yet.
+- Your history lives in a local library on this Mac, and iCloud saving is not
+  available yet.
+- Keeptide's app sandbox allows outgoing connections, set aside for cloud
+  models you will be able to choose with your own API key (planned). Only one
+  part of Keeptide may use them: it connects only to Anthropic's and OpenAI's
+  API hosts over HTTPS, follows no redirect, and keeps no cache or cookies. No
+  feature uses it yet, so nothing leaves your Mac. The helper that reads the
+  clipboard never connects.
 - Ignored apps, and content that apps mark as private or transient, are
   skipped. A copy larger than 50 MiB, or one whose formats cannot all be read,
   is not kept, and Keeptide says why until a later copy is kept.

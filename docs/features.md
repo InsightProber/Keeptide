@@ -147,6 +147,11 @@ planned.
 - Text recognition reads only images that were copied, and translation only the
   text of clips, when asked. Keeptide does not read the screen or other apps'
   windows.
+- Keeptide's own connections go only through its cloud-model module, over
+  HTTPS, to the model providers' API hosts. It sends nothing until a person
+  chooses a cloud model with their own API key, which is planned. iCloud
+  mirroring uses the system's CloudKit service. The helper that reads the
+  clipboard never connects.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
   Settings; without it, Return copies. Keeptide checks the front app and window
   before it sends the paste and again after the panel hides. When they changed,
