@@ -94,6 +94,23 @@ final class PreviewUITests: XCTestCase {
         )
     }
 
+    /// With synthetic previews, which load nothing, a link's row reads the title its page gave over its address, and
+    /// its detail shows that title too.
+    func testALinksRowAndDetailShowItsPagesTitle() {
+        continueAfterFailure = false
+        let app = launchKeeptide(seedSyntheticClips: true, fakesLinkPreviews: true)
+        let library = requireLibrary(in: app)
+
+        let title = "Synthetic page at example.com/synthetic"
+        let row = app.staticTexts[title].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), app.debugDescription)
+        XCTAssertTrue(app.staticTexts["https://example.com/synthetic"].firstMatch.exists, app.debugDescription)
+        row.click()
+        XCTAssertTrue(library.buttons["Open Link"].waitForExistence(timeout: 8), app.debugDescription)
+        let preview = library.descendants(matching: .any)["LibraryContentPreview"]
+        XCTAssertTrue(preview.staticTexts[title].waitForExistence(timeout: 8), app.debugDescription)
+    }
+
     func testSavedURLLeavesTypedPreviewAndBecomesExactEditableSource() {
         continueAfterFailure = false
         let app = launchKeeptide(seedSyntheticClips: true)
@@ -115,7 +132,7 @@ final class PreviewUITests: XCTestCase {
         XCTAssertFalse(library.buttons["Open Link"].exists)
     }
 
-    private func launchKeeptide(seedSyntheticClips: Bool = false) -> XCUIApplication {
+    private func launchKeeptide(seedSyntheticClips: Bool = false, fakesLinkPreviews: Bool = false) -> XCUIApplication {
         let sessionID = UUID()
         let app = XCUIApplication()
         app.launchArguments = [
@@ -126,6 +143,7 @@ final class PreviewUITests: XCTestCase {
             sessionID.uuidString,
         ]
         if seedSyntheticClips { app.launchArguments.append("--seed-synthetic-clips") }
+        if fakesLinkPreviews { app.launchArguments.append("--fake-link-previews") }
         self.sessionID = sessionID
         application = app
         app.launch()

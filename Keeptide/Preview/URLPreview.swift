@@ -20,10 +20,14 @@ struct URLPreview: View {
     let url: URL
     /// Why the link's page isn't shown, when Keeptide never loads it.
     var note: String? = nil
+    /// What was loaded of the link's page: its picture, and its title where the link has none of its own.
+    var preview: LinkPreview? = nil
     var onOpen: (URL) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let image = preview?.image { LinkPicture(image: image) }
+
             if let displayTitle {
                 Text(verbatim: displayTitle)
                     .font(.title3.weight(.semibold))
@@ -58,9 +62,8 @@ struct URLPreview: View {
         .accessibilityElement(children: .contain)
     }
 
+    /// The link's own title, then its page's, each as a card shows it: on one line, without direction controls.
     private var displayTitle: String? {
-        guard let title else { return nil }
-        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        LinkPreview.shownTitle(title) ?? LinkPreview.shownTitle(preview?.title)
     }
 }

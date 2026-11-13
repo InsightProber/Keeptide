@@ -58,9 +58,9 @@ cleanup and disk-pressure recovery; cloud integration remains planned.
 A network boundary is in place: only two modules may connect.
 `Keeptide/CloudModels/` connects over HTTPS to the model providers' API hosts,
 and nothing uses it yet. `Keeptide/LinkPreviews/` loads the pages of copied web
-links through LinkPresentation for their cards' titles and pictures, and shows
-a link's page in the preview in a web view that keeps nothing, unless Settings ›
-Privacy's Load link previews is off.
+links through LinkPresentation for the titles and pictures their cards and the
+library show, and shows a link's page in quick access's preview in a web view
+that keeps nothing, unless Settings › Privacy's Load link previews is off.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here

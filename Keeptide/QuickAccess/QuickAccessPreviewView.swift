@@ -19,6 +19,9 @@ struct QuickAccessPreviewView: View {
     var isOnTray = false
     /// Loads a link's page in the preview, where it is given and loading previews is on.
     var linkPages: LinkPreviewCenter? = nil
+    /// Shows what was loaded of a link's page, its picture and title, where the page itself isn't shown: in the
+    /// library. It asks for them as the link shows.
+    var linkPictures: LinkPreviewCenter? = nil
 
     var body: some View {
         Group {
@@ -62,8 +65,20 @@ struct QuickAccessPreviewView: View {
                         .id(url)
                 case .link(let note):
                     if let url = URL(string: address) {
-                        URLPreview(title: title, url: url, note: note) { NSWorkspace.shared.open($0) }
-                            .padding(16)
+                        URLPreview(title: title, url: url, note: note ?? linkPictures?.refusal(of: address),
+                                   preview: linkPictures?.state(of: address).loadedPreview) {
+                            NSWorkspace.shared.open($0)
+                        }
+                        .padding(16)
+                        // Asked for once the link has shown a moment, so that a key held through the library's list
+                        // asks for nothing, and again when loading previews is turned on.
+                        .task(id: LinkPictureRequest(address: address,
+                                                     loadsPreviews: linkPictures?.loadsPreviews == true)) {
+                            guard let linkPictures, linkPictures.loadsPreviews else { return }
+                            try? await Task.sleep(for: .milliseconds(500))
+                            guard !Task.isCancelled else { return }
+                            linkPictures.request(address)
+                        }
                     } else {
                         PreviewText(text: address, scrollerBottomInset: scrollerBottomInset, onCommand: onCommand)
                     }
@@ -98,6 +113,12 @@ struct QuickAccessPreviewView: View {
             .compactMap { $0 }
             .joined(separator: ", ")
     }
+}
+
+/// What a link's preview in the library asks for its picture and title again for.
+private struct LinkPictureRequest: Equatable {
+    let address: String
+    let loadsPreviews: Bool
 }
 
 /// Read-only, selectable text that keeps its line breaks and indentation: a clip in the preview card, or a command in
