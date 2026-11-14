@@ -16,9 +16,7 @@ struct AnthropicMessagesSource: GenerationSource {
         let request = request
         return ProviderStream.events(from: Self.preset, by: client, sending: { source.cloudRequest() },
                                      answer: Answer(request: request)) { status, headers, body in
-            let error = try? ProviderStream.decode(ErrorBody.self, body).error
-            return .error(Self.failure(type: error?.type, message: error?.message ?? "", status: status,
-                                       retryAfter: ProviderStream.retryAfter(in: headers), for: request))
+            .error(Self.failure(body, status: status, headers: headers, about: .generation(request)))
         }
     }
 
@@ -38,10 +36,18 @@ struct AnthropicMessagesSource: GenerationSource {
                             headers: ProviderStream.headers(for: Self.preset, key: key), body: encoded)
     }
 
+    /// An HTTP error as a person reads it, from its status, its `retry-after` header and the error in its body.
+    fileprivate static func failure(_ body: Data, status: Int, headers: [String: String],
+                                    about subject: ProviderStream.Subject) -> GenerationError {
+        let error = try? ProviderStream.decode(ErrorBody.self, body).error
+        return failure(type: error?.type, message: error?.message ?? "", status: status,
+                       retryAfter: ProviderStream.retryAfter(in: headers), about: subject)
+    }
+
     /// An error Claude reported, by HTTP status or in the stream, as a person reads it. A few are told apart only by
     /// their message, and then only for the types that say them.
     fileprivate static func failure(type: String?, message: String, status: Int?, retryAfter: Duration?,
-                                    for request: ModelRequest) -> GenerationError {
+                                    about subject: ProviderStream.Subject) -> GenerationError {
         let said = message.lowercased()
         let invalid = status == 400 || type == "invalid_request_error"
         let limited = status == 429 || type == "rate_limit_error"
@@ -55,15 +61,20 @@ struct AnthropicMessagesSource: GenerationSource {
             return GenerationError(kind: .noCredit, message: "Your Anthropic account reached its spending limit.")
         }
         if type == "permission_error" {
-            return GenerationError(kind: .accessDenied, message: "Your API key doesn't have access to this model.")
+            let what = switch subject {
+            case .generation: "this model"
+            case .models: "Anthropic's models"
+            }
+            return GenerationError(kind: .accessDenied, message: "Your API key doesn't have access to \(what).")
         }
         if type == "forbidden" {
             return GenerationError(kind: .regionUnavailable, message: "Anthropic isn't available in your region.")
         }
-        if status == 404 || type == "not_found_error" {
+        if case .generation(let request) = subject, status == 404 || type == "not_found_error" {
             return GenerationError(kind: .modelUnavailable, message: "\(request.modelName) is no longer available.")
         }
-        if status == 413 || type == "request_too_large" || (invalid && said.contains("prompt is too long")) {
+        if case .generation(let request) = subject,
+           status == 413 || type == "request_too_large" || (invalid && said.contains("prompt is too long")) {
             return ProviderStream.tooLarge(request)
         }
         if limited {
@@ -136,11 +147,51 @@ private struct Answer: ProviderAnswer {
         case "error":
             let error = try ProviderStream.decode(ErrorBody.self, data).error
             throw AnthropicMessagesSource.failure(type: error.type, message: error.message ?? "", status: nil,
-                                                  retryAfter: nil, for: request)
+                                                  retryAfter: nil, about: .generation(request))
         default:
             // `ping`, the start and end of each block, and events Keeptide doesn't know.
             return []
         }
+    }
+}
+
+/// Claude's list of models, read page by page until Claude says there are no more, and given only whole.
+enum AnthropicModels {
+    private static let preset = ProviderPreset.anthropic
+    /// The most models a page holds, which the Models API allows.
+    private static let pageSize = 1000
+    /// The most pages read. Ten thousand models is more than any provider offers, so a list that goes on is refused.
+    private static let pageLimit = 10
+
+    static func list(by client: ModelClient, key: APIKey,
+                     waiting wait: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+        async throws -> [RemoteModel] {
+        var models: [RemoteModel] = []
+        var listed: Set<String> = []
+        var cursors: Set<String> = []
+        var after: String?
+        for _ in 0..<pageLimit {
+            var url = preset.baseURL.appending(path: "v1/models")
+            url.append(queryItems: [URLQueryItem(name: "limit", value: "\(pageSize)")]
+                + (after.map { [URLQueryItem(name: "after_id", value: $0)] } ?? []))
+            let request = CloudRequest(method: .get, url: url, headers: ProviderStream.headers(for: preset, key: key))
+            let body = try await ProviderStream.fetch(request, from: preset, by: client, waiting: wait) {
+                AnthropicMessagesSource.failure($2, status: $0, headers: $1, about: .models)
+            }
+            guard let page = try? JSONDecoder().decode(Page.self, from: body) else {
+                throw GenerationError.interrupted
+            }
+            let read = page.data.compactMap { $0.value?.model }
+            // A page of models none of which can be read would empty the catalog it stands in for.
+            guard !read.isEmpty || page.data.isEmpty else { throw GenerationError.interrupted }
+            // A model listed again, as the list changes between pages, is kept where it was first.
+            models += read.filter { listed.insert($0.id).inserted }
+            guard page.hasMore == true else { return models }
+            // A page that says there are more says where it ended, somewhere the list hasn't been.
+            guard let last = page.lastID, cursors.insert(last).inserted else { throw GenerationError.interrupted }
+            after = last
+        }
+        throw GenerationError.interrupted
     }
 }
 
@@ -219,4 +270,148 @@ private struct ErrorBody: Decodable {
     }
 
     let error: Failure
+}
+
+/// A page of the Models API's list.
+private struct Page: Decodable {
+    let data: [Lenient<ListedModel>]
+    let hasMore: Bool?
+    let lastID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case data
+        case hasMore = "has_more"
+        case lastID = "last_id"
+    }
+}
+
+/// A model as the Models API lists it. Only its identifier must be read; anything else that can't be is unknown. A
+/// capability's levels are read by their names, as they come, so the keys are spelled out rather than converted from
+/// snake case.
+private struct ListedModel: Decodable {
+    let id: String
+    let displayName: String?
+    let createdAt: String?
+    let maxInputTokens: Int?
+    let maxTokens: Int?
+    let capabilities: Capabilities?
+    let lifecycle: String?
+    let retiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case displayName = "display_name"
+        case createdAt = "created_at"
+        case maxInputTokens = "max_input_tokens"
+        case maxTokens = "max_tokens"
+        case capabilities
+        case lifecycle
+        case retiresAt = "retires_at"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        id = try fields.decode(String.self, forKey: .id)
+        guard !id.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: fields, debugDescription: "No identifier")
+        }
+        displayName = try? fields.decodeIfPresent(String.self, forKey: .displayName)
+        createdAt = try? fields.decodeIfPresent(String.self, forKey: .createdAt)
+        maxInputTokens = try? fields.decodeIfPresent(Int.self, forKey: .maxInputTokens)
+        maxTokens = try? fields.decodeIfPresent(Int.self, forKey: .maxTokens)
+        capabilities = try? fields.decodeIfPresent(Capabilities.self, forKey: .capabilities)
+        lifecycle = try? fields.decodeIfPresent(String.self, forKey: .lifecycle)
+        retiresAt = try? fields.decodeIfPresent(String.self, forKey: .retiresAt)
+    }
+
+    var model: RemoteModel {
+        RemoteModel(id: id, displayName: displayName, created: createdAt.flatMap(Self.date),
+                    maxInputTokens: maxInputTokens.flatMap(Self.known), maxOutputTokens: maxTokens.flatMap(Self.known),
+                    readsImages: capabilities?.imageInput?.supported,
+                    thinkingTypes: capabilities?.thinking?.types.map {
+                        Set($0.supported.compactMap(ModelRequest.Thinking.init))
+                    },
+                    efforts: capabilities?.effort.map { Set($0.supported.compactMap(ModelRequest.Effort.init)) },
+                    lifecycle: lifecycle.flatMap(RemoteModel.Lifecycle.init), shutDown: retiresAt.flatMap(Self.date))
+    }
+
+    /// A date, or nil for the epoch, which the Models API gives for a date it doesn't know.
+    private static func date(_ text: String) -> Date? {
+        let date = (try? Date(text, strategy: .iso8601))
+            ?? (try? Date(text, strategy: Date.ISO8601FormatStyle(includingFractionalSeconds: true)))
+        return date.flatMap { $0.timeIntervalSince1970 > 0 ? $0 : nil }
+    }
+
+    /// A count of tokens, or nil for none, which no model takes.
+    private static func known(_ tokens: Int) -> Int? {
+        tokens > 0 ? tokens : nil
+    }
+}
+
+/// The capabilities Keeptide shapes a request by. The Models API gives the whole tree, each leaf saying whether it is
+/// supported; the rest is left unread, and a capability that can't be read is unknown.
+private struct Capabilities: Decodable {
+    struct Leaf: Decodable {
+        let supported: Bool?
+    }
+
+    struct Thinking: Decodable {
+        let types: Levels?
+
+        enum CodingKeys: String, CodingKey {
+            case types
+        }
+
+        init(from decoder: any Decoder) throws {
+            types = try? decoder.container(keyedBy: CodingKeys.self).decodeIfPresent(Levels.self, forKey: .types)
+        }
+    }
+
+    let imageInput: Leaf?
+    let thinking: Thinking?
+    let effort: Levels?
+
+    enum CodingKeys: String, CodingKey {
+        case imageInput = "image_input"
+        case thinking
+        case effort
+    }
+
+    init(from decoder: any Decoder) throws {
+        let fields = try decoder.container(keyedBy: CodingKeys.self)
+        imageInput = try? fields.decodeIfPresent(Leaf.self, forKey: .imageInput)
+        thinking = try? fields.decodeIfPresent(Thinking.self, forKey: .thinking)
+        effort = try? fields.decodeIfPresent(Levels.self, forKey: .effort)
+    }
+}
+
+/// The levels under a capability by name, beside the capability's own `supported`: those that are supported. A level
+/// given as null isn't; one that can't be read leaves the whole capability unknown.
+private struct Levels: Decodable {
+    let supported: Set<String>
+
+    init(from decoder: any Decoder) throws {
+        let levels = try decoder.container(keyedBy: Name.self)
+        var supported: Set<String> = []
+        for name in levels.allKeys where name.stringValue != "supported" {
+            guard try !levels.decodeNil(forKey: name) else { continue }
+            if try levels.decode(Capabilities.Leaf.self, forKey: name).supported == true {
+                supported.insert(name.stringValue)
+            }
+        }
+        self.supported = supported
+    }
+
+    private struct Name: CodingKey {
+        let stringValue: String
+        var intValue: Int? { nil }
+
+        init(stringValue: String) {
+            self.stringValue = stringValue
+        }
+
+        init?(intValue: Int) {
+            nil
+        }
+    }
 }

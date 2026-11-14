@@ -25,7 +25,8 @@ final class StubService: URLProtocol, @unchecked Sendable {
     }
 
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var current = Answer.respond(status: 200, headers: [:], chunks: [])
+    /// The answers still to give, in order; the last is given to every request after it.
+    nonisolated(unsafe) private static var answers = [Answer.respond(status: 200, headers: [:], chunks: [])]
     nonisolated(unsafe) private static var seen: [Seen] = []
     nonisolated(unsafe) private static var stoppedBeforeTheEnd = 0
     /// The rest of an answer held after its first chunk, and which answer it is.
@@ -38,12 +39,18 @@ final class StubService: URLProtocol, @unchecked Sendable {
     static var releasedOnItsOwn: Bool { lock.withLock { restSentOnItsOwn } }
 
     static func answer(_ answer: Answer) {
-        lock.withLock { current = answer }
+        lock.withLock { answers = [answer] }
+    }
+
+    /// Answers each request with the next of `sequence`, and every request after the last with the last.
+    static func answer(_ sequence: [Answer]) {
+        precondition(!sequence.isEmpty)
+        lock.withLock { answers = sequence }
     }
 
     static func reset() {
         lock.withLock {
-            current = .respond(status: 200, headers: [:], chunks: [])
+            answers = [.respond(status: 200, headers: [:], chunks: [])]
             seen = []
             stoppedBeforeTheEnd = 0
             rest = nil
@@ -78,7 +85,7 @@ final class StubService: URLProtocol, @unchecked Sendable {
         let body = Self.body(of: request)
         let answer = Self.lock.withLock { () -> Answer in
             Self.seen.append(Seen(request: request, body: body))
-            return Self.current
+            return Self.answers.count > 1 ? Self.answers.removeFirst() : Self.answers[0]
         }
         guard let url = request.url else { return }
         switch answer {
