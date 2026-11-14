@@ -11,6 +11,14 @@ protocol ProviderAnswer: Sendable {
 /// What every provider's source does alike: send its request, read the streamed answer until the provider says it is
 /// over, and say what went wrong as a person reads it.
 enum ProviderStream {
+    /// What a request asked a provider for, which a failure is said about.
+    enum Subject: Sendable {
+        /// A generation of the text or image in the request, by the model it names.
+        case generation(ModelRequest)
+        /// The provider's list of models.
+        case models
+    }
+
     /// How a response other than a 200 ends the generation.
     enum Failure: Sendable {
         /// With this error.
@@ -23,6 +31,53 @@ enum ProviderStream {
     static let errorBodyLimit = 64 * 1024
     /// The most of a provider's own message a result shows.
     static let shownMessageLimit = 200
+    /// The most of an answer that isn't streamed, such as a list of models, read.
+    static let answerLimit = 4 * 1024 * 1024
+    /// The pauses before a request that changes nothing is tried again, when the provider doesn't ask for a pause.
+    static let retryPauses: [Duration] = [.seconds(1), .seconds(2)]
+    /// The longest pause a provider may ask for before a request is tried again. A longer one is told to the person.
+    static let longestRetryPause = Duration.seconds(30)
+    /// The ways of not reaching a host that may pass in a moment. Being offline, or a certificate that isn't trusted,
+    /// doesn't.
+    static let passingUnreachable: Set<URLError.Code> = [
+        .timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+    ]
+
+    /// A provider's whole answer to a request that changes nothing and costs nothing, such as its list of models: the
+    /// body of a 200. A failure that may pass is tried twice more: a host not reached for a moment, too many requests,
+    /// and the provider's own failures. The pause before each try is the one the provider asks for, or else 1 and
+    /// then 2 seconds; a provider that asks for longer than half a minute is told to the person instead of being
+    /// asked again before it may be. Any other failure, such as no credit, ends it at once, as `failure` says it.
+    static func fetch(
+        _ request: CloudRequest, from preset: ProviderPreset, by client: ModelClient,
+        waiting wait: @Sendable (Duration) async throws -> Void,
+        failure: (_ status: Int, _ headers: [String: String], _ body: Data) -> GenerationError
+    ) async throws -> Data {
+        var pauses = retryPauses
+        while true {
+            let failed: GenerationError
+            let mayPass: Bool
+            var asked: Duration?
+            do {
+                let response = try await client.send(request)
+                if response.status == 200 { return try await whole(response.body) }
+                guard let body = await errorBody(of: response) else { throw CancellationError() }
+                try Task.checkCancellation()
+                failed = failure(response.status, response.headers, body)
+                mayPass = failed.kind == .rateLimited || failed.kind == .overloaded
+                asked = retryAfter(in: response.headers)
+            } catch let error as CloudError {
+                // Before the answer or part way through it.
+                failed = sendFailure(error, to: preset)
+                mayPass = if case .unreachable(_, let code) = error { passingUnreachable.contains(code) } else { false }
+            }
+            guard mayPass, let pause = pauses.first else { throw failed }
+            let waiting = asked ?? pause
+            guard waiting <= longestRetryPause else { throw failed }
+            pauses.removeFirst()
+            try await wait(waiting)
+        }
+    }
 
     /// A generation's events. The request is written in the task that sends it, rather than by the caller, as an image
     /// takes a while to encode, and a generation stopped meanwhile sends nothing. `answer` reads a 200's events, and
@@ -147,6 +202,18 @@ enum ProviderStream {
         }
     }
 
+    /// The whole of an answer's body, which ends unexpectedly when it grows past `answerLimit`.
+    private static func whole(_ body: AsyncThrowingStream<Data, any Error>) async throws -> Data {
+        var data = Data()
+        for try await chunk in body {
+            data.append(chunk)
+            guard data.count <= answerLimit else { throw GenerationError.interrupted }
+        }
+        // A body stops early, as if it had ended, when the task reading it is cancelled.
+        try Task.checkCancellation()
+        return data
+    }
+
     /// The start of an error's body: what arrived before it ended, was cut off or reached the limit. Nil when the task
     /// reading it was cancelled.
     private static func errorBody(of response: CloudResponse) async -> Data? {
@@ -166,16 +233,18 @@ enum ProviderStream {
 
     /// A request that couldn't be sent, as a person reads it: a host that can't be reached is named.
     private static func sendFailure(_ error: any Error, to preset: ProviderPreset) -> any Error {
-        switch error as? CloudError {
-        case .unreachable(let host, _)?:
-            return GenerationError(kind: .network, message: "Can't reach \(host).")
-        case .notAllowed?:
-            return GenerationError(kind: .network,
-                                   message: "Can't reach \(preset.baseURL.host(percentEncoded: false) ?? "").")
-        case .notHTTP?:
-            return GenerationError.interrupted
-        case nil:
-            return error is CancellationError ? error : GenerationError.interrupted
+        if let error = error as? CloudError { return sendFailure(error, to: preset) }
+        return error is CancellationError ? error : GenerationError.interrupted
+    }
+
+    private static func sendFailure(_ error: CloudError, to preset: ProviderPreset) -> GenerationError {
+        switch error {
+        case .unreachable(let host, _):
+            GenerationError(kind: .network, message: "Can't reach \(host).")
+        case .notAllowed:
+            GenerationError(kind: .network, message: "Can't reach \(preset.baseURL.host(percentEncoded: false) ?? "").")
+        case .notHTTP:
+            GenerationError.interrupted
         }
     }
 
