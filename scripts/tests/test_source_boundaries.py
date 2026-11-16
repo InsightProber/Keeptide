@@ -16,6 +16,8 @@ FORBIDDEN_CLIPBOARD_ACCESS = re.compile(r"\bNSPasteboard\b|\bUIPasteboard\b")
 
 APP_SOURCES = REPOSITORY_ROOT / "Keeptide"
 CLOUD_MODULE = APP_SOURCES / "CloudModels"
+LINK_PREVIEW_MODULE = APP_SOURCES / "LinkPreviews"
+NETWORK_MODULES = (CLOUD_MODULE, LINK_PREVIEW_MODULE)
 PASTEBOARD_READER = REPOSITORY_ROOT / "KeeptidePasteboardReader"
 UNIT_TESTS = REPOSITORY_ROOT / "KeeptideTests"
 UI_TESTS = REPOSITORY_ROOT / "KeeptideUITests"
@@ -59,7 +61,12 @@ NETWORK_ACCESS = re.compile(
     r"|\bresourceBytes\b|\bNSAttributedString\s*\(\s*html\b|\bDocumentType\.(?:html|webArchive)\b"
     r"|\bdocumentType\s*:\s*\.(?:html|webArchive)\b"
 )
-# Writing to the log, which must never carry what the cloud module sends or receives.
+# How the link preview module may reach the network: the system's LinkPresentation and WebKit, nothing of its own.
+LINK_PREVIEW_NETWORK = re.compile(r"\bimport\s+(?:WebKit|LinkPresentation)\b|\bWKWebView\b|\bLPMetadataProvider\b")
+# The system's link loader named in a test, other than to ask how it reads a failure: a test that built one would load
+# a real website, however it built it.
+TEST_LINK_LOADER = re.compile(r"\bSystemLinkMetadataLoader\b(?!\.reason\b)")
+# Writing to the log, which must never carry what the network modules send or receive.
 LOGGING = re.compile(r"\b(?:print|debugPrint|dump|NSLog|os_log)\s*\(|\bLogger\s*\(|\bimport\s+(?:os|OSLog)\b")
 # A model client built in a test: it must be given a stand-in for the network.
 TEST_CLIENT = re.compile(r"\bModelClient\s*\(((?:[^()]|\([^()]*\))*)\)")
@@ -241,15 +248,16 @@ class NetworkBoundaryTests(unittest.TestCase):
                      "[.documentType: NSAttributedString.DocumentType.rtf]", "socketCount"):
             self.assertIsNone(NETWORK_ACCESS.search(code), code)
 
-    def test_only_the_cloud_module_reaches_the_network(self) -> None:
-        cloud_sources = frozenset(
-            path.relative_to(REPOSITORY_ROOT).as_posix() for path in CLOUD_MODULE.rglob("*.swift")
+    def test_only_the_cloud_and_link_preview_modules_reach_the_network(self) -> None:
+        for module in NETWORK_MODULES:
+            self.assertTrue(any(module.rglob("*.swift")), f"{module} has no sources")
+        module_sources = frozenset(
+            path.relative_to(REPOSITORY_ROOT).as_posix() for module in NETWORK_MODULES for path in module.rglob("*.swift")
         )
-        self.assertNotEqual(cloud_sources, frozenset(), f"{CLOUD_MODULE} has no sources")
         self.assertEqual(
-            matching_lines(NETWORK_ACCESS, (APP_SOURCES,), cloud_sources),
+            matching_lines(NETWORK_ACCESS, (APP_SOURCES,), module_sources),
             [],
-            "Only Keeptide/CloudModels/ may reach the network",
+            "Only Keeptide/CloudModels/ and Keeptide/LinkPreviews/ may reach the network",
         )
         # The reader inherits Keeptide's sandbox, outgoing connections included; its code never uses them.
         self.assertEqual(
@@ -258,28 +266,42 @@ class NetworkBoundaryTests(unittest.TestCase):
             "The pasteboard reader never reaches the network",
         )
 
-    def test_the_cloud_module_reaches_nothing_but_the_network_and_logs_nothing(self) -> None:
-        for pattern, why in (
-            (FORBIDDEN_CLIPBOARD_ACCESS, "reads or writes the clipboard"),
-            (KEYBOARD_EVENT_CREATION_OR_POSTING, "makes or posts keyboard events"),
-            (APPLICATION_ACTIVATION, "activates an app"),
-            (LOGGING, "writes to the log"),
-        ):
-            self.assertEqual(matching_lines(pattern, (CLOUD_MODULE,)), [], f"The cloud module {why}")
+    def test_link_previews_reach_the_network_only_through_the_system(self) -> None:
+        # Pages are loaded through LinkPresentation and WebKit alone, never through URL loading or sockets of the
+        # module's own.
+        offenders: list[str] = []
+        for source_file in sorted(LINK_PREVIEW_MODULE.rglob("*.swift")):
+            code = code_only(source_file.read_text(encoding="utf-8"))
+            for match in NETWORK_ACCESS.finditer(code):
+                if not LINK_PREVIEW_NETWORK.fullmatch(match.group(0)):
+                    line = code.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line} {match.group(0)}")
+        self.assertEqual(offenders, [], "Keeptide/LinkPreviews/ loads pages only through LinkPresentation and WebKit")
 
-    def test_the_cloud_module_is_compiled_into_the_app_alone(self) -> None:
-        # The reader may compile shared sources; never the cloud module's.
+    def test_the_network_modules_reach_nothing_but_the_network_and_log_nothing(self) -> None:
+        for module in NETWORK_MODULES:
+            for pattern, why in (
+                (FORBIDDEN_CLIPBOARD_ACCESS, "reads or writes the clipboard"),
+                (KEYBOARD_EVENT_CREATION_OR_POSTING, "makes or posts keyboard events"),
+                (APPLICATION_ACTIVATION, "activates an app"),
+                (LOGGING, "writes to the log"),
+            ):
+                self.assertEqual(matching_lines(pattern, (module,)), [], f"Keeptide/{module.name}/ {why}")
+
+    def test_the_network_modules_are_compiled_into_the_app_alone(self) -> None:
+        # The reader may compile shared sources; never a network module's.
         project = PROJECT.read_text(encoding="utf-8")
         phases = dict(re.findall(
             r"(\w{24}) /\* Sources \*/ = \{isa = PBXSourcesBuildPhase;[^\n]*?files = \(([^)]*)\)", project
         ))
         self.assertIn(APP_SOURCES_PHASE, phases)
         compiled = {phase: set(re.findall(r"/\* (\S+) in Sources \*/", files)) for phase, files in phases.items()}
-        cloud_files = {path.name for path in CLOUD_MODULE.rglob("*.swift")}
-        self.assertTrue(cloud_files <= compiled[APP_SOURCES_PHASE], "The app compiles the cloud module")
-        for phase, names in compiled.items():
-            if phase != APP_SOURCES_PHASE:
-                self.assertEqual(names & cloud_files, set(), f"Sources phase {phase} compiles the cloud module")
+        for module in NETWORK_MODULES:
+            module_files = {path.name for path in module.rglob("*.swift")}
+            self.assertTrue(module_files <= compiled[APP_SOURCES_PHASE], f"The app compiles Keeptide/{module.name}/")
+            for phase, names in compiled.items():
+                if phase != APP_SOURCES_PHASE:
+                    self.assertEqual(names & module_files, set(), f"Sources phase {phase} compiles Keeptide/{module.name}/")
 
     def test_tests_build_a_model_client_only_with_a_stand_in_for_the_network(self) -> None:
         # The test host may connect out; a test that reached a provider would make a real, billed request.
@@ -296,6 +318,22 @@ class NetworkBoundaryTests(unittest.TestCase):
                         clients.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line}")
         self.assertEqual(clients, [], "Tests must give each ModelClient a stand-in for the network")
 
+    def test_tests_never_build_the_system_link_loader(self) -> None:
+        # The test host may connect out; a test that built the system's loader would load a real website.
+        for code in ("SystemLinkMetadataLoader()", "SystemLinkMetadataLoader (timeout: 1)", "SystemLinkMetadataLoader.init()",
+                     "let loader: SystemLinkMetadataLoader = .init()", "[SystemLinkMetadataLoader]()"):
+            self.assertIsNotNone(TEST_LINK_LOADER.search(code), code)
+        for code in ("SystemLinkMetadataLoader.reason(for: error)", "SystemLinkMetadataLoaderTests"):
+            self.assertIsNone(TEST_LINK_LOADER.search(code), code)
+        builds: list[str] = []
+        for directory in (UNIT_TESTS, UI_TESTS):
+            for source_file in sorted(directory.rglob("*.swift")):
+                code = code_only(source_file.read_text(encoding="utf-8"))
+                for match in TEST_LINK_LOADER.finditer(code):
+                    line = code.count("\n", 0, match.start()) + 1
+                    builds.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line}")
+        self.assertEqual(builds, [], "Tests must never build the system's link loader")
+
 
 class EntitlementTests(unittest.TestCase):
     def test_keeptide_may_connect_out_and_do_nothing_more(self) -> None:
@@ -304,7 +342,7 @@ class EntitlementTests(unittest.TestCase):
                 "com.apple.security.app-sandbox": True,
                 "com.apple.security.files.user-selected.read-write": True,
                 "com.apple.security.files.bookmarks.app-scope": True,
-                # Outgoing connections only, for the cloud module; nothing listens.
+                # Outgoing connections only, for the cloud and link preview modules; nothing listens.
                 "com.apple.security.network.client": True,
             })
 
