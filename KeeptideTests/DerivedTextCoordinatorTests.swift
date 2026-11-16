@@ -1561,6 +1561,110 @@ final class DerivedTextCoordinatorTests: XCTestCase {
         _ = try await startedTranslation(translator, 0)
     }
 
+    // MARK: What the result columns show
+
+    func testWhatTheTextColumnShowsIsWorkedOutFromTheJobsAndWhatWasKept() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Screenshot", into: controller)
+        let recognizer = ScriptedRecognizer()
+        let coordinator = try await makeCoordinator(controller, store, recognizer)
+        func shown(read: Bool = true, kept: DerivedText? = nil) -> TextColumn {
+            ResultColumnContents.text(for: source, in: coordinator,
+                                      kept: read ? KeptResult(source: source, result: kept) : nil).column
+        }
+
+        // Until the store has said what it kept, the column waits; with nothing kept, it offers to extract the text.
+        XCTAssertEqual(shown(read: false), .loading)
+        XCTAssertEqual(shown(), .notStarted)
+        // Text kept from before shows as it was made.
+        let kept = try await store.save(GenerationSnapshot(phase: .finished(.completed), info: info,
+                                                           texts: [.main: "Kept plan"]),
+                                        for: DerivedTextRequest(source: source, operation: .extractText,
+                                                                keepsLineBreaks: false))
+        XCTAssertEqual(shown(kept: kept), .text("Kept plan", keepsLineBreaks: false, status: .complete))
+        // Under way, then made, and what was made is the result behind it.
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        let engine = try await started(recognizer, 0)
+        guard case .recognizing = shown(kept: kept) else { return XCTFail("\(shown(kept: kept))") }
+        engine.send(.started(info), .delta("Quarterly plan"), .finished(.completed))
+        await waitUntil("the result is saved") { hasSettled(coordinator, source) }
+        XCTAssertEqual(shown(kept: kept), .text("Quarterly plan", keepsLineBreaks: true, status: .complete))
+        XCTAssertEqual(ResultColumnContents.text(for: source, in: coordinator,
+                                                 kept: KeptResult(source: source, result: kept)).result?.text,
+                       "Quarterly plan")
+        // Tried again and failed, it says so beside what was made.
+        coordinator.extractText(from: source, keepingLineBreaks: true)
+        try await started(recognizer, 1).end(throwing: GenerationError(kind: .engineUnavailable,
+                                                                       message: "Synthetic failure."))
+        await waitUntil("it failed") { coordinator.failure(for: source, operation: .extractText) != nil }
+        guard case .failedAgain(.text("Quarterly plan", _, _), _) = shown(kept: kept) else {
+            return XCTFail("\(shown(kept: kept))")
+        }
+
+        // A first recognition of another image that fails: it says why once the store has said it kept nothing, and
+        // beside what it kept from before.
+        let diagram = try await insertClip("Diagram", into: controller)
+        func shownForDiagram(read: Bool = true, kept: DerivedText? = nil) -> TextColumn {
+            ResultColumnContents.text(for: diagram, in: coordinator,
+                                      kept: read ? KeptResult(source: diagram, result: kept) : nil).column
+        }
+        coordinator.extractText(from: diagram, keepingLineBreaks: true)
+        try await started(recognizer, 2).end(throwing: GenerationError(kind: .engineUnavailable,
+                                                                       message: "Synthetic failure."))
+        // A first failure leaves nothing made before: it is the recognition's ending, not a failure beside a result.
+        await waitUntil("it failed") {
+            if case .failed? = coordinator.outcome(for: diagram, operation: .extractText) { return true }
+            return false
+        }
+        XCTAssertEqual(shownForDiagram(read: false), .loading)
+        guard case .failed = shownForDiagram() else { return XCTFail("\(shownForDiagram())") }
+        let keptDiagram = try await store.save(GenerationSnapshot(phase: .finished(.completed), info: info,
+                                                                  texts: [.main: "Kept diagram"]),
+                                               for: DerivedTextRequest(source: diagram, operation: .extractText,
+                                                                       keepsLineBreaks: false))
+        guard case .failedAgain(.text("Kept diagram", _, _), _) = shownForDiagram(kept: keptDiagram) else {
+            return XCTFail("\(shownForDiagram(kept: keptDiagram))")
+        }
+        // What the store said of other content isn't this image's: the column still reads.
+        XCTAssertEqual(ResultColumnContents.text(for: diagram, in: coordinator,
+                                                 kept: KeptResult(source: source, result: nil)).column, .loading)
+        XCTAssertEqual(ResultColumnContents.text(for: diagram, in: coordinator,
+                                                 kept: KeptResult(source: diagram, result: kept)).column, .loading)
+    }
+
+    func testWhatTheTranslationColumnShowsIsWorkedOutFromTheJobsAndWhatWasKept() async throws {
+        let (controller, store) = try await makeStore()
+        let source = try await insertClip("Note", into: controller)
+        let translator = ScriptedTranslator()
+        let coordinator = try await makeCoordinator(controller, store, ScriptedRecognizer(), translator: translator)
+        func shown(read: Bool = true, kept: DerivedText? = nil, isImage: Bool = false) -> TranslationColumn {
+            ResultColumnContents.translation(for: source, isImage: isImage, in: coordinator,
+                                             kept: read ? KeptResult(source: source, result: kept) : nil).column
+        }
+
+        XCTAssertEqual(shown(read: false), .loading)
+        XCTAssertEqual(shown(), .notStarted)
+        // A translation kept from before shows as it is, in whatever language it is in.
+        let kept = try await store.save(GenerationSnapshot(phase: .finished(.completed), info: info,
+                                                           texts: [.main: "Note gardée"]),
+                                        for: DerivedTextRequest(source: source, operation: .translate,
+                                                                targetLanguage: "fr"))
+        XCTAssertEqual(shown(kept: kept), .translation("Note gardée", into: "fr", status: .complete))
+        XCTAssertEqual(ResultColumnContents.translation(for: source, isImage: false, in: coordinator,
+                                                        kept: KeptResult(source: source, result: kept)).result?.text,
+                       "Note gardée")
+        // Under way, into the language asked for.
+        coordinator.translate(source, to: Locale.Language(identifier: "zh-Hans"))
+        let engine = try await startedTranslation(translator, 0)
+        guard case .translating(_, let into) = shown() else { return XCTFail("\(shown())") }
+        XCTAssertEqual(into, "zh-Hans")
+        // Nothing in it to translate, said for a text and for an image's text.
+        engine.send(.started(info), .finished(.completed))
+        await waitUntil("it has ended") { hasSettled(coordinator, source, .translate) }
+        XCTAssertEqual(shown(), .nothingToTranslate(into: "zh-Hans"))
+        XCTAssertEqual(shown(isImage: true), .noTextInImage(into: "zh-Hans"))
+    }
+
     // MARK: Helpers
 
     private func makeStore() async throws -> (PersistenceController, DerivedTextStore) {

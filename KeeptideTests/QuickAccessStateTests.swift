@@ -935,6 +935,32 @@ final class QuickAccessStateTests: XCTestCase {
         _ = try await startedSource(recognizer, 1)
     }
 
+    func testMovingToAnImageWhoseTextWasKeptShowsItWithoutFirstOfferingToExtract() async throws {
+        let (fixture, recognizer) = try await makeTextFixture()
+        try await insert("Older", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
+        try await insert("Newer", types: [("public.png", try png(width: 30, height: 40))], at: 2, into: fixture)
+        let state = QuickAccessState(services: { fixture.services })
+        state.open()
+        try await settled(state)
+        let older = try XCTUnwrap(state.selection.rows.last?.ref)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Kept from before"]),
+            for: DerivedTextRequest(source: older, operation: .extractText, keepsLineBreaks: true))
+        state.showTextInImage()
+        _ = try await startedSource(recognizer, 0)
+
+        state.moveSelection(by: 1)
+
+        // Until the store has said what it kept of the image moved to, the column waits: it never offers to extract
+        // text that was kept.
+        XCTAssertEqual(state.textColumnRef, older)
+        XCTAssertEqual(state.textColumn, .loading)
+        try await SearchTestSupport.waitUntil {
+            state.textColumn == .text("Kept from before", keepsLineBreaks: true, status: .complete)
+        }
+    }
+
     func testClosingThePreviewClosesTheColumn() async throws {
         let (fixture, _) = try await makeTextFixture()
         try await insert("Screenshot", types: [("public.png", try png(width: 40, height: 30))], at: 1, into: fixture)
@@ -1194,6 +1220,28 @@ final class QuickAccessStateTests: XCTestCase {
         }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertNil(translator.request(0), "Whatever language it is in")
+    }
+
+    func testMovingToATextWhoseTranslationWasKeptShowsItWithoutFirstOfferingToTranslate() async throws {
+        let translator = ScriptedTranslator()
+        let (state, fixture) = try await makeTranslationPanel(translator)
+        let notes = try XCTUnwrap(state.selection.rows.first { $0.title == "Notes" }?.ref)
+        _ = try await DerivedTextStore(controller: fixture.harness.controller).save(
+            GenerationSnapshot(phase: .finished(.completed), info: GenerationInfo(engine: "On this Mac"),
+                               texts: [.main: "Deuxième note."]),
+            for: DerivedTextRequest(source: notes, operation: .translate, targetLanguage: "fr"))
+        state.showTranslation()
+        _ = try await startedTranslation(translator, 0)
+
+        state.moveSelection(by: 2)
+
+        // Until the store has said what it kept of the text moved to, the column waits: it never offers to translate
+        // a text whose translation was kept.
+        XCTAssertEqual(state.translationColumnRef, notes)
+        XCTAssertEqual(state.translationColumn, .loading)
+        try await SearchTestSupport.waitUntil {
+            state.translationColumn == .translation("Deuxième note.", into: "fr", status: .complete)
+        }
     }
 
     func testACardSaysNothingOfATranslationMadeInTheBackgroundUntilItIsMade() async throws {
