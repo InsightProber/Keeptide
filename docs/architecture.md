@@ -166,19 +166,36 @@ language identification and translation today. The first release does not includ
 monitoring. Future suggestions must preserve the same permission and
 content-validation boundaries.
 
-Keeptide's own network access is confined to the cloud-model module in
-`Keeptide/CloudModels/`, the only code that may use URL loading, sockets, web
-views or link previews; the clipboard reader, which inherits the app sandbox and
-its outgoing connections, never uses them. The module connects only over HTTPS,
+Keeptide's own network access is confined to two modules, the only code that
+may reach the network: the cloud-model module in `Keeptide/CloudModels/`, which
+uses URL loading, and the link preview module in `Keeptide/LinkPreviews/`, which
+may use only the system's LinkPresentation and WebKit. The clipboard reader,
+which inherits the app sandbox and its outgoing connections, never uses them.
+The cloud-model module connects only over HTTPS,
 on HTTPS's port, to the hosts it is given, Anthropic's and OpenAI's APIs by
 default. It follows no redirect, so that a request and the key in its headers go
 nowhere else, keeps no cache, cookies or credentials, and logs nothing it sends
 or receives. An answer's body streams in as each line ends, and stopping reading
 it cancels the request. Cloud models a person chooses with their own API key,
 which are planned, will reach providers only through it; no feature uses it yet.
-Source-boundary tests keep those APIs, and the HTML importer, which loads what a
-page links to, out of the rest of the app and the reader. iCloud mirroring goes
-through the system's CloudKit service instead.
+The link preview module loads the page of a web link a person copied, to show
+its title and picture, through the system's LinkPresentation; a web view in it,
+for showing a page, will keep no data. It refuses a link whose address leads to
+this Mac or the local network, including any IP address and any name written
+with escapes; one that names a user or a password; and one with a parameter that
+may carry a token, key, session, signature or a code that isn't plainly a
+country's, a postal one or the like, or that holds a JSON Web Token, escaped or
+not. A link another carries in a parameter, as a click tracker's does, is held
+to the same rules. It can't check what the address doesn't show: a public name
+that resolves to a local address, where the page redirects, and the pictures
+and icons the page names. What it loads is a cache it can rebuild, kept under a
+hash of each address: previews unused for 30 days go, and the least recently
+used ones beyond 64 MB, checked as a preview is asked for, at most once a day,
+and after every 50 pages loaded. Link previews on cards are planned; no feature
+uses the module yet. Source-boundary tests keep those APIs, and the HTML
+importer, which loads what a page links to, out of the rest of the app and the
+reader, and keep tests from naming the system's link loader. iCloud mirroring
+goes through the system's CloudKit service instead.
 
 ## Local export
 
