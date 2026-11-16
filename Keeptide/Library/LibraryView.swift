@@ -56,12 +56,34 @@ struct LibraryView: View {
     @State private var bodyFocus = BodyFocusRequestState()
     @State private var availableWidth: CGFloat = 1_120
     @FocusState private var sidebarHasFocus: Bool
+    /// The list of items has the keyboard: the text column gives it back as it closes from its own text.
+    @FocusState private var listHasFocus: Bool
     @State private var searchPresented = false
     @State private var searchScope: LibrarySearchScope = .allContent
+    /// The text recognized in the open image, beside it in the detail.
+    @State private var textColumn: LibraryTextColumn
 
-    init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands()) {
+    /// `preferences` are quick access's, which Settings edits: recognized text is laid out as they say.
+    init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands(),
+         preferences: QuickAccessPreferences? = nil) {
         _session = Bindable(wrappedValue: session)
         _commands = Bindable(wrappedValue: commands)
+        _textColumn = State(initialValue: LibraryTextColumn(services: { [weak session, weak commands] in
+            guard let session, let derivedText = session.derivedText, let paste = session.pasteService,
+                  let library = session.libraryService else { return nil }
+            return LibraryTextColumn.Services(
+                derivedText: derivedText,
+                copyText: { paste.copyText($0) },
+                saveSnippet: { [weak session] text in
+                    let identity = try await library.controller.identity()
+                    _ = try await library.create(MemoDraft(body: text), expecting: identity)
+                    // The lists and their counts show the new snippet.
+                    await session?.libraryWorkspace?.reload()
+                },
+                keepsLineBreaks: { preferences?.keepsLineBreaks ?? true },
+                announce: { commands?.announce($0) }
+            )
+        }))
     }
 
     private var libraryLayout: some View {
@@ -278,8 +300,26 @@ struct LibraryView: View {
         }
     }
 
-    var body: some View {
+    /// The text in the open image, beside it: shown from the menus, copied, saved and stopped from them, closed with
+    /// Escape and as the detail moves on. What VoiceOver hears of its recognitions, a view of its own follows, so the
+    /// library doesn't follow every step of a recognition.
+    private var textColumnLibrary: some View {
         itemLibrary
+        .onChange(of: commands.extractTextRequest) { _, _ in extractTextFromSelection() }
+        .onChange(of: commands.closeResultColumnRequest) { _, _ in textColumn.close() }
+        .onChange(of: commands.stopResultColumnRequest) { _, _ in textColumn.stop() }
+        .onChange(of: commands.copyResultTextRequest) { _, _ in textColumn.copy() }
+        .onChange(of: commands.saveResultTextRequest) { _, _ in Task { await textColumn.saveAsSnippet() } }
+        .onChange(of: detailImageRef) { _, ref in textColumn.follow(ref) }
+        .onAppear {
+            let column = textColumn
+            commands.resultColumnHasText = { [weak column] in column?.text != nil }
+        }
+        .background { LibraryTextColumnAnnouncer(textColumn: textColumn) }
+    }
+
+    var body: some View {
+        textColumnLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }
@@ -562,6 +602,8 @@ struct LibraryView: View {
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
+                textColumn: textColumn,
+                returnFocusToList: { listHasFocus = true },
                 contentKind: editorContentKind(editor, in: workspace),
                 previewService: session.previewService,
                 fileAccessStore: session.fileAccessStore,
@@ -960,8 +1002,61 @@ struct LibraryView: View {
             removableCollection: removableCollection(for: state),
             inspectorIsPresented: inspectorPresented,
             isRecentlyDeleted: selectedScope == .recentlyDeleted,
-            deleted: selectedDeletedRow
+            deleted: selectedDeletedRow,
+            canExtractText: canExtractText(state),
+            resultColumnIsOpen: textColumn.ref != nil && textColumn.ref == detailImageRef
         )
+    }
+
+    /// The item the detail shows, while it shows one: not several, none, one that couldn't be read, or a deleted one.
+    private var detailRef: ContentRef? {
+        guard selectedScope != .recentlyDeleted, selectedEntryIDs.count <= 1, let workspace = session.libraryWorkspace,
+              let editor = workspace.editor else { return nil }
+        if let selected = selectedEntryIDs.first, workspace.unavailableItemID == selected { return nil }
+        return editor.ref
+    }
+
+    /// The open image, while the detail shows it as an image: what the text column is beside. Not an image that
+    /// couldn't be read, nor a snippet whose text body the detail shows in its place.
+    private var detailImageRef: ContentRef? {
+        guard let ref = detailRef, let workspace = session.libraryWorkspace, let editor = workspace.editor,
+              editorContentKind(editor, in: workspace) == .image,
+              (editor.details?.integrity ?? .complete) == .complete,
+              LibraryContentPresentation.showsTypedPreview(isReadOnly: editor.isReadOnly, hasBody: editor.body != nil,
+                                                           kind: .image)
+        else { return nil }
+        return ref
+    }
+
+    /// Whether Extract Text acts on the selection: one image whose content can be read, in a library that recognizes
+    /// text. The detail shows it as an image, or is still to open it.
+    private func canExtractText(_ state: LibrarySelectionState) -> Bool {
+        guard state.canExtractText, session.derivedText != nil, let selected = state.refs.first else { return false }
+        if let open = detailRef, open.itemID == selected.itemID { return detailImageRef != nil }
+        return true
+    }
+
+    /// Item › Extract Text: the text in the selected image, beside it once it is open.
+    private func extractTextFromSelection() {
+        let state = selectionState
+        guard canExtractText(state), let workspace = session.libraryWorkspace, let selected = state.refs.first,
+              let entry = workspace.entries.first(where: { $0.id == selected.itemID }) else { return }
+        extractText(from: entry, workspace: workspace)
+    }
+
+    /// Extract Text for a row: its image opens in the detail unless it is open, and its text shows beside it once the
+    /// detail shows the image.
+    private func extractText(from entry: LibraryEntry, workspace: LibraryWorkspace) {
+        if let open = detailRef, open.itemID == entry.id {
+            if let ref = detailImageRef { textColumn.show(ref) }
+            return
+        }
+        selectedEntryIDs = [entry.id]
+        Task {
+            await workspace.select(entry.id)
+            guard selectedEntryIDs == [entry.id], let ref = detailImageRef, ref.itemID == entry.id else { return }
+            textColumn.show(ref)
+        }
     }
 
     private func copySelection() {
@@ -1106,6 +1201,7 @@ struct LibraryView: View {
                     }
                 }
                 .listStyle(.inset)
+                .focused($listHasFocus)
                 .onDeleteCommand { deleteFromList(workspace) }
                 .accessibilityIdentifier("SnippetList")
             }
@@ -1345,6 +1441,10 @@ struct LibraryView: View {
             Task { await workspace.setFavorite(of: refs, to: !state.isFavorite) }
         }
         .disabled(!state.canFavorite)
+        if state.canExtractText, session.derivedText != nil, let entry = entries.first {
+            Divider()
+            Button("Extract Text") { extractText(from: entry, workspace: workspace) }
+        }
         if let linked = state.linked {
             Divider()
             Button(state.linkedTitle) { show(linked) }
@@ -1532,6 +1632,10 @@ enum LibraryRowText {
 private struct MemoEditorView: View {
     @Bindable var editor: MemoEditorSession
     @Bindable var workspace: LibraryWorkspace
+    /// The text recognized in the open image, shown beside it while the column is open for it.
+    let textColumn: LibraryTextColumn
+    /// Gives the keyboard back to the list, as the text column closes from its own text.
+    let returnFocusToList: () -> Void
     let contentKind: ContentKind
     let previewService: PreviewService?
     let fileAccessStore: FileAccessStore?
@@ -1554,14 +1658,22 @@ private struct MemoEditorView: View {
                 LibraryItemText.unavailableContent(integrity)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let ref = editor.ref, showsTypedPreview {
-                LibraryContentPreview(
-                    ref: ref,
-                    kind: contentKind,
-                    service: previewService,
-                    fileAccessStore: fileAccessStore,
-                    fileAccessIdentity: fileAccessIdentity,
-                    applicationName: editor.details?.sourceApp.flatMap { applicationNames.name(for: $0) }
-                )
+                // The preview keeps its place as the column opens beside it, so it isn't read again.
+                LibraryResultSplit(showsColumn: textColumn.ref == ref && textColumn.column != nil) {
+                    LibraryContentPreview(
+                        ref: ref,
+                        kind: contentKind,
+                        service: previewService,
+                        fileAccessStore: fileAccessStore,
+                        fileAccessIdentity: fileAccessIdentity,
+                        applicationName: editor.details?.sourceApp.flatMap { applicationNames.name(for: $0) }
+                    )
+                } column: {
+                    if let column = textColumn.column {
+                        LibraryTextColumnView(textColumn: textColumn, column: column,
+                                              returnFocusToList: returnFocusToList)
+                    }
+                }
             } else if let body = editor.body {
                 if editor.kind == .markdown {
                     markdownBar
@@ -2022,6 +2134,8 @@ struct LibrarySelectionState: Equatable {
     /// The open clip's snippet, or the open snippet's clip while it is in Recent Clips.
     var linked: ContentRef?
     var canDelete = false
+    /// One image is selected whose content can be read: its text can be extracted.
+    var canExtractText = false
 
     var favoriteTitle: String { isFavorite ? "Remove from Favorites" : "Add to Favorites" }
     var collectionTitle: String { savesIntoCollection ? "Save to Collection" : "Add to Collection" }
@@ -2054,6 +2168,7 @@ struct LibrarySelectionState: Equatable {
         state.canFile = hasCollections && !unreadable
         state.savesIntoCollection = !unsavedClips.isEmpty
         state.canDelete = canDelete
+        state.canExtractText = entries.count == 1 && entries[0].kind == .image && !unreadable
         if let open {
             switch open.ref.facet {
             case .history:

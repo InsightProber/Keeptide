@@ -40,7 +40,8 @@ supports recoverable editing, document find, search, and explicit saving. Persis
 file authorization is local and explicit. ⇧⌘T shows the text recognized on this Mac
 in a copied image beside its preview, and keeps it locally beside the image, where
 search finds the image by it; Return, ⌘C and ⌘S then paste, copy or save that text
-instead of the image.
+instead of the image. In the library, Item › Extract Text shows the same text
+beside the open image.
 ⌘T shows a translation of a text clip, or of the text in an image, recognized
 first when needed, beside its preview, made on this Mac with Apple's Translation
 into the language fixed in Settings › AI, or else the one last chosen from the

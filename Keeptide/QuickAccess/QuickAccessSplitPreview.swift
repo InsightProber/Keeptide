@@ -46,7 +46,8 @@ struct QuickAccessSplitPreview: View {
 
 /// Why a recognition or a translation that just ended left its column without new text, said to VoiceOver as it ends:
 /// there is none, or why it failed, and whether that left what was made before. The panel asks on every change it
-/// sees, and not the column's view: SwiftUI doesn't always deliver a view's `onChange`. An ending is told by `ending`,
+/// sees, and not the column's view: SwiftUI doesn't always deliver a view's `onChange`. The Library asks from a view of
+/// its own (`LibraryTextColumnAnnouncer`), on every change of what its column shows or of the ending it shows. An ending is told by `ending`,
 /// the latest job's while the column shows it. What the column says of an ending, `words`, is said once, as it
 /// changes: a new ending, or the same one in other words, as when text it made can't be kept. What the column shows
 /// as it begins to show a clip, as the panel opens or the selection comes to it, is only shown, even once it has read
@@ -282,7 +283,7 @@ private struct ScanLine: View {
 }
 
 /// The line between the columns: 1 pt, white at 8 percent in dark mode, or with Increase Contrast at 25 percent.
-private struct ColumnDivider: View {
+struct ColumnDivider: View {
     let vertical: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
@@ -305,22 +306,53 @@ private struct ColumnDivider: View {
 /// it, the recognition under way, or why there is none. One display shows the text from the moment recognition starts
 /// until it is made, so the text is typed out as it comes and VoiceOver hears the recognition start and end; text kept
 /// from before, or brought back by stopping a recognition, shows at once. Why a recognition found no text, or none
-/// could be made or kept, the panel says as it ends (`ResultColumnEndings`). The column is the image's own: another image
-/// has another column.
-private struct TextInImageColumn: View {
+/// could be made or kept, the surface showing it says as it ends (`ResultColumnEndings`). The column is the image's own:
+/// another image has another column. Quick access and the Library each say what the column's keys do and what it is
+/// called, and the Library puts its buttons at the end of the column's title.
+struct TextInImageColumn<Accessory: View>: View {
     let column: TextColumn
     let pixelSize: CGSize?
     /// Whether what the column shows is how the latest recognition of its image just ended.
     let isJustMade: Bool
+    /// What the column and its Extract Text are called to assistive apps and UI tests.
+    struct Identifiers {
+        let column: String
+        let extract: String
+    }
+
+    let identifiers: Identifiers
     let onCommand: (QuickAccessCommand) -> Void
     let onCopy: (String) -> Void
+    /// Takes a key pressed in the column's text before the text does: true when it took it.
+    let onKeyDown: @MainActor (NSEvent) -> Bool
+    /// What stands at the end of the column's title.
+    let accessory: Accessory
     /// Whether the recognition has run long enough to say what it is doing.
     @State private var saysWhatItDoes = false
 
+    init(column: TextColumn, pixelSize: CGSize?, isJustMade: Bool, identifiers: Identifiers,
+         onCommand: @escaping (QuickAccessCommand) -> Void, onCopy: @escaping (String) -> Void,
+         onKeyDown: @escaping @MainActor (NSEvent) -> Bool, @ViewBuilder accessory: () -> Accessory) {
+        self.column = column
+        self.pixelSize = pixelSize
+        self.isJustMade = isJustMade
+        self.identifiers = identifiers
+        self.onCommand = onCommand
+        self.onCopy = onCopy
+        self.onKeyDown = onKeyDown
+        self.accessory = accessory()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(TextColumnWords.title).font(.system(size: 12, weight: .bold))
-            Text(TextColumnWords.subtitle(for: column)).font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(TextColumnWords.title).font(.system(size: 12, weight: .bold))
+                    Text(TextColumnWords.subtitle(for: column)).font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+                accessory
+            }
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .padding(.top, 12)
@@ -331,7 +363,7 @@ private struct TextInImageColumn: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(TextColumnWords.title), on this Mac")
-        .accessibilityIdentifier("QuickAccessTextInImage")
+        .accessibilityIdentifier(identifiers.column)
         .task(id: column.isScanning) {
             saysWhatItDoes = false
             guard column.isScanning else { return }
@@ -364,9 +396,7 @@ private struct TextInImageColumn: View {
                                   announcements: .init(start: "Recognizing text", finish: "Text recognized"),
                                   allowsCopyingAll: shown.mode != .writing && shown.isWhole,
                                   onCopy: { [onCopy] in onCopy($0) },
-                                  onKeyDown: { [onCommand] event in
-                                      PreviewTextKeys.handle(event, hasMarkedText: false, onCommand: onCommand)
-                                  })
+                                  onKeyDown: onKeyDown)
             }
             switch column {
             case .loading:
@@ -380,7 +410,7 @@ private struct TextInImageColumn: View {
                 }
                 .buttonStyle(TrayCapsuleButtonStyle())
                 .accessibilityLabel(TextColumnWords.extract)
-                .accessibilityIdentifier("QuickAccessExtractText")
+                .accessibilityIdentifier(identifiers.extract)
                 .help("\(TextColumnWords.extract) (⇧⌘T)")
             case .unsaved, .failedAgain(.unsaved, _):
                 Text(TextColumnWords.notSaved).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -421,6 +451,18 @@ private struct TextInImageColumn: View {
         case .loading, .notStarted, .noText, .failed, .failedAgain:
             return nil
         }
+    }
+}
+
+extension TextInImageColumn where Accessory == EmptyView {
+    /// The column in quick access, whose text takes the panel's keys.
+    init(column: TextColumn, pixelSize: CGSize?, isJustMade: Bool, onCommand: @escaping (QuickAccessCommand) -> Void,
+         onCopy: @escaping (String) -> Void) {
+        self.init(column: column, pixelSize: pixelSize, isJustMade: isJustMade,
+                  identifiers: .init(column: "QuickAccessTextInImage", extract: "QuickAccessExtractText"),
+                  onCommand: onCommand, onCopy: onCopy,
+                  onKeyDown: { PreviewTextKeys.handle($0, hasMarkedText: false, onCommand: onCommand) },
+                  accessory: { EmptyView() })
     }
 }
 

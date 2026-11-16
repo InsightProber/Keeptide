@@ -94,6 +94,12 @@ enum ApplicationMenuBuilder {
             typeMenu.addItem(kind)
         }
         itemMenu.addItem(menuItem(title: "Type", submenu: typeMenu))
+        // What this Mac makes of the item: the text in an image, beside it in the detail.
+        itemMenu.addItem(.separator())
+        itemMenu.addItem(item(title: "Extract Text", action: #selector(LibraryWindowController.extractText(_:)), keyEquivalent: "t", modifierMask: [.shift, .command], identifier: "ItemMenu-ExtractText"))
+        // What the text column's buttons do, for the keyboard too.
+        itemMenu.addItem(item(title: "Copy Text", action: #selector(LibraryWindowController.copyResultText(_:)), identifier: "ItemMenu-CopyResultText"))
+        itemMenu.addItem(item(title: "Save Text as Snippet", action: #selector(LibraryWindowController.saveResultTextAsSnippet(_:)), identifier: "ItemMenu-SaveResultText"))
         itemMenu.addItem(.separator())
         itemMenu.addItem(item(title: "Show Snippet", action: #selector(LibraryWindowController.showLinkedItem(_:)), identifier: "ItemMenu-ShowLinked"))
         itemMenu.addItem(.separator())
