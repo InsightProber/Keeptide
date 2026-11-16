@@ -54,9 +54,10 @@ each preferred language needs to be translated into it, and says whether Apple
 Intelligence is available; nothing uses Apple Intelligence yet.
 Lifecycle maintenance includes configurable retention, Recently Deleted, durable
 cleanup and disk-pressure recovery; cloud integration remains planned.
-A network boundary is in place for cloud models: only `Keeptide/CloudModels/`
-may connect, over HTTPS to the model providers' API hosts, and nothing uses it
-yet.
+A network boundary is in place: only `Keeptide/CloudModels/` may connect, over
+HTTPS to the model providers' API hosts, and `Keeptide/LinkPreviews/`, which
+loads the pages of copied web links through LinkPresentation; nothing uses
+either yet.
 Planned capabilities must stay labelled until implemented and verified.
 
 ## Start here
@@ -147,15 +148,23 @@ Planned capabilities must stay labelled until implemented and verified.
 - Keep file permissions, bookmarks, local paths used as file references, drafts,
   indexes and usage summaries local. Do not log clipboard bodies or credentials.
   Preserve user-authored text as data; do not rewrite paths inside commands.
-- Only `Keeptide/CloudModels/` may use the network: HTTPS to the hosts it is
-  given, no redirects, no cache, cookie or credential storage, and no logging of
-  what it sends or receives. The pasteboard reader inherits the sandbox's
-  outgoing connections and never uses them. Source-boundary tests keep URL
-  loading, sockets, web views, link previews and the HTML importer out of
-  everything else; they can't tell a remote URL from a file, so never give a URL
-  that may be remote to a `contentsOf:` initializer. Tests give every model
-  client a stand-in for the network. iCloud mirroring goes through the system's
-  CloudKit service and does not belong in that folder.
+- Only `Keeptide/CloudModels/` and `Keeptide/LinkPreviews/` may use the
+  network. The cloud module connects over HTTPS to the hosts it is given, with no
+  redirects, no cache, cookie or credential storage, and no logging of what it
+  sends or receives. The link preview module loads only http and https links a
+  person copied, through LinkPresentation and WebKit alone, and any web view in
+  it keeps no data. It refuses a link whose address leads to this Mac or the
+  local network, names a user or a password, or may carry a secret; what the
+  address can't show (a name that resolves locally, a redirect, the pictures a
+  page names) is not checked. It keeps what it loads only as a rebuildable cache
+  and logs no address or page. The pasteboard
+  reader inherits the sandbox's outgoing connections and never uses them.
+  Source-boundary tests keep URL loading, sockets, web views, link previews and
+  the HTML importer out of everything else; they can't tell a remote URL from a
+  file, so never give a URL that may be remote to a `contentsOf:` initializer.
+  Tests give every model client a stand-in for the network and never build the
+  system's link loader. iCloud mirroring goes through the system's CloudKit
+  service and does not belong in either folder.
 - Tests use synthetic content, temporary stores and isolated cloud resources.
   Never inspect or modify personal clipboard history to populate tests.
 - Automatic insertion requires current target, permission, identity and content
