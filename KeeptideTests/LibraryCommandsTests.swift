@@ -1,4 +1,5 @@
 import AppKit
+import Carbon.HIToolbox
 import XCTest
 @testable import Keeptide
 
@@ -495,6 +496,149 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertTrue(libraryWindow.isVisible)
     }
 
+    func testTheItemMenuExtractsTheTextInAnImageInAGroupOfItsOwn() throws {
+        let menu = ApplicationMenuBuilder.makeMainMenu(applicationName: "Keeptide")
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Item" }?.submenu)
+        let index = try XCTUnwrap(item.items.firstIndex {
+            $0.action == #selector(LibraryWindowController.extractText(_:))
+        })
+        let extract = item.items[index]
+
+        XCTAssertEqual(extract.title, "Extract Text")
+        XCTAssertEqual(extract.keyEquivalent, "t")
+        XCTAssertEqual(extract.keyEquivalentModifierMask, [.shift, .command])
+        // Then what the column's buttons do, for the keyboard too.
+        let group = Array(item.items[index...index + 2])
+        XCTAssertEqual(group.map(\.title), ["Extract Text", "Copy Text", "Save Text as Snippet"])
+        XCTAssertEqual(group.map(\.action), [#selector(LibraryWindowController.extractText(_:)),
+                                             #selector(LibraryWindowController.copyResultText(_:)),
+                                             #selector(LibraryWindowController.saveResultTextAsSnippet(_:))])
+        XCTAssertEqual(group.compactMap(\.identifier?.rawValue),
+                       ["ItemMenu-ExtractText", "ItemMenu-CopyResultText", "ItemMenu-SaveResultText"])
+        // After the item's favorite, collections and type, and before Show Snippet.
+        XCTAssertTrue(item.items[index - 1].isSeparatorItem)
+        XCTAssertEqual(item.items[index - 2].title, "Type")
+        XCTAssertTrue(item.items[index + 3].isSeparatorItem)
+    }
+
+    func testTheTextBesideAnImageIsCopiedAndSavedFromTheItemMenuOnceItIsWhole() {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let copy = NSMenuItem(title: "Copy Text", action: #selector(LibraryWindowController.copyResultText(_:)),
+                              keyEquivalent: "")
+        let save = NSMenuItem(title: "Save Text as Snippet",
+                              action: #selector(LibraryWindowController.saveResultTextAsSnippet(_:)), keyEquivalent: "")
+        XCTAssertFalse(controller.validateMenuItem(copy))
+        XCTAssertFalse(controller.validateMenuItem(save))
+        // Open, but its text isn't whole yet.
+        controller.commands.updateItemContext(LibraryItemContext(resultColumnIsOpen: true))
+        controller.commands.resultColumnHasText = { false }
+        XCTAssertFalse(controller.validateMenuItem(copy))
+
+        controller.commands.resultColumnHasText = { true }
+        XCTAssertTrue(controller.validateMenuItem(copy))
+        XCTAssertTrue(controller.validateMenuItem(save))
+        controller.copyResultText(copy)
+        controller.saveResultTextAsSnippet(save)
+
+        XCTAssertEqual(controller.commands.copyResultTextRequest, 1)
+        XCTAssertEqual(controller.commands.saveResultTextRequest, 1)
+    }
+
+    func testExtractTextWaitsWhileACompositionHasTheKeyboard() throws {
+        let controller = LibraryWindowController(
+            session: CaptureSession(), autosaveName: nil, setActivationPolicy: { _ in }
+        )
+        let window = try XCTUnwrap(controller.window)
+        addTeardownBlock { window.close() }
+        let content = try XCTUnwrap(window.contentView)
+        let extract = NSMenuItem(title: "Extract Text", action: #selector(LibraryWindowController.extractText(_:)),
+                                 keyEquivalent: "t")
+        controller.commands.updateItemContext(LibraryItemContext(canExtractText: true))
+        let field = NSTextField(frame: NSRect(x: 0, y: 50, width: 200, height: 22))
+        content.addSubview(field)
+        XCTAssertTrue(window.makeFirstResponder(field))
+        let fieldEditor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        XCTAssertTrue(controller.validateMenuItem(extract))
+
+        fieldEditor.setMarkedText(
+            "ni", selectedRange: NSRange(location: 2, length: 0),
+            replacementRange: NSRange(location: NSNotFound, length: 0)
+        )
+
+        XCTAssertFalse(controller.validateMenuItem(extract), "The input method keeps ⇧⌘T while it composes")
+    }
+
+    func testExtractTextIsForOneImageWhoseContentCanBeRead() {
+        let image = Self.entry(.history, kind: .image)
+        var details = LibraryItemDetails(createdAt: Date(), lastCopiedAt: Date(), copyCount: 1)
+        func state(_ entries: [LibraryEntry], details: LibraryItemDetails? = nil) -> LibrarySelectionState {
+            let open = details.map {
+                LibrarySelectionState.OpenItem(ref: entries[0].ref, details: $0, kind: .plainText, isReadOnly: true)
+            }
+            return .make(entries: entries, open: open, hasCollections: false, canDelete: true)
+        }
+
+        XCTAssertTrue(state([image], details: details).canExtractText)
+        // A snippet saved from an image is one too.
+        XCTAssertTrue(state([Self.entry(.memo, kind: .image)]).canExtractText)
+        // Not a text, a link or a file, nor two images at once.
+        XCTAssertFalse(state([Self.entry(.history)]).canExtractText)
+        XCTAssertFalse(state([Self.entry(.history, kind: .url)]).canExtractText)
+        XCTAssertFalse(state([Self.entry(.history, kind: .file)]).canExtractText)
+        XCTAssertFalse(state([image, Self.entry(.history, kind: .image)]).canExtractText)
+        XCTAssertFalse(state([]).canExtractText)
+        // Not an image whose content can't be read.
+        details.integrity = .requiresRelocation
+        XCTAssertFalse(state([image], details: details).canExtractText)
+    }
+
+    func testExtractTextIsForwardedAsARequestWhereTheLibraryCanRecognizeText() {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let extract = NSMenuItem(title: "Extract Text", action: #selector(LibraryWindowController.extractText(_:)),
+                                 keyEquivalent: "t")
+        XCTAssertFalse(controller.validateMenuItem(extract))
+
+        controller.commands.updateItemContext(LibraryItemContext(canExtractText: true))
+        XCTAssertTrue(controller.validateMenuItem(extract))
+        controller.extractText(extract)
+
+        XCTAssertEqual(controller.commands.extractTextRequest, 1)
+    }
+
+    func testEscapeClosesTheResultColumnAndCommandPeriodStopsItsRecognitionWithoutClosingIt() throws {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let window = try XCTUnwrap(controller.window)
+
+        window.cancelOperation(nil)
+        XCTAssertEqual(controller.commands.closeResultColumnRequest, 0)
+        XCTAssertFalse(controller.commands.cancelResultColumn(isCommandPeriod: true))
+        controller.commands.updateItemContext(LibraryItemContext(resultColumnIsOpen: true))
+        window.cancelOperation(nil)
+        XCTAssertEqual(controller.commands.closeResultColumnRequest, 1)
+        // ⌘. stops, so that one pressed just as the recognition ends isn't taken as Escape.
+        XCTAssertTrue(controller.commands.cancelResultColumn(isCommandPeriod: true))
+
+        XCTAssertEqual(controller.commands.stopResultColumnRequest, 1)
+        XCTAssertEqual(controller.commands.closeResultColumnRequest, 1)
+        // Which key asked: ⌘., or ⇧⌘. where the keyboard needs Shift for it, else Escape; held down, it has acted.
+        XCTAssertTrue(LibraryWindow.cancelKey(try key(".", code: kVK_ANSI_Period, modifiers: .command)).isCommandPeriod)
+        XCTAssertTrue(LibraryWindow.cancelKey(try key(".", code: kVK_ANSI_Period, modifiers: [.command, .shift]))
+            .isCommandPeriod)
+        XCTAssertFalse(LibraryWindow.cancelKey(try key("\u{1b}", code: kVK_Escape)).isCommandPeriod)
+        XCTAssertTrue(LibraryWindow.cancelKey(try key("\u{1b}", code: kVK_Escape, isARepeat: true)).isRepeat)
+        XCTAssertFalse(LibraryWindow.cancelKey(nil).isRepeat)
+    }
+
+    func testClosingTheWindowClosesTheResultColumn() throws {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil,
+                                                 setActivationPolicy: { _ in })
+        let window = try XCTUnwrap(controller.window)
+
+        controller.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: window))
+
+        XCTAssertEqual(controller.commands.closeResultColumnRequest, 1)
+    }
+
     func testItemCommandsAreForwardedAsRequests() throws {
         let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
         let prompts = CollectionID()
@@ -654,15 +798,24 @@ final class LibraryCommandsTests: XCTestCase {
         return ((root as? View).map { [$0] } ?? []) + root.subviews.flatMap { views(type, in: $0) }
     }
 
+    private func key(_ characters: String, code: Int, modifiers: NSEvent.ModifierFlags = [],
+                     isARepeat: Bool = false) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                                       windowNumber: 0, context: nil, characters: characters,
+                                       charactersIgnoringModifiers: characters, isARepeat: isARepeat,
+                                       keyCode: UInt16(code)))
+    }
+
     private static func ref(_ facet: ContentFacet, of itemID: ItemID = ItemID()) -> ContentRef {
         ContentRef(itemID: itemID, facet: facet, version: ContentVersion(), digest: Data(repeating: 1, count: 32))
     }
 
     /// A row as the library lists it: a clip, or a snippet, of its own item.
-    private static func entry(_ facet: ContentFacet, isMemo: Bool? = nil, isFavorite: Bool = false) -> LibraryEntry {
+    private static func entry(_ facet: ContentFacet, isMemo: Bool? = nil, isFavorite: Bool = false,
+                              kind: ContentKind = .text) -> LibraryEntry {
         let itemID = ItemID()
         return LibraryEntry(id: itemID, ref: ref(facet, of: itemID), title: "Synthetic", snippet: nil,
-                            lastCopiedAt: Date(), kind: .text, isMemo: isMemo ?? (facet == .memo),
+                            lastCopiedAt: Date(), kind: kind, isMemo: isMemo ?? (facet == .memo),
                             isFavorite: isFavorite)
     }
 }

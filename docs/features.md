@@ -107,12 +107,18 @@ details panel for a snippet's type, collections, favorite and note, sidebar
 counts from the search index, and a filter for favorites, content kinds and
 source apps. Markdown
 reading mode keeps source editing separate from rendering and never fetches
-embedded images. Typed previews show stored URLs, bounded image resolutions and locally
-authorized files. Full input-method and accessibility acceptance remains a
-release gate. History now has configurable retention, a seven-day Recently
-Deleted window and explicit permanent removal. Settings report allocated storage
-and let users configure or disable advisory warnings. Saved snippets protect
-referenced content; permanent retention has no hidden count or size quota.
+embedded images. Typed previews show stored URLs, bounded image resolutions and
+locally authorized files. Item › Extract Text (⇧⌘T), or Extract Text in the menu
+of an image's row, shows the text in the open image beside it, side by side
+where the detail is wide enough and under the image where it isn't: the same
+text quick access shows, recognized and kept the same way, with Copy, Save as
+Snippet and Close, which Item › Copy Text and Save Text as Snippet repeat for
+the keyboard; Escape closes it, and ⌘. stops a recognition. Full input-method
+and accessibility acceptance remains a release gate. History now has
+configurable retention, a seven-day Recently Deleted window and explicit
+permanent removal. Settings report allocated storage and let users configure or
+disable advisory warnings. Saved snippets protect referenced content; permanent
+retention has no hidden count or size quota.
 Local export creates a new directory containing portable originals, readable
 derivatives and an independently verified manifest. It preserves exact selected
 versions, supports cancellation before publication, and never overwrites an

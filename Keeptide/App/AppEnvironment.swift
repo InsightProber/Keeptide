@@ -62,6 +62,7 @@ final class AppEnvironment {
         self.makeLibrary = makeLibrary ?? {
             LibraryWindowController(
                 session: captureSession,
+                preferences: quickAccessPreferences,
                 autosaveName: ProcessInfo.processInfo.arguments.contains("--ui-testing")
                     ? nil : "KeeptideLibraryWindow"
             )

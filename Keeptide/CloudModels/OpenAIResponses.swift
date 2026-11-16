@@ -42,13 +42,34 @@ struct OpenAIResponsesSource: GenerationSource {
         code.map(policyCodes.contains) ?? false
     }
 
-    /// The request as sent, with the key in its header.
-    private func cloudRequest() -> CloudRequest? {
-        let content: Content = switch request.input {
+    /// How many tokens the request's input is, as OpenAI counts them before it is sent. Counting sends the request's
+    /// content to OpenAI as the generation would, so a caller counts only once the person has agreed to send it
+    /// there, and counts roughly on this Mac until then; an image is counted as closely on this Mac, without being
+    /// sent twice. Counting changes nothing, so a count is asked for again once, briefly. A caller waiting on it
+    /// before a generation gives it a deadline of its own and falls back to the rough count.
+    func countInputTokens(waiting wait: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) })
+        async throws -> Int {
+        let body = CountBody(model: request.model, instructions: request.instructions,
+                             input: [Message(content: [content])],
+                             reasoning: request.effort.map { Reasoning(effort: $0.rawValue) })
+        let request = request
+        return try await ProviderStream.count(body, at: "v1/responses/input_tokens", from: Self.preset, key: key,
+                                              by: client, waiting: wait) {
+            Self.failure($2, status: $0, headers: $1, about: .generation(request))
+        }
+    }
+
+    /// The request's content as an item of OpenAI's input.
+    private var content: Content {
+        switch request.input {
         case .text(let text): Content(type: "input_text", text: text)
         case .image(let data, let mediaType):
             Content(type: "input_image", imageUrl: "data:\(mediaType);base64,\(data.base64EncodedString())")
         }
+    }
+
+    /// The request as sent, with the key in its header.
+    private func cloudRequest() -> CloudRequest? {
         let body = Body(model: request.model, instructions: request.instructions,
                         input: [Message(content: [content])], maxOutputTokens: request.maxOutputTokens,
                         reasoning: request.effort.map { Reasoning(effort: $0.rawValue) })
@@ -260,6 +281,14 @@ private struct Body: Encodable {
 private struct Message: Encodable {
     let role = "user"
     let content: [Content]
+}
+
+/// What OpenAI counts of a request: the request as it would be sent, but for what isn't input.
+private struct CountBody: Encodable {
+    let model: String
+    let instructions: String
+    let input: [Message]
+    let reasoning: Reasoning?
 }
 
 private struct Content: Encodable {

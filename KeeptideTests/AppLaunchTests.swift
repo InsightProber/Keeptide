@@ -1470,7 +1470,8 @@ final class AppLaunchTests: XCTestCase {
         // Every item that acts on the library window is kept from it, those the panel has commands of its own for too.
         XCTAssertEqual(taken, ["New Snippet", "New Collection…", "Save", "Find in Note…", "Search Library…",
                                "Copy Entire Item", "Show Sidebar", "Show Inspector", "Previous List", "Next List",
-                               "Choose List…", "Add to Favorites", "Add to Collection…", "Move to Recently Deleted"])
+                               "Choose List…", "Add to Favorites", "Add to Collection…", "Extract Text",
+                               "Move to Recently Deleted"])
         // The others act elsewhere: the app takes Settings… and Quit, the search field's text Cut, Copy, Paste and
         // Select All, and the panel's window Undo, Redo and Close.
         XCTAssertEqual(goneOn, ["Settings…", "Quit Keeptide", "Undo", "Redo", "Cut", "Copy", "Paste", "Select All",
@@ -7468,7 +7469,7 @@ final class AppLaunchTests: XCTestCase {
         let codes = [",": kVK_ANSI_Comma, "q": kVK_ANSI_Q, "n": kVK_ANSI_N, "s": kVK_ANSI_S, "z": kVK_ANSI_Z,
                      "x": kVK_ANSI_X, "c": kVK_ANSI_C, "v": kVK_ANSI_V, "a": kVK_ANSI_A, "f": kVK_ANSI_F,
                      "i": kVK_ANSI_I, "[": kVK_ANSI_LeftBracket, "]": kVK_ANSI_RightBracket, "l": kVK_ANSI_L,
-                     "d": kVK_ANSI_D, "m": kVK_ANSI_M, "w": kVK_ANSI_W, "\u{8}": kVK_Delete]
+                     "d": kVK_ANSI_D, "m": kVK_ANSI_M, "w": kVK_ANSI_W, "t": kVK_ANSI_T, "\u{8}": kVK_Delete]
         let code = try XCTUnwrap(codes[item.keyEquivalent], "No key for “\(item.title)”")
         let modifiers = item.keyEquivalentModifierMask
         let characters = item.keyEquivalent == "\u{8}" ? "\u{7F}"

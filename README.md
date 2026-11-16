@@ -156,6 +156,10 @@ show the selected clip, or its snippet, there.
   like; the Info button shows a snippet's type, collections, favorite and note.
   Images open fitted or at actual size, links open only when you ask, and files
   use Quick Look.
+- For an image, **Item › Extract Text** (⇧⌘T), or **Extract Text** when you
+  right-click its row, shows its text beside it, recognized on this Mac as in
+  quick access. Copy, Save as Snippet and Close are beside the text and in the
+  Item menu; Escape closes it too, and ⌘. stops a recognition.
 - **All Snippets** and **Favorites** hold what you keep on purpose; your
   **collections** sort them, a snippet can be in several at once, and
   **Unfiled** shows snippets that are in no collection. In a collection, ⌫
