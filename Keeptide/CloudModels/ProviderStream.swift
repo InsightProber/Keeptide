@@ -50,10 +50,11 @@ enum ProviderStream {
     /// asked again before it may be. Any other failure, such as no credit, ends it at once, as `failure` says it.
     static func fetch(
         _ request: CloudRequest, from preset: ProviderPreset, by client: ModelClient,
+        pauses: [Duration] = retryPauses, longestPause: Duration = longestRetryPause,
         waiting wait: @Sendable (Duration) async throws -> Void,
         failure: (_ status: Int, _ headers: [String: String], _ body: Data) -> GenerationError
     ) async throws -> Data {
-        var pauses = retryPauses
+        var pauses = pauses
         while true {
             let failed: GenerationError
             let mayPass: Bool
@@ -73,7 +74,7 @@ enum ProviderStream {
             }
             guard mayPass, let pause = pauses.first else { throw failed }
             let waiting = asked ?? pause
-            guard waiting <= longestRetryPause else { throw failed }
+            guard waiting <= longestPause else { throw failed }
             pauses.removeFirst()
             try await wait(waiting)
         }
@@ -119,6 +120,32 @@ enum ProviderStream {
         }
         continuation.onTermination = { _ in reading.cancel() }
         return events
+    }
+
+    /// The one pause before a count is asked for again, and the longest a provider may ask for. A count is waited on
+    /// before a generation, and a rough one can stand in for it, so it isn't waited on long.
+    static let countPauses: [Duration] = [.seconds(1)]
+    static let longestCountPause = Duration.seconds(2)
+
+    /// How many tokens of input `body` is, as `preset` counts them at `path`.
+    static func count(
+        _ body: some Encodable, at path: String, from preset: ProviderPreset, key: APIKey, by client: ModelClient,
+        waiting wait: @Sendable (Duration) async throws -> Void,
+        failure: (_ status: Int, _ headers: [String: String], _ body: Data) -> GenerationError
+    ) async throws -> Int {
+        guard let encoded = encode(body) else { throw GenerationError.interrupted }
+        let request = CloudRequest(method: .post, url: preset.baseURL.appending(path: path),
+                                   headers: headers(for: preset, key: key), body: encoded)
+        let answer = try await fetch(request, from: preset, by: client, pauses: countPauses,
+                                     longestPause: longestCountPause, waiting: wait, failure: failure)
+        guard let count = try? decode(Counted.self, answer).inputTokens, count >= 0 else {
+            throw GenerationError.interrupted
+        }
+        return count
+    }
+
+    private struct Counted: Decodable {
+        let inputTokens: Int
     }
 
     /// The headers every request to `preset` carries, with `key` where the provider wants it.
