@@ -66,12 +66,123 @@ struct QuickAccessServices {
     var derivedText: DerivedTextCoordinator? = nil
 }
 
-/// A column of derived text beside the preview. Only an image has one now: the text recognized in it.
+/// A column of derived text beside the preview: the text recognized in an image, or a translation.
 enum ResultColumn: Equatable, Sendable {
     /// The text recognized in an image.
     case text
     /// A translation of a clip's text.
     case translation
+}
+
+/// What the store said it kept of an item's text or translation, once it has said: for the content it was asked about,
+/// the result it kept of exactly that content, or nil where it kept none.
+struct KeptResult: Equatable {
+    let source: ContentRef
+    let result: DerivedText?
+
+    /// Whether this is what the store said of exactly `ref`'s content.
+    func isRead(for ref: ContentRef) -> Bool {
+        source == ref && (result?.source ?? ref) == ref
+    }
+}
+
+/// What the result columns show for an item, worked out from the jobs and endings the coordinator knows of and from
+/// what the store kept of exactly this content, apart from the panel's selection and preview.
+@MainActor
+enum ResultColumnContents {
+    /// What the text column shows for an image, and the saved result behind it when that is what it shows. Until
+    /// `kept` is what the store said of exactly this image, the column is still reading. A recognition that failed
+    /// leaves what was made before, in this session or an earlier one, and says so while it is the latest
+    /// recognition's ending.
+    static func text(for ref: ContentRef, in derivedText: DerivedTextCoordinator,
+                     kept: KeptResult?) -> (column: TextColumn, result: DerivedText?) {
+        let savedIsRead = kept?.isRead(for: ref) == true
+        let saved = savedIsRead ? kept?.result : nil
+        if let job = derivedText.job(for: ref, operation: .extractText) { return (.recognizing(job.snapshot), nil) }
+        let made: (column: TextColumn, result: DerivedText?)
+        switch derivedText.outcome(for: ref, operation: .extractText) {
+        // Recognition on this Mac ends whole or not at all, so the text being saved is whole.
+        case .saving(let text, let request, _)?:
+            made = (.text(text, keepsLineBreaks: request.keepsLineBreaks, status: .complete), nil)
+        case .saved(let result)?: made = (column(showing: result), result)
+        case .noText?: made = (.noText, nil)
+        case .notSaved(let text, let request, _)?:
+            made = (.unsaved(text, keepsLineBreaks: request.keepsLineBreaks), nil)
+        case .failed(let error)?:
+            guard savedIsRead else { return (.loading, nil) }
+            guard let saved else {
+                // Tried again once the store has said it kept none.
+                return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .failed(error), nil)
+            }
+            let kept = column(showing: saved)
+            let isLatest = derivedText.showsLatestEnding(for: ref, operation: .extractText)
+            return (isLatest ? .failedAgain(kept, error) : kept, saved)
+        case nil:
+            guard savedIsRead else { return (.loading, nil) }
+            if let saved { return (column(showing: saved), saved) }
+            // Text the person asked for starts once the store has said it kept none.
+            return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted, nil)
+        }
+        guard let failure = derivedText.failure(for: ref, operation: .extractText) else { return made }
+        return (.failedAgain(made.column, failure), made.result)
+    }
+
+    private static func column(showing result: DerivedText) -> TextColumn {
+        .text(result.text, keepsLineBreaks: result.keepsLineBreaks, status: result.status)
+    }
+
+    /// What the translation column shows for a text or an image, and the saved result behind it when that is what it
+    /// shows. Until `kept` is what the store said of exactly this item, the column is still reading. `isImage` says
+    /// whether the item is an image, whose missing text is said as an image's. A translation that failed leaves what
+    /// was made before, in this session or an earlier one, and says so while it is the latest translation's ending.
+    static func translation(for ref: ContentRef, isImage: Bool, in derivedText: DerivedTextCoordinator,
+                            kept: KeptResult?) -> (column: TranslationColumn, result: DerivedText?) {
+        let savedIsRead = kept?.isRead(for: ref) == true
+        let saved = savedIsRead ? kept?.result : nil
+        if let job = derivedText.job(for: ref, operation: .translate) {
+            let into = derivedText.runningRequest(for: ref, operation: .translate)?.targetLanguage
+            return (.translating(job.snapshot, into: into), nil)
+        }
+        // The text in an image is recognized first, as soon as this Mac's lane has room.
+        if let target = derivedText.translationWaitingForText(ref) {
+            let hasStarted = derivedText.job(for: ref, operation: .extractText)?.hasStarted == true
+            return (.recognizingText(into: target.translationCode, hasStarted: hasStarted), nil)
+        }
+        let made: (column: TranslationColumn, result: DerivedText?)
+        switch derivedText.outcome(for: ref, operation: .translate) {
+        case .saving(let text, let request, let status)?:
+            made = (.translation(text, into: request.targetLanguage, status: status), nil)
+        case .saved(let result)?: made = (translationColumn(showing: result), result)
+        case .noText?:
+            let into = derivedText.shownRequest(for: ref, operation: .translate)?.targetLanguage
+            made = (isImage ? .noTextInImage(into: into) : .nothingToTranslate(into: into), nil)
+        case .notSaved(let text, let request, let status)?:
+            made = (.unsaved(text, into: request.targetLanguage, status: status), nil)
+        case .failed(let error)?:
+            let asked = derivedText.failedRequest(for: ref, operation: .translate)?.targetLanguage
+            guard savedIsRead else { return (.loading, nil) }
+            guard let saved else {
+                // Tried again once the store has said it kept none.
+                let isWaiting = derivedText.isWaitingToStart(ref, operation: .translate)
+                return (isWaiting ? .loading : .failed(error, asked: asked), nil)
+            }
+            let kept = translationColumn(showing: saved)
+            let isLatest = derivedText.showsLatestEnding(for: ref, operation: .translate)
+            return (isLatest ? .failedAgain(kept, error, asked: asked) : kept, saved)
+        case nil:
+            guard savedIsRead else { return (.loading, nil) }
+            if let saved { return (translationColumn(showing: saved), saved) }
+            // A translation the person asked for starts once the store has said it kept none.
+            return (derivedText.isWaitingToStart(ref, operation: .translate) ? .loading : .notStarted, nil)
+        }
+        guard let failure = derivedText.failure(for: ref, operation: .translate) else { return made }
+        let asked = derivedText.failedRequest(for: ref, operation: .translate)?.targetLanguage
+        return (.failedAgain(made.column, failure, asked: asked), made.result)
+    }
+
+    private static func translationColumn(showing result: DerivedText) -> TranslationColumn {
+        .translation(result.text, into: result.targetLanguage, status: result.status)
+    }
 }
 
 /// What the text column shows for the selected image.
@@ -444,15 +555,13 @@ final class QuickAccessState {
     @ObservationIgnored private var textCopiedNote: Task<Void, Never>?
     /// The texts saved as snippets in this showing: saving one again says it is there already.
     @ObservationIgnored private var savedTexts: Set<String> = []
-    /// The image the saved text below was read for. Until it is the previewed image, the column is still reading.
-    private var savedTextRef: ContentRef?
-    /// What an earlier job saved of the previewed image's text, if anything.
-    private var savedText: DerivedText?
+    /// What the store kept of the previewed image's text, once it has said. Until it is what it said of the previewed
+    /// image, the column is still reading.
+    private var keptText: KeptResult?
     @ObservationIgnored private var readingSavedText: Task<Void, Never>?
-    /// The clip the saved translation below was read for. Until it is the previewed clip, the column is still reading.
-    private var savedTranslationRef: ContentRef?
-    /// What an earlier job saved of the previewed clip's translation, if anything.
-    private var savedTranslation: DerivedText?
+    /// What the store kept of the previewed clip's translation, once it has said. Until it is what it said of the
+    /// previewed clip, the column is still reading.
+    private var keptTranslation: KeptResult?
     @ObservationIgnored private var readingSavedTranslation: Task<Void, Never>?
     /// The languages the person prefers, first first, as the system lists them.
     @ObservationIgnored private let preferredLanguages: () -> [String]
@@ -1039,42 +1148,11 @@ final class QuickAccessState {
         return result
     }
 
-    /// What the text column shows, and the saved result behind it when that is what it shows. A recognition that
-    /// failed leaves what was made before, in this session or an earlier one, and says so while it is the latest
-    /// recognition's ending.
+    /// What the text column shows, and the saved result behind it when that is what it shows, from what the store kept
+    /// of the image once it has said.
     private var textColumnContents: (column: TextColumn, result: DerivedText?)? {
         guard let ref = textColumnRef, let derivedText = services()?.derivedText else { return nil }
-        if let job = derivedText.job(for: ref, operation: .extractText) { return (.recognizing(job.snapshot), nil) }
-        let made: (column: TextColumn, result: DerivedText?)
-        switch derivedText.outcome(for: ref, operation: .extractText) {
-        // Recognition on this Mac ends whole or not at all, so the text being saved is whole.
-        case .saving(let text, let request, _)?:
-            made = (.text(text, keepsLineBreaks: request.keepsLineBreaks, status: .complete), nil)
-        case .saved(let result)?: made = (Self.column(showing: result), result)
-        case .noText?: made = (.noText, nil)
-        case .notSaved(let text, let request, _)?:
-            made = (.unsaved(text, keepsLineBreaks: request.keepsLineBreaks), nil)
-        case .failed(let error)?:
-            guard savedTextRef == ref else { return (.loading, nil) }
-            guard let savedText else {
-                // Tried again once the store has said it kept none.
-                return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .failed(error), nil)
-            }
-            let kept = Self.column(showing: savedText)
-            let isLatest = derivedText.showsLatestEnding(for: ref, operation: .extractText)
-            return (isLatest ? .failedAgain(kept, error) : kept, savedText)
-        case nil:
-            guard savedTextRef == ref else { return (.loading, nil) }
-            if let savedText { return (Self.column(showing: savedText), savedText) }
-            // Text the person asked for starts once the store has said it kept none.
-            return (derivedText.isWaitingToStart(ref, operation: .extractText) ? .loading : .notStarted, nil)
-        }
-        guard let failure = derivedText.failure(for: ref, operation: .extractText) else { return made }
-        return (.failedAgain(made.column, failure), made.result)
-    }
-
-    private static func column(showing result: DerivedText) -> TextColumn {
-        .text(result.text, keepsLineBreaks: result.keepsLineBreaks, status: result.status)
+        return ResultColumnContents.text(for: ref, in: derivedText, kept: keptText)
     }
 
     /// Whether the column shows how the latest recognition of its image just ended: the text it made, that it found
@@ -1227,7 +1305,7 @@ final class QuickAccessState {
     private func textAtHand(for row: QuickAccessRow, _ derivedText: DerivedTextCoordinator) -> String? {
         if row.kind == .image {
             if let recognized = derivedText.recognizedText(in: row.ref) { return recognized }
-            return savedTextRef == row.ref ? savedText?.text : nil
+            return keptText?.isRead(for: row.ref) == true ? keptText?.result?.text : nil
         }
         guard previewedRef == row.ref, case .text(let text, _) = TranslationOriginal(preview) else { return nil }
         return text
@@ -1312,55 +1390,12 @@ final class QuickAccessState {
         selection.selectedRow?.kind == .image ? .image : TranslationOriginal(preview)
     }
 
-    /// What the translation column shows, and the saved result behind it when that is what it shows. A translation
-    /// that failed leaves what was made before, in this session or an earlier one, and says so while it is the latest
-    /// translation's ending.
+    /// What the translation column shows, and the saved result behind it when that is what it shows, from what the
+    /// store kept of the clip once it has said.
     private var translationColumnContents: (column: TranslationColumn, result: DerivedText?)? {
         guard let ref = translationColumnRef, let derivedText = services()?.derivedText else { return nil }
-        if let job = derivedText.job(for: ref, operation: .translate) {
-            let into = derivedText.runningRequest(for: ref, operation: .translate)?.targetLanguage
-            return (.translating(job.snapshot, into: into), nil)
-        }
-        // The text in an image is recognized first, as soon as this Mac's lane has room.
-        if let target = derivedText.translationWaitingForText(ref) {
-            let hasStarted = derivedText.job(for: ref, operation: .extractText)?.hasStarted == true
-            return (.recognizingText(into: target.translationCode, hasStarted: hasStarted), nil)
-        }
-        let made: (column: TranslationColumn, result: DerivedText?)
-        switch derivedText.outcome(for: ref, operation: .translate) {
-        case .saving(let text, let request, let status)?:
-            made = (.translation(text, into: request.targetLanguage, status: status), nil)
-        case .saved(let result)?: made = (Self.translationColumn(showing: result), result)
-        case .noText?:
-            let into = derivedText.shownRequest(for: ref, operation: .translate)?.targetLanguage
-            let isImage = selection.selectedRow?.kind == .image
-            made = (isImage ? .noTextInImage(into: into) : .nothingToTranslate(into: into), nil)
-        case .notSaved(let text, let request, let status)?:
-            made = (.unsaved(text, into: request.targetLanguage, status: status), nil)
-        case .failed(let error)?:
-            let asked = derivedText.failedRequest(for: ref, operation: .translate)?.targetLanguage
-            guard savedTranslationRef == ref else { return (.loading, nil) }
-            guard let savedTranslation else {
-                // Tried again once the store has said it kept none.
-                let isWaiting = derivedText.isWaitingToStart(ref, operation: .translate)
-                return (isWaiting ? .loading : .failed(error, asked: asked), nil)
-            }
-            let kept = Self.translationColumn(showing: savedTranslation)
-            let isLatest = derivedText.showsLatestEnding(for: ref, operation: .translate)
-            return (isLatest ? .failedAgain(kept, error, asked: asked) : kept, savedTranslation)
-        case nil:
-            guard savedTranslationRef == ref else { return (.loading, nil) }
-            if let savedTranslation { return (Self.translationColumn(showing: savedTranslation), savedTranslation) }
-            // A translation the person asked for starts once the store has said it kept none.
-            return (derivedText.isWaitingToStart(ref, operation: .translate) ? .loading : .notStarted, nil)
-        }
-        guard let failure = derivedText.failure(for: ref, operation: .translate) else { return made }
-        let asked = derivedText.failedRequest(for: ref, operation: .translate)?.targetLanguage
-        return (.failedAgain(made.column, failure, asked: asked), made.result)
-    }
-
-    private static func translationColumn(showing result: DerivedText) -> TranslationColumn {
-        .translation(result.text, into: result.targetLanguage, status: result.status)
+        return ResultColumnContents.translation(for: ref, isImage: selection.selectedRow?.kind == .image,
+                                                in: derivedText, kept: keptTranslation)
     }
 
     /// The latest translation's ending that the column shows, which tells one ending from another so that each is
@@ -1548,16 +1583,14 @@ final class QuickAccessState {
     private func readSavedText() {
         readingSavedText?.cancel()
         readingSavedText = nil
-        savedTextRef = nil
-        savedText = nil
+        keptText = nil
         guard isPreviewExpanded, let row = selection.selectedRow, row.kind == .image,
               let derivedText = services()?.derivedText else { return }
         let ref = row.ref
         readingSavedText = Task { [weak self] in
             let saved = await derivedText.savedResult(for: ref, operation: .extractText)
             guard !Task.isCancelled, let self, selection.selection == ref else { return }
-            savedTextRef = ref
-            savedText = saved
+            keptText = KeptResult(source: ref, result: saved)
             readTranslationLanguages()
         }
     }
@@ -1566,16 +1599,14 @@ final class QuickAccessState {
     private func readSavedTranslation() {
         readingSavedTranslation?.cancel()
         readingSavedTranslation = nil
-        savedTranslationRef = nil
-        savedTranslation = nil
+        keptTranslation = nil
         guard isPreviewExpanded, let row = selection.selectedRow, Self.isTranslatable(row.kind),
               let derivedText = services()?.derivedText else { return }
         let ref = row.ref
         readingSavedTranslation = Task { [weak self] in
             let saved = await derivedText.savedResult(for: ref, operation: .translate)
             guard !Task.isCancelled, let self, selection.selection == ref else { return }
-            savedTranslationRef = ref
-            savedTranslation = saved
+            keptTranslation = KeptResult(source: ref, result: saved)
             translateWhileViewed(ref, kept: saved)
         }
     }
