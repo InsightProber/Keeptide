@@ -21,6 +21,9 @@ struct LaunchConfiguration: Sendable {
     /// `--fake-text-recognition`: text in images is recognized by a stand-in that finds the same synthetic text in
     /// any image, for UI tests. Debug builds and test sessions only.
     let usesFakeTextRecognition: Bool
+    /// `--fake-link-previews`: links' previews come from a stand-in that loads nothing, for UI tests. Debug builds and
+    /// test sessions only; any other test session loads none.
+    let usesFakeLinkPreviews: Bool
     /// `--manual-paste-qa`, for checking direct paste by hand: a throwaway library of harmless clips in place of the
     /// user's, and no recording. Debug builds only, and never under UI tests or XCTest.
     let shouldStartManualPasteQA: Bool
@@ -41,6 +44,7 @@ struct LaunchConfiguration: Sendable {
         shouldSeedSyntheticClips = captureTestSessionID != nil && arguments.contains("--seed-synthetic-clips")
         shouldSeedSyntheticSnippets = shouldSeedSyntheticClips && arguments.contains("--seed-synthetic-snippets")
         usesFakeTextRecognition = captureTestSessionID != nil && arguments.contains("--fake-text-recognition")
+        usesFakeLinkPreviews = captureTestSessionID != nil && arguments.contains("--fake-link-previews")
         shouldStartManualPasteQA = arguments.contains("--manual-paste-qa") && !isUITesting && !isRunningTests
         #else
         captureTestSessionID = nil
@@ -48,6 +52,7 @@ struct LaunchConfiguration: Sendable {
         shouldSeedSyntheticClips = false
         shouldSeedSyntheticSnippets = false
         usesFakeTextRecognition = false
+        usesFakeLinkPreviews = false
         shouldStartManualPasteQA = false
         #endif
         shouldForceOnboarding = captureTestSessionID != nil && arguments.contains("--show-onboarding")
@@ -56,8 +61,27 @@ struct LaunchConfiguration: Sendable {
         shouldInitializeCaptureSession = captureTestSessionID != nil || (!isRunningTests && !isUITesting)
     }
 
+    /// Where link previews come from: synthetic ones, which load nothing, for a UI test session that asks for them;
+    /// none for any other test, test session or manual check; the web for the app itself.
+    var linkPreviewSource: LinkPreviewSource {
+        if usesFakeLinkPreviews { return .synthetic }
+        let isTestOrCheck = shouldUseEphemeralApplicationState || captureTestSessionID != nil
+            || shouldStartManualPasteQA
+        return isTestOrCheck ? .off : .web
+    }
+
     /// Whether XCTest runs in the process `environment` belongs to, as in the app that hosts the unit tests.
     static func isRunningTests(_ environment: [String: String]) -> Bool {
         environment["XCTestConfigurationFilePath"] != nil
     }
+}
+
+/// Where a launch's link previews come from.
+enum LinkPreviewSource: Equatable {
+    /// No previews: nothing is loaded.
+    case off
+    /// Synthetic previews, which load nothing.
+    case synthetic
+    /// Pages loaded from the web.
+    case web
 }

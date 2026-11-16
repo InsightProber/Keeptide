@@ -318,6 +318,18 @@ class NetworkBoundaryTests(unittest.TestCase):
                         clients.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line}")
         self.assertEqual(clients, [], "Tests must give each ModelClient a stand-in for the network")
 
+    def test_only_the_app_delegate_builds_the_system_link_loader(self) -> None:
+        # A test session, a manual check and a UI test get no loader, or one that loads nothing; the app delegate builds
+        # the one that loads real pages, once, in a function tests can't call.
+        named = re.compile(r"\bSystemLinkMetadataLoader\b")
+        own = (LINK_PREVIEW_MODULE / "SystemLinkMetadataLoader.swift").relative_to(REPOSITORY_ROOT).as_posix()
+        self.assertEqual(matching_lines(named, (APP_SOURCES,), frozenset({APP_DELEGATE, own})), [],
+                         "Only the app delegate names the system's link loader")
+        delegate = code_only((REPOSITORY_ROOT / APP_DELEGATE).read_text(encoding="utf-8"))
+        self.assertEqual(len(named.findall(delegate)), 1, "The app delegate builds it once")
+        self.assertIn("SystemLinkMetadataLoader()", delegate)
+        self.assertRegex(delegate, r"private static func makeLinkPreviews\b")
+
     def test_tests_never_build_the_system_link_loader(self) -> None:
         # The test host may connect out; a test that built the system's loader would load a real website.
         for code in ("SystemLinkMetadataLoader()", "SystemLinkMetadataLoader (timeout: 1)", "SystemLinkMetadataLoader.init()",

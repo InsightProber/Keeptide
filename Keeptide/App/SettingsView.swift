@@ -141,7 +141,8 @@ struct SettingsView: View {
     }
 
     private var privacyPage: some View {
-        Form {
+        @Bindable var preferences = model.quickAccess
+        return Form {
             Section("Ignored Apps") {
                 HStack {
                     Text(ignoredApplicationsDescription)
@@ -164,6 +165,20 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("SavedSnippetRetentionExplanation")
+            }
+
+            Section {
+                Toggle(isOn: $preferences.loadsLinkPreviews) {
+                    Text("Load link previews")
+                    Text("Shows the title and picture of a link's page on its card. To get them, Keeptide sends the link "
+                        + "to its website, as opening it would.")
+                }
+                .accessibilityIdentifier("LoadLinkPreviewsToggle")
+            } header: {
+                Text("Links")
+            } footer: {
+                Text("Links whose address names this Mac or your local network, or has a parameter that may hold a "
+                    + "password, key or token, are never loaded. Turning this off removes the previews Keeptide kept.")
             }
         }
         .formStyle(.grouped)
