@@ -70,6 +70,11 @@ TEST_LINK_LOADER = re.compile(r"\bSystemLinkMetadataLoader\b(?!\.reason\b)")
 LOGGING = re.compile(r"\b(?:print|debugPrint|dump|NSLog|os_log)\s*\(|\bLogger\s*\(|\bimport\s+(?:os|OSLog)\b")
 # A model client built in a test: it must be given a stand-in for the network.
 TEST_CLIENT = re.compile(r"\bModelClient\s*\(((?:[^()]|\([^()]*\))*)\)")
+# Calling the keychain, through SecItem or the older SecKeychain functions.
+KEYCHAIN_CALLS = re.compile(r"\bSecItem(?:Add|CopyMatching|Update|Delete|Export|Import)\b|\bSecKeychain\w*")
+# The keychain itself, which is how a credential store reaches the real one.
+REAL_KEYCHAIN = re.compile(KEYCHAIN_CALLS.pattern + r"|\bSystemKeychain\b")
+CREDENTIAL_STORE = "Keeptide/CloudModels/Credentials.swift"
 # Reading the keyboard's state or watching other apps' events needs Input Monitoring access.
 INPUT_MONITORING = re.compile(
     r"\bCGEventSource\.keyState\b|\bCGEventSourceKeyState\b|\bCGEvent\.tapCreate\w*|\bCGEventTapCreate\w*"
@@ -345,6 +350,35 @@ class NetworkBoundaryTests(unittest.TestCase):
                     line = code.count("\n", 0, match.start()) + 1
                     builds.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line}")
         self.assertEqual(builds, [], "Tests must never build the system's link loader")
+
+
+class KeychainBoundaryTests(unittest.TestCase):
+    def test_the_keychain_patterns_find_each_way_to_reach_the_keychain(self) -> None:
+        for code in ("SecItemAdd(item as CFDictionary, nil)", "SecItemCopyMatching(query, &result)",
+                     "SecItemUpdate(query, changes)", "SecItemDelete(query)", "SecItemExport(item, .formatPEMSequence",
+                     "SecKeychainFindGenericPassword(nil", "SecKeychainItemDelete(item)"):
+            self.assertIsNotNone(KEYCHAIN_CALLS.search(code), code)
+        self.assertIsNotNone(REAL_KEYCHAIN.search("KeychainCredentialStore(keychain: SystemKeychain())"))
+        for code in ("KeychainCredentialStore(keychain: KeychainStandIn())", "kSecClassGenericPassword",
+                     "kSecAttrAccessibleWhenUnlockedThisDeviceOnly", "errSecItemNotFound", "SecItemCount"):
+            self.assertIsNone(REAL_KEYCHAIN.search(code), code)
+
+    def test_only_the_credential_store_calls_the_keychain(self) -> None:
+        self.assertTrue((REPOSITORY_ROOT / CREDENTIAL_STORE).is_file(), CREDENTIAL_STORE)
+        self.assertEqual(
+            matching_lines(KEYCHAIN_CALLS, (APP_SOURCES, PASTEBOARD_READER), frozenset({CREDENTIAL_STORE})),
+            [],
+            "Only the credential store calls the keychain",
+        )
+
+    def test_tests_never_reach_the_real_keychain(self) -> None:
+        # Unit tests run inside Keeptide: a test that reached the keychain would read or change the real one, and its
+        # prompt could hold up the run.
+        self.assertEqual(
+            matching_lines(REAL_KEYCHAIN, (UNIT_TESTS, UI_TESTS)),
+            [],
+            "Tests give each credential store a stand-in for the keychain",
+        )
 
 
 class EntitlementTests(unittest.TestCase):
