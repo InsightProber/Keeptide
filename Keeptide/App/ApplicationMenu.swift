@@ -97,7 +97,12 @@ enum ApplicationMenuBuilder {
         // What this Mac makes of the item: the text in an image, beside it in the detail.
         itemMenu.addItem(.separator())
         itemMenu.addItem(item(title: "Extract Text", action: #selector(LibraryWindowController.extractText(_:)), keyEquivalent: "t", modifierMask: [.shift, .command], identifier: "ItemMenu-ExtractText"))
-        // What the text column's buttons do, for the keyboard too.
+        itemMenu.addItem(item(title: "Translate", action: #selector(LibraryWindowController.translateItem(_:)), keyEquivalent: "t", identifier: "ItemMenu-Translate"))
+        let translateTo = menuItem(title: "Translate To", submenu: NSMenu(title: "Translate To"))
+        translateTo.submenu?.delegate = LibraryTranslateToMenu.shared
+        translateTo.identifier = NSUserInterfaceItemIdentifier("ItemMenu-TranslateTo")
+        itemMenu.addItem(translateTo)
+        // What the result column's buttons do, for the keyboard too; named for the result it shows.
         itemMenu.addItem(item(title: "Copy Text", action: #selector(LibraryWindowController.copyResultText(_:)), identifier: "ItemMenu-CopyResultText"))
         itemMenu.addItem(item(title: "Save Text as Snippet", action: #selector(LibraryWindowController.saveResultTextAsSnippet(_:)), identifier: "ItemMenu-SaveResultText"))
         itemMenu.addItem(.separator())

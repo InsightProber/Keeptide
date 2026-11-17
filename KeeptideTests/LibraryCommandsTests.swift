@@ -508,17 +508,114 @@ final class LibraryCommandsTests: XCTestCase {
         XCTAssertEqual(extract.keyEquivalent, "t")
         XCTAssertEqual(extract.keyEquivalentModifierMask, [.shift, .command])
         // Then what the column's buttons do, for the keyboard too.
-        let group = Array(item.items[index...index + 2])
-        XCTAssertEqual(group.map(\.title), ["Extract Text", "Copy Text", "Save Text as Snippet"])
-        XCTAssertEqual(group.map(\.action), [#selector(LibraryWindowController.extractText(_:)),
-                                             #selector(LibraryWindowController.copyResultText(_:)),
-                                             #selector(LibraryWindowController.saveResultTextAsSnippet(_:))])
+        let group = Array(item.items[index...index + 4])
+        XCTAssertEqual(group.map(\.title),
+                       ["Extract Text", "Translate", "Translate To", "Copy Text", "Save Text as Snippet"])
+        XCTAssertEqual(group[1].keyEquivalent, "t")
+        XCTAssertEqual(group[1].keyEquivalentModifierMask, .command)
+        // Translate To is a submenu, AppKit's to open.
+        XCTAssertEqual([group[0], group[1], group[3], group[4]].map(\.action),
+                       [#selector(LibraryWindowController.extractText(_:)),
+                        #selector(LibraryWindowController.translateItem(_:)),
+                        #selector(LibraryWindowController.copyResultText(_:)),
+                        #selector(LibraryWindowController.saveResultTextAsSnippet(_:))])
+        XCTAssertNotNil(group[2].submenu?.delegate, "Translate To lists its languages as it opens")
         XCTAssertEqual(group.compactMap(\.identifier?.rawValue),
-                       ["ItemMenu-ExtractText", "ItemMenu-CopyResultText", "ItemMenu-SaveResultText"])
+                       ["ItemMenu-ExtractText", "ItemMenu-Translate", "ItemMenu-TranslateTo",
+                        "ItemMenu-CopyResultText", "ItemMenu-SaveResultText"])
         // After the item's favorite, collections and type, and before Show Snippet.
         XCTAssertTrue(item.items[index - 1].isSeparatorItem)
         XCTAssertEqual(item.items[index - 2].title, "Type")
-        XCTAssertTrue(item.items[index + 3].isSeparatorItem)
+        XCTAssertTrue(item.items[index + 5].isSeparatorItem)
+    }
+
+    func testTranslateIsForOneTextOrImageWhoseContentCanBeRead() {
+        func state(_ entries: [LibraryEntry]) -> LibrarySelectionState {
+            .make(entries: entries, open: nil, hasCollections: false, canDelete: true)
+        }
+        XCTAssertTrue(state([Self.entry(.history)]).canTranslate)
+        XCTAssertTrue(state([Self.entry(.memo, kind: .image)]).canTranslate)
+        XCTAssertFalse(state([Self.entry(.history, kind: .url)]).canTranslate)
+        XCTAssertFalse(state([Self.entry(.history, kind: .file)]).canTranslate)
+        XCTAssertFalse(state([Self.entry(.history), Self.entry(.history)]).canTranslate)
+        var details = LibraryItemDetails(createdAt: Date(), lastCopiedAt: Date(), copyCount: 1)
+        details.integrity = .requiresRelocation
+        let text = Self.entry(.history)
+        let open = LibrarySelectionState.OpenItem(ref: text.ref, details: details, kind: .plainText, isReadOnly: true)
+        XCTAssertFalse(LibrarySelectionState.make(entries: [text], open: open, hasCollections: false,
+                                                  canDelete: true).canTranslate)
+    }
+
+    func testTranslateIsForwardedAsARequestAndTranslateToListsTheLanguagesAsItOpens() throws {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let translate = NSMenuItem(title: "Translate", action: #selector(LibraryWindowController.translateItem(_:)),
+                                   keyEquivalent: "t")
+        XCTAssertFalse(controller.validateMenuItem(translate))
+        controller.commands.updateItemContext(LibraryItemContext(canTranslate: true))
+        XCTAssertTrue(controller.validateMenuItem(translate))
+
+        controller.translateItem(translate)
+        XCTAssertEqual(controller.commands.translationRequest?.code, nil)
+        XCTAssertEqual(controller.commands.translationRequest?.generation, 1)
+
+        // Translate To: the languages for the selected item, as the language menu lists them, the chosen one checked.
+        controller.commands.languageMenuForSelection = {
+            TranslationLanguageMenu(
+                preferred: [.init(code: "en", name: "English", note: nil, isChosen: false)],
+                others: [.init(code: "ja", name: "Japanese", note: .notDownloaded, isChosen: true)]
+            )
+        }
+        let menu = NSMenu(title: "Translate To")
+        // Only while the library is in front: behind Settings, or closed, it has nothing to translate.
+        LibraryTranslateToMenu.shared.isLibraryInFront = { false }
+        LibraryTranslateToMenu.shared.menuNeedsUpdate(menu)
+        XCTAssertEqual(menu.items.map(\.title), ["No Item to Translate"])
+        var target: AnyObject?
+        var action: Selector?
+        XCTAssertFalse(LibraryTranslateToMenu.shared.menuHasKeyEquivalent(
+            menu, for: try key("a", code: kVK_ANSI_A, modifiers: .command), target: &target, action: &action))
+        LibraryTranslateToMenu.shared.isLibraryInFront = { true }
+        LibraryTranslateToMenu.shared.menuNeedsUpdate(menu)
+        XCTAssertEqual(menu.items.map(\.title), ["English", "", "Japanese"])
+        XCTAssertEqual(menu.items.last?.state, .on)
+        XCTAssertEqual(menu.items.last?.badge?.stringValue, TranslationLanguageMenu.Note.notDownloaded.title)
+        menu.performActionForItem(at: 2)
+        XCTAssertEqual(controller.commands.translationRequest?.code, "ja")
+        XCTAssertEqual(controller.commands.translationRequest?.generation, 2)
+        // Nothing to translate: it says so.
+        controller.commands.updateItemContext(LibraryItemContext(canTranslate: false))
+        LibraryTranslateToMenu.shared.menuNeedsUpdate(menu)
+        XCTAssertEqual(menu.items.map(\.title), ["No Item to Translate"])
+        XCTAssertFalse(menu.items[0].isEnabled)
+    }
+
+    func testTheLanguagesAreReadAgainEachTimeTheWindowShows() {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil,
+                                                 setActivationPolicy: { _ in })
+        addTeardownBlock { controller.window?.close() }
+        XCTAssertEqual(controller.commands.shownGeneration, 0)
+
+        controller.show()
+        controller.show()
+
+        XCTAssertEqual(controller.commands.shownGeneration, 2)
+    }
+
+    func testCopyAndSaveAreNamedForTheResultTheColumnShows() {
+        let controller = LibraryWindowController(session: CaptureSession(), autosaveName: nil)
+        let copy = NSMenuItem(title: "Copy Text", action: #selector(LibraryWindowController.copyResultText(_:)),
+                              keyEquivalent: "")
+        let save = NSMenuItem(title: "Save Text as Snippet",
+                              action: #selector(LibraryWindowController.saveResultTextAsSnippet(_:)), keyEquivalent: "")
+        controller.commands.updateItemContext(LibraryItemContext(resultColumnIsOpen: true))
+        controller.commands.resultColumnHasText = { true }
+        controller.commands.resultColumnName = { "Translation" }
+
+        _ = controller.validateMenuItem(copy)
+        _ = controller.validateMenuItem(save)
+
+        XCTAssertEqual(copy.title, "Copy Translation")
+        XCTAssertEqual(save.title, "Save Translation as Snippet")
     }
 
     func testTheTextBesideAnImageIsCopiedAndSavedFromTheItemMenuOnceItIsWhole() {

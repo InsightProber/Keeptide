@@ -161,6 +161,14 @@ show the selected clip, or its snippet, there.
   right-click its row, shows its text beside it, recognized on this Mac as in
   quick access. Copy, Save as Snippet and Close are beside the text and in the
   Item menu; Escape closes it too, and ⌘. stops a recognition.
+- For a text or an image, **Item › Translate** (⌘T), **Translate To**, the
+  toolbar's **Translate** or the same in its row's right-click menu shows its
+  translation beside it, made on this Mac as quick access makes it, the text in
+  an image recognized first. The language's name above the translation is the
+  menu of languages to translate into, marked, once the text's language is
+  known, for what each needs; the language chosen is the one quick access
+  translates into too, unless Settings fixes one. A snippet is saved before it
+  is translated, and once edited, its translation is to be made again.
 - **All Snippets** and **Favorites** hold what you keep on purpose; your
   **collections** sort them, a snippet can be in several at once, and
   **Unfiled** shows snippets that are in no collection. In a collection, ⌫

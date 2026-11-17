@@ -38,6 +38,17 @@ final class LibraryWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .unified
         window.onCancel = { [weak commands] in commands?.cancelResultColumn(isCommandPeriod: $0) ?? false }
+        LibraryTranslateToMenu.shared.commands = commands
+        LibraryTranslateToMenu.shared.isLibraryInFront = { [weak window] in
+            window?.isKeyWindow == true || window?.isMainWindow == true
+        }
+        // The language menu opens where the column says, in the view it gives.
+        commands.showLanguageMenu = { languages, view, point, choose in
+            let menu = NSMenu(title: "Translate To")
+            menu.autoenablesItems = false
+            ActionMenu.addLanguageItems(languages, to: menu, choose: choose)
+            menu.popUp(positioning: nil, at: point, in: view)
+        }
         // What the library says to VoiceOver, it says from its own window, and only while the window shows.
         commands.announce = { [weak window] words in
             guard let window, window.isVisible else { return }
@@ -72,6 +83,7 @@ final class LibraryWindowController: NSWindowController {
             setActivationPolicy(.regular)
         }
         session.libraryWorkspace?.resumeAfterCloseCancellation()
+        commands.noteShown()
         NSApplication.shared.activate()
         window.makeKeyAndOrderFront(nil)
     }
@@ -128,6 +140,7 @@ final class LibraryWindowController: NSWindowController {
 
     @objc func removeFromCollection(_ sender: Any?) { commands.requestRemoveFromCollection() }
     @objc func extractText(_ sender: Any?) { commands.requestExtractText() }
+    @objc func translateItem(_ sender: Any?) { commands.requestTranslation(into: nil) }
     @objc func copyResultText(_ sender: Any?) { commands.requestCopyResultText() }
     @objc func saveResultTextAsSnippet(_ sender: Any?) { commands.requestSaveResultText() }
 
@@ -328,7 +341,13 @@ extension LibraryWindowController: NSMenuItemValidation {
             // An input method keeps ⇧⌘T while it composes.
             if let text = window?.firstResponder as? NSTextView, text.hasMarkedText() { return false }
             return commands.itemContext.canExtractText
+        case #selector(translateItem(_:)):
+            // An input method keeps ⌘T while it composes.
+            if let text = window?.firstResponder as? NSTextView, text.hasMarkedText() { return false }
+            return commands.itemContext.canTranslate
         case #selector(copyResultText(_:)), #selector(saveResultTextAsSnippet(_:)):
+            let name = commands.resultColumnName()
+            menuItem.title = menuItem.action == #selector(copyResultText(_:)) ? "Copy \(name)" : "Save \(name) as Snippet"
             return commands.itemContext.resultColumnIsOpen && commands.resultColumnHasText()
         case #selector(moveToRecentlyDeleted(_:)):
             // In the editor ⌘⌫ deletes to the start of the line; items move only from the list or the sidebar.
@@ -411,6 +430,19 @@ final class LibraryWindowCommands {
     private(set) var saveResultTextRequest = 0
     /// Whether the result column beside the detail shows a whole text; the view sets it, and the menus ask it.
     @ObservationIgnored var resultColumnHasText: @MainActor () -> Bool = { false }
+    /// What the result column calls its result, "Text" or "Translation", for the menus; the view sets it.
+    @ObservationIgnored var resultColumnName: @MainActor () -> String = { "Text" }
+    /// The languages to translate the selected item into, as Item › Translate To lists them; the view sets it.
+    @ObservationIgnored var languageMenuForSelection: @MainActor () -> TranslationLanguageMenu? = { nil }
+    /// Opens the menu of languages to translate into at a point in a view, and hands the code chosen to `choose`; the
+    /// window controller sets it.
+    @ObservationIgnored var showLanguageMenu: @MainActor (TranslationLanguageMenu, NSView, NSPoint,
+                                                          @escaping (String) -> Void) -> Void = { _, _, _, _ in }
+    /// Item › Translate and Translate To: the selected item's translation, into the language with `code` where one is
+    /// chosen.
+    private(set) var translationRequest: LibraryTranslationRequest?
+    /// Counts the times the window showed: the languages are read again each time.
+    private(set) var shownGeneration = 0
     /// Says something to VoiceOver from the library's window; the window controller sets it.
     @ObservationIgnored var announce: @MainActor (String) -> Void = { _ in }
     private(set) var focusGeneration = 0
@@ -505,6 +537,11 @@ final class LibraryWindowCommands {
     }
 
     func requestCloseResultColumn() { closeResultColumnRequest &+= 1 }
+    func noteShown() { shownGeneration &+= 1 }
+
+    func requestTranslation(into code: String?) {
+        translationRequest = LibraryTranslationRequest(code: code, generation: (translationRequest?.generation ?? 0) + 1)
+    }
     func requestCopyResultText() { copyResultTextRequest &+= 1 }
     func requestSaveResultText() { saveResultTextRequest &+= 1 }
 
@@ -544,6 +581,8 @@ struct LibraryItemContext: Equatable {
     var deleted: TrashFacetSnapshot?
     /// Whether the text in the open image can be extracted: one readable image, in a library that recognizes text.
     var canExtractText = false
+    /// Whether the selected item can be translated: one readable text or image, in a library that translates.
+    var canTranslate = false
     /// Whether the detail shows a result column beside the item: Escape closes it.
     var resultColumnIsOpen = false
 }
@@ -570,6 +609,41 @@ final class LibraryWindow: NSWindow {
         let modifiers = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let isCommandPeriod = event.charactersIgnoringModifiers == "." && modifiers.subtracting(.shift) == .command
         return (isCommandPeriod, event.isARepeat)
+    }
+}
+
+struct LibraryTranslationRequest: Equatable {
+    /// The language chosen, by its code; nil for the one translations are made in.
+    let code: String?
+    let generation: Int
+}
+
+/// Lists the languages to translate the selected item into as Item › Translate To opens, as the language menu does.
+@MainActor
+final class LibraryTranslateToMenu: NSObject, NSMenuDelegate {
+    static let shared = LibraryTranslateToMenu()
+    /// The library window's commands; the window controller sets them.
+    weak var commands: LibraryWindowCommands?
+    /// Whether the library window is in front, key or main; the window controller sets it.
+    var isLibraryInFront: @MainActor () -> Bool = { false }
+
+    /// No language has a key equivalent: AppKit needn't list them as it looks for one.
+    func menuHasKeyEquivalent(_ menu: NSMenu, for event: NSEvent,
+                              target: AutoreleasingUnsafeMutablePointer<AnyObject?>,
+                              action: UnsafeMutablePointer<Selector?>) -> Bool { false }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        menu.autoenablesItems = false
+        guard isLibraryInFront(), let commands, commands.itemContext.canTranslate,
+              let languages = commands.languageMenuForSelection(),
+              !languages.preferred.isEmpty || !languages.others.isEmpty else {
+            let none = NSMenuItem(title: "No Item to Translate", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
+            return
+        }
+        ActionMenu.addLanguageItems(languages, to: menu) { [weak commands] in commands?.requestTranslation(into: $0) }
     }
 }
 
