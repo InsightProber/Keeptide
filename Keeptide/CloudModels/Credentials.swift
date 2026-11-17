@@ -3,7 +3,7 @@ import Security
 
 /// What Keeptide keeps of a provider's API key, without the key: the identifier its keychain item goes by, whose key
 /// it is, the last four characters of a key long enough to show them, and when it was added.
-struct Credential: Codable, Equatable, Sendable {
+struct Credential: Codable, Hashable, Sendable {
     let id: UUID
     let provider: ProviderPreset.ID
     /// Empty for a key too short to show any of without showing much of it.
@@ -27,6 +27,8 @@ enum CredentialError: Error, Equatable, Sendable {
     case adminKey
     /// The key is certainly this provider's, not the one it was given for.
     case otherProvidersKey(ProviderPreset.ID)
+    /// The key doesn't begin as this provider's keys do, so it isn't one of its.
+    case notProvidersKey(ProviderPreset.ID)
     case empty
 
     /// The error as a person reads it.
@@ -48,6 +50,9 @@ enum CredentialError: Error, Equatable, Sendable {
             "Admin API keys can't be used with models. Paste an API key instead."
         case .otherProvidersKey(let provider):
             "This key is for \(provider.displayName). Choose \(provider.displayName) to add it."
+        case .notProvidersKey(let provider):
+            "This key isn't for \(provider.displayName). "
+                + "\(provider.displayName)'s API keys begin with “\(provider.keyPrefix)”."
         case .empty:
             "Paste an API key to add it."
         }
@@ -137,14 +142,15 @@ struct KeychainCredentialStore: Sendable {
     }
 
     /// Puts `key` in place of `credential`'s, in a new item under the same identifier, so that a key is never written
-    /// into an item Keeptide didn't make. If the new key can't be saved once the old one is removed, neither is kept,
-    /// and reading the key then says it's missing.
+    /// into an item Keeptide didn't make. When the old item can't be removed, nothing changes and the error says so;
+    /// when the new key can't be saved once the old one is removed, neither is kept, and reading the key then says
+    /// it's missing.
     func replace(_ credential: Credential, with key: APIKey) async throws -> Credential {
         try await oneAtATime {
             try Self.check(key, for: credential.provider)
             let status = keychain.delete(matching: Self.item(credential.id))
             guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw CredentialError.notSaved(credential.provider, status)
+                throw CredentialError.notRemoved(credential.provider, status)
             }
             let replaced = self.credential(for: key, of: credential.provider, id: credential.id)
             try add(key, as: replaced)
@@ -171,10 +177,7 @@ struct KeychainCredentialStore: Sendable {
 
     /// Why `key` can't be kept for `provider`, if it can't.
     private static func check(_ key: APIKey, for provider: ProviderPreset.ID) throws {
-        try APIKey.check(key.value)
-        if key.likelyProvider == .anthropic, provider != .anthropic {
-            throw CredentialError.otherProvidersKey(.anthropic)
-        }
+        try key.check(for: provider)
     }
 
     private func credential(for key: APIKey, of provider: ProviderPreset.ID, id: UUID) -> Credential {
@@ -214,6 +217,15 @@ extension APIKey {
         if value.hasPrefix("sk-ant-") { return .anthropic }
         if value.hasPrefix("sk-") { return .openAI }
         return nil
+    }
+
+    /// Why this key can't be used with `provider`, if it can't: as a pasted key isn't taken, or as one that is
+    /// certainly another provider's, or doesn't begin as `provider`'s keys do. A key is checked so before it is sent
+    /// or kept, so that it goes only to the provider it is for.
+    func check(for provider: ProviderPreset.ID) throws {
+        try Self.check(value)
+        if likelyProvider == .anthropic, provider != .anthropic { throw CredentialError.otherProvidersKey(.anthropic) }
+        guard value.hasPrefix(provider.keyPrefix) else { throw CredentialError.notProvidersKey(provider) }
     }
 
     /// Why `text` can't be kept as a key, if it can't: it's empty, has spaces within it or a character that no provider
