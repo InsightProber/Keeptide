@@ -455,15 +455,16 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(clip("Synthetic alpha note", in: frames).waitForNonExistence(timeout: 8), app.debugDescription)
         query.typeKey(.downArrow, modifierFlags: [])
         app.typeKey(.space, modifierFlags: [])
-        let preview = app.descendants(matching: .any)["LinkPagePreview"]
-        XCTAssertTrue(preview.waitForExistence(timeout: 8), app.debugDescription)
-        XCTAssertTrue(app.buttons["OpenLinkInBrowser"].exists, app.debugDescription)
+        // The page's own bar has Open in Browser. macOS 26 folds the page preview's group into the preview's, so the
+        // page is found by that button rather than by the group.
+        let openInBrowser = app.buttons["OpenLinkInBrowser"]
+        XCTAssertTrue(openInBrowser.waitForExistence(timeout: 8), app.debugDescription)
         // The page shows, in the web view.
         let heading = app.webViews.staticTexts["Synthetic page"].firstMatch
         XCTAssertTrue(heading.waitForExistence(timeout: 20), app.debugDescription)
         heading.click()
         app.typeKey(.escape, modifierFlags: [])
-        XCTAssertTrue(preview.waitForNonExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(openInBrowser.waitForNonExistence(timeout: 8), app.debugDescription)
     }
 
     // MARK: - Helpers
