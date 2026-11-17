@@ -170,8 +170,8 @@ struct SettingsView: View {
             Section {
                 Toggle(isOn: $preferences.loadsLinkPreviews) {
                     Text("Load link previews")
-                    Text("Shows the title and picture of a link's page on its card. To get them, Keeptide sends the link "
-                        + "to its website, as opening it would.")
+                    Text("Shows a link's page in its preview, and its title and picture on its card and in the library. "
+                        + "To get them, Keeptide sends the link to its website, as opening it would.")
                 }
                 .accessibilityIdentifier("LoadLinkPreviewsToggle")
             } header: {

@@ -244,6 +244,40 @@ final class LibraryLayoutTests: XCTestCase {
                        "Image content")
     }
 
+    func testALinksRowShowsItsPagesTitleOverItsAddress() {
+        func entry(title: String, kind: ContentKind = .url, isMemo: Bool = false) -> LibraryEntry {
+            let itemID = ItemID()
+            return LibraryEntry(
+                id: itemID,
+                ref: ContentRef(itemID: itemID, facet: isMemo ? .memo : .history, version: ContentVersion(),
+                                digest: Data(repeating: 1, count: 32)),
+                title: title, snippet: nil, lastCopiedAt: Date(), kind: kind, isMemo: isMemo
+            )
+        }
+        let address = "https://example.com/article"
+        let clip = entry(title: address)
+        func shown(_ entry: LibraryEntry, address: String? = address, copied: String? = nil,
+                   page: String? = nil) -> [String?] {
+            let row = LibraryRowText.link(entry, address: address, copiedTitle: copied, pageTitle: page)
+            return [row.title, row.address]
+        }
+
+        XCTAssertEqual(shown(clip), [address, nil], "With no title, the address once")
+        XCTAssertEqual(shown(clip, page: "Example Article"), ["Example Article", address])
+        XCTAssertEqual(shown(clip, copied: "Copied As", page: "Example Article"), ["Copied As", address],
+                       "The title it was copied with comes first")
+        XCTAssertEqual(shown(clip, page: "  Example\nArticle  "), ["Example Article", address], "On one line")
+        XCTAssertEqual(shown(clip, copied: "\u{202E}", page: "Example Article"), ["Example Article", address],
+                       "A title with nothing to see gives way")
+        // A saved snippet's own title stays; one that is only its address gives way, as a clip's does.
+        XCTAssertEqual(shown(entry(title: "Docs", isMemo: true), page: "Example Article"), ["Docs", address])
+        XCTAssertEqual(shown(entry(title: address, isMemo: true), page: "Example Article"),
+                       ["Example Article", address])
+        // Before the address is read, and for anything but a link, the row is as it was.
+        XCTAssertEqual(shown(clip, address: nil, page: "Example Article"), [address, nil])
+        XCTAssertEqual(shown(entry(title: "Notes", kind: .text), page: "Example Article"), ["Notes", nil])
+    }
+
     func testTheWindowSubtitleElidesALongListNameInTheMiddle() {
         XCTAssertEqual(LibrarySidebar.subtitle("Immediate Scope"), "Immediate Scope")
         let long = LibrarySidebar.subtitle("Group 20 — 很长的中文名称用于验证完整筛选")

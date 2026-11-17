@@ -41,10 +41,11 @@ snippets in a native library.
   newest first. Clips you reuse often sit to the left of the newest one. Click
   **Snippets** at the band's top left to use what you keep on purpose; your
   collections appear beside it.
-- **Links with their pages.** A link's card shows the title and picture of
-  its page, which Keeptide loads as you copy the link or quick access shows its
-  card. Turn off
-  **Load link previews** in Settings › Privacy and no page is loaded.
+- **Links with their pages.** A link's card shows the title and picture of its
+  page, and its row in the library the title, with the picture in its preview.
+  Keeptide loads them as you copy the link or as its card or row shows, and the
+  larger preview shows the page itself. Turn off **Load link previews** in
+  Settings › Privacy and no page is loaded.
 - **Fast local search.** Start typing to search your clips and snippets,
   including one- and two-character Chinese queries. The filter button beside
   the search, at the band's right end, narrows the list to your favorites or to
@@ -154,8 +155,8 @@ show the selected clip, or its snippet, there.
 - **Recent Clips** lists everything Keeptide kept. The toolbar copies the
   selected clip or saves it as a snippet, straight into a collection if you
   like; the Info button shows a snippet's type, collections, favorite and note.
-  Images open fitted or at actual size, links open only when you ask, and files
-  use Quick Look.
+  Images open fitted or at actual size, links show their page's picture and
+  title and open only when you ask, and files use Quick Look.
 - For an image, **Item › Extract Text** (⇧⌘T), or **Extract Text** when you
   right-click its row, shows its text beside it, recognized on this Mac as in
   quick access. Copy, Save as Snippet and Close are beside the text and in the
@@ -194,7 +195,7 @@ Choose **Settings…** from the menu-bar menu.
 | --- | --- |
 | General | Card size, how much the selected card grows, faded strip ends, frequent clips, trackpad ticks, whether direct paste is on, opening at login, the welcome window and library export |
 | Shortcuts | The quick access shortcut: ⇧⌘V, ⌥⌘V, ⌃⌘V or off |
-| Privacy | Ignored apps, how long to keep clipboard history (from one day to forever), storage warnings, and whether link cards load their pages' titles and pictures |
+| Privacy | Ignored apps, how long to keep clipboard history (from one day to forever), storage warnings, and whether links load their pages |
 | AI | Whether recognized text keeps its line breaks, the language to translate into (the last one chosen, or one you fix), whether new text in other languages is translated as you copy it, what translating from each of your languages into it needs on this Mac, and whether Apple Intelligence is available (Keeptide doesn't use it yet) |
 | iCloud | Shows that iCloud saving is not available in this build |
 
@@ -206,7 +207,7 @@ Choose **Settings…** from the menu-bar menu.
   you copy and for cloud models you will be able to choose with your own API key
   (planned). Only two parts of Keeptide may use them.
   - The one for link previews loads the page of a web link you copy, or whose
-    card quick access shows, for its title and picture, and keeps them on this
+    card or library row shows, for its title and picture, and keeps them on this
     Mac. It never loads a link whose address names this Mac or an address on
     your local network, or has a parameter that may carry a password, key or
     token. Loading a page tells its website the link and your IP address, as
@@ -233,7 +234,7 @@ Choose **Settings…** from the menu-bar menu.
 ## Status
 
 Development builds include local capture, quick access with lists for
-snippets, favorites and collections, search, direct paste, link cards with
+snippets, favorites and collections, search, direct paste, links shown with
 their pages' titles and pictures, text in images recognized and text
 translated on this Mac, the snippet library with
 collections (a snippet can be in several), favorites, list counts and filters,

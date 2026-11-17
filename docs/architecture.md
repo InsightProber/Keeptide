@@ -203,15 +203,17 @@ loads for itself, its pictures, scripts and frames among them. What it loads is
 a cache it can rebuild, kept under a hash of each address: previews unused for
 30 days go, and the least recently used ones beyond 64 MB, checked as a preview
 is asked for, at most once a day, and after every 50 pages loaded. Quick
-access's link cards use it while Settings › Privacy's Load link previews is on:
-a link's page is loaded as it is copied and as its card is framed, and turning
-the switch off removes what was kept. A test session loads no page: it has no
-previews, or synthetic ones a UI test asks for, with text in place of each page.
-Source-boundary tests keep those APIs, and the HTML importer, which loads what a
-page links to, out of the rest of the app and the reader, keep tests from naming
-the system's link loader, and let only the app delegate give quick access pages
-from the web. iCloud mirroring goes through the system's CloudKit service
-instead.
+access's link cards and the library's link rows and previews use it while
+Settings › Privacy's Load link previews is on: a link's page is loaded as it is
+copied, as its card is framed, and once its row or preview in the library has
+stayed in view a moment; at most 32 wait to be loaded, the latest asked for
+first, and turning the switch off removes what was kept. A test session loads no
+page: it has no previews, or synthetic ones a UI test asks for, with text in
+place of each page. Source-boundary tests keep those APIs, and the HTML
+importer, which loads what a page links to, out of the rest of the app and the
+reader, keep tests from naming the system's link loader, and let only the app
+delegate give quick access pages from the web. iCloud mirroring goes through the
+system's CloudKit service instead.
 
 ## Local export
 

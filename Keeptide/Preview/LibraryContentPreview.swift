@@ -46,6 +46,8 @@ struct LibraryContentPreview: View {
     var fileAccessIdentity: StoreIdentity? = nil
     var applicationName: String? = nil
     var maximumImagePixels = 2_048
+    /// Shows a link's picture and title, from what was loaded of its page.
+    var linkPreviews: LinkPreviewCenter? = nil
 
     @State private var phase = LibraryPreviewPhase.idle
     @State private var originalGeneration: UInt64 = 0
@@ -72,7 +74,8 @@ struct LibraryContentPreview: View {
             fileAccessIdentity: fileAccessIdentity,
             isLoadingOriginal: isLoadingOriginal,
             previewMessage: previewMessage,
-            onRequestOriginal: requestOriginalImage
+            onRequestOriginal: requestOriginalImage,
+            linkPictures: linkPreviews
         )
         .accessibilityIdentifier("LibraryContentPreview")
         .task(id: request) { await loadPreview(request) }

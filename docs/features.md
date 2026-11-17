@@ -110,41 +110,43 @@ translating it failed; its help tag and VoiceOver say which, with the language
 of a translation or why it failed.
 
 The reusable-library service foundation also supports saving captures, creating
-plain text, prompt, code and Markdown content, preserving originals during edits,
-recoverable local drafts, and independent conflict copies. The native library
-provides text editing, document-local find, explicit capture saving and safe
-undo of a newly saved capture, saving a capture straight into a collection,
+plain text, prompt, code and Markdown content, preserving originals during
+edits, recoverable local drafts, and independent conflict copies. The native
+library provides text editing, document-local find, explicit capture saving and
+safe undo of a newly saved capture, saving a capture straight into a collection,
 flat collections, each snippet in as many as it is added to, and favorites,
-library-wide search from the list, a
-details panel for a snippet's type, collections, favorite and note, sidebar
-counts from the search index, and a filter for favorites, content kinds and
-source apps. Markdown
-reading mode keeps source editing separate from rendering and never fetches
-embedded images. Typed previews show stored URLs, bounded image resolutions and
-locally authorized files. Item › Extract Text (⇧⌘T), or Extract Text in the menu
-of an image's row, shows the text in the open image beside it, side by side
-where the detail is wide enough and under the image where it isn't: the same
-text quick access shows, recognized and kept the same way, with Copy, Save as
-Snippet and Close, which Item › Copy Text and Save Text as Snippet repeat for
-the keyboard; Escape closes it, and ⌘. stops a recognition. Item › Translate
-(⌘T) and Translate To, the toolbar's Translate, or the same in a row's menu show
-the translation of a text, or of the text in an image, beside it in the same
-way: the language's name above it is the menu of languages to translate into,
-marked, once the text's language is known, for what each needs, and the language
-chosen is the one quick access translates into too, unless Settings fixes one. A
-snippet is saved before it is translated, and once edited, its translation is to
-be made again. A link or a file is not translated. Full input-method and
-accessibility acceptance remains a release gate. History now has configurable
-retention, a seven-day Recently Deleted window and explicit permanent removal.
-Settings report allocated storage and let users configure or disable advisory
-warnings. Saved snippets protect referenced content; permanent retention has no
-hidden count or size quota.
-Local export creates a new directory containing portable originals, readable
-derivatives and an independently verified manifest. It preserves exact selected
-versions, supports cancellation before publication, and never overwrites an
-existing destination. File references carry relocation metadata without local
-paths or permissions. Archives are local snapshots; cloud recovery remains
-planned.
+library-wide search from the list, a details panel for a snippet's type,
+collections, favorite and note, sidebar counts from the search index, and a
+filter for favorites, content kinds and source apps. Markdown reading mode keeps
+source editing separate from rendering and never fetches embedded images. Typed
+previews show stored URLs, bounded image resolutions and locally authorized
+files. A link's row shows the title it was copied with over its address, or,
+while Load link previews is on, the title its page gave, and its preview shows
+the page's picture and title. They come from the previews quick access keeps,
+and a page is loaded for the library once its row or preview has stayed in view
+a moment. Item › Extract Text (⇧⌘T), or Extract Text in the menu of an image's
+row, shows the text in the open image beside it, side by side where the detail
+is wide enough and under the image where it isn't: the same text quick access
+shows, recognized and kept the same way, with Copy, Save as Snippet and Close,
+which Item › Copy Text and Save Text as Snippet repeat for the keyboard; Escape
+closes it, and ⌘. stops a recognition. Item › Translate (⌘T) and Translate To,
+the toolbar's Translate, or the same in a row's menu show the translation of a
+text, or of the text in an image, beside it in the same way: the language's name
+above it is the menu of languages to translate into, marked, once the text's
+language is known, for what each needs, and the language chosen is the one
+quick access translates into too, unless Settings fixes one. A snippet is saved
+before it is translated, and once edited, its translation is to be made again. A
+link or a file is not translated. Full input-method and accessibility
+acceptance remains a release gate. History now has configurable retention, a
+seven-day Recently Deleted window and explicit permanent removal. Settings
+report allocated storage and let users configure or disable advisory warnings.
+Saved snippets protect referenced content; permanent retention has no hidden
+count or size quota. Local export creates a new directory containing portable
+originals, readable derivatives and an independently verified manifest. It
+preserves exact selected versions, supports cancellation before publication, and
+never overwrites an existing destination. File references carry relocation
+metadata without local paths or permissions. Archives are local snapshots; cloud
+recovery remains planned.
 
 ## First release
 
@@ -156,7 +158,7 @@ planned.
 | Quick access | A global shortcut, a band of clip cards, lists of snippets and collections, filters for favorites and types, keyboard navigation and explicit actions |
 | Search | Fast literal full-text search, mixed-language content, short Chinese queries and useful filters |
 | Organization | Flat collections; a snippet can belong to any number of them, plus independent favorites |
-| Previews | Text, image, URL and file previews, and link cards with their page's title and picture; Space opens a preview when results have focus |
+| Previews | Text, image, URL and file previews, link cards with their page's title and picture, and library rows with their page's title; Space opens a preview when results have focus |
 | Text in images | Text recognized on this Mac in a copied image, shown beside its preview, kept locally and searched |
 | Translation | A text clip, or the text in an image, translated on this Mac into the language chosen, shown beside its preview and kept locally |
 | Reuse | Original-format copying, plain-text copying and permission-aware automatic insertion |
@@ -182,12 +184,12 @@ planned.
   text of clips, when asked. Keeptide does not read the screen or other apps'
   windows.
 - Keeptide's own connections go only through two modules. The link preview
-  module loads the pages of web links a person copies, or whose cards quick
-  access shows, while Settings › Privacy's Load link previews is on; it never
-  loads a link whose address names this Mac or a local-network address, or has
-  a parameter that may carry a password, key or token. The cloud-model module
-  connects over HTTPS to the model providers' API hosts, and sends nothing
-  until a person chooses a cloud model with their own API key, which is
+  module loads the pages of web links a person copies, or that quick access or
+  the library shows, while Settings › Privacy's Load link previews is on; it
+  never loads a link whose address names this Mac or a local-network address, or
+  has a parameter that may carry a password, key or token. The cloud-model
+  module connects over HTTPS to the model providers' API hosts, and sends
+  nothing until a person chooses a cloud model with their own API key, which is
   planned. iCloud mirroring uses the system's CloudKit service. The helper that
   reads the clipboard never connects.
 - Direct paste needs the Accessibility (send keys) permission, granted in System
@@ -212,22 +214,23 @@ and performance. They are not first-release promises.
 
 The native Settings window groups appearance, keyboard shortcuts, privacy, AI
 and cloud availability. Settings › Privacy's Load link previews, on at first,
-turns off loading the pages of links for their cards, and removes the previews
-kept. Settings › AI sets whether recognized text keeps its
-line breaks and the language translations are made in: Last Used, the one last
-chosen in quick access, or one fixed there. It lists what translating from each
-of the person's languages into that one needs on this Mac, opens Language &
-Region in System Settings to download more, and can translate new text
-automatically: with Translate automatically on, which it is not at first, text
-in another language is translated on this Mac as it is copied, giving way to
-anything the person asks for, and its card shows nothing until it is done. While
-the translation column is open, so is a text card moved to that has no
-translation, once it has shown a moment, and that stops, keeping nothing, as the
-person moves on, the list changes or the column closes. Only text of up to 5,000
-characters is translated, if it isn't mostly code, links or numbers and this Mac
-translates its main language without a download. The page also says whether
-Apple Intelligence is available, which Keeptide doesn't use yet. Keeptide saves
-new copies from first launch; the welcome says what it saves and what it skips,
-and there is no switch to turn it off. Shortcut changes preserve the last
-working registration if a new choice fails. Login-item controls reflect the
-operating system status. iCloud is explicitly unavailable in the current build.
+turns off loading the pages of links for their cards, the preview and the
+library, and removes the previews kept. Settings › AI sets whether recognized
+text keeps its line breaks and the language translations are made in: Last Used,
+the one last chosen in quick access, or one fixed there. It lists what
+translating from each of the person's languages into that one needs on this Mac,
+opens Language & Region in System Settings to download more, and can translate
+new text automatically: with Translate automatically on, which it is not at
+first, text in another language is translated on this Mac as it is copied,
+giving way to anything the person asks for, and its card shows nothing until it
+is done. While the translation column is open, so is a text card moved to that
+has no translation, once it has shown a moment, and that stops, keeping nothing,
+as the person moves on, the list changes or the column closes. Only text of up
+to 5,000 characters is translated, if it isn't mostly code, links or numbers and
+this Mac translates its main language without a download. The page also says
+whether Apple Intelligence is available, which Keeptide doesn't use yet.
+Keeptide saves new copies from first launch; the welcome says what it saves and
+what it skips, and there is no switch to turn it off. Shortcut changes preserve
+the last working registration if a new choice fails. Login-item controls reflect
+the operating system status. iCloud is explicitly unavailable in the current
+build.

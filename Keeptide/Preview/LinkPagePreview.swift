@@ -57,6 +57,24 @@ struct LinkPagePreview: View {
     }
 }
 
+/// The picture of a link's page, as large as fits up to a height and no larger than its pixels, which would blur it,
+/// its corners rounded.
+struct LinkPicture: View {
+    let image: CGImage
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        Image(decorative: image, scale: 1)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .frame(maxWidth: CGFloat(image.width) / displayScale,
+                   maxHeight: min(280, CGFloat(image.height) / displayScale))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true)
+    }
+}
+
 /// What is known of a link's page without loading it: its picture, its title and its address.
 struct LinkPageFallback: View {
     let url: URL
@@ -65,14 +83,7 @@ struct LinkPageFallback: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let image = preview?.image {
-                Image(decorative: image, scale: 1)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: 280)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .accessibilityHidden(true)
-            }
+            if let image = preview?.image { LinkPicture(image: image) }
             if let shown = LinkPreview.shownTitle(title) ?? LinkPreview.shownTitle(preview?.title) {
                 Text(verbatim: shown)
                     .font(.title3.weight(.semibold))
