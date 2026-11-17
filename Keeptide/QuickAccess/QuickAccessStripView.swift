@@ -96,6 +96,8 @@ final class QuickAccessStripView: NSView {
     private var details: [ContentRef: ClipDetail] = [:]
     /// What each image's card says of the text in it.
     private var textMarks: [ContentRef: StripTextMark] = [:]
+    /// What was loaded of each link's page, for its card.
+    private var linkPreviews: [ContentRef: LinkPreview] = [:]
     /// What each text's card says of its translation.
     private var translationMarks: [ContentRef: StripTranslationMark] = [:]
     private var metrics: StripMetrics?
@@ -186,7 +188,8 @@ final class QuickAccessStripView: NSView {
               metrics: StripMetrics, applicationNames: ApplicationNames, oldestIsLoaded: Bool = true,
               collections: [CollectionID: CollectionSummary] = [:], collectionColors: [CollectionID: String] = [:],
               slides: Bool = true, textMarks: [ContentRef: StripTextMark] = [:],
-              translationMarks: [ContentRef: StripTranslationMark] = [:]) {
+              translationMarks: [ContentRef: StripTranslationMark] = [:],
+              linkPreviews: [ContentRef: LinkPreview] = [:]) {
         let selectionChanged = selection != self.selection
         // Where the selected clip was drawn, the fingers' push included, so that the film can slide from there to
         // where it now rests: a newly selected clip, or the same one when rows before it come or go or its place
@@ -210,6 +213,7 @@ final class QuickAccessStripView: NSView {
         self.details = details
         self.textMarks = textMarks
         self.translationMarks = translationMarks
+        self.linkPreviews = linkPreviews
         self.metrics = metrics
         self.oldestIsLoaded = oldestIsLoaded
         self.applicationNames = applicationNames
@@ -437,7 +441,8 @@ final class QuickAccessStripView: NSView {
             let view = StripFrameView(
                 content: StripFrameContent.make(row: row, detail: details[row.ref], cardSize: metrics.cardSize,
                                                 collections: collections, textMark: textMarks[row.ref],
-                                                translationMark: translationMarks[row.ref]),
+                                                translationMark: translationMarks[row.ref],
+                                                linkPreview: linkPreviews[row.ref]),
                 applicationIcon: icon, metrics: metrics, accent: accent, isSelected: row.id == selection
             )
             let retained = frames[row.id] != nil

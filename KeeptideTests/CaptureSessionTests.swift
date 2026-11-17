@@ -180,6 +180,42 @@ final class CaptureSessionTests: XCTestCase {
         await session.shutdown()
     }
 
+    func testALinkCopiedHasItsPagesPreviewLoaded() async throws {
+        let configuration = try makeIsolatedSession()
+        let clipboard = SessionClipboard()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: configuration.preferencesSuite))
+        let session = CaptureSession(preferences: CapturePreferences(defaults: defaults), clipboardReader: clipboard)
+        let loader = FakeLinkLoader()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Keeptide-copied-links-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let center = LinkPreviewCenter(loader: loader, store: LinkPreviewStore(directory: directory), isEnabled: { true })
+        session.linkPreviews = center
+        await session.initialize(testSessionID: configuration.id)
+        // Quick access asks the same for the cards it frames.
+        XCTAssertIdentical(session.quickAccessServices?.linkPreviews, center)
+        func copy(_ representations: [(String, String)]) {
+            clipboard.copies.append(representations.map {
+                CapturedRepresentation(typeIdentifier: $0.0, bytes: Data($0.1.utf8))
+            })
+            clipboard.changeCount += 1
+        }
+
+        // Text, even text that reads as a link, isn't a link to load.
+        copy([("public.utf8-plain-text", "https://example.com/written")])
+        try await SearchTestSupport.waitUntil { session.recent.count == 1 }
+        try await Task.sleep(for: .milliseconds(200))
+        var requested = await loader.requested
+        XCTAssertEqual(requested, [])
+        // A link copied is loaded at once.
+        let address = "https://example.com/copied"
+        copy([("public.url", address), ("public.utf8-plain-text", address)])
+        try await SearchTestSupport.waitUntil { await loader.requested == [address] }
+        requested = await loader.requested
+        XCTAssertEqual(requested, [address])
+        await session.shutdown()
+    }
+
     func testQuickAccessServicesReadUsesFromTheSessionsStore() async throws {
         let configuration = try makeIsolatedSession()
         let session = CaptureSession()

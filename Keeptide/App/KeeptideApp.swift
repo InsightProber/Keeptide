@@ -66,12 +66,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             || launchConfiguration.shouldStartManualPasteQA
             ? LaunchAtLoginModel(service: InertLaunchAtLoginService())
             : LaunchAtLoginModel()
+        let quickAccessPreferences = QuickAccessPreferences(defaults: preferencesDefaults)
         let environment = AppEnvironment(
             captureSession: captureSession,
-            quickAccessPreferences: QuickAccessPreferences(defaults: preferencesDefaults),
+            quickAccessPreferences: quickAccessPreferences,
             shortcutCoordinator: shortcutCoordinator,
             launchAtLogin: launchAtLogin,
-            onboardingPreferences: onboardingPreferences
+            onboardingPreferences: onboardingPreferences,
+            linkPreviews: Self.makeLinkPreviews(for: launchConfiguration, preferences: quickAccessPreferences)
         )
         self.environment = environment
 
@@ -127,6 +129,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let onboarding = OnboardingPreferences(defaults: defaults)
         defaults.removeObject(forKey: OnboardingPreferences.retiredRecordingSwitchKey)
         return (onboarding, CapturePreferences(defaults: defaults))
+    }
+
+    /// The link previews of a launch, as `LaunchConfiguration.linkPreviewSource` says: from the web, loaded with
+    /// LinkPresentation and kept in the app's caches; synthetic, kept in the UI test session's folder, which its
+    /// cleanup removes; or off.
+    private static func makeLinkPreviews(for launchConfiguration: LaunchConfiguration,
+                                         preferences: QuickAccessPreferences) -> LinkPreviewCenter? {
+        let isEnabled: @MainActor () -> Bool = { [weak preferences] in preferences?.loadsLinkPreviews ?? false }
+        switch launchConfiguration.linkPreviewSource {
+        case .off:
+            return nil
+        case .synthetic:
+            #if DEBUG
+            guard let session = launchConfiguration.captureTestSessionID else { return nil }
+            let directory = CaptureTestConfiguration(id: session).directory
+                .appendingPathComponent("LinkPreviews", isDirectory: true)
+            return LinkPreviewCenter(loader: SyntheticLinkMetadataLoader(), store: LinkPreviewStore(directory: directory),
+                                     isEnabled: isEnabled)
+            #else
+            return nil
+            #endif
+        case .web:
+            guard let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+                return nil
+            }
+            let store = LinkPreviewStore(directory: caches.appendingPathComponent("LinkPreviews", isDirectory: true))
+            return LinkPreviewCenter(loader: SystemLinkMetadataLoader(), store: store, isEnabled: isEnabled)
+        }
     }
 
     /// The status menu, wired to `environment`'s panel, windows and capture session.

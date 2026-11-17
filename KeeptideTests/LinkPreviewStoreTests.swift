@@ -79,6 +79,35 @@ final class LinkPreviewStoreTests: XCTestCase {
         XCTAssertNil(titled.image)
     }
 
+    func testATitleIsKeptOnOneLineWithoutDirectionControlsAndNoLongerThanTheMost() async throws {
+        let store = makeStore()
+        let kept = await store.keep(LinkPageMetadata(title: "  Line one\nLine\ttwo \u{202E}reversed\u{2069}\u{0007} "),
+                                    for: "https://example.com/t", imagePixels: 480)
+        XCTAssertEqual(kept.title, "Line one Line two reversed")
+        let long = await store.keep(LinkPageMetadata(title: String(repeating: "word ", count: 200)),
+                                    for: "https://example.com/long", imagePixels: 480)
+        let title = try XCTUnwrap(long.title)
+        XCTAssertLessThanOrEqual(title.count, LinkPreview.longestTitle)
+        XCTAssertGreaterThan(title.count, LinkPreview.longestTitle - 5)
+        XCTAssertFalse(title.hasSuffix(" "))
+    }
+
+    func testATitleShowsOnlyWhatIsVisible() {
+        // Joined emoji keep their joiners, and marks that don't turn text around stay.
+        XCTAssertEqual(LinkPreview.shownTitle("👩‍💻 Synthetic"), "👩‍💻 Synthetic")
+        XCTAssertEqual(LinkPreview.shownTitle("a\u{200E}b"), "a\u{200E}b")
+        // A mark after a control character has nothing to attach to.
+        XCTAssertEqual(LinkPreview.shownTitle("A\u{0007}\u{0301}B"), "A B")
+        // Nothing visible: no title.
+        XCTAssertNil(LinkPreview.shownTitle(" \n\u{202E} "))
+        XCTAssertNil(LinkPreview.shownTitle("\u{200B}\u{2060}\u{FEFF}\u{00AD}"))
+        XCTAssertNil(LinkPreview.shownTitle(nil))
+        // However many marks a title carries, only so much is read.
+        let marked = "a" + String(repeating: "\u{0301}", count: 10_000)
+        let read = LinkPreview.shownTitle(marked)?.unicodeScalars.count ?? 0
+        XCTAssertLessThanOrEqual(read, 4 * LinkPreview.longestTitle)
+    }
+
     func testAPictureThatCantBeReadOrIsTooLargeIsLeftOut() async throws {
         let store = makeStore(largestPictureBytes: 2_000)
         let unreadable = await store.keep(LinkPageMetadata(title: "A", image: Data("not a picture".utf8)),

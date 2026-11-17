@@ -9,6 +9,44 @@ struct LinkPreview: Equatable, Sendable {
     let icon: CGImage?
 }
 
+extension LinkPreview {
+    /// The longest title shown, in characters.
+    static let longestTitle = 300
+
+    /// A link's title as its card and VoiceOver read it: on one line, white space and control characters as single
+    /// spaces, without the controls that embed, override or isolate the direction text runs in, no longer than
+    /// `longestTitle`, and nil when nothing of it would show.
+    static func shownTitle(_ title: String?) -> String? {
+        guard let title else { return nil }
+        var scalars = String.UnicodeScalarView()
+        // At the start as after a space: neither a space nor a mark is kept there.
+        var afterSpace = true
+        // However many marks a character carries, no more than this much of a title is read.
+        for scalar in title.unicodeScalars.prefix(4 * longestTitle) {
+            if (0x202A...0x202E).contains(scalar.value) || (0x2066...0x2069).contains(scalar.value) { continue }
+            let properties = scalar.properties
+            if properties.isWhitespace || properties.generalCategory == .control {
+                if !afterSpace { scalars.append(" ") }
+                afterSpace = true
+                continue
+            }
+            // A mark, a variation selector or a joiner has nothing to attach to after a space.
+            let attaches = [.nonspacingMark, .spacingMark, .enclosingMark].contains(properties.generalCategory)
+                || properties.isVariationSelector || scalar.value == 0x200D
+            if afterSpace, attaches { continue }
+            scalars.append(scalar)
+            afterSpace = false
+        }
+        let shown = String(String(scalars).prefix(longestTitle)).trimmingCharacters(in: .whitespaces)
+        // A title of zero-width spaces, soft hyphens and the like shows nothing.
+        let shows = shown.unicodeScalars.contains {
+            !$0.properties.isWhitespace && !$0.properties.isDefaultIgnorableCodePoint
+                && $0.properties.generalCategory != .format
+        }
+        return shows ? shown : nil
+    }
+}
+
 /// What is known of a link's preview.
 enum LinkPreviewState: Equatable {
     /// Nothing to show: loading previews is off, the link isn't one to load, it wasn't asked for, or what was kept of
@@ -106,6 +144,9 @@ final class LinkPreviewCenter {
         self.maximumPictures = maximumPictures
         self.trimEvery = trimEvery
     }
+
+    /// Whether previews are loaded: loading them is on.
+    var loadsPreviews: Bool { isEnabled() }
 
     /// What is known of the preview of the link `address`. Nothing while loading previews is off.
     func state(of address: String) -> LinkPreviewState {

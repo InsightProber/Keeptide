@@ -64,6 +64,8 @@ struct QuickAccessServices {
     /// Recognizing the text in images and reading what was recognized before; without it the preview has no text
     /// column.
     var derivedText: DerivedTextCoordinator? = nil
+    /// Loading the previews of links' pages; without it link cards show their links alone.
+    var linkPreviews: LinkPreviewCenter? = nil
 }
 
 /// A column of derived text beside the preview: the text recognized in an image, or a translation.
@@ -563,8 +565,6 @@ final class QuickAccessState {
     /// previewed clip, the column is still reading.
     private var keptTranslation: KeptResult?
     @ObservationIgnored private var readingSavedTranslation: Task<Void, Never>?
-    /// The languages the person prefers, first first, as the system lists them.
-    @ObservationIgnored private let preferredLanguages: () -> [String]
     /// The language last chosen from the language menu, by its code without a region: translations are made in it
     /// unless Settings fixes one. Nil until one is, and translations are made in the first language the person
     /// prefers.
@@ -580,18 +580,10 @@ final class QuickAccessState {
     @ObservationIgnored private var viewedTranslationWait: Task<Void, Never>?
     /// The language Settings fixes translations in; nil for the last used one.
     private var fixedTranslationTarget: String?
-    /// The languages translations can be made in, a language in each of its regions, as Translation last listed them:
-    /// read again each time the panel opens. Empty until then; kept from one showing to the next.
-    private(set) var knownTranslationLanguages: [Locale.Language] = []
-    @ObservationIgnored private var readingKnownLanguages: Task<Void, Never>?
-    /// What translating from a language into each language needs, by the code of the language translated from, as
-    /// read in this showing: read again in the next, as a language may be downloaded or removed meanwhile.
-    private var pairStatuses: [String: [TranslationLanguage]] = [:]
-    @ObservationIgnored private var readingPairStatuses: [String: Task<Void, Never>] = [:]
-    /// The language each clip's text was told to be in, in this showing, from the text quick access had of it: nil
-    /// where it couldn't be told.
-    private var textLanguages: [ContentRef: Locale.Language?] = [:]
-    @ObservationIgnored private var tellingLanguage: (ref: ContentRef, task: Task<Void, Never>)?
+    /// What the panel knows of the languages translations can be made in: those Translation offers, read again each
+    /// time the panel opens and kept from one showing to the next, and the language of each clip's text and what
+    /// translating from it needs, as read in this showing.
+    private let translationLanguages: TranslationLanguageState
     private(set) var preview: PreviewContent?
     private(set) var isLoadingOriginalPreview = false
     private(set) var previewMessage: String?
@@ -694,9 +686,12 @@ final class QuickAccessState {
 
     init(services: @escaping @MainActor () -> QuickAccessServices?,
          preferredLanguages: @escaping () -> [String] = { Locale.preferredLanguages }) {
-        self.preferredLanguages = preferredLanguages
         self.services = services
+        translationLanguages = TranslationLanguageState(preferred: preferredLanguages)
     }
+
+    /// The languages translations can be made in, a language in each of its regions, as Translation last listed them.
+    var knownTranslationLanguages: [Locale.Language] { translationLanguages.known }
 
     /// An empty or invisible query with no filters, under `.all`, lists recent clips without the index.
     var showsRecentClips: Bool { list == .all && !favoritesOnly && ParsedQuery(query).isEmpty && kinds.isEmpty }
@@ -763,10 +758,7 @@ final class QuickAccessState {
     func open(frequentWingFirstScreen firstScreen: ((Int) -> Int)? = nil) {
         clearSaveStatus()
         savedTexts = []
-        cancelLanguageReads()
-        textLanguages = [:]
-        pairStatuses = [:]
-        readKnownTranslationLanguages()
+        translationLanguages.showAgain(in: services()?.derivedText)
         keptResults = [:]
         keptAnswered = [:]
         keptAsked = [:]
@@ -788,7 +780,7 @@ final class QuickAccessState {
 
     func close() {
         isOpen = false
-        cancelLanguageReads()
+        translationLanguages.cancelReads()
         // A list changed just before closing is not announced later.
         announcesList = false
         cancelLoads()
@@ -822,10 +814,7 @@ final class QuickAccessState {
         keptResults = [:]
         keptAnswered = [:]
         keptAsked = [:]
-        cancelLanguageReads()
-        textLanguages = [:]
-        pairStatuses = [:]
-        readKnownTranslationLanguages()
+        translationLanguages.showAgain(in: services()?.derivedText)
         startSession(recordingTarget: false)
     }
 
@@ -967,6 +956,12 @@ final class QuickAccessState {
         detailFrameSize = frameSize
         startDetailReads()
         let kinds = Dictionary(selection.rows.map { ($0.ref, $0.kind) }, uniquingKeysWith: { first, _ in first })
+        // The links framed whose details were read before have their previews asked for here; the others as theirs are.
+        if let linkPreviews = services()?.linkPreviews {
+            for ref in refs where kinds[ref] == .url {
+                if let link = details[ref]?.wholeLink { linkPreviews.request(link) }
+            }
+        }
         readKeptResults(of: refs.filter { kinds[$0] == .image }, operation: .extractText)
         readKeptResults(of: refs.filter { kinds[$0].map(Self.isTranslatable) == true }, operation: .translate)
     }
@@ -1007,6 +1002,8 @@ final class QuickAccessState {
                 self.detailReadsRunning -= 1
                 if let detail, !Task.isCancelled, self.selection.rows.contains(where: { $0.ref == ref }) {
                     self.details[ref] = detail
+                    // A link framed has its page's preview asked for once its address is known.
+                    if kind == .url, let link = detail.wholeLink { self.services()?.linkPreviews?.request(link) }
                 }
                 self.startDetailReads()
             }
@@ -1135,6 +1132,18 @@ final class QuickAccessState {
         selection.selectedRow?.kind == .image && canRecognizeText
     }
 
+    /// What each link's card shows of its page: the preview loaded, while loading previews is on. Nothing for a link
+    /// whose details aren't read yet, or hold only the start of a longer address.
+    func linkPreviewer() -> (QuickAccessRow) -> LinkPreview? {
+        guard let linkPreviews = services()?.linkPreviews else { return { _ in nil } }
+        let details = details
+        return { row in
+            guard row.kind == .url, let link = details[row.ref]?.wholeLink,
+                  case .loaded(let preview) = linkPreviews.state(of: link) else { return nil }
+            return preview
+        }
+    }
+
     /// Whether the text in images can be recognized and shown here: the library is open.
     var canRecognizeText: Bool { services()?.derivedText != nil }
 
@@ -1222,13 +1231,12 @@ final class QuickAccessState {
     /// menu, while Translation offers it, or else the first the person prefers that it offers, each in the region the
     /// person wants it in.
     var translationTarget: Locale.Language {
-        TranslationTargets.target(fixed: fixedTranslationTarget, lastUsed: chosenTranslationTarget,
-                                  preferred: preferredLanguages(), offered: knownTranslationLanguages)
+        translationLanguages.target(fixed: fixedTranslationTarget, lastUsed: chosenTranslationTarget)
     }
 
     /// The language to offer where the text is in the one asked for already; nil without another.
     func translationTarget(after language: Locale.Language) -> Locale.Language? {
-        TranslationTargets.next(after: language, of: preferredLanguages(), offered: knownTranslationLanguages)
+        translationLanguages.target(after: language)
     }
 
     /// The language menu for the selected clip.
@@ -1244,23 +1252,7 @@ final class QuickAccessState {
     func translationLanguageMenu(for ref: ContentRef?) -> TranslationLanguageMenu {
         let shown = ref != nil && ref == translationColumnRef ? translationColumn?.language : nil
         let chosen = shown.map(Locale.Language.init(identifier:)) ?? translationTarget
-        let offered = knownTranslationLanguages
-        let preferredLanguages = preferredLanguages()
-        // The marks are for this clip's own language, never another clip's.
-        var statuses: [TranslationLanguage] = []
-        if let ref, let entry = textLanguages[ref], let told = entry {
-            statuses = pairStatuses[told.translationCode] ?? []
-        }
-        let (preferred, others) = TranslationTargets.ordered(preferred: preferredLanguages, offered: offered)
-        func item(_ language: Locale.Language) -> TranslationLanguageMenu.Item {
-            let status = statuses.first {
-                $0.language.isSameLanguage(as: language) && $0.language.region == language.region
-            }?.status
-            return TranslationLanguageMenu.Item(code: language.translationCode, name: language.displayName,
-                                                note: TranslationLanguageMenu.Note(status),
-                                                isChosen: language.isSameLanguage(as: chosen))
-        }
-        return TranslationLanguageMenu(preferred: preferred.map(item), others: others.map(item))
+        return translationLanguages.menu(for: ref, chosen: chosen)
     }
 
     /// Tells the selected clip's language from the text quick access has of it, unless that was done in this showing,
@@ -1270,34 +1262,7 @@ final class QuickAccessState {
     func readTranslationLanguages() {
         guard let row = selection.selectedRow, Self.isTranslatable(row.kind),
               let derivedText = services()?.derivedText else { return }
-        let ref = row.ref
-        if let entry = textLanguages[ref] {
-            if let told = entry { readPairStatuses(from: told, derivedText) }
-            return
-        }
-        guard tellingLanguage?.ref != ref, let text = textAtHand(for: row, derivedText) else { return }
-        tellingLanguage?.task.cancel()
-        tellingLanguage = (ref, Task { [weak self] in
-            let language = await derivedText.language(of: text)
-            guard !Task.isCancelled, let self else { return }
-            tellingLanguage = nil
-            textLanguages.updateValue(language, forKey: ref)
-            if let language { readPairStatuses(from: language, derivedText) }
-        })
-    }
-
-    /// Reads what translating from `source` into each language needs, unless that was read in this showing or is
-    /// being read.
-    private func readPairStatuses(from source: Locale.Language, _ derivedText: DerivedTextCoordinator) {
-        let code = source.translationCode
-        guard pairStatuses[code] == nil, readingPairStatuses[code] == nil else { return }
-        readingPairStatuses[code] = Task { [weak self] in
-            let languages = await derivedText.translationLanguages(from: source)
-            guard !Task.isCancelled, let self else { return }
-            readingPairStatuses[code] = nil
-            pairStatuses[code] = languages
-            if knownTranslationLanguages.isEmpty { knownTranslationLanguages = languages.map(\.language) }
-        }
+        translationLanguages.readMarks(for: row.ref, text: { textAtHand(for: row, derivedText) }, in: derivedText)
     }
 
     /// The text a clip's language is told from, as quick access already has it: a text's preview, or an image's text,
@@ -1311,28 +1276,6 @@ final class QuickAccessState {
         return text
     }
 
-    /// Reads the languages Translation lists, as the panel opens. Those read before stand until then, and where it
-    /// lists none.
-    private func readKnownTranslationLanguages() {
-        readingKnownLanguages?.cancel()
-        guard let derivedText = services()?.derivedText else { return }
-        readingKnownLanguages = Task { [weak self] in
-            let languages = await derivedText.translationLanguages(from: nil).map(\.language)
-            guard !Task.isCancelled, let self, !languages.isEmpty else { return }
-            knownTranslationLanguages = languages
-        }
-    }
-
-    /// Stops telling languages and reading what they need: the panel closed or opened again, or its library changed.
-    private func cancelLanguageReads() {
-        readingKnownLanguages?.cancel()
-        readingKnownLanguages = nil
-        tellingLanguage?.task.cancel()
-        tellingLanguage = nil
-        readingPairStatuses.values.forEach { $0.cancel() }
-        readingPairStatuses = [:]
-    }
-
     /// Chooses a language from the language menu, by its code: the last used one, which translations are made in
     /// unless Settings fixes one. The selected clip's translation shows beside it, made in that language, in the
     /// region the person wants it in, unless the column shows a whole one in it or one is being made in it. Returns
@@ -1342,8 +1285,7 @@ final class QuickAccessState {
     func chooseTranslationLanguage(_ code: String) -> String? {
         guard let code = TranslationTargets.code(of: code) else { return nil }
         chosenTranslationTarget = code
-        let language = TranslationTargets.variant(of: Locale.Language(identifier: code), preferred: preferredLanguages(),
-                                                  offered: knownTranslationLanguages)
+        let language = translationLanguages.variant(of: Locale.Language(identifier: code))
         guard let row = selection.selectedRow, Self.isTranslatable(row.kind),
               let derivedText = services()?.derivedText else { return code }
         resultColumn = .translation
@@ -1444,8 +1386,7 @@ final class QuickAccessState {
             target = next
         }
         // A language the column names is kept without its region: it is made in the region the person wants it in.
-        target = TranslationTargets.variant(of: target, preferred: preferredLanguages(),
-                                            offered: knownTranslationLanguages)
+        target = translationLanguages.variant(of: target)
         // The text in an image is translated again as it was recognized, and recognized first only where it never was.
         if selection.selectedRow?.kind == .image {
             services()?.derivedText?.translateText(inImage: ref, to: target, keepingLineBreaks: keepsLineBreaks)

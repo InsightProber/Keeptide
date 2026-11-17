@@ -587,3 +587,92 @@ private final class ReadResult: @unchecked Sendable {
 
     func set(_ data: Data?) { lock.withLock { result = .some(data) } }
 }
+
+/// How the app wires link previews: the preference that turns them off, and what turning it off removes.
+@MainActor
+final class LinkPreviewWiringTests: XCTestCase {
+    private var suites: [String] = []
+
+    override func tearDown() async throws {
+        for suite in suites { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+    }
+
+    func testLinkPreviewsAreOnUnlessTurnedOffAndSayWhenThatChanges() throws {
+        let defaults = try makeDefaults()
+        let preferences = QuickAccessPreferences(defaults: defaults)
+        XCTAssertTrue(preferences.loadsLinkPreviews)
+        var changes: [Bool] = []
+        preferences.onLoadsLinkPreviewsChange = { changes.append($0) }
+        preferences.loadsLinkPreviews = false
+        preferences.loadsLinkPreviews = false
+        XCTAssertEqual(changes, [false])
+        XCTAssertFalse(QuickAccessPreferences(defaults: defaults).loadsLinkPreviews)
+        preferences.loadsLinkPreviews = true
+        XCTAssertEqual(changes, [false, true])
+        XCTAssertTrue(QuickAccessPreferences(defaults: defaults).loadsLinkPreviews)
+    }
+
+    func testTurningLinkPreviewsOffRemovesThePreviewsKept() async throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        let address = "https://example.com/kept"
+        let loader = FakeLinkLoader()
+        await loader.answer(address, with: .success(LinkPageMetadata(title: "Kept")))
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Keeptide-link-wiring-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LinkPreviewStore(directory: directory)
+        let center = LinkPreviewCenter(loader: loader, store: store, isEnabled: { preferences.loadsLinkPreviews })
+        let environment = AppEnvironment(quickAccessPreferences: preferences, linkPreviews: center)
+        XCTAssertIdentical(environment.captureSession.linkPreviews, center)
+
+        center.request(address)
+        try await SearchTestSupport.waitUntil { center.state(of: address) == .loaded(LinkPreview(title: "Kept", image: nil, icon: nil)) }
+        let key = LinkAddress.key(for: try XCTUnwrap(URL(string: address)))
+        var kept = await store.kept(for: key, imagePixels: 480)
+        XCTAssertEqual(kept?.title, "Kept")
+
+        preferences.loadsLinkPreviews = false
+        try await SearchTestSupport.waitUntil { await store.kept(for: key, imagePixels: 480) == nil }
+        preferences.loadsLinkPreviews = true
+        XCTAssertEqual(center.state(of: address), .notLoaded)
+        kept = await store.kept(for: key, imagePixels: 480)
+        XCTAssertNil(kept)
+    }
+
+    func testALaunchWithLinkPreviewsOffRemovesWhatAnEarlierOneLeft() async throws {
+        let preferences = QuickAccessPreferences(defaults: try makeDefaults())
+        preferences.loadsLinkPreviews = false
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Keeptide-link-wiring-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = LinkPreviewStore(directory: directory)
+        let key = LinkAddress.key(for: try XCTUnwrap(URL(string: "https://example.com/left")))
+        await store.keep(LinkPageMetadata(title: "Left"), for: key, imagePixels: 480)
+        let center = LinkPreviewCenter(loader: FakeLinkLoader(), store: store,
+                                       isEnabled: { preferences.loadsLinkPreviews })
+        _ = AppEnvironment(quickAccessPreferences: preferences, linkPreviews: center)
+        try await SearchTestSupport.waitUntil { await store.kept(for: key, imagePixels: 480) == nil }
+    }
+
+    func testOnlyTheAppItselfLoadsPagesAndAUITestSessionCanAskForSyntheticOnes() {
+        func source(_ arguments: [String], testing: Bool = false) -> LinkPreviewSource {
+            let environment = testing ? ["XCTestConfigurationFilePath": "/synthetic.xctestconfiguration"] : [:]
+            return LaunchConfiguration(arguments: ["Keeptide"] + arguments, environment: environment).linkPreviewSource
+        }
+        let session = ["--ui-testing", "--capture-test-session", UUID().uuidString]
+        XCTAssertEqual(source([]), .web)
+        XCTAssertEqual(source([], testing: true), .off)
+        XCTAssertEqual(source(["--ui-testing"]), .off)
+        XCTAssertEqual(source(session), .off)
+        XCTAssertEqual(source(session + ["--fake-link-previews"]), .synthetic)
+        XCTAssertEqual(source(["--manual-paste-qa"]), .off)
+        // Asked for outside a UI test session, synthetic previews aren't given; nor in a test.
+        XCTAssertEqual(source(["--fake-link-previews"], testing: true), .off)
+    }
+
+    private func makeDefaults() throws -> UserDefaults {
+        let suite = "Keeptide.LinkPreviewWiringTests.\(UUID().uuidString)"
+        suites.append(suite)
+        return try XCTUnwrap(UserDefaults(suiteName: suite))
+    }
+}
