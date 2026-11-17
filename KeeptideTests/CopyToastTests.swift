@@ -40,14 +40,15 @@ final class CopyToastTests: XCTestCase {
 
         // A toast that says why a paste became a copy stays as long as it is shown for.
         toast.show("The window changed — copied instead. Press ⌘V to paste.", centeredOn: frame,
-                   duration: .milliseconds(600))
+                   duration: .seconds(3))
         try await Task.sleep(for: .milliseconds(300))
         XCTAssertTrue(toast.isVisible, "Still up after six times the default")
-        try await SearchTestSupport.waitUntil(timeout: .seconds(2)) { !toast.isVisible }
+        try await SearchTestSupport.waitUntil(timeout: .seconds(5)) { !toast.isVisible }
 
-        // Shown again without a time of its own, it stays the time it was made with.
+        // Shown again without a time of its own, it stays the time it was made with, not the last one's: it is gone
+        // well before three seconds, with room for a busy machine to be late.
         toast.show("Copied — press ⌘V to paste", centeredOn: frame)
         XCTAssertTrue(toast.isVisible)
-        try await SearchTestSupport.waitUntil(timeout: .milliseconds(400)) { !toast.isVisible }
+        try await SearchTestSupport.waitUntil(timeout: .seconds(2)) { !toast.isVisible }
     }
 }

@@ -2099,6 +2099,30 @@ final class QuickAccessStateTests: XCTestCase {
 
     // MARK: Translation languages
 
+    func testTheLanguageMenuReadsWhatTranslatingNeedsAgainEachTimeThePanelOpens() async throws {
+        let translator = ScriptedTranslator()
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP"], statuses: [("en", "ja-JP", .needsDownload)])
+        let (state, _) = try await makeTranslationPanel(translator)
+        func japanese() -> TranslationLanguageMenu.Note? {
+            state.translationLanguageMenu.others.first { $0.code == "ja" }?.note
+        }
+        state.showTranslation()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+        state.readTranslationLanguages()
+        try await SearchTestSupport.waitUntil { japanese() == .notDownloaded }
+
+        // Changed while the panel was closed: opened again, it reads what translating needs again.
+        translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP"], statuses: [("en", "ja-JP", .unsupported)])
+        state.close()
+        state.open()
+        try await settled(state)
+        state.showTranslation()
+        try await SearchTestSupport.waitUntil { state.preview != nil }
+        state.readTranslationLanguages()
+
+        try await SearchTestSupport.waitUntil { japanese() == .notAvailable }
+    }
+
     func testTheLanguageMenuListsThePersonsLanguagesFirstAndSaysWhatEachNeedsFromTheText() async throws {
         let translator = ScriptedTranslator()
         translator.script(languages: ["en-US", "zh-Hans-CN", "ja-JP", "fr-FR", "de-DE", "en-GB"],

@@ -201,8 +201,11 @@ final class LibraryTextColumnTests: XCTestCase {
         try await keep("Kept plan", of: image, in: store)
         let column = LibraryTextColumn(services: { self.services(coordinator) })
         column.show(image)
-        await waitUntil("the kept text shows") { column.text == "Kept plan" }
-        XCTAssertFalse(column.canStop)
+        // The column, and the recognition it asked for unless something was made, each read what the store kept: until
+        // both have, the request still waits on the store, and there is something to stop.
+        await waitUntil("the kept text shows, and nothing waits to be recognized") {
+            column.text == "Kept plan" && !column.canStop
+        }
         column.extractText()
         _ = try await started(recognizer, 0)
         XCTAssertTrue(column.canStop)

@@ -3,7 +3,7 @@ import Foundation
 /// A model provider Keeptide knows, as data: where its API is, how a request proves who sends it, and the headers each
 /// request carries. A provider that speaks a wire Keeptide already speaks needs only another preset.
 struct ProviderPreset: Hashable, Sendable {
-    enum ID: String, Sendable {
+    enum ID: String, Codable, Sendable {
         case anthropic
         case openAI = "openai"
     }
@@ -40,4 +40,9 @@ struct ProviderPreset: Hashable, Sendable {
     )
 
     static let all: [ProviderPreset] = [.anthropic, .openAI]
+}
+
+extension ProviderPreset.ID {
+    /// The provider as people see it, such as "Anthropic".
+    var displayName: String { ProviderPreset.all.first { $0.id == self }?.displayName ?? rawValue }
 }
