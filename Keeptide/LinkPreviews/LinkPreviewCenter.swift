@@ -116,6 +116,7 @@ final class LinkPreviewCenter {
     @ObservationIgnored private let imagePixels: Int
     @ObservationIgnored private let maximumPictures: Int
     @ObservationIgnored private let trimEvery: Int
+    @ObservationIgnored private let maximumWaiting: Int
     @ObservationIgnored private let pages: PageSource
     /// When each preview known is due to be loaded again.
     @ObservationIgnored private var due: [String: Date] = [:]
@@ -146,11 +147,12 @@ final class LinkPreviewCenter {
     }
 
     /// `isEnabled` says whether loading previews is on; `imagePixels` is the longer side of the pictures shown, and
-    /// `maximumPictures` how many of them stay in memory. `trimEvery` is how many pages are loaded between trims.
-    /// `pages` says where the preview's pages come from: text that loads nothing unless the web is asked for.
+    /// `maximumPictures` how many of them stay in memory. `trimEvery` is how many pages are loaded between trims, and
+    /// `maximumWaiting` how many may wait to be loaded. `pages` says where the preview's pages come from: text that
+    /// loads nothing unless the web is asked for.
     init(loader: any LinkMetadataLoading, store: LinkPreviewStore, isEnabled: @escaping @MainActor () -> Bool,
          now: @escaping @Sendable () -> Date = { Date() }, maximumLoads: Int = 2, imagePixels: Int = 480,
-         maximumPictures: Int = 96, trimEvery: Int = 50, pages: PageSource = .synthetic) {
+         maximumPictures: Int = 96, trimEvery: Int = 50, maximumWaiting: Int = 32, pages: PageSource = .synthetic) {
         self.loader = loader
         self.store = store
         self.isEnabled = isEnabled
@@ -159,6 +161,7 @@ final class LinkPreviewCenter {
         self.imagePixels = imagePixels
         self.maximumPictures = maximumPictures
         self.trimEvery = trimEvery
+        self.maximumWaiting = maximumWaiting
         self.pages = pages
     }
 
@@ -177,20 +180,25 @@ final class LinkPreviewCenter {
     /// otherwise the link alone, saying why for a link Keeptide never loads.
     func pagePresentation(for address: String) -> PagePresentation {
         guard isEnabled() else { return .link(note: nil) }
-        switch LinkAddress.loadable(address) {
-        case .success(let url):
-            switch pages {
-            case .web:
-                return .page(url, .address(url))
-            case .synthetic:
-                return .page(url, .synthetic(html: "<!doctype html><title>Synthetic page</title>"
-                    + "<h1>Synthetic page</h1><p>\(url.host() ?? "")</p>"))
-            }
-        case .failure(.notWebLink): return .link(note: nil)
-        case .failure(.localNetwork): return .link(note: "Keeptide doesn't load links to this Mac or your local network.")
-        case .failure(.credentials): return .link(note: "Keeptide doesn't load links that name a user or a password.")
-        case .failure(.mayHoldSecret):
-            return .link(note: "Keeptide doesn't load links that may hold a password, key or token.")
+        guard case .success(let url) = LinkAddress.loadable(address) else { return .link(note: refusal(of: address)) }
+        switch pages {
+        case .web:
+            return .page(url, .address(url))
+        case .synthetic:
+            return .page(url, .synthetic(html: "<!doctype html><title>Synthetic page</title>"
+                + "<h1>Synthetic page</h1><p>\(url.host() ?? "")</p>"))
+        }
+    }
+
+    /// Why Keeptide never loads the link `address`, where its page or picture would show. Nil for a link it loads, for
+    /// one that isn't a web link, and while loading previews is off, which the person chose.
+    func refusal(of address: String) -> String? {
+        guard isEnabled(), case .failure(let reason) = LinkAddress.loadable(address) else { return nil }
+        switch reason {
+        case .notWebLink: return nil
+        case .localNetwork: return "Keeptide doesn't load links to this Mac or your local network."
+        case .credentials: return "Keeptide doesn't load links that name a user or a password."
+        case .mayHoldSecret: return "Keeptide doesn't load links that may hold a password, key or token."
         }
     }
 
@@ -262,6 +270,12 @@ final class LinkPreviewCenter {
     private func enqueue(_ link: Link) {
         waiting.removeAll { $0.key == link.key }
         waiting.append(link)
+        // Past the most that may wait, the one asked for longest ago is dropped, as when loading previews is turned
+        // off: it is read again when it is asked for again.
+        while waiting.count > maximumWaiting {
+            let dropped = waiting.removeFirst()
+            if states[dropped.key] == .loading { states[dropped.key] = nil }
+        }
         startLoads()
     }
 

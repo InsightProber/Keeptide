@@ -101,6 +101,35 @@ final class LinkPreviewCenterTests: XCTestCase {
         XCTAssertEqual(requested.last, "https://example.com/c")
     }
 
+    func testOnlyTheLinksAskedForLastWaitAndOneDroppedIsLoadedWhenAskedForAgain() async {
+        let loader = FakeLinkLoader()
+        await loader.hold()
+        let center = LinkPreviewCenter(loader: loader, store: makeStore(),
+                                       isEnabled: { [unowned self] in self.isEnabled },
+                                       now: { [clock] in clock.now }, maximumLoads: 1, maximumWaiting: 2)
+        for name in ["a", "b", "c", "d"] {
+            center.request("https://example.com/\(name)")
+            await eventually { center.state(of: "https://example.com/\(name)") == .loading }
+        }
+        // a loads; of b, c and d, the two asked for last wait, and b, asked for longest ago, was dropped, as a link
+        // scrolled past is.
+        XCTAssertEqual(center.state(of: "https://example.com/b"), .notLoaded)
+        XCTAssertEqual(center.state(of: "https://example.com/c"), .loading)
+        await loader.release("https://example.com/a")
+        await eventually { await loader.requested.count == 2 }
+        await loader.release("https://example.com/d")
+        await eventually { await loader.requested.count == 3 }
+        await loader.release("https://example.com/c")
+        await settle()
+        var requested = await loader.requested
+        XCTAssertEqual(requested, ["https://example.com/a", "https://example.com/d", "https://example.com/c"])
+        // Asked for again, it is loaded.
+        center.request("https://example.com/b")
+        await eventually { await loader.requested.count == 4 }
+        requested = await loader.requested
+        XCTAssertEqual(requested.last, "https://example.com/b")
+    }
+
     func testAPreviewKeptBeforeIsShownWithoutLoadingThePage() async throws {
         let store = makeStore()
         await store.keep(LinkPageMetadata(title: "Kept", image: try LinkTestImages.png(width: 300, height: 200)),
@@ -352,6 +381,20 @@ final class LinkPreviewCenterTests: XCTestCase {
         isEnabled = false
         XCTAssertEqual(center.pagePresentation(for: "https://example.com/a"), .link(note: nil))
         XCTAssertEqual(center.pagePresentation(for: "http://localhost:3000/"), .link(note: nil))
+    }
+
+    func testWhyALinkIsNeverLoadedIsSaidWhileLoadingIsOnAlone() {
+        let center = makeCenter(FakeLinkLoader())
+        XCTAssertEqual(center.refusal(of: "http://192.168.1.1/"),
+                       "Keeptide doesn't load links to this Mac or your local network.")
+        XCTAssertEqual(center.refusal(of: "https://user:secret@example.com/"),
+                       "Keeptide doesn't load links that name a user or a password.")
+        XCTAssertEqual(center.refusal(of: "https://example.com/?token=abc"),
+                       "Keeptide doesn't load links that may hold a password, key or token.")
+        XCTAssertNil(center.refusal(of: "https://example.com/a"), "A link it loads")
+        XCTAssertNil(center.refusal(of: "mailto:someone@example.com"), "No web link")
+        isEnabled = false
+        XCTAssertNil(center.refusal(of: "http://192.168.1.1/"), "Turned off, by the person")
     }
 
     func testPagesAreSyntheticAndLoadNothingUnlessTheWebIsAskedFor() throws {

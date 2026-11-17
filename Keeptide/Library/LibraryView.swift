@@ -606,6 +606,7 @@ struct LibraryView: View {
                 returnFocusToList: { listHasFocus = true },
                 contentKind: editorContentKind(editor, in: workspace),
                 previewService: session.previewService,
+                linkPreviews: session.linkPreviews,
                 fileAccessStore: session.fileAccessStore,
                 fileAccessIdentity: session.fileAccessIdentity,
                 applicationNames: applicationNames,
@@ -1320,7 +1321,9 @@ struct LibraryView: View {
             entry: entry,
             sourceAppName: entry.sourceApp.flatMap { applicationNames.name(for: $0) },
             collections: showsCollections(workspace)
-                ? CollectionBadge.collections(entry.collectionIDs, in: workspace.collections.map(\.value)) : []
+                ? CollectionBadge.collections(entry.collectionIDs, in: workspace.collections.map(\.value)) : [],
+            previewService: session.previewService,
+            linkPreviews: session.linkPreviews
         )
         .tag(entry.id)
         .accessibilityIdentifier(recentStyle ? "RecentClipRow" : "LibraryEntryRow")
@@ -1507,23 +1510,38 @@ struct LibraryView: View {
 
 /// One row of a list: what the item is, its title, an excerpt, and a line with the time the list is ordered by,
 /// where it came from and its collection. A clip saved as a snippet carries a bookmark; a favorite snippet a star.
+/// What a link's row reads its link again for: another item or version, or loading previews turned on or off.
+private struct LinkRowRead: Equatable {
+    let ref: ContentRef
+    let loadsPreviews: Bool
+}
+
 private struct LibraryEntryRow: View {
     let entry: LibraryEntry
     let sourceAppName: String?
     /// The snippet's collections, in the sidebar's order, where the list shows them.
     let collections: [CollectionValue]
+    /// Where a link's row reads its address and the title it was copied with, and the title its page gave.
+    var previewService: PreviewService? = nil
+    var linkPreviews: LinkPreviewCenter? = nil
+    /// A link's address and the title it was copied with, once read, with what they were read from.
+    @State private var link: (ref: ContentRef, detail: ClipDetail)?
 
     var body: some View {
+        let detail = link?.ref == entry.ref ? link?.detail : nil
+        let shown = LibraryRowText.link(
+            entry, address: detail?.excerpt, copiedTitle: detail?.linkTitle,
+            pageTitle: detail?.wholeLink.flatMap { linkPreviews?.state(of: $0).loadedPreview?.title })
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: symbolName)
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.title.isEmpty ? "Untitled" : entry.title)
+                Text(shown.title.isEmpty ? "Untitled" : shown.title)
                     .font(.body.weight(.medium))
                     .lineLimit(1)
-                if let excerpt = LibraryRowText.excerpt(for: entry) {
+                if let excerpt = LibraryRowText.excerpt(for: entry) ?? shown.address {
                     Text(excerpt)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -1541,6 +1559,22 @@ private struct LibraryEntryRow: View {
         }
         .padding(.vertical, 8)
         .accessibilityIdentifier("LibraryEntryRow")
+        // Read again for another version, and when loading previews is turned on.
+        .task(id: LinkRowRead(ref: entry.ref, loadsPreviews: linkPreviews?.loadsPreviews == true)) { await readLink() }
+    }
+
+    /// Reads a link's address and the title it was copied with as its row shows, and asks for what its page gives once
+    /// the row has stayed a moment: rows scrolled past ask for nothing.
+    private func readLink() async {
+        guard entry.kind == .url, let previewService else { return }
+        let ref = entry.ref
+        guard let detail = try? await previewService.detail(for: ref, kind: .url, frameSize: .zero),
+              !Task.isCancelled else { return }
+        link = (ref, detail)
+        guard let whole = detail.wholeLink, let linkPreviews, linkPreviews.loadsPreviews else { return }
+        try? await Task.sleep(for: .milliseconds(500))
+        guard !Task.isCancelled else { return }
+        linkPreviews.request(whole)
     }
 
     private var metadata: AttributedString {
@@ -1602,6 +1636,19 @@ extension CollectionBadge {
 
 /// What a row says under its title, apart from the drawing so it can be tested.
 enum LibraryRowText {
+    /// A link's row: its title and, where the title isn't its address, the start of the address beneath it. The title
+    /// is a saved snippet's own, then the title of the page the link was copied from, then the title its page gave, and
+    /// else the row's, the start of the address. `address` is the start of the link's address, once it is read.
+    static func link(_ entry: LibraryEntry, address: String?, copiedTitle: String?,
+                     pageTitle: String?) -> (title: String, address: String?) {
+        guard entry.kind == .url, let address, !address.isEmpty else { return (entry.title, nil) }
+        if entry.isMemo, !entry.title.isEmpty, !address.hasPrefix(entry.title) { return (entry.title, address) }
+        guard let title = [copiedTitle, pageTitle].compactMap(LinkPreview.shownTitle).first else {
+            return (entry.title, nil)
+        }
+        return (title, address)
+    }
+
     /// The start of the text, or a snippet's note where the text only repeats the title.
     static func excerpt(for entry: LibraryEntry) -> String? {
         let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1638,6 +1685,8 @@ private struct MemoEditorView: View {
     let returnFocusToList: () -> Void
     let contentKind: ContentKind
     let previewService: PreviewService?
+    /// Shows a link's picture and title.
+    let linkPreviews: LinkPreviewCenter?
     let fileAccessStore: FileAccessStore?
     let fileAccessIdentity: StoreIdentity?
     let applicationNames: ApplicationNames
@@ -1666,7 +1715,8 @@ private struct MemoEditorView: View {
                         service: previewService,
                         fileAccessStore: fileAccessStore,
                         fileAccessIdentity: fileAccessIdentity,
-                        applicationName: editor.details?.sourceApp.flatMap { applicationNames.name(for: $0) }
+                        applicationName: editor.details?.sourceApp.flatMap { applicationNames.name(for: $0) },
+                        linkPreviews: linkPreviews
                     )
                 } column: {
                     if let column = textColumn.column {
