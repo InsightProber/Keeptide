@@ -64,6 +64,8 @@ struct QuickAccessServices {
     /// Recognizing the text in images and reading what was recognized before; without it the preview has no text
     /// column.
     var derivedText: DerivedTextCoordinator? = nil
+    /// Loading the previews of links' pages; without it link cards show their links alone.
+    var linkPreviews: LinkPreviewCenter? = nil
 }
 
 /// A column of derived text beside the preview: the text recognized in an image, or a translation.
@@ -954,6 +956,12 @@ final class QuickAccessState {
         detailFrameSize = frameSize
         startDetailReads()
         let kinds = Dictionary(selection.rows.map { ($0.ref, $0.kind) }, uniquingKeysWith: { first, _ in first })
+        // The links framed whose details were read before have their previews asked for here; the others as theirs are.
+        if let linkPreviews = services()?.linkPreviews {
+            for ref in refs where kinds[ref] == .url {
+                if let link = details[ref]?.wholeLink { linkPreviews.request(link) }
+            }
+        }
         readKeptResults(of: refs.filter { kinds[$0] == .image }, operation: .extractText)
         readKeptResults(of: refs.filter { kinds[$0].map(Self.isTranslatable) == true }, operation: .translate)
     }
@@ -994,6 +1002,8 @@ final class QuickAccessState {
                 self.detailReadsRunning -= 1
                 if let detail, !Task.isCancelled, self.selection.rows.contains(where: { $0.ref == ref }) {
                     self.details[ref] = detail
+                    // A link framed has its page's preview asked for once its address is known.
+                    if kind == .url, let link = detail.wholeLink { self.services()?.linkPreviews?.request(link) }
                 }
                 self.startDetailReads()
             }
@@ -1120,6 +1130,18 @@ final class QuickAccessState {
     /// Whether the selected clip is an image whose text the preview can show beside it.
     var offersTextInImage: Bool {
         selection.selectedRow?.kind == .image && canRecognizeText
+    }
+
+    /// What each link's card shows of its page: the preview loaded, while loading previews is on. Nothing for a link
+    /// whose details aren't read yet, or hold only the start of a longer address.
+    func linkPreviewer() -> (QuickAccessRow) -> LinkPreview? {
+        guard let linkPreviews = services()?.linkPreviews else { return { _ in nil } }
+        let details = details
+        return { row in
+            guard row.kind == .url, let link = details[row.ref]?.wholeLink,
+                  case .loaded(let preview) = linkPreviews.state(of: link) else { return nil }
+            return preview
+        }
     }
 
     /// Whether the text in images can be recognized and shown here: the library is open.

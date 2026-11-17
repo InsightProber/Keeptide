@@ -4267,6 +4267,117 @@ final class QuickAccessStateTests: XCTestCase {
     /// The quick-access seed's multi-line command.
     private static let multiLine = "set -e\necho synthetic-gamma\n"
 
+    // MARK: Link previews
+
+    func testAFramedLinkHasItsPagesPreviewLoadedAndShown() async throws {
+        let fixture = try makeFixture()
+        let address = "https://example.com/articles/synthetic"
+        _ = try await insert(address, types: link(address), at: 1, into: fixture)
+        let loader = FakeLinkLoader()
+        await loader.answer(address, with: .success(LinkPageMetadata(title: "A Synthetic Article",
+                                                                      image: try png(width: 600, height: 315))))
+        var loads = true
+        var services = fixture.services
+        services.linkPreviews = makeLinkPreviews(loader, isEnabled: { loads })
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.rows.first)
+        func preview() -> LinkPreview? { state.linkPreviewer()(row) }
+        try await Task.sleep(for: .milliseconds(100))
+        var requested = await loader.requested
+        XCTAssertEqual(requested, [], "Nothing is loaded before its card is framed")
+        XCTAssertNil(preview())
+
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await SearchTestSupport.waitUntil { preview()?.title == "A Synthetic Article" }
+        XCTAssertNotNil(preview()?.image)
+        // Framed again, it isn't loaded again.
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await Task.sleep(for: .milliseconds(100))
+        requested = await loader.requested
+        XCTAssertEqual(requested, [address])
+        // Turned off, the card shows its link alone.
+        loads = false
+        XCTAssertNil(preview())
+    }
+
+    func testFramingALoadedLinkAgainChangesNothingItsCardReads() async throws {
+        let fixture = try makeFixture()
+        let address = "https://example.com/articles/framed"
+        _ = try await insert(address, types: link(address), at: 1, into: fixture)
+        let loader = FakeLinkLoader()
+        let picture = try png(width: 600, height: 315)
+        await loader.answer(address, with: .success(LinkPageMetadata(title: "Framed", image: picture)))
+        var services = fixture.services
+        services.linkPreviews = makeLinkPreviews(loader, isEnabled: { true })
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.rows.first)
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await SearchTestSupport.waitUntil { state.linkPreviewer()(row)?.title == "Framed" }
+        // The panel frames its cards as it draws them, and draws them again when what they read changes.
+        let changed = ObservedChange()
+        withObservationTracking { _ = state.linkPreviewer()(row) } onChange: { changed.mark() }
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertFalse(changed.happened)
+    }
+
+    func testALinkFramedAgainOnceLoadingIsTurnedOnIsLoaded() async throws {
+        let fixture = try makeFixture()
+        let address = "https://example.com/later"
+        _ = try await insert(address, types: link(address), at: 1, into: fixture)
+        let loader = FakeLinkLoader()
+        var loads = false
+        var services = fixture.services
+        services.linkPreviews = makeLinkPreviews(loader, isEnabled: { loads })
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.rows.first)
+        // Read while loading previews is off: nothing is asked for.
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await SearchTestSupport.waitUntil { state.details[row.ref] != nil }
+        try await Task.sleep(for: .milliseconds(100))
+        var requested = await loader.requested
+        XCTAssertEqual(requested, [])
+        // Turned on, the card framed again, whose details were read already, is asked for.
+        loads = true
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await SearchTestSupport.waitUntil { await loader.requested == [address] }
+        requested = await loader.requested
+        XCTAssertEqual(requested, [address])
+    }
+
+    func testALinkLongerThanItsDetailIsNeverLoaded() async throws {
+        let fixture = try makeFixture()
+        let address = "https://example.com/" + String(repeating: "a", count: 2_100)
+        _ = try await insert("long link", types: link(address), at: 1, into: fixture)
+        let loader = FakeLinkLoader()
+        var services = fixture.services
+        services.linkPreviews = makeLinkPreviews(loader, isEnabled: { true })
+        let state = QuickAccessState(services: { services })
+        state.open()
+        try await settled(state)
+        let row = try XCTUnwrap(state.selection.rows.first)
+        state.loadDetails(for: [row.ref], frameSize: CGSize(width: 392, height: 300))
+        try await SearchTestSupport.waitUntil { state.details[row.ref] != nil }
+        try await Task.sleep(for: .milliseconds(150))
+        let requested = await loader.requested
+        XCTAssertEqual(requested, [])
+        XCTAssertNil(state.linkPreviewer()(row))
+    }
+
+    /// Link previews kept in a folder of the test's own, loaded by `loader`.
+    private func makeLinkPreviews(_ loader: FakeLinkLoader, isEnabled: @escaping @MainActor () -> Bool) -> LinkPreviewCenter {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Keeptide-link-cards-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return LinkPreviewCenter(loader: loader, store: LinkPreviewStore(directory: directory), isEnabled: isEnabled)
+    }
+
     private struct Fixture {
         let harness: SearchHarness
         let board: NSPasteboard
@@ -4696,4 +4807,14 @@ private actor SameReferenceOriginalReadGate {
     func release(call: Int) {
         continuations.removeValue(forKey: call)?.resume()
     }
+}
+
+/// Whether an observed change happened.
+private final class ObservedChange: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed = false
+
+    var happened: Bool { lock.withLock { changed } }
+
+    func mark() { lock.withLock { changed = true } }
 }

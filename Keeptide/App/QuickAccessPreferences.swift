@@ -17,6 +17,7 @@ final class QuickAccessPreferences {
     static let translationTargetKey = "translation.targetLanguage"
     static let fixedTranslationTargetKey = "translation.fixedTargetLanguage"
     static let translatesAutomaticallyKey = "translation.automatic"
+    static let loadsLinkPreviewsKey = "linkPreviews.loads"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -66,6 +67,18 @@ final class QuickAccessPreferences {
         didSet { defaults.set(translatesAutomatically, forKey: Self.translatesAutomaticallyKey) }
     }
 
+    /// Whether link cards show the title and picture of their pages, which Keeptide loads, as Settings › Privacy's Load
+    /// link previews says. Absent means on.
+    var loadsLinkPreviews: Bool {
+        didSet {
+            defaults.set(loadsLinkPreviews, forKey: Self.loadsLinkPreviewsKey)
+            if loadsLinkPreviews != oldValue { onLoadsLinkPreviewsChange?(loadsLinkPreviews) }
+        }
+    }
+
+    /// Called as Load link previews is turned on or off. The app removes the previews kept as it is turned off.
+    @ObservationIgnored var onLoadsLinkPreviewsChange: ((Bool) -> Void)?
+
     /// The strip's style as these settings make it, with the enlargement as it is stored. The panel takes it as it
     /// opens.
     var stripStyle: StripStyle {
@@ -88,6 +101,7 @@ final class QuickAccessPreferences {
         let fixed = defaults.object(forKey: Self.fixedTranslationTargetKey) as? String
         fixedTranslationTarget = fixed?.isEmpty == false ? fixed : nil
         translatesAutomatically = defaults.object(forKey: Self.translatesAutomaticallyKey) as? Bool ?? false
+        loadsLinkPreviews = defaults.object(forKey: Self.loadsLinkPreviewsKey) as? Bool ?? true
     }
 
     /// Stored values are not trusted: a number is kept to 1.00–1.25 and to hundredths, and anything else gives the

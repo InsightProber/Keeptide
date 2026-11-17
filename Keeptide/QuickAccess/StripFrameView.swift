@@ -109,6 +109,8 @@ struct StripFrameContent: Equatable {
         /// A link by its title: a saved link's own title, the title of the page it was copied from, or else its
         /// decoded path. A search's hits are in bold.
         case link(title: AttributedString)
+        /// A link with its page's picture, which fills the middle above the link's title. A search's hits are in bold.
+        case linkPreview(image: CGImage, title: AttributedString)
         case image(CGImage, fills: Bool)
         case file(name: String, typeIdentifier: String?)
         /// The kind's symbol and the clip's title. It stands in until the details arrive (a text search
@@ -176,11 +178,13 @@ struct StripFrameContent: Equatable {
     /// `detail` is nil until the details have arrived, and when they could not be read. A text search
     /// result already has its snippet, so it shows it without them and only its caption waits. `now` is the
     /// moment the time is told from. `collections` holds the collections a memo's card may name; a list of one
-    /// collection leaves it out, since every card there is in it.
+    /// collection leaves it out, since every card there is in it. `linkPreview` is what was loaded of a link's page: its
+    /// title and picture.
     static func make(row: QuickAccessRow, detail: ClipDetail?, cardSize: CardSize,
                      now: Date = Date(), collections: [CollectionID: CollectionSummary] = [:],
                      textMark: StripTextMark? = nil,
-                     translationMark: StripTranslationMark? = nil) -> StripFrameContent {
+                     translationMark: StripTranslationMark? = nil,
+                     linkPreview: LinkPreview? = nil) -> StripFrameContent {
         let isMemo = row.facet == .memo
         // The row lists its collections in the sidebar's order; the first the card may name leads.
         let named = isMemo ? row.collectionIDs.compactMap { collections[$0] } : []
@@ -201,7 +205,7 @@ struct StripFrameContent: Equatable {
         if row.isPartiallyIndexed { content.markers.append(.partiallyIndexed) }
         if content.isFavorite { content.markers.append(.favorite) }
         if let detail {
-            content.show(detail, of: row, cardSize: cardSize)
+            content.show(detail, of: row, cardSize: cardSize, linkPreview: linkPreview)
         } else {
             content.showSnippet(of: row, cardSize: cardSize)
         }
@@ -211,7 +215,8 @@ struct StripFrameContent: Equatable {
     }
 
     /// Fills in what the details tell: the footer, how many more items there are, and the clip itself.
-    private mutating func show(_ detail: ClipDetail, of row: QuickAccessRow, cardSize: CardSize) {
+    private mutating func show(_ detail: ClipDetail, of row: QuickAccessRow, cardSize: CardSize,
+                               linkPreview: LinkPreview?) {
         extraItems = max(0, detail.itemCount - 1)
         info = Self.info(for: row, detail: detail)
         switch row.kind {
@@ -222,11 +227,13 @@ struct StripFrameContent: Equatable {
         case .url:
             guard let address = detail.excerpt, !address.isEmpty else { break }
             if let (host, rest) = Self.split(link: address) {
-                let pageTitle = detail.linkTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let title = Self.memoTitle(of: row, over: address)
-                    ?? pageTitle.flatMap { $0.isEmpty ? nil : $0 }
-                    ?? (rest.isEmpty ? host : rest)
-                body = .link(title: Self.highlighted(title, like: row.snippet))
+                // A saved snippet's own title, then the title of the page it was copied from, then the title its page
+                // gave when it was loaded, and else the address after the host.
+                // Each page title as a card shows a title: on one line, without direction controls.
+                let pageTitles = [detail.linkTitle, linkPreview?.title].compactMap(LinkPreview.shownTitle)
+                let title = Self.memoTitle(of: row, over: address) ?? pageTitles.first ?? (rest.isEmpty ? host : rest)
+                let marked = Self.highlighted(title, like: row.snippet)
+                body = linkPreview?.image.map { .linkPreview(image: $0, title: marked) } ?? .link(title: marked)
                 accessibilityTitle = title
             } else {
                 setText(AttributedString(address), plain: address, for: row, cardSize: cardSize)
@@ -607,6 +614,7 @@ struct StripFrameView: View {
             switch content.body {
             case .text(let text, let style): textBody(text, style: style)
             case .link(let title): linkBody(title)
+            case .linkPreview(let image, let title): linkPreviewBody(image: image, title: title)
             case .image(let image, let fills):
                 if fills { filledImage(image) } else { wholeImage(image) }
             case .file(let name, let typeIdentifier): fileBody(name: name, typeIdentifier: typeIdentifier)
@@ -620,7 +628,7 @@ struct StripFrameView: View {
     private var showsUnavailableText: Bool {
         guard content.isTextUnavailable else { return false }
         switch content.body {
-        case .text, .link, .placeholder: return true
+        case .text, .link, .linkPreview, .placeholder: return true
         case .image, .file: return false
         }
     }
@@ -685,6 +693,33 @@ struct StripFrameView: View {
         .padding(.bottom, verticalPadding.bottom)
         .padding(.horizontal, textPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The page's picture covering the middle, cut evenly at its edges, above the link's title in up to two lines.
+    private func linkPreviewBody(image: CGImage, title: AttributedString) -> some View {
+        let style = StripTypography.titleStyle(cardSize: metrics.cardSize)
+        return VStack(spacing: 0) {
+            Color.clear
+                .overlay {
+                    Image(decorative: image, scale: 1)
+                        .resizable()
+                        .scaledToFill()
+                }
+                .clipped()
+                .accessibilityHidden(true)
+            Text(marked(title))
+                .font(.system(size: style.size, weight: .semibold))
+                .lineHeight(.exact(points: style.lineHeight))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(Palette.text(isDark))
+                .padding(.top, 8 * scale)
+                .padding(.bottom, verticalPadding.bottom)
+                .padding(.horizontal, textPadding)
+                .layoutPriority(1)
+        }
+        .frame(width: metrics.contentSize.width, height: metrics.contentSize.height)
     }
 
     /// A picture covering the middle, cut evenly at its edges. A picture is shown this way when its shape is within a

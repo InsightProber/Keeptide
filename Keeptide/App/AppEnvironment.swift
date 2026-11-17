@@ -28,6 +28,7 @@ final class AppEnvironment {
          shortcutCoordinator: GlobalShortcutCoordinator? = nil,
          launchAtLogin: (any LaunchAtLoginControlling)? = nil,
          onboardingPreferences: OnboardingPreferences? = nil,
+         linkPreviews: LinkPreviewCenter? = nil,
          makePanel: (() -> PanelController)? = nil,
          makeLibrary: (() -> LibraryWindowController)? = nil,
          makeSettings: (() -> SettingsWindowController)? = nil,
@@ -74,6 +75,17 @@ final class AppEnvironment {
         captureSession.automaticTranslation = { [weak self] in
             guard let preferences = self?.quickAccessPreferences, preferences.translatesAutomatically else { return nil }
             return (preferences.fixedTranslationTarget, preferences.translationTarget)
+        }
+        // Copied links have their pages' previews loaded where Load link previews is on; turned off, the previews kept
+        // go.
+        captureSession.linkPreviews = linkPreviews
+        if let linkPreviews, !quickAccessPreferences.loadsLinkPreviews {
+            // Turned off in an earlier run that ended before it removed them.
+            Task { await linkPreviews.clear() }
+        }
+        quickAccessPreferences.onLoadsLinkPreviewsChange = { [weak linkPreviews] loads in
+            guard !loads, let linkPreviews else { return }
+            Task { await linkPreviews.clear() }
         }
         captureSession.onServicesChanged = { [weak self] in
             guard let self else { return }
@@ -298,7 +310,8 @@ extension CaptureSession {
             collections: collectionService,
             collectionChanges: collectionService,
             lifecycle: maintenance,
-            derivedText: derivedText
+            derivedText: derivedText,
+            linkPreviews: linkPreviews
         )
     }
 }

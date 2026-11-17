@@ -434,6 +434,14 @@ final class QuickAccessUITests: XCTestCase {
         XCTAssertTrue(older.exists, app.debugDescription)
     }
 
+    /// The seeded link's card shows the title its page gave, from synthetic previews that load nothing.
+    func testALinkCardShowsItsPagesTitleFromItsPreview() throws {
+        let app = launchKeeptide(fakesLinkPreviews: true)
+        let frames = try openPanel(app)
+        let titled = frames.matching(NSPredicate(format: "label CONTAINS %@", "Synthetic page at example.com/synthetic"))
+        XCTAssertTrue(titled.firstMatch.waitForExistence(timeout: 10), app.debugDescription)
+    }
+
     // MARK: - Helpers
 
     /// Launches the test host first, so the panel opens last and keeps keyboard focus.
@@ -444,13 +452,14 @@ final class QuickAccessUITests: XCTestCase {
     }
 
     private func launchKeeptide(sessionID: UUID = UUID(), seedsSnippets: Bool = false,
-                                fakesTextRecognition: Bool = false) -> XCUIApplication {
+                                fakesTextRecognition: Bool = false, fakesLinkPreviews: Bool = false) -> XCUIApplication {
         continueAfterFailure = false
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--disable-global-hotkey", "--show-quick-access",
                                "--capture-test-session", sessionID.uuidString, "--seed-synthetic-clips"]
             + (seedsSnippets ? ["--seed-synthetic-snippets"] : [])
             + (fakesTextRecognition ? ["--fake-text-recognition"] : [])
+            + (fakesLinkPreviews ? ["--fake-link-previews"] : [])
         self.sessionID = sessionID
         application = app
         app.launch()
