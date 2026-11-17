@@ -38,6 +38,19 @@ that respects Reduce Motion. Its close button, a click on the exposed band, or
 Escape dismisses the preview while preserving the current search and selection.
 Escape continues through the existing search layers before closing quick access.
 
+A link's preview shows its page under its address and Open in Browser, in a web
+view that keeps no cookies, cache or history. While the page loads, or when it
+can't, its picture and title stand in. The page moves on by itself only to
+addresses Keeptide would load, and the address shown changes to another site
+only once that site's page shows. A link you click there, or a form you send,
+opens in the default browser, and nothing is downloaded; a form that would send
+what you typed other than in its address isn't sent. A link opened with
+VoiceOver comes with no click or key press, so it counts as the page's own move;
+Open in Browser takes the page shown to the browser. Once you click into the
+page, Space scrolls it, and ⌘Y or Escape closes the preview. A link Keeptide
+never loads, or any link while Load link previews is off, shows its address
+alone.
+
 ⇧⌘T, or **Text** in the preview's bar, shows the text in a selected image
 beside its preview: the image on the left and, on the right, its text recognized
 on this Mac with Apple's Vision, line by line or joined into paragraphs. A tall

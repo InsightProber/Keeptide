@@ -1132,6 +1132,9 @@ final class QuickAccessState {
         selection.selectedRow?.kind == .image && canRecognizeText
     }
 
+    /// Loads the previews of links' pages, and the pages for the preview, while the library is open.
+    var linkPreviews: LinkPreviewCenter? { services()?.linkPreviews }
+
     /// What each link's card shows of its page: the preview loaded, while loading previews is on. Nothing for a link
     /// whose details aren't read yet, or hold only the start of a longer address.
     func linkPreviewer() -> (QuickAccessRow) -> LinkPreview? {

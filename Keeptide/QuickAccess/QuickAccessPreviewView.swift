@@ -17,6 +17,8 @@ struct QuickAccessPreviewView: View {
     /// Whether the preview lies straight on quick access's tray, with no background of its own, and its scrollers
     /// stop short of the tray's round corners. In the Library it lies on a text background.
     var isOnTray = false
+    /// Loads a link's page in the preview, where it is given and loading previews is on.
+    var linkPages: LinkPreviewCenter? = nil
 
     var body: some View {
         Group {
@@ -52,11 +54,19 @@ struct QuickAccessPreviewView: View {
                     }
                 }
             case .url(let title, let address)?:
-                if let url = URL(string: address) {
-                    URLPreview(title: title, url: url) { NSWorkspace.shared.open($0) }
-                        .padding(16)
-                } else {
-                    PreviewText(text: address, scrollerBottomInset: scrollerBottomInset, onCommand: onCommand)
+                switch linkPages?.pagePresentation(for: address) ?? .link(note: nil) {
+                case .page(let url, let page):
+                    LinkPagePreview(url: url, page: page, title: title,
+                                    preview: linkPages?.state(of: address).loadedPreview)
+                        // Another page is another view, which starts loading.
+                        .id(url)
+                case .link(let note):
+                    if let url = URL(string: address) {
+                        URLPreview(title: title, url: url, note: note) { NSWorkspace.shared.open($0) }
+                            .padding(16)
+                    } else {
+                        PreviewText(text: address, scrollerBottomInset: scrollerBottomInset, onCommand: onCommand)
+                    }
                 }
             case .files(let references)?:
                 FilePreviewPane(references: references, store: fileAccessStore, identity: fileAccessIdentity)

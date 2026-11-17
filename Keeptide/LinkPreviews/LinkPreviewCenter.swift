@@ -66,6 +66,12 @@ enum LinkPreviewState: Equatable {
         if case .loaded(let preview) = self { return preview.image != nil }
         return false
     }
+
+    /// The preview loaded, if it was.
+    var loadedPreview: LinkPreview? {
+        if case .loaded(let preview) = self { return preview }
+        return nil
+    }
 }
 
 /// Loads what a page gives to show its link by.
@@ -110,6 +116,7 @@ final class LinkPreviewCenter {
     @ObservationIgnored private let imagePixels: Int
     @ObservationIgnored private let maximumPictures: Int
     @ObservationIgnored private let trimEvery: Int
+    @ObservationIgnored private let pages: PageSource
     /// When each preview known is due to be loaded again.
     @ObservationIgnored private var due: [String: Date] = [:]
     /// Pages waiting to be loaded. The last one goes first.
@@ -130,11 +137,20 @@ final class LinkPreviewCenter {
     /// When each preview known was last counted as used in the store.
     @ObservationIgnored private var touched: [String: Date] = [:]
 
+    /// Where the preview's pages come from.
+    enum PageSource: Sendable {
+        /// Text in place of each page, which loads nothing.
+        case synthetic
+        /// The pages links lead to, from the web.
+        case web
+    }
+
     /// `isEnabled` says whether loading previews is on; `imagePixels` is the longer side of the pictures shown, and
     /// `maximumPictures` how many of them stay in memory. `trimEvery` is how many pages are loaded between trims.
+    /// `pages` says where the preview's pages come from: text that loads nothing unless the web is asked for.
     init(loader: any LinkMetadataLoading, store: LinkPreviewStore, isEnabled: @escaping @MainActor () -> Bool,
          now: @escaping @Sendable () -> Date = { Date() }, maximumLoads: Int = 2, imagePixels: Int = 480,
-         maximumPictures: Int = 96, trimEvery: Int = 50) {
+         maximumPictures: Int = 96, trimEvery: Int = 50, pages: PageSource = .synthetic) {
         self.loader = loader
         self.store = store
         self.isEnabled = isEnabled
@@ -143,10 +159,40 @@ final class LinkPreviewCenter {
         self.imagePixels = imagePixels
         self.maximumPictures = maximumPictures
         self.trimEvery = trimEvery
+        self.pages = pages
     }
 
     /// Whether previews are loaded: loading them is on.
     var loadsPreviews: Bool { isEnabled() }
+
+    /// How the preview shows a link: its page, or the link alone.
+    enum PagePresentation: Equatable {
+        /// The page the link leads to, loaded in a web view that keeps nothing.
+        case page(URL, LinkWebView.Page)
+        /// The link alone, with why its page isn't loaded, when that is the link's and not the switch's.
+        case link(note: String?)
+    }
+
+    /// How the preview shows the link `address`: its page while loading previews is on and the link is one to load;
+    /// otherwise the link alone, saying why for a link Keeptide never loads.
+    func pagePresentation(for address: String) -> PagePresentation {
+        guard isEnabled() else { return .link(note: nil) }
+        switch LinkAddress.loadable(address) {
+        case .success(let url):
+            switch pages {
+            case .web:
+                return .page(url, .address(url))
+            case .synthetic:
+                return .page(url, .synthetic(html: "<!doctype html><title>Synthetic page</title>"
+                    + "<h1>Synthetic page</h1><p>\(url.host() ?? "")</p>"))
+            }
+        case .failure(.notWebLink): return .link(note: nil)
+        case .failure(.localNetwork): return .link(note: "Keeptide doesn't load links to this Mac or your local network.")
+        case .failure(.credentials): return .link(note: "Keeptide doesn't load links that name a user or a password.")
+        case .failure(.mayHoldSecret):
+            return .link(note: "Keeptide doesn't load links that may hold a password, key or token.")
+        }
+    }
 
     /// What is known of the preview of the link `address`. Nothing while loading previews is off.
     func state(of address: String) -> LinkPreviewState {

@@ -61,11 +61,18 @@ NETWORK_ACCESS = re.compile(
     r"|\bresourceBytes\b|\bNSAttributedString\s*\(\s*html\b|\bDocumentType\.(?:html|webArchive)\b"
     r"|\bdocumentType\s*:\s*\.(?:html|webArchive)\b"
 )
-# How the link preview module may reach the network: the system's LinkPresentation and WebKit, nothing of its own.
-LINK_PREVIEW_NETWORK = re.compile(r"\bimport\s+(?:WebKit|LinkPresentation)\b|\bWKWebView\b|\bLPMetadataProvider\b")
+# How the link preview module may reach the network: the system's LinkPresentation and WebKit, and a request it hands a
+# web view, nothing of its own.
+LINK_PREVIEW_NETWORK = re.compile(
+    r"\bimport\s+(?:WebKit|LinkPresentation)\b|\bWKWebView\b|\bLPMetadataProvider\b|\bURLRequest\b"
+)
 # The system's link loader named in a test, other than to ask how it reads a failure: a test that built one would load
 # a real website, however it built it.
 TEST_LINK_LOADER = re.compile(r"\bSystemLinkMetadataLoader\b(?!\.reason\b)")
+# A web view class of the link preview module's own.
+WEB_VIEW_SUBCLASS = re.compile(r"\bclass\s+(\w+)\s*:\s*WKWebView\b")
+# Quick access's preview given the pages links lead to, from the web, rather than text that loads nothing.
+WEB_PAGES = re.compile(r"\bpages\s*:\s*[\w.\s]*?\.\s*web\b|\bPageSource\b[^\n;]*?\.\s*web\b")
 # Writing to the log, which must never carry what the network modules send or receive.
 LOGGING = re.compile(r"\b(?:print|debugPrint|dump|NSLog|os_log)\s*\(|\bLogger\s*\(|\bimport\s+(?:os|OSLog)\b")
 # A model client built in a test: it must be given a stand-in for the network.
@@ -99,6 +106,33 @@ def matching_lines(pattern: re.Pattern[str], directories: tuple[Path, ...],
             for match in pattern.finditer(text):
                 matches.append(f"{path}:{text.count(chr(10), 0, match.start()) + 1}")
     return matches
+
+
+def call_arguments(code: str, opening: int) -> str:
+    """The text between the parenthesis at `opening` and the one that closes it."""
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "(":
+            depth += 1
+        elif code[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return code[opening + 1:index]
+    raise AssertionError("A parenthesis is never closed")
+
+
+def braced_span(code: str, start: int) -> tuple[int, int]:
+    """Where the first brace from `start` opens, and just past the one that closes it."""
+    opening = code.index("{", start)
+    depth = 0
+    for index in range(opening, len(code)):
+        if code[index] == "{":
+            depth += 1
+        elif code[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return opening, index + 1
+    raise AssertionError("A brace is never closed")
 
 
 def code_only(source: str) -> str:
@@ -282,6 +316,63 @@ class NetworkBoundaryTests(unittest.TestCase):
                     line = code.count("\n", 0, match.start()) + 1
                     offenders.append(f"{source_file.relative_to(REPOSITORY_ROOT).as_posix()}:{line} {match.group(0)}")
         self.assertEqual(offenders, [], "Keeptide/LinkPreviews/ loads pages only through LinkPresentation and WebKit")
+
+    def test_link_preview_web_views_keep_nothing(self) -> None:
+        # A page shown in the preview leaves no cookies, cache or history: each web view has a store of its own.
+        configured = False
+        for source_file in sorted(LINK_PREVIEW_MODULE.rglob("*.swift")):
+            code = code_only(source_file.read_text(encoding="utf-8"))
+            if "WKWebViewConfiguration()" in code:
+                configured = True
+                self.assertRegex(code, r"websiteDataStore\s*=\s*\.nonPersistent\(\)", source_file.name)
+            self.assertNotRegex(code, r"\bWKWebsiteDataStore\.default\b|websiteDataStore\s*=\s*\.default\b",
+                                source_file.name)
+        self.assertTrue(configured, "The link preview module configures the web views it shows pages in")
+
+    def test_link_preview_web_views_are_built_with_a_configuration_of_their_own(self) -> None:
+        # Built without one, a web view uses the default store, which keeps cookies, caches and history; so does a
+        # class of the module's own that starts its web view without one.
+        sources = {path: code_only(path.read_text(encoding="utf-8")) for path in sorted(LINK_PREVIEW_MODULE.rglob("*.swift"))}
+        classes = {"WKWebView"} | {name for code in sources.values() for name in WEB_VIEW_SUBCLASS.findall(code)}
+        self.assertIn("LinkPageWebView", classes)
+        built = re.compile(r"\b(?:" + "|".join(sorted(classes)) + r")\s*(?:\.\s*init\s*)?\(")
+        started = re.compile(r"\bsuper\s*\.\s*init\s*\(")
+        for code, made in (("WKWebView()", True), ("WKWebView(frame: .zero)", True), ("WKWebView.init(frame: f)", True),
+                           ("WKWebView(frame: .zero, configuration: c)", False), ("WKWebViewConfiguration()", None),
+                           ("func webView(_ webView: WKWebView, didCommit: X)", None)):
+            match = built.search(code)
+            self.assertEqual(match is not None and "configuration:" not in call_arguments(code, match.end() - 1),
+                             bool(made), code)
+        offenders: list[str] = []
+        count = 0
+        for path, code in sources.items():
+            bodies = [braced_span(code, match.end()) for match in WEB_VIEW_SUBCLASS.finditer(code)]
+            calls = list(built.finditer(code))
+            calls += [match for match in started.finditer(code)
+                      if any(start < match.start() < end for start, end in bodies)]
+            for match in calls:
+                count += 1
+                if "configuration:" not in call_arguments(code, match.end() - 1):
+                    line = code.count("\n", 0, match.start()) + 1
+                    offenders.append(f"{path.relative_to(REPOSITORY_ROOT).as_posix()}:{line}")
+        self.assertGreater(count, 0, "The link preview module builds the web views it shows pages in")
+        self.assertEqual(offenders, [], "Each web view is built with a configuration that keeps nothing")
+
+    def test_only_the_app_delegate_asks_for_pages_from_the_web(self) -> None:
+        # A center made anywhere else, a test session's among them, shows text that loads nothing in place of a page.
+        for code in ("pages: .web", "pages:.web", "pages: LinkPreviewCenter.PageSource.web",
+                     "let source = LinkPreviewCenter.PageSource.web", "let source: LinkPreviewCenter.PageSource = .web"):
+            self.assertIsNotNone(WEB_PAGES.search(code), code)
+        for code in ("pages: .synthetic", "case .web:", "linkPreviewSource == .web", "enum PageSource: Sendable {",
+                     "pages: PageSource = .synthetic) {"):
+            self.assertIsNone(WEB_PAGES.search(code), code)
+        self.assertEqual(matching_lines(WEB_PAGES, (APP_SOURCES,), frozenset({APP_DELEGATE})), [],
+                         "Only the app delegate gives quick access pages from the web")
+        delegate = code_only((REPOSITORY_ROOT / APP_DELEGATE).read_text(encoding="utf-8"))
+        self.assertEqual(len(WEB_PAGES.findall(delegate)), 1, "The app delegate asks for them once")
+        start = delegate.index("private static func makeLinkPreviews")
+        self.assertIsNotNone(WEB_PAGES.search(delegate, start, start + delegate[start:].index("\n    }\n")),
+                             "It asks for them where it builds the system's link loader")
 
     def test_the_network_modules_reach_nothing_but_the_network_and_log_nothing(self) -> None:
         for module in NETWORK_MODULES:

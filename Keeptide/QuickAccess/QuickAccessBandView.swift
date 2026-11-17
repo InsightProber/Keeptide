@@ -265,7 +265,8 @@ struct QuickAccessBandView: View {
                                    isLoadingOriginal: state.isLoadingOriginalPreview,
                                    previewMessage: state.previewMessage,
                                    onRequestOriginal: state.loadOriginalPreview,
-                                   isOnTray: true)
+                                   isOnTray: true,
+                                   linkPages: state.linkPreviews)
                 // In the split card, no wider than the plain preview, so text keeps lines it can be read in.
                 .frame(maxWidth: state.isPreviewSplit ? StripLayout.previewMaximum.width : .infinity)
         }

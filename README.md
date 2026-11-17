@@ -131,7 +131,7 @@ Keeptide needs **macOS 26 or later** on **Apple silicon**.
 | Return | Paste into the app you came from, or copy |
 | Double-click | Paste or copy the clip you double-click, as Return does with a clip |
 | ⇧Return | Paste or copy as plain text |
-| Space or ⌘Y | Show or hide a larger preview |
+| Space or ⌘Y | Show or hide a larger preview; a link's shows its page |
 | ⇧⌘T | Show the text in the selected image beside its preview |
 | ⌘T | Show the translation of the selected text, or of the text in the selected image, beside its preview |
 | ⌥⌘T | Choose the language to translate into |
@@ -201,9 +201,11 @@ Choose **Settings…** from the menu-bar menu.
     card quick access shows, for its title and picture, and keeps them on this
     Mac. It never loads a link whose address names this Mac or an address on
     your local network, or has a parameter that may carry a password, key or
-    token. Loading a page tells its website the link
-    and your IP address, as opening it would; turn off **Load link previews** in
-    Settings › Privacy and no page is loaded, and the previews kept are removed.
+    token. Loading a page tells its website the link and your IP address, as
+    opening it would. The larger preview shows the page itself, in a view that
+    keeps no cookies, cache or history, and a link you click there opens in your
+    browser. Turn off **Load link previews** in Settings › Privacy and no page is
+    loaded, and the previews kept are removed.
   - The one for cloud models connects only to Anthropic's and OpenAI's API hosts
     over HTTPS, follows no redirect, and keeps no cache or cookies. No feature
     uses it yet.
