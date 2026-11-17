@@ -124,6 +124,26 @@ final class LibraryUITests: XCTestCase {
         XCTAssertTrue(image.exists, app.debugDescription)
     }
 
+    func testTranslateShowsATranslationBesideTheTextAndEscapeInTheListClosesIt() {
+        continueAfterFailure = false
+        let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)
+        _ = requireLibrary(in: app)
+        let note = app.staticTexts["Synthetic alpha note"].firstMatch
+        XCTAssertTrue(note.waitForExistence(timeout: 8), app.debugDescription)
+        note.click()
+
+        // ⌘T, Item › Translate: the translation beside the text, under the name of its language, which is its menu.
+        app.typeKey("t", modifierFlags: .command)
+        let column = app.descendants(matching: .any)["LibraryTranslation"]
+        XCTAssertTrue(column.waitForExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(app.descendants(matching: .any)["LibraryTranslationLanguage"].exists, app.debugDescription)
+
+        // The list still has the keyboard: Escape there closes the column, and the text stays.
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(column.waitForNonExistence(timeout: 8), app.debugDescription)
+        XCTAssertTrue(note.exists, app.debugDescription)
+    }
+
     func testFavoriteOnAClipSavesItFirst() {
         continueAfterFailure = false
         let app = launchKeeptide(sessionID: UUID(), seedSyntheticClips: true)

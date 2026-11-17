@@ -60,18 +60,18 @@ struct LibraryView: View {
     @FocusState private var listHasFocus: Bool
     @State private var searchPresented = false
     @State private var searchScope: LibrarySearchScope = .allContent
-    /// The text recognized in the open image, beside it in the detail.
-    @State private var textColumn: LibraryTextColumn
+    /// What was made of the open item, beside it in the detail: the text in an image, or a translation.
+    @State private var resultColumn: LibraryResultColumn
 
     /// `preferences` are quick access's, which Settings edits: recognized text is laid out as they say.
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands(),
          preferences: QuickAccessPreferences? = nil) {
         _session = Bindable(wrappedValue: session)
         _commands = Bindable(wrappedValue: commands)
-        _textColumn = State(initialValue: LibraryTextColumn(services: { [weak session, weak commands] in
+        _resultColumn = State(initialValue: LibraryResultColumn(services: { [weak session, weak commands] in
             guard let session, let derivedText = session.derivedText, let paste = session.pasteService,
                   let library = session.libraryService else { return nil }
-            return LibraryTextColumn.Services(
+            return LibraryResultColumn.Services(
                 derivedText: derivedText,
                 copyText: { paste.copyText($0) },
                 saveSnippet: { [weak session] text in
@@ -81,7 +81,9 @@ struct LibraryView: View {
                     await session?.libraryWorkspace?.reload()
                 },
                 keepsLineBreaks: { preferences?.keepsLineBreaks ?? true },
-                announce: { commands?.announce($0) }
+                announce: { commands?.announce($0) },
+                translationTargets: { (preferences?.fixedTranslationTarget, preferences?.translationTarget) },
+                keepLastUsed: { preferences?.translationTarget = $0 }
             )
         }))
     }
@@ -300,26 +302,47 @@ struct LibraryView: View {
         }
     }
 
-    /// The text in the open image, beside it: shown from the menus, copied, saved and stopped from them, closed with
-    /// Escape and as the detail moves on. What VoiceOver hears of its recognitions, a view of its own follows, so the
-    /// library doesn't follow every step of a recognition.
-    private var textColumnLibrary: some View {
+    /// What was made of the open item, beside it: the text in an image, or a translation. Shown from the menus,
+    /// copied, saved and stopped from them, closed with Escape and as the detail moves on. What VoiceOver hears of its
+    /// jobs, a view of its own follows, so the library doesn't follow every step of a job.
+    private var resultColumnLibrary: some View {
         itemLibrary
         .onChange(of: commands.extractTextRequest) { _, _ in extractTextFromSelection() }
-        .onChange(of: commands.closeResultColumnRequest) { _, _ in textColumn.close() }
-        .onChange(of: commands.stopResultColumnRequest) { _, _ in textColumn.stop() }
-        .onChange(of: commands.copyResultTextRequest) { _, _ in textColumn.copy() }
-        .onChange(of: commands.saveResultTextRequest) { _, _ in Task { await textColumn.saveAsSnippet() } }
-        .onChange(of: detailImageRef) { _, ref in textColumn.follow(ref) }
-        .onAppear {
-            let column = textColumn
-            commands.resultColumnHasText = { [weak column] in column?.text != nil }
+        .onChange(of: commands.translationRequest) { _, request in
+            if let request { translateSelection(into: request.code) }
         }
-        .background { LibraryTextColumnAnnouncer(textColumn: textColumn) }
+        .onChange(of: commands.closeResultColumnRequest) { _, _ in resultColumn.close() }
+        .onChange(of: commands.stopResultColumnRequest) { _, _ in resultColumn.stop() }
+        .onChange(of: commands.copyResultTextRequest) { _, _ in resultColumn.copy() }
+        .onChange(of: commands.saveResultTextRequest) { _, _ in Task { await resultColumn.saveAsSnippet() } }
+        .onChange(of: detailRef) { _, ref in
+            resultColumn.follow(ref, itemText: session.libraryWorkspace?.editor?.body)
+        }
+        // A column the detail no longer shows beside its item, as when the item can no longer be read, closes.
+        .onChange(of: resultColumnIsShown) { _, shown in
+            if !shown, resultColumn.ref != nil { resultColumn.close() }
+        }
+        // The languages are read again each time the window shows, and as the library changes, as a language may be
+        // downloaded meanwhile.
+        .onChange(of: commands.shownGeneration, initial: true) { _, _ in
+            resultColumn.languages.showAgain(in: session.derivedText)
+        }
+        .onChange(of: session.libraryWorkspace.map(ObjectIdentifier.init)) { _, _ in
+            resultColumn.languages.showAgain(in: session.derivedText)
+        }
+        .onAppear {
+            let column = resultColumn
+            commands.resultColumnHasText = { [weak column] in column?.text != nil }
+            commands.resultColumnName = { [weak column] in column?.resultName ?? "Text" }
+            commands.languageMenuForSelection = { languageMenuForSelection() }
+        }
+        // That closure holds the view, which holds the commands: let go of it with the view.
+        .onDisappear { commands.languageMenuForSelection = { nil } }
+        .background { LibraryResultColumnAnnouncer(resultColumn: resultColumn) }
     }
 
     var body: some View {
-        textColumnLibrary
+        resultColumnLibrary
         .onChange(of: commands.newSnippetRequest) { _, _ in
             startNewSnippet(focusGeneration: commands.newSnippetFocusGeneration)
         }
@@ -602,8 +625,9 @@ struct LibraryView: View {
             MemoEditorView(
                 editor: editor,
                 workspace: workspace,
-                textColumn: textColumn,
+                resultColumn: resultColumn,
                 returnFocusToList: { listHasFocus = true },
+                openLanguageMenu: { openLanguageMenu(in: $0, at: $1) },
                 contentKind: editorContentKind(editor, in: workspace),
                 previewService: session.previewService,
                 linkPreviews: session.linkPreviews,
@@ -728,7 +752,7 @@ struct LibraryView: View {
         ToolbarItem { filterMenu }
     }
 
-    /// Over the detail: what acts on the selection, the same four items whatever is selected, then Info and the
+    /// Over the detail: what acts on the selection, the same five items whatever is selected, then Info and the
     /// system's search item, which the system keeps last.
     @ToolbarContentBuilder
     private var detailToolbar: some ToolbarContent {
@@ -805,7 +829,31 @@ struct LibraryView: View {
             .help(state.hasCollections ? state.collectionTitle : "Create a collection first.")
             .accessibilityIdentifier("CollectionMenu")
             .disabled(!state.canFile)
+
+            Button { translateSelection(into: nil) } label: {
+                Label("Translate", systemImage: "translate")
+            }
+            .help(translateHelp(state))
+            .accessibilityIdentifier("TranslateLibraryItem")
+            .disabled(!canTranslate(state))
         }
+    }
+
+    /// The toolbar's Translate says why the selection can't be translated, where it can't.
+    private func translateHelp(_ state: LibrarySelectionState) -> String {
+        if canTranslate(state) { return "Translate this item (⌘T)" }
+        guard state.refs.count == 1, let workspace = session.libraryWorkspace, let selected = state.refs.first,
+              let kind = workspace.entries.first(where: { $0.id == selected.itemID })?.kind else {
+            return "Select one text or image to translate."
+        }
+        return kind == .url || kind == .file ? "Links and files can't be translated." : "This item can't be translated."
+    }
+
+    /// A language in a row's Translate To, checked where it is the one chosen, said with what translating into it
+    /// needs.
+    private func languageToggle(_ language: TranslationLanguageMenu.Item, choose: @escaping () -> Void) -> some View {
+        Toggle(language.menuTitle, isOn: Binding(get: { language.isChosen }, set: { _ in choose() }))
+            .accessibilityLabel(language.spokenName)
     }
 
     /// The collections and New Collection…, each collection checked when all of the selection is in it. Choosing
@@ -1005,8 +1053,104 @@ struct LibraryView: View {
             isRecentlyDeleted: selectedScope == .recentlyDeleted,
             deleted: selectedDeletedRow,
             canExtractText: canExtractText(state),
-            resultColumnIsOpen: textColumn.ref != nil && textColumn.ref == detailImageRef
+            canTranslate: canTranslate(state),
+            resultColumnIsOpen: resultColumnIsShown
         )
+    }
+
+    /// The open text, while the detail shows it in the editor: what a translation is beside.
+    private var detailTextRef: ContentRef? {
+        guard let ref = detailRef, let workspace = session.libraryWorkspace, let editor = workspace.editor,
+              editor.body != nil, (editor.details?.integrity ?? .complete) == .complete,
+              !LibraryContentPresentation.showsTypedPreview(isReadOnly: editor.isReadOnly, hasBody: true,
+                                                            kind: editorContentKind(editor, in: workspace))
+        else { return nil }
+        return ref
+    }
+
+    /// Whether the result column shows beside the item it is for: the text in an image beside the image, and a
+    /// translation beside the image or the text.
+    private var resultColumnIsShown: Bool {
+        guard let ref = resultColumn.ref else { return false }
+        switch resultColumn.showing {
+        case .text?: return ref == detailImageRef
+        case .translation?: return ref == detailImageRef || ref == detailTextRef
+        case nil: return false
+        }
+    }
+
+    /// Whether Translate acts on the selection: one text or image whose content can be read, in a library that
+    /// translates. The detail shows it, or is still to open it.
+    private func canTranslate(_ state: LibrarySelectionState) -> Bool {
+        guard state.canTranslate, session.derivedText != nil, let selected = state.refs.first else { return false }
+        if let open = detailRef, open.itemID == selected.itemID { return detailImageRef != nil || detailTextRef != nil }
+        return true
+    }
+
+    /// Item › Translate and Translate To: the selected item's translation beside it once it is open, into the
+    /// language with `code` where one is chosen.
+    private func translateSelection(into code: String?) {
+        let state = selectionState
+        guard canTranslate(state), let workspace = session.libraryWorkspace, let selected = state.refs.first,
+              let entry = workspace.entries.first(where: { $0.id == selected.itemID }) else { return }
+        translate(entry, into: code, workspace: workspace)
+    }
+
+    /// Translate for a row: it opens in the detail unless it is open, and its translation shows beside it once the
+    /// detail shows it, into the language with `code` where one is chosen.
+    private func translate(_ entry: LibraryEntry, into code: String?, workspace: LibraryWorkspace) {
+        func open(_ ref: ContentRef, isImage: Bool, text: String?) {
+            if let code {
+                resultColumn.chooseLanguage(code, for: ref, isImage: isImage, itemText: text)
+            } else {
+                resultColumn.showTranslation(ref, isImage: isImage, itemText: text)
+            }
+        }
+        func show() {
+            guard let ref = detailImageRef ?? detailTextRef, ref.itemID == entry.id else { return }
+            if ref == detailImageRef { return open(ref, isImage: true, text: nil) }
+            // A text is translated as the editor shows it: what was typed is saved first, as a copy saves it.
+            guard workspace.editor?.isComposing != true else { return NSSound.beep() }
+            Task {
+                let flushed = try? await workspace.flush()
+                guard let saved = (flushed ?? nil) ?? workspace.editor?.ref, saved.itemID == entry.id,
+                      saved == detailTextRef else { return }
+                open(saved, isImage: false, text: workspace.editor?.body)
+            }
+        }
+        if let open = detailRef, open.itemID == entry.id { return show() }
+        selectedEntryIDs = [entry.id]
+        Task {
+            await workspace.select(entry.id)
+            guard selectedEntryIDs == [entry.id] else { return }
+            show()
+        }
+    }
+
+    /// The languages to translate the selected item into, as Translate To lists them, marked for that item once its
+    /// language is told: the language its translation shows in, or else the one translations are made in, chosen.
+    private func languageMenuForSelection() -> TranslationLanguageMenu? {
+        guard let ref = detailImageRef ?? detailTextRef else {
+            return resultColumn.languages.menu(for: nil, chosen: resultColumn.translationTarget)
+        }
+        if ref == resultColumn.ref, resultColumn.showing == .translation {
+            resultColumn.readLanguageMarks()
+            return resultColumn.languageMenu
+        }
+        if let derivedText = session.derivedText {
+            let text = ref == detailImageRef ? derivedText.recognizedText(in: ref)
+                : session.libraryWorkspace?.editor?.body
+            resultColumn.languages.readMarks(for: ref, text: { text }, in: derivedText)
+        }
+        return resultColumn.languages.menu(for: ref, chosen: resultColumn.translationTarget)
+    }
+
+    /// The translation's title: the languages to translate the item shown into, below the title.
+    private func openLanguageMenu(in view: NSView, at point: NSPoint) {
+        let column = resultColumn
+        commands.showLanguageMenu(column.languageMenu, view, point) { [weak column] code in
+            column?.chooseLanguage(code)
+        }
     }
 
     /// The item the detail shows, while it shows one: not several, none, one that couldn't be read, or a deleted one.
@@ -1049,14 +1193,14 @@ struct LibraryView: View {
     /// detail shows the image.
     private func extractText(from entry: LibraryEntry, workspace: LibraryWorkspace) {
         if let open = detailRef, open.itemID == entry.id {
-            if let ref = detailImageRef { textColumn.show(ref) }
+            if let ref = detailImageRef { resultColumn.showText(ref) }
             return
         }
         selectedEntryIDs = [entry.id]
         Task {
             await workspace.select(entry.id)
             guard selectedEntryIDs == [entry.id], let ref = detailImageRef, ref.itemID == entry.id else { return }
-            textColumn.show(ref)
+            resultColumn.showText(ref)
         }
     }
 
@@ -1444,9 +1588,27 @@ struct LibraryView: View {
             Task { await workspace.setFavorite(of: refs, to: !state.isFavorite) }
         }
         .disabled(!state.canFavorite)
-        if state.canExtractText, session.derivedText != nil, let entry = entries.first {
+        if session.derivedText != nil, let entry = entries.first, state.canExtractText || state.canTranslate {
             Divider()
-            Button("Extract Text") { extractText(from: entry, workspace: workspace) }
+            if state.canExtractText {
+                Button("Extract Text") { extractText(from: entry, workspace: workspace) }
+            }
+            if state.canTranslate {
+                Button("Translate") { translate(entry, into: nil, workspace: workspace) }
+                Menu("Translate To") {
+                    // The row's column, while it shows a translation, chooses its own language.
+                    let languages = entry.ref == resultColumn.ref && resultColumn.showing == .translation
+                        ? resultColumn.languageMenu
+                        : resultColumn.languages.menu(for: entry.ref, chosen: resultColumn.translationTarget)
+                    ForEach(languages.preferred, id: \.code) { language in
+                        languageToggle(language) { translate(entry, into: language.code, workspace: workspace) }
+                    }
+                    if !languages.preferred.isEmpty, !languages.others.isEmpty { Divider() }
+                    ForEach(languages.others, id: \.code) { language in
+                        languageToggle(language) { translate(entry, into: language.code, workspace: workspace) }
+                    }
+                }
+            }
         }
         if let linked = state.linked {
             Divider()
@@ -1679,10 +1841,12 @@ enum LibraryRowText {
 private struct MemoEditorView: View {
     @Bindable var editor: MemoEditorSession
     @Bindable var workspace: LibraryWorkspace
-    /// The text recognized in the open image, shown beside it while the column is open for it.
-    let textColumn: LibraryTextColumn
-    /// Gives the keyboard back to the list, as the text column closes from its own text.
+    /// What was made of the open item, shown beside it while the column is open for it.
+    let resultColumn: LibraryResultColumn
+    /// Gives the keyboard back to the list, as the result column closes from its own text.
     let returnFocusToList: () -> Void
+    /// Opens the menu of languages to translate into at a point in a view.
+    let openLanguageMenu: (NSView, NSPoint) -> Void
     let contentKind: ContentKind
     let previewService: PreviewService?
     /// Shows a link's picture and title.
@@ -1708,7 +1872,8 @@ private struct MemoEditorView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let ref = editor.ref, showsTypedPreview {
                 // The preview keeps its place as the column opens beside it, so it isn't read again.
-                LibraryResultSplit(showsColumn: textColumn.ref == ref && textColumn.column != nil) {
+                // Whether a column shows, not what it shows: the preview isn't laid out again as the column changes.
+                LibraryResultSplit(showsColumn: resultColumn.ref == ref && resultColumn.showing != nil) {
                     LibraryContentPreview(
                         ref: ref,
                         kind: contentKind,
@@ -1719,44 +1884,49 @@ private struct MemoEditorView: View {
                         linkPreviews: linkPreviews
                     )
                 } column: {
-                    if let column = textColumn.column {
-                        LibraryTextColumnView(textColumn: textColumn, column: column,
-                                              returnFocusToList: returnFocusToList)
-                    }
+                    LibraryResultColumnView(resultColumn: resultColumn, returnFocusToList: returnFocusToList,
+                                            openLanguageMenu: openLanguageMenu)
                 }
             } else if let body = editor.body {
                 if editor.kind == .markdown {
                     markdownBar
                     Divider()
                 }
-                ZStack {
-                    EditorBridge(
-                        documentID: editor.draftID,
-                        text: body,
-                        isCode: editor.kind == .code,
-                        isEditable: canEditSource,
-                        focusRequest: bodyFocusRequest,
-                        shouldFocus: { canEditSource && shouldFocusBody() },
-                        onChange: { value, isComposing in
-                            editor.setBody(value, isComposing: isComposing)
-                        },
-                        onFocusLost: {
-                            Task { _ = try? await workspace.focusLost() }
-                        },
-                        onFocusAccepted: { documentID, request in
-                            onBodyFocusAccepted(editor.sessionID, documentID, request)
-                        }
-                    )
-                    .id(editor.sessionID)
-                    .opacity(isShowingMarkdownPreview ? 0 : 1)
-                    .allowsHitTesting(!isShowingMarkdownPreview)
-                    .accessibilityHidden(isShowingMarkdownPreview)
-                    .accessibilityIdentifier("SnippetBodyEditor")
+                // The editor keeps its place as a translation opens beside it.
+                LibraryResultSplit(showsColumn: resultColumn.ref == editor.ref
+                                    && resultColumn.showing == .translation) {
+                    ZStack {
+                        EditorBridge(
+                            documentID: editor.draftID,
+                            text: body,
+                            isCode: editor.kind == .code,
+                            isEditable: canEditSource,
+                            focusRequest: bodyFocusRequest,
+                            shouldFocus: { canEditSource && shouldFocusBody() },
+                            onChange: { value, isComposing in
+                                editor.setBody(value, isComposing: isComposing)
+                            },
+                            onFocusLost: {
+                                Task { _ = try? await workspace.focusLost() }
+                            },
+                            onFocusAccepted: { documentID, request in
+                                onBodyFocusAccepted(editor.sessionID, documentID, request)
+                            }
+                        )
+                        .id(editor.sessionID)
+                        .opacity(isShowingMarkdownPreview ? 0 : 1)
+                        .allowsHitTesting(!isShowingMarkdownPreview)
+                        .accessibilityHidden(isShowingMarkdownPreview)
+                        .accessibilityIdentifier("SnippetBodyEditor")
 
-                    if isShowingMarkdownPreview {
-                        MarkdownReadingView(documentID: editor.draftID, source: body)
-                            .background(Color(nsColor: .textBackgroundColor))
+                        if isShowingMarkdownPreview {
+                            MarkdownReadingView(documentID: editor.draftID, source: body)
+                                .background(Color(nsColor: .textBackgroundColor))
+                        }
                     }
+                } column: {
+                    LibraryResultColumnView(resultColumn: resultColumn, returnFocusToList: returnFocusToList,
+                                            openLanguageMenu: openLanguageMenu)
                 }
             } else {
                 ContentUnavailableView(
@@ -2186,6 +2356,8 @@ struct LibrarySelectionState: Equatable {
     var canDelete = false
     /// One image is selected whose content can be read: its text can be extracted.
     var canExtractText = false
+    /// One text or image is selected whose content can be read: it can be translated.
+    var canTranslate = false
 
     var favoriteTitle: String { isFavorite ? "Remove from Favorites" : "Add to Favorites" }
     var collectionTitle: String { savesIntoCollection ? "Save to Collection" : "Add to Collection" }
@@ -2219,6 +2391,7 @@ struct LibrarySelectionState: Equatable {
         state.savesIntoCollection = !unsavedClips.isEmpty
         state.canDelete = canDelete
         state.canExtractText = entries.count == 1 && entries[0].kind == .image && !unreadable
+        state.canTranslate = entries.count == 1 && [.text, .image].contains(entries[0].kind) && !unreadable
         if let open {
             switch open.ref.facet {
             case .history:

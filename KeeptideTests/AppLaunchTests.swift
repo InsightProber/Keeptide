@@ -1470,7 +1470,7 @@ final class AppLaunchTests: XCTestCase {
         // Every item that acts on the library window is kept from it, those the panel has commands of its own for too.
         XCTAssertEqual(taken, ["New Snippet", "New Collection…", "Save", "Find in Note…", "Search Library…",
                                "Copy Entire Item", "Show Sidebar", "Show Inspector", "Previous List", "Next List",
-                               "Choose List…", "Add to Favorites", "Add to Collection…", "Extract Text",
+                               "Choose List…", "Add to Favorites", "Add to Collection…", "Extract Text", "Translate",
                                "Move to Recently Deleted"])
         // The others act elsewhere: the app takes Settings… and Quit, the search field's text Cut, Copy, Paste and
         // Select All, and the panel's window Undo, Redo and Close.
