@@ -8,6 +8,8 @@ final class CaptureSession {
     /// Where Translate automatically is on, the languages a new text is translated into: the one fixed in Settings and
     /// the one last used, by their codes; nil where it is off. The app gives it from quick access's preferences.
     var automaticTranslation: (@MainActor () -> (fixed: String?, lastUsed: String?)?)?
+    /// Loads the previews of links: a copied link's at once. Nil where the app gives none, as in tests.
+    @ObservationIgnored var linkPreviews: LinkPreviewCenter?
     private(set) var isReady = false
     private(set) var libraryWorkspace: LibraryWorkspace?
     private(set) var maintenance: LibraryMaintenance?
@@ -337,14 +339,25 @@ final class CaptureSession {
         }
     }
 
-    /// A copy was kept: the recent clips are read again, and text copied, a clip copied again as much as a new one, is
-    /// translated in the background where Translate automatically is on. A clip the recent clips don't list yet, as when
-    /// another read of them overtook this one, is tried too: an image or a file has no text of its own to translate.
+    /// A copy was kept. The recent clips are read again, and a link's page is loaded for its preview. Text copied, a
+    /// clip copied again as much as a new one, is translated in the background where Translate automatically is on. A
+    /// clip the recent clips don't list yet, as when another read of them overtook this one, is tried too: an image or
+    /// a file has no text of its own to translate.
     private func captured(_ result: CaptureResult) async {
         await refresh()
         let kind = recent.first(where: { $0.history == result.ref })?.kind
+        if kind == .url { await requestLinkPreview(of: result.ref) }
         guard let languages = automaticTranslation?(), kind == nil || kind == .text else { return }
         derivedText?.translateAutomatically(result.ref, fixed: languages.fixed, lastUsed: languages.lastUsed)
+    }
+
+    /// A copied link's page is loaded for its preview at once, where loading previews is on, so that its card has it
+    /// when quick access opens.
+    private func requestLinkPreview(of ref: ContentRef) async {
+        guard let linkPreviews, linkPreviews.loadsPreviews, let previewService,
+              let link = try? await previewService.detail(for: ref, kind: .url, frameSize: .zero).wholeLink
+        else { return }
+        linkPreviews.request(link)
     }
 
     func refresh() async {

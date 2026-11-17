@@ -120,7 +120,7 @@ actor LinkPreviewStore {
     func keep(_ metadata: LinkPageMetadata, for key: String, imagePixels: Int,
               generation: Int? = nil) -> KeptLinkPreview {
         let date = now()
-        let title = metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let title = LinkPreview.shownTitle(metadata.title)
         if let generation, generation < firstGeneration {
             return KeptLinkPreview(outcome: .empty, title: title, date: date, retryAfter: date)
         }
@@ -281,8 +281,4 @@ actor LinkPreviewStore {
             kCGImageSourceShouldCacheImmediately: true,
         ] as CFDictionary)
     }
-}
-
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
