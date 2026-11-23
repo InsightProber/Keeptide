@@ -62,12 +62,15 @@ struct LibraryView: View {
     @State private var searchScope: LibrarySearchScope = .allContent
     /// What was made of the open item, beside it in the detail: the text in an image, or a translation.
     @State private var resultColumn: LibraryResultColumn
+    /// What the rows say of what was made of their items.
+    @State private var resultMarks: LibraryResultMarks
 
     /// `preferences` are quick access's, which Settings edits: recognized text is laid out as they say.
     init(session: CaptureSession, commands: LibraryWindowCommands = LibraryWindowCommands(),
          preferences: QuickAccessPreferences? = nil) {
         _session = Bindable(wrappedValue: session)
         _commands = Bindable(wrappedValue: commands)
+        _resultMarks = State(initialValue: LibraryResultMarks(derivedText: { [weak session] in session?.derivedText }))
         _resultColumn = State(initialValue: LibraryResultColumn(services: { [weak session, weak commands] in
             guard let session, let derivedText = session.derivedText, let paste = session.pasteService,
                   let library = session.libraryService else { return nil }
@@ -201,6 +204,8 @@ struct LibraryView: View {
         .onChange(of: selectedEntryIDs) { _, _ in updateExportContext() }
         .onChange(of: session.libraryWorkspace?.entries.map(\.ref) ?? []) { _, _ in
             updateExportContext()
+            // The rows say what was kept of their items, read for the items listed as the list changes.
+            resultMarks.read(for: session.libraryWorkspace?.entries ?? [])
         }
     }
 
@@ -326,9 +331,13 @@ struct LibraryView: View {
         // downloaded meanwhile.
         .onChange(of: commands.shownGeneration, initial: true) { _, _ in
             resultColumn.languages.showAgain(in: session.derivedText)
+            // Rows listed before the window first showed are read now; those read before aren't read again, as what
+            // was made meanwhile shows from the jobs.
+            resultMarks.read(for: session.libraryWorkspace?.entries ?? [])
         }
         .onChange(of: session.libraryWorkspace.map(ObjectIdentifier.init)) { _, _ in
             resultColumn.languages.showAgain(in: session.derivedText)
+            readResultMarksAgain()
         }
         .onAppear {
             let column = resultColumn
@@ -1459,6 +1468,12 @@ struct LibraryView: View {
         }
     }
 
+    /// What the store kept of the items listed is read again, as the library changed.
+    private func readResultMarksAgain() {
+        resultMarks.forget()
+        resultMarks.read(for: session.libraryWorkspace?.entries ?? [])
+    }
+
     /// One row of a list, with its menu; the last row asks for the next page.
     private func entryRow(_ entry: LibraryEntry, workspace: LibraryWorkspace, recentStyle: Bool) -> some View {
         LibraryEntryRow(
@@ -1466,6 +1481,7 @@ struct LibraryView: View {
             sourceAppName: entry.sourceApp.flatMap { applicationNames.name(for: $0) },
             collections: showsCollections(workspace)
                 ? CollectionBadge.collections(entry.collectionIDs, in: workspace.collections.map(\.value)) : [],
+            resultMarks: resultMarks,
             previewService: session.previewService,
             linkPreviews: session.linkPreviews
         )
@@ -1670,19 +1686,21 @@ struct LibraryView: View {
     }
 }
 
-/// One row of a list: what the item is, its title, an excerpt, and a line with the time the list is ordered by,
-/// where it came from and its collection. A clip saved as a snippet carries a bookmark; a favorite snippet a star.
 /// What a link's row reads its link again for: another item or version, or loading previews turned on or off.
 private struct LinkRowRead: Equatable {
     let ref: ContentRef
     let loadsPreviews: Bool
 }
 
+/// One row of a list: what the item is, its title, an excerpt, and a line with the time the list is ordered by,
+/// where it came from and its collection. A clip saved as a snippet carries a bookmark; a favorite snippet a star.
 private struct LibraryEntryRow: View {
     let entry: LibraryEntry
     let sourceAppName: String?
     /// The snippet's collections, in the sidebar's order, where the list shows them.
     let collections: [CollectionValue]
+    /// What the rows say of what was made of their items: this row's marks follow it.
+    let resultMarks: LibraryResultMarks
     /// Where a link's row reads its address and the title it was copied with, and the title its page gave.
     var previewService: PreviewService? = nil
     var linkPreviews: LinkPreviewCenter? = nil
@@ -1717,6 +1735,7 @@ private struct LibraryEntryRow: View {
                     .accessibilityLabel(spokenMetadata)
             }
             Spacer(minLength: 4)
+            LibraryRowMarks(entry: entry, marks: resultMarks)
             marker
         }
         .padding(.vertical, 8)
