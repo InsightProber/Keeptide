@@ -168,7 +168,9 @@ show the selected clip, or its snippet, there.
   menu of languages to translate into, marked, once the text's language is
   known, for what each needs; the language chosen is the one quick access
   translates into too, unless Settings fixes one. A snippet is saved before it
-  is translated, and once edited, its translation is to be made again.
+  is translated, and once edited, its translation is to be made again. A row
+  is marked, as its card in quick access is, while the text in its image or
+  its translation is being made, once it has been, and when making it failed.
 - **All Snippets** and **Favorites** hold what you keep on purpose; your
   **collections** sort them, a snippet can be in several at once, and
   **Unfiled** shows snippets that are in no collection. In a collection, ⌫

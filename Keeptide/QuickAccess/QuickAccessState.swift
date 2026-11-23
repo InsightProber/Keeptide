@@ -187,6 +187,68 @@ enum ResultColumnContents {
     }
 }
 
+/// What a card in quick access or a row in the Library says of what was made of its item: worked out from the jobs and
+/// endings the coordinator knows of, and from what the store kept of the items it was asked about (`kept`), once it
+/// has answered for them (`answered`). A job is told apart as waiting or running by whether it started, which changes
+/// once, so that a surface doesn't follow every snapshot it publishes.
+@MainActor
+enum ResultMarks {
+    /// What an item says of the text in its image: a recognition under way or waiting its turn, text made or kept,
+    /// or why making it failed. Nothing for an item that isn't an image, an image whose text was never made, or one
+    /// with none in it.
+    static func text(for ref: ContentRef, kind: ContentKind, in derivedText: DerivedTextCoordinator,
+                     kept: [ContentRef: DerivedTextSummary], answered: Set<ContentRef>) -> StripTextMark? {
+        guard kind == .image else { return nil }
+        let (job, outcome) = derivedText.cardState(for: ref, operation: .extractText)
+        if let job { return job.hasStarted ? .recognizing : .waiting }
+        // Text cut off at its length limit is text, as it is when made in this showing.
+        let isKept = kept[ref] != nil
+        switch outcome {
+        case .saving?, .saved?, .notSaved?: return .hasText
+        // A failure leaves the text kept from before, which the store is asked for first.
+        case .failed(let error)?:
+            if isKept { return .hasText }
+            return answered.contains(ref) ? .failed(error.message) : nil
+        case .noText?: return nil
+        case nil: return isKept ? .hasText : nil
+        }
+    }
+
+    /// What an item says of the translation of its text, or of the text in its image: one under way or waiting its
+    /// turn, waiting for the image's text to be recognized included, one made or kept from before, whole or stopped
+    /// part way, or why making it failed. Nothing for an item that can't be translated, one never translated, or one
+    /// with nothing in it to translate.
+    static func translation(for ref: ContentRef, kind: ContentKind, in derivedText: DerivedTextCoordinator,
+                            kept: [ContentRef: DerivedTextSummary],
+                            answered: Set<ContentRef>) -> StripTranslationMark? {
+        func made(_ status: DerivedTextStatus, into language: String?) -> StripTranslationMark {
+            status == .complete ? .translated(into: language) : .stopped
+        }
+        guard QuickAccessState.isTranslatable(kind) else { return nil }
+        let (job, outcome) = derivedText.cardState(for: ref, operation: .translate)
+        // A translation made in the background isn't shown until it is made.
+        if let job, job.priority == .user {
+            guard job.hasStarted else { return .waiting }
+            let into = derivedText.runningRequest(for: ref, operation: .translate)?.targetLanguage
+            return .translating(into: into)
+        }
+        // A translation of the text in an image waits for the text to be recognized.
+        if derivedText.translationWaitingForText(ref) != nil { return .waiting }
+        let before = kept[ref].map { made($0.status, into: $0.targetLanguage) }
+        switch outcome {
+        case .saving(_, let request, let status)?, .notSaved(_, let request, let status)?:
+            return made(status, into: request.targetLanguage)
+        case .saved(let result)?: return made(result.status, into: result.targetLanguage)
+        // A failure leaves the translation kept from before, which the store is asked for first.
+        case .failed(let error)?:
+            guard answered.contains(ref) else { return nil }
+            return before ?? .failed(error.message)
+        case .noText?: return nil
+        case nil: return before
+        }
+    }
+}
+
 /// What the text column shows for the selected image.
 enum TextColumn: Equatable {
     /// What was made before is still being read.
@@ -1066,22 +1128,10 @@ final class QuickAccessState {
     /// panel doesn't follow every snapshot it publishes.
     func textMarker() -> (QuickAccessRow) -> StripTextMark? {
         guard let derivedText = services()?.derivedText else { return { _ in nil } }
-        // Text cut off at its length limit is text, as it is when made in this showing.
-        let kept = Set((keptResults[.extractText] ?? [:]).keys)
+        let kept = keptResults[.extractText] ?? [:]
         let answered = keptAnswered[.extractText] ?? []
         return { row in
-            guard row.kind == .image else { return nil }
-            let (job, outcome) = derivedText.cardState(for: row.ref, operation: .extractText)
-            if let job { return job.hasStarted ? .recognizing : .waiting }
-            switch outcome {
-            case .saving?, .saved?, .notSaved?: return .hasText
-            // A failure leaves the text kept from before, which the store is asked for first.
-            case .failed(let error)?:
-                if kept.contains(row.ref) { return .hasText }
-                return answered.contains(row.ref) ? .failed(error.message) : nil
-            case .noText?: return nil
-            case nil: return kept.contains(row.ref) ? .hasText : nil
-            }
+            ResultMarks.text(for: row.ref, kind: row.kind, in: derivedText, kept: kept, answered: answered)
         }
     }
 
@@ -1098,32 +1148,8 @@ final class QuickAccessState {
         guard let derivedText = services()?.derivedText else { return { _ in nil } }
         let kept = keptResults[.translate] ?? [:]
         let answered = keptAnswered[.translate] ?? []
-        func made(_ status: DerivedTextStatus, into language: String?) -> StripTranslationMark {
-            status == .complete ? .translated(into: language) : .stopped
-        }
         return { row in
-            guard Self.isTranslatable(row.kind) else { return nil }
-            let (job, outcome) = derivedText.cardState(for: row.ref, operation: .translate)
-            // A translation made in the background isn't shown until it is made.
-            if let job, job.priority == .user {
-                guard job.hasStarted else { return .waiting }
-                let into = derivedText.runningRequest(for: row.ref, operation: .translate)?.targetLanguage
-                return .translating(into: into)
-            }
-            // A translation of the text in an image waits for the text to be recognized.
-            if derivedText.translationWaitingForText(row.ref) != nil { return .waiting }
-            let before = kept[row.ref].map { made($0.status, into: $0.targetLanguage) }
-            switch outcome {
-            case .saving(_, let request, let status)?, .notSaved(_, let request, let status)?:
-                return made(status, into: request.targetLanguage)
-            case .saved(let result)?: return made(result.status, into: result.targetLanguage)
-            // A failure leaves the translation kept from before, which the store is asked for first.
-            case .failed(let error)?:
-                guard answered.contains(row.ref) else { return nil }
-                return before ?? .failed(error.message)
-            case .noText?: return nil
-            case nil: return before
-            }
+            ResultMarks.translation(for: row.ref, kind: row.kind, in: derivedText, kept: kept, answered: answered)
         }
     }
 
