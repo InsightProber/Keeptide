@@ -16,7 +16,7 @@ struct RecognizedTextFingerprint: Equatable, Sendable {
 }
 
 /// What a derived text was made by.
-enum DerivedTextOperation: String, Codable, Sendable {
+enum DerivedTextOperation: String, Codable, Sendable, CaseIterable {
     /// Text recognized in an image.
     case extractText
     case translate
